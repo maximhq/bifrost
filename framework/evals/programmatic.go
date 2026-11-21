@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -263,6 +264,9 @@ func scoreFromStarlark(value starlark.Value) (Score, error) {
 		return StringScore(string(v)), nil
 	case starlark.Int, starlark.Float:
 		if f, ok := starlark.AsFloat(v); ok {
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				return Score{}, fmt.Errorf("%s returned %s; a number score must be a finite number", programmaticFunction, value.String())
+			}
 			return NumberScore(f), nil
 		}
 	}

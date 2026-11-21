@@ -1,0 +1,499 @@
+# Schemas for the test runs API.
+RunTarget:
+  type: object
+  description: What a run calls for each row
+  properties:
+    type:
+      type: string
+      enum: [dataset, prompt, model, http]
+      description: dataset scores outputs already in the dataset. prompt calls a prompt version. model calls a plain model. http calls an endpoint
+    prompt_id:
+      type: string
+      description: Prompt targets. The prompt in the prompt repository
+    prompt_version:
+      type: integer
+      description: Prompt targets. The version number. 0 or absent means the latest. A stored run carries the number it resolved to
+    messages:
+      type: array
+      description: Prompt targets. The version's messages, copied when the run starts. Read only
+      items:
+        type: object
+        additionalProperties: true
+    provider:
+      type: string
+      description: Model targets. A prompt target takes it from its version
+    model:
+      type: string
+      description: Model targets. A prompt target takes it from its version
+    system:
+      type: string
+      description: Model targets. An optional system message
+    params:
+      type: object
+      additionalProperties: true
+      description: Model parameters, in the provider's wire form
+    http:
+      type: object
+      additionalProperties: true
+      description: HTTP targets. The request, in the shape of an API evaluator's config (method, url, headers, params, payload, timeout_ms). The value at output_mapping.score is the output. Header values are encrypted at rest and redacted on read
+  required:
+  - type
+RunEvaluatorRef:
+  type: object
+  properties:
+    id:
+      type: string
+      description: A saved evaluator
+    version:
+      type: integer
+      description: Its version. 0 or absent means the current one
+  required:
+  - id
+RunInput:
+  type: object
+  description: A run to start
+  properties:
+    name:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+    target:
+      $ref: '#/RunTarget'
+    dataset_id:
+      type: string
+    dataset_version:
+      type: integer
+      description: The dataset version to read. 0 or absent means the dataset as it is now; unsaved edits are saved as a version first
+    split_id:
+      type: string
+      description: Only the rows of this split
+    evaluators:
+      type: array
+      description: At least one
+      items:
+        $ref: '#/RunEvaluatorRef'
+    target_concurrency:
+      type: integer
+      description: HTTP targets. The most calls in flight to the endpoint, per gateway instance
+  required:
+  - name
+  - target
+  - dataset_id
+  - evaluators
+RunUpdateInput:
+  type: object
+  properties:
+    name:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+  required:
+  - name
+RunCheck:
+  type: object
+  description: The outcome of checking a run's settings
+  properties:
+    valid:
+      type: boolean
+    problems:
+      type: array
+      items:
+        type: string
+      description: What would stop the run from starting
+    variables:
+      type: array
+      items:
+        type: string
+      description: The variables the run provides to its evaluators
+RunEvaluatorSummary:
+  type: object
+  description: One evaluator's results across a run
+  properties:
+    evaluator_id:
+      type: string
+    name:
+      type: string
+    type:
+      type: string
+    version:
+      type: integer
+    total:
+      type: integer
+      description: Results that are in, scored or not
+    scored:
+      type: integer
+    na:
+      type: integer
+      description: Results skipped because a variable was missing
+    errors:
+      type: integer
+    passed:
+      type: integer
+    pass_rate:
+      type: number
+      description: Percent of scored results that passed
+    mean:
+      type: number
+    median:
+      type: number
+    min:
+      type: number
+    max:
+      type: number
+    histogram:
+      type: object
+      additionalProperties:
+        type: integer
+      description: Count per label, for evaluators that score with labels
+    pending:
+      type: integer
+      description: Results still queued, running or waiting for a reviewer
+    run_pass:
+      type: boolean
+      description: The run-level verdict. Absent while the run is active
+RunLatency:
+  type: object
+  description: The target's latency over the completed entries, in milliseconds
+  properties:
+    count:
+      type: integer
+    min:
+      type: integer
+    max:
+      type: integer
+    mean:
+      type: number
+    p50:
+      type: integer
+    p90:
+      type: integer
+    p95:
+      type: integer
+    p99:
+      type: integer
+RunTotals:
+  type: object
+  description: Tokens and cost the run spent
+  properties:
+    target_tokens:
+      type: integer
+    target_cost:
+      type: number
+    evaluator_tokens:
+      type: integer
+    evaluator_cost:
+      type: number
+RunSummary:
+  type: object
+  properties:
+    evaluators:
+      type: array
+      items:
+        $ref: '#/RunEvaluatorSummary'
+    latency:
+      $ref: '#/RunLatency'
+    totals:
+      $ref: '#/RunTotals'
+Run:
+  type: object
+  description: A test run
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+    status:
+      type: string
+      enum: [queued, running, completed, failed, stopped]
+      description: failed means no entry completed. A run with some failed entries is still completed
+    target_type:
+      type: string
+    target:
+      $ref: '#/RunTarget'
+    dataset_id:
+      type: string
+    dataset_version:
+      type: integer
+      description: The dataset version the run reads. It is kept while the run exists
+    split_id:
+      type: string
+    evaluators:
+      type: array
+      description: The evaluator definitions copied onto the run, secrets redacted
+      items:
+        type: object
+        additionalProperties: true
+    target_concurrency:
+      type: integer
+    total:
+      type: integer
+      description: How many entries the run has
+    counts:
+      type: object
+      additionalProperties:
+        type: integer
+      description: Entries by status
+    passed:
+      type: integer
+      description: Completed entries that passed every evaluator with a pass rule
+    summary:
+      $ref: '#/RunSummary'
+    error:
+      type: string
+    created_by:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+    started_at:
+      type: string
+      format: date-time
+    ended_at:
+      type: string
+      format: date-time
+RunResponse:
+  type: object
+  properties:
+    run:
+      $ref: '#/Run'
+RunListResponse:
+  type: object
+  properties:
+    runs:
+      type: array
+      items:
+        $ref: '#/Run'
+    total:
+      type: integer
+    limit:
+      type: integer
+    offset:
+      type: integer
+RunDeletedResponse:
+  type: object
+  properties:
+    deleted:
+      type: boolean
+RunRerunRequest:
+  type: object
+  description: Which entries to run again. Give a scope, or a list of entries
+  properties:
+    scope:
+      type: string
+      enum: [failed, all]
+      description: failed takes the entries that failed or were stopped
+    entry_ids:
+      type: array
+      items:
+        type: string
+RunAddEvaluatorsRequest:
+  type: object
+  properties:
+    evaluators:
+      type: array
+      items:
+        $ref: '#/RunEvaluatorRef'
+  required:
+  - evaluators
+RunReviewRequest:
+  type: object
+  properties:
+    score:
+      description: true or false, a number, or one of the evaluator's choices
+      oneOf:
+      - type: boolean
+      - type: number
+      - type: string
+    reasoning:
+      type: string
+  required:
+  - score
+RunResult:
+  type: object
+  description: One evaluator's score for one entry
+  properties:
+    id:
+      type: string
+    run_id:
+      type: string
+    entry_id:
+      type: string
+    evaluator_id:
+      type: string
+    status:
+      type: string
+      enum: [queued, running, completed, failed, not_applicable, awaiting_review]
+    score:
+      type: object
+      additionalProperties: true
+      description: The score as the evaluator produced it
+    score_number:
+      type: number
+      description: The score as a number, when it has one. 1 and 0 for yes and no
+    pass:
+      type: boolean
+    reasoning:
+      type: string
+    latency_ms:
+      type: integer
+    prompt_tokens:
+      type: integer
+    completion_tokens:
+      type: integer
+    total_tokens:
+      type: integer
+    cost:
+      type: number
+    attempt:
+      type: integer
+    error:
+      type: string
+    reviewed_by:
+      type: string
+    queued_at:
+      type: string
+      format: date-time
+    started_at:
+      type: string
+      format: date-time
+    completed_at:
+      type: string
+      format: date-time
+RunResultResponse:
+  type: object
+  properties:
+    result:
+      $ref: '#/RunResult'
+RunEntry:
+  type: object
+  description: One dataset row in a run
+  properties:
+    id:
+      type: string
+    run_id:
+      type: string
+    seq:
+      type: integer
+    dataset_row_id:
+      type: string
+    status:
+      type: string
+      enum: [queued, running, evaluating, completed, failed, stopped]
+    attempt:
+      type: integer
+    variables:
+      type: object
+      additionalProperties:
+        type: string
+      description: What the dataset row gives the evaluators
+    output:
+      type: string
+    tool_calls:
+      type: string
+      description: The target's tool calls, as JSON text
+    context:
+      type: string
+    passed:
+      type: boolean
+    target_latency_ms:
+      type: integer
+    target_prompt_tokens:
+      type: integer
+    target_completion_tokens:
+      type: integer
+    target_total_tokens:
+      type: integer
+    target_cost:
+      type: number
+    error:
+      type: string
+    queued_at:
+      type: string
+      format: date-time
+    started_at:
+      type: string
+      format: date-time
+    ended_at:
+      type: string
+      format: date-time
+    results:
+      type: array
+      items:
+        $ref: '#/RunResult'
+    baseline:
+      description: The baseline run's entry for the same dataset row. Present when the entries were listed with `baseline` and that run has the row.
+      allOf:
+        - $ref: '#/RunEntry'
+RunEntryResponse:
+  type: object
+  properties:
+    entry:
+      $ref: '#/RunEntry'
+RunEntriesPage:
+  type: object
+  properties:
+    entries:
+      type: array
+      items:
+        $ref: '#/RunEntry'
+    total:
+      type: integer
+      description: Entries the filters match, across all pages
+RunComparedRow:
+  type: object
+  properties:
+    dataset_row_id:
+      type: string
+    variables:
+      type: object
+      additionalProperties:
+        type: string
+    entries:
+      type: array
+      description: One per run, in the order the runs were given. Null for a run that does not have the row
+      items:
+        allOf:
+        - $ref: '#/RunEntry'
+        nullable: true
+RunComparison:
+  type: object
+  properties:
+    runs:
+      type: array
+      items:
+        $ref: '#/Run'
+    rows:
+      type: array
+      items:
+        $ref: '#/RunComparedRow'
+    total:
+      type: integer
+      description: Dataset rows across the runs, over all pages
+    changes:
+      type: object
+      description: Keyed by run ID, then evaluator ID. How that run's scores moved against the first run, the baseline, over every row. The baseline has no entry
+      additionalProperties:
+        type: object
+        additionalProperties:
+          type: object
+          properties:
+            improved:
+              type: integer
+              description: Rows the run scored higher than the baseline
+            regressed:
+              type: integer
+              description: Rows the run scored lower than the baseline
+            compared:
+              type: integer
+              description: Rows both runs have a numeric score for

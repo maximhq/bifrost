@@ -785,7 +785,7 @@ datasets-rows-from-sessions:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Add rows from sessions
     description: |
-      Adds one row per session. Every turn of the session goes into a variable column named `session`, which is created when the dataset has none. The first request fills the input and the last reply fills the output. The added rows are saved as a new version. Needs a log store.
+      Adds one row per session. Every turn of the session goes into a variable column named `session`, which is created when the dataset has none. The first request fills the input and the last reply fills the output. The added rows are saved as a new version. Needs a log store. A session is read up to 2,000 root requests (retries and fallbacks are not counted); a longer session is not cut short but skipped, and listed in `skipped` with the reason. A session one of whose requests cannot be read is skipped the same way.
     tags:
     - Datasets
     parameters:

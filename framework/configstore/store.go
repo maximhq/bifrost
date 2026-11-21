@@ -1127,7 +1127,7 @@ type ConfigStore interface {
 	// Evals - Executions
 	CreateEvalExecution(ctx context.Context, execution *tables.TableEvalExecution) error
 	GetEvalExecution(ctx context.Context, id string) (*tables.TableEvalExecution, error)
-	StartEvalExecution(ctx context.Context, id, keyID, claimID string, reclaimStartedBefore time.Time) (bool, error)
+	StartEvalExecution(ctx context.Context, id, keyID, claimID string, reclaimStartedBefore, recoverStartedAt time.Time) (bool, error)
 	CompleteEvalExecution(ctx context.Context, id string, resultJSON json.RawMessage) error
 	RouteEvalExecution(ctx context.Context, id, fromKey, toKey string) (bool, error)
 	ListQueuedEvalExecutions(ctx context.Context, createdBefore, routedBefore time.Time, skipKeys []string, limit int) ([]tables.TableEvalExecution, error)
@@ -1160,6 +1160,7 @@ type ConfigStore interface {
 	CreateEvalDatasetFile(ctx context.Context, file *tables.TableEvalDatasetFile) error
 	GetEvalDatasetFile(ctx context.Context, datasetID, fileID string) (*tables.TableEvalDatasetFile, error)
 	ListEvalDatasetFileKeys(ctx context.Context, datasetID string) ([]string, error)
+	ListEvalDatasetFiles(ctx context.Context, datasetID string) ([]tables.TableEvalDatasetFile, error)
 	ListEvalDatasetFolders(ctx context.Context) ([]tables.TableEvalDatasetFolder, error)
 	CreateEvalDatasetFolder(ctx context.Context, folder *tables.TableEvalDatasetFolder) error
 	UpdateEvalDatasetFolder(ctx context.Context, folder *tables.TableEvalDatasetFolder) error
@@ -1168,6 +1169,46 @@ type ConfigStore interface {
 	SetEvalDatasetFolder(ctx context.Context, datasetID string, folderID *string) error
 	// WithEvalDataset is the only way to change a dataset's rows, columns and versions.
 	WithEvalDataset(ctx context.Context, datasetID string, fn func(tx EvalDatasetTx) error) error
+
+	// Evals - Test runs
+	CreateEvalRun(ctx context.Context, run *tables.TableEvalRun) error
+	GetEvalRun(ctx context.Context, id string) (*tables.TableEvalRun, error)
+	GetEvalRunState(ctx context.Context, id string) (*EvalRunState, error)
+	ListEvalRuns(ctx context.Context, params EvalRunListParams) ([]tables.TableEvalRun, int64, error)
+	TransitionEvalRun(ctx context.Context, id string, from []string, fields map[string]any) (bool, error)
+	TransitionEvalRunIfUnchanged(ctx context.Context, id string, from []string, updatedAt time.Time, fields map[string]any) (bool, error)
+	DeleteEvalRun(ctx context.Context, id string) error
+	CountEvalRunsOnDataset(ctx context.Context, datasetID string, version int) (int64, error)
+	CreateEvalRunEntries(ctx context.Context, entries []tables.TableEvalRunEntry) error
+	ListEvalRunEntries(ctx context.Context, params EvalRunEntryListParams) ([]tables.TableEvalRunEntry, int64, error)
+	ListEvalRunEntryRefs(ctx context.Context, params EvalRunEntryListParams) ([]EvalRunEntryRef, error)
+	HasOpenEvalRunEntries(ctx context.Context, runID string) (bool, error)
+	GetEvalRunEntry(ctx context.Context, id string) (*tables.TableEvalRunEntry, error)
+	TransitionEvalRunEntry(ctx context.Context, id string, from []string, fields map[string]any) (bool, error)
+	TransitionEvalRunEntries(ctx context.Context, runID string, from, ids []string, fields map[string]any) (int64, error)
+	RouteEvalRunEntry(ctx context.Context, id, fromKey, toKey string) (bool, error)
+	RouteEvalRunResult(ctx context.Context, id, fromKey, toKey string) (bool, error)
+	ClaimEvalRunEntry(ctx context.Context, id, keyID, claimID string, attempt int, startedBefore, recoverStartedAt time.Time) (bool, error)
+	ClaimEvalRunResult(ctx context.Context, id, keyID, claimID string, attempt int, startedBefore, recoverStartedAt time.Time) (bool, error)
+	TransitionEvalRunEntryAttempt(ctx context.Context, id string, attempt int, from []string, fields map[string]any) (bool, error)
+	TransitionEvalRunResultAttempt(ctx context.Context, id string, attempt int, from []string, fields map[string]any) (bool, error)
+	TransitionEvalRunResultUnstarted(ctx context.Context, id string, attempt int, fields map[string]any) (bool, error)
+	ResetEvalRunEntries(ctx context.Context, runID string, ids []string, fields map[string]any) (int64, error)
+	GetEvalRunLastSeq(ctx context.Context, runID string) (int64, error)
+	ListEvalRunRowIDs(ctx context.Context, runIDs []string, offset, limit int) ([]string, int64, error)
+	CountEvalRunResultsByEvaluator(ctx context.Context, runID string) ([]EvalRunEvaluatorCount, error)
+	CountEvalRunEntries(ctx context.Context, runID string) (map[string]int64, error)
+	CountEvalRunEntriesPassed(ctx context.Context, runID string) (int64, error)
+	ListEvalRunTargetLatencies(ctx context.Context, runID string) ([]int64, error)
+	GetEvalRunTotals(ctx context.Context, runID string) (EvalRunTotals, error)
+	CreateEvalRunResults(ctx context.Context, results []tables.TableEvalRunResult, entryAttempt int) error
+	GetEvalRunResult(ctx context.Context, id string) (*tables.TableEvalRunResult, error)
+	ListEvalRunResults(ctx context.Context, params EvalRunResultListParams) ([]tables.TableEvalRunResult, error)
+	ListEvalRunResultRefs(ctx context.Context, params EvalRunResultListParams) ([]EvalRunResultRef, error)
+	TransitionEvalRunResult(ctx context.Context, id string, from []string, fields map[string]any) (bool, error)
+	CountEvalRunResults(ctx context.Context, entryID string) (map[string]int64, error)
+	CountEvalRunScoreChanges(ctx context.Context, baseRunID, runID string) ([]EvalRunScoreChange, error)
+	DeleteEvalRunResults(ctx context.Context, runID string, entryIDs []string, evaluatorID string) (int64, error)
 
 	// Sidekiq - generic durable background jobs
 	CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error

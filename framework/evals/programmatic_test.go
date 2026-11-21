@@ -53,6 +53,22 @@ func TestProgrammatic_ReturnTypes(t *testing.T) {
 	}
 }
 
+// NaN and infinity are not scores: they cannot be stored as JSON, so a result holding
+// one would be redelivered until it was dead-lettered.
+func TestProgrammatic_RejectsNonFiniteNumbers(t *testing.T) {
+	for name, code := range map[string]string{
+		"nan":      "def validate(output):\n    return float(\"nan\")\n",
+		"infinity": "def validate(output):\n    return float(\"inf\")\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := newProgrammaticEngine(ProgrammaticOptions{}).Run(context.Background(),
+				programmaticDefinition(t, code, GradingStyleNumber), Input{Variables: map[string]string{"output": "hello"}})
+			assert.Equal(t, ScoreStatusError, result.Score.Status, result.Reasoning)
+			assert.Contains(t, result.Reasoning, "finite number")
+		})
+	}
+}
+
 // A dict return carries reasoning alongside the score, which Maxim's sandboxes cannot.
 func TestProgrammatic_DictReturnCarriesReasoning(t *testing.T) {
 	code := "def validate(output, expected_output):\n" +

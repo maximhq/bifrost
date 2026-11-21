@@ -21,6 +21,7 @@ func setupEvalDatasetTestStore(t *testing.T) *RDBConfigStore {
 	require.NoError(t, store.DB().AutoMigrate(
 		&tables.TableEvalDataset{}, &tables.TableEvalDatasetColumn{}, &tables.TableEvalDatasetVersion{},
 		&tables.TableEvalDatasetRow{}, &tables.TableEvalDatasetSplit{}, &tables.TableEvalDatasetSplitRow{}, &tables.TableEvalDatasetFolder{}, &tables.TableEvalDatasetFile{},
+		&tables.TableEvalRun{}, &tables.TableEvalRunEntry{}, &tables.TableEvalRunResult{},
 	))
 	return store
 }
@@ -624,7 +625,8 @@ func TestEvalDatasetVersionDiffReadsOnePage(t *testing.T) {
 func TestEvalDatasetPostgresSearchLocksAndDiff(t *testing.T) {
 	store := trySetupPostgresSchemaStore(t, "configstore_evaldatasets_pg_test",
 		&tables.TableEvalDatasetFolder{}, &tables.TableEvalDataset{}, &tables.TableEvalDatasetColumn{}, &tables.TableEvalDatasetRow{},
-		&tables.TableEvalDatasetVersion{}, &tables.TableEvalDatasetSplit{}, &tables.TableEvalDatasetSplitRow{}, &tables.TableEvalDatasetFile{})
+		&tables.TableEvalDatasetVersion{}, &tables.TableEvalDatasetSplit{}, &tables.TableEvalDatasetSplitRow{}, &tables.TableEvalDatasetFile{},
+		&tables.TableEvalRun{}, &tables.TableEvalRunEntry{}, &tables.TableEvalRunResult{})
 	if store == nil {
 		t.Skip("Postgres not available")
 	}

@@ -15,7 +15,7 @@ import (
 // ExecutionStore is the part of the config store the runner needs for API executions.
 type ExecutionStore interface {
 	GetEvalExecution(ctx context.Context, id string) (*tables.TableEvalExecution, error)
-	StartEvalExecution(ctx context.Context, id, keyID, claimID string, reclaimStartedBefore time.Time) (bool, error)
+	StartEvalExecution(ctx context.Context, id, keyID, claimID string, reclaimStartedBefore, recoverStartedAt time.Time) (bool, error)
 	CompleteEvalExecution(ctx context.Context, id string, resultJSON json.RawMessage) error
 	RouteEvalExecution(ctx context.Context, id, fromKey, toKey string) (bool, error)
 	ListQueuedEvalExecutions(ctx context.Context, createdBefore, routedBefore time.Time, skipKeys []string, limit int) ([]tables.TableEvalExecution, error)
@@ -121,7 +121,7 @@ func (s *executionJobStore) PurgeJobs(ctx context.Context, completedBefore time.
 
 // StartJob marks the execution as running.
 func (s *executionJobStore) StartJob(ctx context.Context, id, keyID string, claim JobClaim) (bool, error) {
-	return s.store.StartEvalExecution(ctx, id, keyID, claim.DeliveryID, claim.StartedBefore)
+	return s.store.StartEvalExecution(ctx, id, keyID, claim.DeliveryID, claim.StartedBefore, claim.RecoverStartedAt)
 }
 
 // CompleteJob stores the result.

@@ -187,6 +187,21 @@ func TestEngineRun_FailuresBecomeErrorResults(t *testing.T) {
 	})
 }
 
+// A factory that panics while building the evaluator is an evaluator fault, reported as
+// an error result like a panic in Evaluate, never a panic out of Run.
+func TestEngineRun_RecoversAPanickingFactory(t *testing.T) {
+	engine := NewEngine(EngineOptions{})
+	engine.Register(EvaluatorTypeStatistical, "fake", func(Definition, Config) (Evaluator, error) {
+		panic("factory blew up")
+	})
+	var result Result
+	require.NotPanics(t, func() {
+		result = engine.Run(context.Background(), fakeDefinition(statisticalConfig), Input{})
+	})
+	assert.Equal(t, ScoreStatusError, result.Score.Status)
+	assert.Contains(t, result.Reasoning, "panicked")
+}
+
 func TestEngineBuild_HumanIsNotExecutable(t *testing.T) {
 	engine := NewEngine(EngineOptions{})
 	_, err := engine.Build(Definition{Type: EvaluatorTypeHuman, Config: []byte(`{"evaluation_type":"yes_no"}`)})
