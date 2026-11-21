@@ -166,6 +166,8 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			lib.ForwardProviderResponseHeaders(ctx, headers)
 		}
 	}
+	// This body is generated locally, not the encoded upstream body.
+	ctx.Response.Header.Del("Content-Encoding")
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
 	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
@@ -205,6 +207,8 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 			lib.ForwardProviderResponseHeaders(ctx, headers)
 		}
 	}
+	// This body is generated locally, not the encoded upstream body.
+	ctx.Response.Header.Del("Content-Encoding")
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
 	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
