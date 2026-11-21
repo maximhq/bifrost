@@ -2526,8 +2526,9 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 	preloadedVk, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID)
 	if err != nil {
-		logger.Error("failed to reload virtual key: %v", err)
-		preloadedVk = &vk
+		logger.Error("failed to reload virtual key after create: %v", err)
+		SendError(ctx, 500, "Virtual key created in database but failed to reload in-memory state")
+		return
 	}
 	// Reverse-map governance from the model configs just written, for display.
 	h.hydrateVKGovernance(ctx, preloadedVk)
@@ -3609,8 +3610,9 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 	// Reloading team from in-memory store
 	preloadedTeam, err := h.governanceManager.ReloadTeam(ctx, team.ID)
 	if err != nil {
-		logger.Error("failed to reload team: %v", err)
-		preloadedTeam = &team
+		logger.Error("failed to reload team after create: %v", err)
+		SendError(ctx, 500, "Team created in database but failed to reload in-memory state")
+		return
 	}
 	lib.RecordAuditChange(ctx, "team.created", "team", team.ID, team.Name, nil, auditTeam(preloadedTeam))
 	SendJSON(ctx, map[string]interface{}{
@@ -4024,8 +4026,9 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 	}
 	preloadedCustomer, err := h.governanceManager.ReloadCustomer(ctx, customer.ID)
 	if err != nil {
-		logger.Error("failed to reload customer: %v", err)
-		preloadedCustomer = &customer
+		logger.Error("failed to reload customer after create: %v", err)
+		SendError(ctx, 500, "Customer created in database but failed to reload in-memory state")
+		return
 	}
 	lib.RecordAuditChange(ctx, "customer.created", "customer", customer.ID, customer.Name, nil, auditCustomer(preloadedCustomer))
 	SendJSON(ctx, map[string]interface{}{
@@ -4868,8 +4871,9 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 	// Reload model config in memory
 	preloadedMC, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID)
 	if err != nil {
-		logger.Error("failed to reload model config in memory: %v", err)
-		preloadedMC = &mc
+		logger.Error("failed to reload model config after create: %v", err)
+		SendError(ctx, 500, "Model config created in database but failed to reload in-memory state")
+		return
 	}
 	h.resolveModelConfigScopeName(ctx, preloadedMC, map[string]string{})
 	h.resolveModelConfigManagedBy(ctx, preloadedMC, map[string]configstoreTables.SourceRef{})
