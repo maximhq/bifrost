@@ -849,3 +849,18 @@ func TestTraceRetentionCleanupIsWhole(t *testing.T) {
 		assert.Len(t, links, 1, "the span stayed, so its link stays")
 	})
 }
+
+// TestTraceUploadBytesLiveOnTheRowWithoutAnObjectStore pins upload bytes on a SQL store: saved on
+// the row, read back whole.
+func TestTraceUploadBytesLiveOnTheRowWithoutAnObjectStore(t *testing.T) {
+	ctx := context.Background()
+	store := newTraceTestStore(t)
+	assert.True(t, store.TraceUploadsAvailable())
+	require.NoError(t, store.CreateTraceUpload(ctx, &TraceUpload{ID: "u1", ProjectID: "p1", Source: TraceSourceLangfuse, ContentType: "image/png"}))
+	require.NoError(t, store.SaveTraceUploadBytes(ctx, "u1", []byte("png")))
+	upload, data, err := store.ReadTraceUploadBytes(ctx, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("png"), data)
+	assert.Equal(t, TraceUploadStatusDone, upload.Status)
+	assert.ErrorIs(t, store.SaveTraceUploadBytes(ctx, "missing", []byte("x")), ErrNotFound)
+}
