@@ -159,6 +159,8 @@
 			"maxConnsHelp": "プロバイダーホストごとの最大TCP接続数。HTTP/2プロバイダー（例：Bedrock）の場合、各接続は約100の同時ストリームをサポートします。",
 			"keepAliveTimeout": "キープアライブ タイムアウト（秒）",
 			"keepAliveHelp": "プール接続のアイドルキープアライブ。アップストリームサーバーのキープアライブより短く設定して、既に閉じられた接続を再利用しないようにします。",
+			"streamReadBufferSize": "ストリーム読み取りバッファサイズ (KB)",
+			"streamReadBufferHelp": "ストリーミング応答の読み取りバッファサイズ (KB)。Azure の音声ストリーミングと、Gemini および Vertex Gemini モデルのストリーミングに適用されます。その他のプロバイダーと Vertex Anthropic のストリームでは無視されます。ストリームごとに確保されるため、大きな値は同時ストリームごとにメモリを消費します。デフォルト: 64。範囲: 1–16384。",
 			"enforceHttp2": "HTTP/2 を強制する",
 			"enforceHttp2Help": "プロバイダー接続に HTTP/2 を強制します。各 HTTP/2 接続が約100の同時ストリームをサポートする net/http ベースのプロバイダー（例: Bedrock）に関連します。",
 			"http2PingInterval": "HTTP/2 ピング間隔（秒）",

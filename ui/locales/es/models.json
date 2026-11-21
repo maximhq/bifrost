@@ -159,6 +159,8 @@
 			"maxConnsHelp": "Max TCP conexiones por proveedor host. Para proveedores HTTP/2 (p. ej. Bedrock), cada conexión soporta ~100 corrientes concurrentes.",
 			"keepAliveTimeout": "Manténgase en vivo (segundos)",
 			"keepAliveHelp": "Mantener el espacio para las conexiones acolchadas. Se encuentra debajo de la reserva del servidor de corriente avanzada para evitar reutilizar las conexiones que ya ha cerrado.",
+			"streamReadBufferSize": "Tamaño del búfer de lectura de stream (KB)",
+			"streamReadBufferHelp": "Tamaño del búfer de lectura para respuestas en streaming, en KB. Se aplica al streaming de voz de Azure y al streaming de modelos Gemini y Vertex Gemini; los demás proveedores y los streams de Vertex Anthropic lo ignoran. Se asigna por stream, así que los valores grandes consumen memoria por cada stream simultáneo. Predeterminado: 64. Rango: 1–16384.",
 			"enforceHttp2": "Forzar HTTP/2",
 			"enforceHttp2Help": "Fuerza HTTP/2 en conexiones de proveedores. Relevant for net/http-based proveedores (e.g. Bedrock) where each HTTP/2 connection supports ~100 concurrent streams.",
 			"http2PingInterval": "Intervalo de Ping HTTP/2 (segundos)",
