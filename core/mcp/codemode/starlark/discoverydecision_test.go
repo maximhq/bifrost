@@ -362,6 +362,27 @@ func TestListToolFilesDecisionRankerRecordsCalls(t *testing.T) {
 			want:      schemas.MCPDiscoveryRankerCall{Provider: "typesafe", Model: "system-one"},
 			wantError: "decision request returned no response",
 		},
+		// A refusal is a rejected answer: its row is an error row that keeps
+		// the response's usage and routing.
+		"refused": {
+			answer: func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				resp := &schemas.BifrostDecisionResponse{Answers: []schemas.DecisionAnswer{{Type: schemas.DecisionTypeRefusal, Name: schemas.Ptr(discoveryDecisionRelevantQuestion)}}}
+				resp.Usage, resp.ExtraFields.RoutingInfo = usage, served
+				return resp, nil
+			},
+			want:      schemas.MCPDiscoveryRankerCall{Provider: "openai", Model: "gpt-5-nano", Usage: usage},
+			wantError: "decision answer was rejected: decision response has no choice answer",
+		},
+		// A probability outside [0, 1] fails validation and is rejected the same way.
+		"invalid probability": {
+			answer: func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				resp := decisionAnswers(map[string]float64{"servers/github/create_issue.pyi": 1.5}, nil)
+				resp.Usage, resp.ExtraFields.RoutingInfo = usage, served
+				return resp, nil
+			},
+			want:      schemas.MCPDiscoveryRankerCall{Provider: "openai", Model: "gpt-5-nano", Usage: usage},
+			wantError: `decision answer was rejected: relevance of candidate "servers/github/create_issue.pyi" must be between 0 and 1`,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)

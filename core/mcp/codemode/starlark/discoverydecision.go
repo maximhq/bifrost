@@ -86,8 +86,22 @@ func (r *decisionDiscoveryRanker) rank(ctx context.Context, input discoveryRankR
 			// Made before the call is recorded, so its log row is an error row.
 			bifrostErr = &schemas.BifrostError{Error: &schemas.ErrorField{Message: "decision request returned no response"}}
 		}
+		// The answer is checked before the call is recorded, so a rejected
+		// answer's log row is an error row with the response's usage.
+		var out discoveryRankResponse
+		var rejected error
+		if bifrostErr == nil {
+			out, rejected = decisionRankResponse(input, resp)
+			if rejected == nil {
+				_, rejected = validateDiscoveryRankResponse(input, out)
+			}
+		}
 		if toolCtx, ok := ctx.(*schemas.BifrostContext); ok {
-			schemas.AppendMCPDiscoveryRankerCallOnContext(toolCtx, r.call(model, started, resp, bifrostErr))
+			call := r.call(model, started, resp, bifrostErr)
+			if rejected != nil {
+				call.Error = &schemas.BifrostError{Error: &schemas.ErrorField{Message: "decision answer was rejected: " + rejected.Error()}}
+			}
+			schemas.AppendMCPDiscoveryRankerCallOnContext(toolCtx, call)
 		}
 		if bifrostErr != nil {
 			message := "unknown error"
@@ -101,15 +115,10 @@ func (r *decisionDiscoveryRanker) rank(ctx context.Context, input discoveryRankR
 				(bifrostErr.AllowFallbacks != nil && !*bifrostErr.AllowFallbacks) {
 				break
 			}
+		} else if rejected == nil {
+			return out, nil
 		} else {
-			out, err := decisionRankResponse(input, resp)
-			if err == nil {
-				_, err = validateDiscoveryRankResponse(input, out)
-			}
-			if err == nil {
-				return out, nil
-			}
-			failures = append(failures, fmt.Sprintf("decision answer from %s/%s was rejected: %v", model.Provider, model.Model, err))
+			failures = append(failures, fmt.Sprintf("decision answer from %s/%s was rejected: %v", model.Provider, model.Model, rejected))
 		}
 		if decisionCtx.Err() != nil {
 			break
