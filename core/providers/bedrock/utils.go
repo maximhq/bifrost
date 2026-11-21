@@ -3474,7 +3474,7 @@ func convertTextFormatToTool(ctx *schemas.BifrostContext, model string, textConf
 	if schemaObj == nil {
 		return nil, nil, nil // No schema info — neither composite Schema nor decomposed fields set
 	}
-	if format.JSONSchema.Description != nil {
+	if format.JSONSchema.Description != nil && *format.JSONSchema.Description != "" {
 		description = *format.JSONSchema.Description
 	}
 
@@ -3991,7 +3991,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 
 			// Use the tool description if available, otherwise use a generic description
 			description := "Function tool"
-			if tool.Function.Description != nil {
+			if tool.Function.Description != nil && *tool.Function.Description != "" {
 				description = *tool.Function.Description
 			}
 
