@@ -1721,6 +1721,7 @@ func HandleOpenAIChatCompletionStreaming(
 							bifrostErr.Error.Code = response.Code
 						}
 
+						providerUtils.AbandonStreamingResponse(ctx, resp)
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 						return
@@ -2500,6 +2501,7 @@ func HandleOpenAIResponsesStreaming(
 
 			if response.Type == schemas.ResponsesStreamResponseTypeError {
 				bifrostErr := responsesStreamError(&response)
+				providerUtils.AbandonStreamingResponse(ctx, resp)
 
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
@@ -2510,6 +2512,7 @@ func HandleOpenAIResponsesStreaming(
 			// instead of a pre-stream 4xx. Convert to BifrostError for consistent handling.
 			if response.Type == schemas.ResponsesStreamResponseTypeFailed {
 				bifrostErr := responsesStreamError(&response)
+				providerUtils.AbandonStreamingResponse(ctx, resp)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 				return

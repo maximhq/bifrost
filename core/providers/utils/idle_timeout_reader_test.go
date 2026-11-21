@@ -1,14 +1,17 @@
 package utils
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -27,11 +30,11 @@ import (
 //
 // Close() triggers the panic (by closing panicTrigger) and then blocks on
 // allowReturn until the test signals it. This keeps SetupStreamCancellation
-// stuck inside Close() so BifrostContextKeyConnectionClosed is guaranteed to
-// be unset when idleTimeoutReader.Read's recover block runs — the exact race
-// window that exists in the current code.
+// inside Close() while idleTimeoutReader.Read unwinds, exercising the ownership
+// claim that must be visible before the body is closed.
 type syncedPanicBody struct {
 	panicTrigger chan struct{}
+	abortRead    chan struct{} // test-only escape hatch; does not count as a close
 	allowReturn  chan struct{}
 	closeOnce    sync.Once
 	closes       atomic.Int32
@@ -44,13 +47,18 @@ func (s *syncedPanicBody) closeCount() int { return int(s.closes.Load()) }
 func newSyncedPanicBody() *syncedPanicBody {
 	return &syncedPanicBody{
 		panicTrigger: make(chan struct{}),
+		abortRead:    make(chan struct{}),
 		allowReturn:  make(chan struct{}),
 	}
 }
 
 func (s *syncedPanicBody) Read(_ []byte) (int, error) {
-	<-s.panicTrigger
-	panic("use of closed network connection")
+	select {
+	case <-s.panicTrigger:
+		panic("use of closed network connection")
+	case <-s.abortRead:
+		return 0, io.ErrClosedPipe
+	}
 }
 
 func (s *syncedPanicBody) Close() error {
@@ -180,6 +188,10 @@ func (r *zeroThenBlockReader) Read(p []byte) (int, error) {
 	return r.pipeRd.Read(p)
 }
 
+type idleReadFunc func([]byte) (int, error)
+
+func (f idleReadFunc) Read(p []byte) (int, error) { return f(p) }
+
 // ---------------------------------------------------------------------------
 // tests
 // ---------------------------------------------------------------------------
@@ -218,6 +230,40 @@ func TestIdleTimeoutReader_NormalRead(t *testing.T) {
 	if totalBytes != 5*len("chunk") {
 		t.Fatalf("expected %d bytes, got %d", 5*len("chunk"), totalBytes)
 	}
+}
+
+// Regression for https://github.com/maximhq/bifrost/issues/10165: consumer
+// processing between successful reads must not count as upstream idleness.
+func TestIdleTimeoutReader_ConsumerPauseDoesNotTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = 100 * time.Millisecond
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		upstream := strings.NewReader("firstsecond")
+		body := &readCloserSpy{}
+		reader, cleanup := NewIdleTimeoutReader(upstream, body, timeout, ctx)
+		defer cleanup()
+
+		buf := make([]byte, len("first"))
+		n, err := reader.Read(buf)
+		if err != nil || string(buf[:n]) != "first" {
+			t.Fatalf("first read: got %q, %v; want first, nil", buf[:n], err)
+		}
+
+		// The upstream already has more data. No Read is pending while the
+		// consumer processes the first chunk for longer than the idle timeout.
+		time.Sleep(3 * timeout)
+		synctest.Wait()
+		t.Logf("after consumer pause: upstream bytes available=%d, body close calls=%d", upstream.Len(), body.closeCount())
+		if got := body.closeCount(); got != 0 {
+			t.Errorf("body closed %d time(s) with no upstream Read pending; want 0", got)
+		}
+
+		buf = make([]byte, len("second"))
+		n, err = reader.Read(buf)
+		if err != nil || string(buf[:n]) != "second" {
+			t.Errorf("read after consumer pause: got %q, %v; want second, nil", buf[:n], err)
+		}
+	})
 }
 
 func TestIdleTimeoutReader_TimeoutClosesStream(t *testing.T) {
@@ -337,30 +383,25 @@ func TestIdleTimeoutReader_CleanupStopsTimer(t *testing.T) {
 }
 
 func TestIdleTimeoutReader_DoubleCloseIsSafe(t *testing.T) {
-	t.Parallel()
-	spy := &readCloserSpy{}
-
-	br := &zeroThenBlockReader{first: atomic.Bool{}, pipeRd: nil}
-	// Use spy as bodyStream — it implements both io.Reader and io.Closer.
-	_, cleanup := NewIdleTimeoutReader(br, spy, 50*time.Millisecond, nil)
-	defer cleanup()
-
-	// Let the timer fire (closes spy via sync.Once).
-	time.Sleep(100 * time.Millisecond)
-
-	// Manually close again — should not panic.
-	spy.Close()
-
-	// sync.Once ensures the idle timer's close ran exactly once.
-	// The manual close above adds another, so total should be 2
-	// (the once.Do protects the timer path, not external callers).
-	// The key guarantee: no panic.
-	if spy.closeCount() < 1 {
-		t.Fatal("expected at least one close call")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		body := newSyncedPanicBody()
+		close(body.allowReturn)
+		reader, cleanup := NewIdleTimeoutReader(body, body, 50*time.Millisecond, nil)
+		defer cleanup()
+		for i := 0; i < 2; i++ {
+			if _, err := reader.Read(make([]byte, 1)); !errors.Is(err, ErrStreamIdleTimeout) {
+				t.Fatalf("read %d: got %v, want idle timeout", i, err)
+			}
+		}
+		cleanup()
+		cleanup()
+		if got := body.closeCount(); got != 1 {
+			t.Fatalf("body closed %d times, want 1", got)
+		}
+	})
 }
 
-func TestIdleTimeoutReader_ZeroBytesDoNotResetTimer(t *testing.T) {
+func TestIdleTimeoutReader_ZeroByteReadThenStallTimesOut(t *testing.T) {
 	t.Parallel()
 	pr, pw := io.Pipe()
 	defer pw.Close()
@@ -441,11 +482,10 @@ func TestIdleTimeoutReader_ClosedContextReturnsError(t *testing.T) {
 
 func TestIdleTimeoutReader_RecoversReadPanicAfterTimeout(t *testing.T) {
 	t.Parallel()
-	wrapped, cleanup := NewIdleTimeoutReader(panicReader{}, &readCloserSpy{}, 10*time.Millisecond, nil)
+	body := newSyncedPanicBody()
+	close(body.allowReturn)
+	wrapped, cleanup := NewIdleTimeoutReader(body, body, 10*time.Millisecond, nil)
 	defer cleanup()
-
-	time.Sleep(50 * time.Millisecond)
-
 	_, err := wrapped.Read(make([]byte, 1))
 	if !errors.Is(err, ErrStreamIdleTimeout) {
 		t.Fatalf("expected ErrStreamIdleTimeout, got %v", err)
@@ -467,7 +507,16 @@ func TestIdleTimeoutReader_RecoversReadPanicAfterTimeout(t *testing.T) {
 func TestIdleTimeoutReader_RecoversCloseStreamPanicOnTimerFire(t *testing.T) {
 	t.Parallel()
 	body := newTimerPanicCloser()
-	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
+	source := idleReadFunc(func([]byte) (int, error) {
+		<-body.called
+		return 0, io.ErrClosedPipe
+	})
+	reader, cleanup := NewIdleTimeoutReader(source, body, 10*time.Millisecond, nil)
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		reader.Read(make([]byte, 1))
+	}()
 
 	// Wait until the timer goroutine has actually entered CloseWithError (about to
 	// panic). This proves the guarded path was exercised; a fixed sleep could be
@@ -479,10 +528,10 @@ func TestIdleTimeoutReader_RecoversCloseStreamPanicOnTimerFire(t *testing.T) {
 		t.Fatal("idle timer never fired CloseWithError within 2s")
 	}
 
-	// cleanup() blocks on timerDone, closed only after the (now-recovered) timer
-	// callback returns — so reaching the end proves the panic was recovered in the
-	// timer goroutine. Without the recover, the process would already have crashed.
+	// cleanup() waits for the recovered timer callback to return. Reaching
+	// the end proves the panic did not escape the timer goroutine.
 	cleanup()
+	<-readDone
 }
 
 // TestIdleTimeoutReader_LogsRecoveredTimerPanic verifies that the recovered
@@ -497,13 +546,23 @@ func TestIdleTimeoutReader_LogsRecoveredTimerPanic(t *testing.T) {
 	t.Cleanup(func() { SetLogger(prev) })
 
 	body := newTimerPanicCloser()
-	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
+	source := idleReadFunc(func([]byte) (int, error) {
+		<-body.called
+		return 0, io.ErrClosedPipe
+	})
+	reader, cleanup := NewIdleTimeoutReader(source, body, 10*time.Millisecond, nil)
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		reader.Read(make([]byte, 1))
+	}()
 	select {
 	case <-body.called:
 	case <-time.After(2 * time.Second):
 		t.Fatal("idle timer never fired CloseWithError within 2s")
 	}
 	cleanup() // blocks until the timer callback (recover + log) has returned
+	<-readDone
 
 	if !capLog.contains("idle-timeout timer") || !capLog.contains("nil-deref") {
 		t.Fatalf("expected recovered panic to be logged; got %v", capLog.msgs)
@@ -513,7 +572,16 @@ func TestIdleTimeoutReader_LogsRecoveredTimerPanic(t *testing.T) {
 func TestIdleTimeoutReader_CleanupWaitsForRunningTimerCallback(t *testing.T) {
 	t.Parallel()
 	body := newBlockingCloserSpy()
-	_, cleanup := NewIdleTimeoutReader(&readCloserSpy{}, body, 10*time.Millisecond, nil)
+	source := idleReadFunc(func([]byte) (int, error) {
+		<-body.started
+		return 0, io.ErrClosedPipe
+	})
+	reader, cleanup := NewIdleTimeoutReader(source, body, 10*time.Millisecond, nil)
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		reader.Read(make([]byte, 1))
+	}()
 
 	select {
 	case <-body.started:
@@ -540,6 +608,7 @@ func TestIdleTimeoutReader_CleanupWaitsForRunningTimerCallback(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("cleanup did not return after timer callback finished")
 	}
+	<-readDone
 }
 
 // TestSetupStreamCancellation_NoPanicOnCancelledContext verifies that
@@ -690,12 +759,18 @@ func TestStreamClose_ExactlyOnceAcrossOwners(t *testing.T) {
 	t.Parallel()
 
 	for i := 0; i < 100; i++ {
-		body := &countingStreamCloser{}
+		body := newSyncedPanicBody()
+		close(body.allowReturn)
 		goCtx, cancel := context.WithCancel(context.Background())
 		ctx := schemas.NewBifrostContext(goCtx, time.Time{})
 
 		// Tiny idle timeout so the timer races the cancellation.
-		_, cleanup := NewIdleTimeoutReader(body, body, time.Millisecond, ctx)
+		reader, cleanup := NewIdleTimeoutReader(body, body, time.Millisecond, ctx)
+		readDone := make(chan struct{})
+		go func() {
+			defer close(readDone)
+			reader.Read(make([]byte, 1))
+		}()
 		stop := SetupStreamCancellation(ctx, body, getLogger())
 
 		go cancel() // fire cancellation concurrently with the idle timer
@@ -703,13 +778,24 @@ func TestStreamClose_ExactlyOnceAcrossOwners(t *testing.T) {
 		// Wait (bounded) until at least one owner has performed the close, rather
 		// than relying on a fixed sleep that can miss both close paths on slow CI.
 		deadline := time.Now().Add(2 * time.Second)
-		for body.closeCount.Load() == 0 && time.Now().Before(deadline) {
+		for body.closeCount() == 0 && time.Now().Before(deadline) {
 			time.Sleep(50 * time.Microsecond)
 		}
 		stop()
 		cleanup()
+		select {
+		case <-readDone:
+		case <-time.After(2 * time.Second):
+			t.Errorf("iteration %d: read did not exit after cancellation/timeout", i)
+			close(body.abortRead) // unblock without masking a missing owner close
+			select {
+			case <-readDone:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("iteration %d: test reader did not exit after forced unblock", i)
+			}
+		}
 
-		if got := body.closeCount.Load(); got != 1 {
+		if got := body.closeCount(); got != 1 {
 			t.Fatalf("iteration %d: CloseWithError called %d times, want exactly 1", i, got)
 		}
 	}
@@ -852,5 +938,294 @@ func TestSetupStreamCancellation_DisarmedDeadlineStillHonoursCtx(t *testing.T) {
 	case <-body.closed:
 	case <-time.After(2 * time.Second):
 		t.Fatal("ctx cancellation no longer closes the body after disarm")
+	}
+}
+
+func BenchmarkIdleTimeoutReaderRead(b *testing.B) {
+	for _, withContext := range []bool{false, true} {
+		b.Run(fmt.Sprintf("context=%t", withContext), func(b *testing.B) {
+			var ctx *schemas.BifrostContext
+			if withContext {
+				ctx = schemas.NewBifrostContext(context.Background(), time.Time{})
+			}
+			source := strings.NewReader("chunk")
+			reader, cleanup := NewIdleTimeoutReader(source, nil, time.Minute, ctx)
+			defer cleanup()
+			buf := make([]byte, 5)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				source.Reset("chunk")
+				if _, err := reader.Read(buf); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkIdleTimeoutReaderLifecycle(b *testing.B) {
+	source := strings.NewReader("chunk")
+	buf := make([]byte, 5)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		source.Reset("chunk")
+		reader, cleanup := NewIdleTimeoutReader(source, nil, time.Minute, nil)
+		if _, err := reader.Read(buf); err != nil {
+			b.Fatal(err)
+		}
+		cleanup()
+	}
+}
+
+func TestIdleTimeoutReader_OnlyPendingReadsCanTimeout(t *testing.T) {
+	for _, withContext := range []bool{false, true} {
+		t.Run(fmt.Sprintf("context=%t", withContext), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var ctx *schemas.BifrostContext
+				if withContext {
+					ctx = schemas.NewBifrostContext(context.Background(), time.Time{})
+				}
+				const timeout = 100 * time.Millisecond
+				body := &readCloserSpy{}
+				source := strings.NewReader("ab")
+				reader, cleanup := NewIdleTimeoutReader(source, body, timeout, ctx)
+				defer cleanup()
+				buf := make([]byte, 1)
+				for _, want := range []string{"a", "b", ""} {
+					// Includes the delay before the very first Read.
+					time.Sleep(3 * timeout)
+					n, err := reader.Read(buf)
+					if string(buf[:n]) != want || (want != "" && err != nil) || (want == "" && err != io.EOF) {
+						t.Fatalf("got %q, %v; want %q", buf[:n], err, want)
+					}
+				}
+				time.Sleep(3 * timeout) // EOF must also disarm the timer.
+				synctest.Wait()
+				if got := body.closeCount(); got != 0 {
+					t.Fatalf("body closed %d times without a pending Read", got)
+				}
+			})
+		})
+	}
+}
+
+func TestIdleTimeoutReader_ReadExitDisarmsTimer(t *testing.T) {
+	for _, outcome := range []string{"zero", "error", "panic"} {
+		t.Run(outcome, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				body := &readCloserSpy{}
+				source := idleReadFunc(func([]byte) (int, error) {
+					switch outcome {
+					case "panic":
+						panic(errPanicReader)
+					case "error":
+						return 0, io.ErrUnexpectedEOF
+					default:
+						return 0, nil
+					}
+				})
+				reader, cleanup := NewIdleTimeoutReader(source, body, time.Millisecond, nil)
+				defer cleanup()
+				func() {
+					defer func() {
+						rec := recover()
+						if outcome == "panic" && rec != errPanicReader {
+							t.Errorf("got panic %v, want %v", rec, errPanicReader)
+						} else if outcome != "panic" && rec != nil {
+							t.Errorf("unexpected panic: %v", rec)
+						}
+					}()
+					_, err := reader.Read(make([]byte, 1))
+					if outcome == "error" && err != io.ErrUnexpectedEOF {
+						t.Errorf("got %v, want unexpected EOF", err)
+					}
+				}()
+				time.Sleep(10 * time.Millisecond)
+				synctest.Wait()
+				if got := body.closeCount(); got != 0 {
+					t.Fatalf("body closed %d times after Read exited", got)
+				}
+			})
+		})
+	}
+}
+
+func TestIdleTimeoutReader_StaleCallbackCannotCloseNextRead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = 100 * time.Millisecond
+		body := &readCloserSpy{}
+		calls := 0
+		var wrapped io.Reader
+		source := idleReadFunc(func(p []byte) (int, error) {
+			calls++
+			if calls == 2 {
+				// Simulate a callback queued by the previous Read's timer,
+				// delivered after the next Read has armed a fresh deadline.
+				wrapped.(*idleTimeoutReader).onTimeout()
+				time.Sleep(timeout / 2)
+			}
+			return copy(p, "x"), nil
+		})
+		var cleanup func()
+		wrapped, cleanup = NewIdleTimeoutReader(source, body, timeout, nil)
+		defer cleanup()
+		for i := 0; i < 2; i++ {
+			if _, err := wrapped.Read(make([]byte, 1)); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(2 * timeout)
+		}
+		if got := body.closeCount(); got != 0 {
+			t.Fatalf("stale callback closed the body %d times", got)
+		}
+	})
+}
+
+func TestIdleTimeoutReader_CancelAndTimeoutOverlap(t *testing.T) {
+	for _, cancelAfter := range []time.Duration{90 * time.Millisecond, 100 * time.Millisecond, 110 * time.Millisecond} {
+		t.Run(cancelAfter.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				body := newSyncedPanicBody()
+				close(body.allowReturn)
+				parent, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				ctx := schemas.NewBifrostContext(parent, time.Time{})
+				reader, cleanup := NewIdleTimeoutReader(body, body, 100*time.Millisecond, ctx)
+				defer cleanup()
+				stop := SetupStreamCancellation(ctx, body, getLogger())
+				defer stop()
+				go func() {
+					time.Sleep(cancelAfter)
+					cancel()
+				}()
+				_, err := reader.Read(make([]byte, 1))
+				if !errors.Is(err, ErrStreamClosed) && !errors.Is(err, ErrStreamIdleTimeout) {
+					t.Fatalf("unexpected read error: %v", err)
+				}
+				if cancelAfter < 100*time.Millisecond && !errors.Is(err, ErrStreamClosed) {
+					t.Fatalf("cancellation misclassified: %v", err)
+				}
+				if cancelAfter > 100*time.Millisecond && !errors.Is(err, ErrStreamIdleTimeout) {
+					t.Fatalf("timeout misclassified: %v", err)
+				}
+				time.Sleep(200 * time.Millisecond)
+				synctest.Wait()
+				if got := body.closeCount(); got != 1 {
+					t.Fatalf("body closed %d times, want 1", got)
+				}
+			})
+		})
+	}
+}
+
+func TestIdleTimeoutReader_HTTPConsumerPause(t *testing.T) {
+	t.Parallel()
+	nextChunk := make(chan struct{})
+	secondWritten := make(chan struct{})
+	var sendOnce sync.Once
+	sendNext := func() { sendOnce.Do(func() { close(nextChunk) }) }
+	srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+		if !readRequest(br) {
+			return
+		}
+		writeAll(t, conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nfirst\r\n")
+		<-nextChunk
+		writeAll(t, conn, "6\r\nsecond\r\n0\r\n\r\n")
+		close(secondWritten)
+	})
+	defer sendNext()
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	req, resp := streamGet(t, BuildStreamingClient(srv.client(time.Second)), "GET")
+	defer fasthttp.ReleaseRequest(req)
+	defer ReleaseStreamingResponse(ctx, resp)
+	defer sendNext() // release the producer before deferred draining on assertion failure
+	reader, cleanup := NewIdleTimeoutReader(resp.BodyStream(), resp.BodyStream(), 100*time.Millisecond, ctx)
+	defer cleanup()
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(reader, buf); err != nil || string(buf) != "first" {
+		t.Fatalf("first HTTP chunk: %q, %v", buf, err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	sendNext()
+	select {
+	case <-secondWritten:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not write second HTTP chunk")
+	}
+	buf = make([]byte, 6)
+	if _, err := io.ReadFull(reader, buf); err != nil || string(buf) != "second" {
+		t.Fatalf("HTTP chunk after consumer pause: %q, %v", buf, err)
+	}
+}
+
+func TestIdleTimeoutReader_CancellationBetweenReads(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		parent, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ctx := schemas.NewBifrostContext(parent, time.Time{})
+		body := &readCloserSpy{}
+		reader, cleanup := NewIdleTimeoutReader(strings.NewReader("ab"), body, time.Millisecond, ctx)
+		defer cleanup()
+		stop := SetupStreamCancellation(ctx, body, getLogger())
+		defer stop()
+		if _, err := reader.Read(make([]byte, 1)); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+		synctest.Wait()
+		if _, err := reader.Read(make([]byte, 1)); !errors.Is(err, ErrStreamClosed) {
+			t.Fatalf("cancellation between reads: got %v, want ErrStreamClosed", err)
+		}
+		if got := body.closeCount(); got != 1 {
+			t.Fatalf("body closed %d times, want 1", got)
+		}
+	})
+}
+
+func TestIdleTimeoutReader_CleanupPreventsRearming(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		body := &readCloserSpy{}
+		reader, cleanup := NewIdleTimeoutReader(strings.NewReader("ab"), body, time.Millisecond, nil)
+		if _, err := reader.Read(make([]byte, 1)); err != nil {
+			t.Fatal(err)
+		}
+		cleanup()
+		cleanup()
+		if _, err := reader.Read(make([]byte, 1)); !errors.Is(err, ErrStreamClosed) {
+			t.Fatalf("read after cleanup: got %v, want ErrStreamClosed", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+		reader.(*idleTimeoutReader).onTimeout() // queued callback after cleanup
+		if got := body.closeCount(); got != 0 {
+			t.Fatalf("body closed %d times after cleanup", got)
+		}
+	})
+}
+
+// Abandonment must claim the same ownership as cancellation and release, and
+// must never attempt to drain a terminal error's potentially unending body.
+func TestAbandonStreamingResponseDoesNotDrainOrCloseTwice(t *testing.T) {
+	for _, alreadyClosed := range []bool{false, true} {
+		t.Run(fmt.Sprint(alreadyClosed), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			body := &countingStreamCloser{}
+			resp := fasthttp.AcquireResponse()
+			resp.SetBodyStream(body, -1)
+			if alreadyClosed {
+				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+				body.CloseWithError(context.Canceled)
+			}
+			AbandonStreamingResponse(ctx, resp)
+			AbandonStreamingResponse(ctx, resp)
+			ReleaseStreamingResponse(ctx, resp)
+			if got := body.closeCount.Load(); got != 1 {
+				t.Errorf("closed %d times, want 1", got)
+			}
+			if got := body.readCount.Load(); got != 0 {
+				t.Errorf("drained %d times, want 0", got)
+			}
+		})
 	}
 }

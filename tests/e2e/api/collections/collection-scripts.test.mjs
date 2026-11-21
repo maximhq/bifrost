@@ -1,4 +1,4 @@
-// Unit tests for the inline scripts in bifrost-api-management.postman_collection.json.
+// Unit tests for the inline scripts in the API management and provider collections.
 // Run directly: `node collection-scripts.test.mjs`.
 // No test framework needed (the tests/e2e/api dir has no test runner configured).
 //
@@ -1156,6 +1156,103 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
     variables: { replaceIn: (v) => v.split("{{run_id}}").join("run7") },
   };
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
+});
+
+// Exercise provider-harness assertions with valid and misleading wire responses.
+// A no-op expect chain would hide these regressions, so this sandbox evaluates
+// the small Chai subset used by the scripts and records real assertion failures.
+function streamExpect(actual, message) {
+  let negate = false;
+  const chain = new Proxy({}, {
+    get(_, key) {
+      if (["to", "be", "at"].includes(key)) return chain;
+      if (key === "not") { negate = !negate; return chain; }
+      const checks = {
+        equal: (expected) => actual === expected,
+        include: (expected) => actual.includes(expected),
+        above: (expected) => actual > expected,
+        below: (expected) => actual < expected,
+        least: (expected) => actual >= expected,
+      };
+      assert.ok(key in checks, `unsupported assertion: ${String(key)}`);
+      return (expected) => assert.ok(negate ? !checks[key](expected) : checks[key](expected), message);
+    },
+  });
+  return chain;
+}
+
+const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
+const idleFolder = providerHarness.item.find((f) => f.name.includes("Stream idle timeout excludes consumer processing"));
+assert.ok(idleFolder, "stream idle regression folder missing");
+function runStreamAssertion(index, responseBody, responseCode = 200, responseTime = 3000) {
+  const ctx = sandbox({ responseBody, responseCode });
+  ctx.pm.expect = streamExpect;
+  ctx.pm.response.headers = { get: () => "text/event-stream" };
+  ctx.pm.response.responseTime = responseTime;
+  new Function("pm", listenScript(idleFolder.item[index], "test"))(ctx.pm);
+  assert.ok(ctx.state.tests.length > 0, "script registered no assertions");
+  return ctx.state.tests.every((t) => t.passed);
+}
+
+const idleChunk = (content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
+const idleReceipt = ': bifrost-idle-pause-fixture {"version":1,"pending_reads_during_pause":0,"idle_timeout_ms":1000,"pause_ms":3000,"second_chunk_ready_before_resume":true}\n\n';
+const beforePause = idleChunk("before-pause");
+const afterPause = idleChunk("after-pause");
+const doneMarker = "data: [DONE]\n\n";
+const completePauseStream = beforePause + afterPause + idleReceipt + doneMarker;
+
+test("idle harness accepts both chunks followed by completion", () => {
+  for (const separator of ["\n", "\r\n", "\r"]) {
+    assert.strictEqual(runStreamAssertion(0, completePauseStream.replaceAll("\n", separator)), true);
+  }
+});
+test("idle harness accepts multiline data in a complete content frame", () => {
+  const multiline = completePauseStream.replace('"choices":[', '"choices":\ndata: [');
+  assert.strictEqual(runStreamAssertion(0, multiline), true);
+});
+test("idle harness rejects an unterminated completion frame", () => {
+  for (const tail of ["data: [DONE]", "data: [DONE]\n"]) {
+    assert.strictEqual(runStreamAssertion(0, beforePause + afterPause + idleReceipt + tail), false);
+  }
+});
+test("idle harness rejects a shortened fixture idle window", () => {
+  for (const [idle, pause] of [[1, 3], [999, 3000]]) {
+    const shortened = completePauseStream.replace('"idle_timeout_ms":1000', '"idle_timeout_ms":' + idle).replace('"pause_ms":3000', '"pause_ms":' + pause);
+    assert.strictEqual(runStreamAssertion(0, shortened), false);
+  }
+});
+for (const [name, body] of [
+  ["completion before the second chunk", beforePause + doneMarker + afterPause + idleReceipt],
+  ["data after completion", completePauseStream + idleChunk("")],
+  ["duplicate completion", completePauseStream + doneMarker],
+  ["missing completion", beforePause + afterPause + idleReceipt],
+]) {
+  test(`idle harness rejects ${name}`, () => assert.strictEqual(runStreamAssertion(0, body), false));
+}
+
+const terminalError = 'event: error\ndata: {"type":"error","error":{"message":"terminal failure","code":"bifrost_terminal_error_fixture"}}\n\n';
+const fakeErrorComment = ': terminal failure bifrost_terminal_error_fixture\n\n';
+const completedEvent = 'event: response.completed\ndata: {"type":"response.completed"}\n\n';
+test("terminal error harness accepts a structured gateway error", () => {
+  assert.strictEqual(runStreamAssertion(1, terminalError), true);
+  assert.strictEqual(runStreamAssertion(1, terminalError.replaceAll("\n", "\r\n")), true);
+});
+test("terminal error harness joins multiline SSE data", () => {
+  assert.strictEqual(runStreamAssertion(1, terminalError.replace(',"error"', ',\ndata: "error"')), true);
+});
+for (const [name, body] of [
+  ["markers only in a comment", fakeErrorComment + completedEvent],
+  ["markers in a successful event", 'event: response.completed\ndata: {"type":"response.completed","message":"terminal failure","code":"bifrost_terminal_error_fixture"}\n\n'],
+  ["wrong error code", fakeErrorComment + terminalError.replace('"code":"bifrost_terminal_error_fixture"', '"code":"different_error"')],
+  ["wrong error event type", terminalError.replace("event: error", "event: response.completed")],
+  ["completion after the error", terminalError + completedEvent],
+  ["an unterminated error frame", terminalError.trimEnd()],
+]) {
+  test(`terminal error harness rejects ${name}`, () => assert.strictEqual(runStreamAssertion(1, body), false));
+}
+test("terminal error harness retains status and timing checks", () => {
+  assert.strictEqual(runStreamAssertion(1, terminalError, 500), false);
+  assert.strictEqual(runStreamAssertion(1, terminalError, 200, 10000), false);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
