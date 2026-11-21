@@ -485,6 +485,7 @@ The environment variables `BIFROST_CODE_MODE_DISCOVERY_RANKER_URL` and `BIFROST_
 
 - `revision` changes whenever a visible tool's definition or the binding level changes, so a ranker can cache by `revision` and `query`.
 - `candidates` holds up to 32 tools. When the caller sees more, Bifrost sends the best lexical matches plus at least one tool from as many other servers as fit. Descriptions are capped at 512 characters.
+- Each candidate `id` is unique: treat it as opaque. It is normally the tool's file path. When two tool names on one server come to the same file name (`get-user` and `get_user` both become `get_user`), the later tool in raw-name order gets a `#2`, `#3`, ... suffix.
 
 **Response** (`200`, JSON, at most 64 KiB):
 

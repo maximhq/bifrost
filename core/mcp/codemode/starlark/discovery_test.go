@@ -428,6 +428,64 @@ func TestListToolFilesExternalRankerSuccess(t *testing.T) {
 	}
 }
 
+// Two raw tool names that come to one canonical name share a file but get
+// distinct candidate ids, so a ranker that scores every candidate once is
+// accepted, and each id still names its own tool.
+func TestListToolFilesExternalRankerSharedFileGetsUniqueIDs(t *testing.T) {
+	rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+		scores := []map[string]interface{}{}
+		for _, c := range req.Candidates {
+			relevance := 0.0
+			if c.Server == "crm" {
+				relevance = 0.8
+			}
+			scores = append(scores, map[string]interface{}{"id": c.ID, "relevance": relevance})
+		}
+		writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": scores})
+	})
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["crm"] = &schemas.MCPClientState{Name: "crm", ExecutionConfig: &schemas.MCPClientConfig{ID: "crm-id", Name: "crm", IsCodeModeClient: true}}
+	manager.tools["crm"] = []schemas.ChatTool{
+		discoveryTestTool("get_user", "Look up a user record", "id"),
+		discoveryTestTool("get-user", "Fetch a user by email", "email"),
+	}
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+
+	out := listToolFiles(t, mode, `{"query":"find a user"}`)
+	if !strings.Contains(out, "(discovery ranker)") {
+		t.Fatalf("expected the ranker answer to be used:\n%s", out)
+	}
+	if paths := shortlistPaths(out); len(paths) != 1 || paths[0] != "servers/crm/get_user.pyi" {
+		t.Fatalf("expected the shared file once, got %v\n%s", paths, out)
+	}
+	req := nextRankRequest(t, rs, "find a user", out)
+	descriptions := map[string]string{}
+	for _, c := range req.Candidates {
+		if _, dup := descriptions[c.ID]; dup {
+			t.Fatalf("candidate id %q sent twice", c.ID)
+		}
+		descriptions[c.ID] = c.Description
+	}
+	// Raw-name order: "get-user" sorts before "get_user".
+	if descriptions["servers/crm/get_user.pyi"] != "Fetch a user by email" || descriptions["servers/crm/get_user.pyi#2"] != "Look up a user record" {
+		t.Fatalf("ids do not map to their tools: %v", descriptions)
+	}
+
+	// The listing order of the tools does not change the ids or the revision.
+	_, revision := mode.discoveryCatalogue(context.Background(), schemas.CodeModeBindingLevelTool)
+	manager.tools["crm"][0], manager.tools["crm"][1] = manager.tools["crm"][1], manager.tools["crm"][0]
+	items, swapped := mode.discoveryCatalogue(context.Background(), schemas.CodeModeBindingLevelTool)
+	if swapped != revision {
+		t.Fatal("revision changed with the order the tools were listed in")
+	}
+	for _, item := range items {
+		if item.candidate.ID == "servers/crm/get_user.pyi#2" && item.candidate.Description != "Look up a user record" {
+			t.Fatalf("id moved to another tool after reordering: %+v", item.candidate)
+		}
+	}
+}
+
 func TestListToolFilesExternalRankerInsufficientHint(t *testing.T) {
 	rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
 		writeRankResponse(w, map[string]interface{}{
