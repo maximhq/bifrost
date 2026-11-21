@@ -1,0 +1,138 @@
+---
+title: "Interactions API"
+description: "Call Google's Interactions API through Bifrost, on Gemini and Vertex or on any other provider, with stored turns, background runs and agents."
+icon: "comments"
+---
+
+## Overview
+
+Google's Interactions API keeps a conversation on Google's side. You send one turn, get back an interaction `id`, and name that id as `previous_interaction_id` on the next turn instead of resending the history. It also runs long jobs in the background and serves agents such as Deep Research.
+
+Bifrost serves it as a typed route under `/genai`. Governance, logging, cost tracking and fallbacks apply to every call.
+
+| Operation | Gemini path | Vertex path |
+|---|---|---|
+| Create | `POST /genai/v1beta/interactions` | `POST /genai/v1beta1/projects/{project}/locations/{location}/interactions` |
+| Get (`?stream=true` replays it) | `GET /genai/v1beta/interactions/{id}` | `GET .../interactions/{id}` |
+| Cancel a background run | `POST /genai/v1beta/interactions/{id}/cancel` | `POST .../interactions/{id}/cancel` |
+| Delete | `DELETE /genai/v1beta/interactions/{id}` | `DELETE .../interactions/{id}` |
+
+`/genai/v1/interactions` is accepted as well as `/v1beta`.
+
+## Which provider runs the request
+
+Bifrost picks the provider the same way it does for `generateContent`:
+
+1. A `provider/model` prefix on `model` (or `agent`), such as `openai/gpt-4o-mini`.
+2. The `x-model-provider` header.
+3. Vertex when the path names a project and location, or the token is a Google OAuth token (`Bearer ya29...`).
+4. Gemini otherwise.
+
+For a get, cancel or delete, which carry no model, add `?provider=<name>` when the run did not come from Gemini.
+
+**Gemini and Vertex.** Bifrost forwards your body to Google as you sent it and returns Google's response byte for byte, so every Interactions field works: agents, `agent_config`, `environment`, `webhook_config`, built-in tool steps and thought signatures. Bifrost only strips the provider prefix from `model` (or `agent`), removes its own `fallbacks` field, and sets `stream: true` on a streamed request that left it out. When a fallback switches between an agent and a model, the field is renamed to match, and `agent_config` cannot fall back to a model. Tools and steps with no Responses form, such as `google_maps` or a step type Bifrost does not model, still reach Google. Bifrost leaves them out only of the copy it uses for routing, governance and logging. A stream is Google's event stream, ending with `event: done`.
+
+**Any other provider.** Bifrost converts the request to the Responses API, runs it on that provider, and renders the answer as an Interaction: model text as a `model_output` step with its citations as annotations, reasoning as a `thought` step, tool calls as `function_call` steps with status `requires_action`. A web search, code run, web fetch, file search or MCP call the provider ran itself comes back as the matching call and result steps (`google_search_call` and `google_search_result`, and so on), and its search count as `grounding_tool_count`. A stream comes back as `interaction.created`, `step.start`, `step.delta`, `step.stop` and `interaction.completed` events. Fields only Google understands (`agent`, `agent_config`, `environment`, `environment_id`, `webhook_config`, `max_total_tokens`, and a `response_format` with no text entry, such as audio only) return 400 on this path rather than being dropped. A fallback from Gemini to another provider takes this path automatically. Because that attempt would drop them, a Gemini or Vertex request that lists a fallback outside Google's family is refused up front, before the first attempt, when it carries those Google-only fields, declares a tool another provider cannot run (such as `google_maps`), or replays Google's built-in tool steps (`google_search_call`, `code_execution_result`, and so on). Fallbacks that stay on Gemini and Vertex are unaffected. A fallback written without a provider prefix runs on the provider the request's `model` names, so `openai/gpt-4o-mini` with `fallbacks: ["gpt-4o"]` falls back to `openai/gpt-4o`. When `model` has no prefix either, the fallback runs on the provider the list above picks for the request. Write the prefix out when in doubt.
+
+## Examples
+
+<Tabs group="interactions">
+<Tab title="Python">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",
+    http_options=HttpOptions(base_url="http://localhost:8080/genai"),
+)
+
+first = client.interactions.create(model="gemini-3-flash-preview", input="Remember the number 42.")
+second = client.interactions.create(
+    model="gemini-3-flash-preview",
+    input="Which number did I ask you to remember?",
+    previous_interaction_id=first.id,
+)
+print(second.output_text)
+
+# The same call on another provider, through the same SDK
+other = client.interactions.create(model="openai/gpt-4o-mini", input="Say hi")
+```
+
+</Tab>
+<Tab title="cURL">
+
+```bash
+curl http://localhost:8080/genai/v1beta/interactions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-vk: <YOUR-BIFROST-VIRTUAL-KEY>" \
+  -d '{"model": "gemini-3-flash-preview", "input": "Remember the number 42."}'
+
+# Background Deep Research run, then poll it
+curl http://localhost:8080/genai/v1beta/interactions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-vk: <YOUR-BIFROST-VIRTUAL-KEY>" \
+  -d '{"agent": "deep-research-preview-04-2026", "input": "Survey river restoration projects in Europe.", "background": true}'
+curl http://localhost:8080/genai/v1beta/interactions/<id> \
+  -H "x-bf-vk: <YOUR-BIFROST-VIRTUAL-KEY>"
+```
+
+</Tab>
+</Tabs>
+
+The client's `Api-Revision` header goes upstream unchanged.
+
+## From the Responses API
+
+`POST /v1/responses` with a `gemini/` or `vertex/` model runs on Interactions instead of `generateContent` when the request needs something only Interactions has:
+
+- `previous_response_id`, sent as `previous_interaction_id`
+- `background: true`
+- an agent as the model, such as `gemini/deep-research-preview-04-2026`
+
+Every other Responses request keeps using `generateContent`. The response `id` is the interaction id, so `GET`, `DELETE` and `POST .../cancel` on `/v1/responses/{id}?provider=gemini` read, delete and cancel the run. Input items come from the run's own input steps. The OpenAI SDK route (`/openai/v1/responses`) and Responses over WebSocket go through the same check.
+
+Google runs built-in tools itself and reports each run as a call step and a result step. Bifrost turns each pair into the Responses item for that tool, so the output looks the same as a search or code run on any other provider:
+
+| Interactions steps | Responses item |
+|---|---|
+| `google_search_call` + `google_search_result` | `web_search_call` with the queries |
+| `code_execution_call` + `code_execution_result` | `code_interpreter_call` with the code and its output as `logs` |
+| `url_context_call` + `url_context_result` | one `web_fetch_call` per URL, `failed` for a URL Google could not read |
+| `mcp_server_tool_call` + `mcp_server_tool_result` | `mcp_call` with the server name, arguments and output |
+| `file_search_call` + `file_search_result` | `file_search_call` |
+
+`url_citation` and `file_citation` annotations on Google's text become Responses annotations, and a stream sends them as `response.output_text.annotation.added` events. Spoken output is an `input_audio` block, as on `generateContent`. `google_maps` and `processing` steps have no Responses item and stay under `provider_extra_fields.steps`.
+
+A Responses `mcp` tool becomes Google's `mcp_server` tool. Google runs the server's tools itself with no approval step, so the tool must set `require_approval: "never"` (the Responses default is `always`), and its `allowed_tools` must name tools rather than filter them; anything else returns 400. A `tool_choice` with `allowed_tools` must name each tool, so a built-in tool entry such as `{"type": "web_search"}` returns 400 rather than lifting the restriction. A `web_search` tool's `search_content_types` (`text`, `image`) becomes Google's `search_types`.
+
+A Responses `mcp` tool's `authorization` token reaches the server as an `Authorization: Bearer` header, unless `headers` already sets `Authorization`.
+
+A `file_search` tool sends its `vector_store_ids` as Google's `file_search_store_names` and `max_num_results` as `top_k`. Google has no equivalent of `filters` or `ranking_options`, so a tool that sets either returns 400 rather than searching documents the filter would exclude. The `file_search_result` entries come back as the `file_search_call` item's `results`, with each native entry kept whole under `attributes`.
+
+A Responses `computer_use_preview` tool becomes Google's `computer_use` tool. Its environment maps to `browser`, `mobile` or `desktop`.
+
+When you replay a stateless conversation, built-in tool items from an earlier turn are left out of the input. Google ran them and has nothing to replay them from.
+
+A run that stops at a checkpoint (`requires_continuation`) comes back `incomplete`, with `incomplete_details.reason` set to `requires_continuation` and the token under `provider_extra_fields.continuation_token`. To carry on, send it back with `previous_response_id`. On `/v1/responses`, put `continuation_token` at the top level of the body. On `/openai/v1/responses`, put it under `extra_params` and send `x-bf-passthrough-extra-params: true`, since that route forwards `extra_params` only with the header.
+
+`previous_response_id`, and the id of a get, cancel, delete or input-items list, must name an interaction. A `resp_...` id comes from a Gemini turn that ran on `generateContent`, which stores nothing to continue from, so Bifrost returns 400 instead of sending it to Google. A conversation you want to continue has to start on Interactions: with `background`, an agent, or the `/genai` interactions route.
+
+Input items list newest first and 20 to a page by default, as in the Responses API. Pass `order=asc` for the run's own order and `limit` for another page size.
+
+## Vertex
+
+Vertex serves the API under `v1beta1` and refuses API keys, so the Vertex key needs service-account credentials. Bifrost sends each call to the key's own project and region, whatever the path says. Google documents only the `global` location today, so a key pinned to a region may get Google's error for that region. Gemini models older than Gemini 3 are refused by Vertex Interactions.
+
+## Billing
+
+A run that finishes during the create is billed on the create, like any other request. Google stores a run by default and repeats its full usage on every read, so Bifrost never bills a get, a replayed stream or a cancel. A background run is billed once, when the first read finds it finished, under the request that created it. If nobody reads it again, Bifrost polls it with the key that created it. A streamed background create that closes while the run is still going reports the run on its last event, so the run is billed the same way even if the client stops listening. That create's own row carries no usage. This is the same accounting [GenAI passthrough](/integrations/passthrough#interactions-and-agents) uses.
+
+Usage follows Google's own billing. `total_tool_use_tokens`, the tokens a code run or a fetched page feeds back to the model, count as input tokens, so input and output add up to `total_tokens`. Google Search runs in `grounding_tool_count` are charged the per-query search fee: one unit per query on Gemini 3 and later, one per grounded request on older models.
+
+## Limitations
+
+- Listing interactions (Vertex only) is not a typed route; use `/genai_passthrough`.
+- `google_maps` and `processing` steps have no Responses item. On `/v1/responses` they stay under `provider_extra_fields.steps`, and a translated `/genai` request refuses a `google_maps` tool.
+- `place_citation` and the speech annotations have no Responses annotation and are not mapped.
