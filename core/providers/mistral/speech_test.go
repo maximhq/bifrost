@@ -100,6 +100,42 @@ func TestSpeechInvalidVoice(t *testing.T) {
 	assert.Contains(t, bifrostErr.Error.Message, "Voice 'nope' not found.")
 }
 
+// An error body sent with a 200 is reported as that error, not as a response with no audio.
+func TestSpeechErrorBodyWithOK(t *testing.T) {
+	t.Parallel()
+
+	for name, upstream := range map[string]string{
+		"nested error":    `{"error":{"message":"rate limited","type":"rate_limit_error"}}`,
+		"top-level error": `{"object":"error","message":"rate limited","type":"rate_limit_error","code":"1300"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(upstream))
+			}))
+			defer server.Close()
+
+			provider := NewMistralProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+			}, &testLogger{})
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, bifrostErr := provider.Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-api-key")}, &schemas.BifrostSpeechRequest{
+				Model: "voxtral-mini-tts-latest",
+				Input: &schemas.SpeechInput{Input: "Hi"},
+			})
+			require.Nil(t, resp)
+			require.NotNil(t, bifrostErr)
+			assert.False(t, bifrostErr.IsBifrostError)
+			assert.Equal(t, "rate limited", bifrostErr.Error.Message)
+			require.NotNil(t, bifrostErr.Error.Type)
+			assert.Equal(t, "rate_limit_error", *bifrostErr.Error.Type)
+		})
+	}
+}
+
 // With raw-response capture on, the decoded Mistral JSON body is returned alongside the audio.
 func TestSpeechReturnsRawResponse(t *testing.T) {
 	t.Parallel()
