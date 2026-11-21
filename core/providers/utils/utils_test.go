@@ -4728,3 +4728,19 @@ func BenchmarkProcessAndSendResponseFinalChunk(b *testing.B) {
 		<-ch
 	}
 }
+
+// BenchmarkHandleStreamCancellation is the terminal a provider stream sends once its context
+// is cancelled. It runs once per cancelled stream, never on a stream that ends normally.
+func BenchmarkHandleStreamCancellation(b *testing.B) {
+	runner := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, e
+	}
+	ch := make(chan *schemas.BifrostStreamChunk, 1)
+	logger := getLogger()
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		HandleStreamCancellation(ctx, runner, ch, logger, nil, nil)
+		<-ch
+	}
+}
