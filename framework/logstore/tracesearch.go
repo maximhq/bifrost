@@ -129,6 +129,7 @@ type TraceReadStore interface {
 	SearchTraces(ctx context.Context, filters TraceFilters, pagination PaginationOptions) (*TraceSearchResult, error)
 	SearchTraceSpans(ctx context.Context, filters TraceFilters, pagination PaginationOptions) (*TraceSpanSearchResult, error)
 	GetTraceStats(ctx context.Context, filters TraceFilters) (*TraceStats, error)
+	GetTraceScoreMeans(ctx context.Context, filters TraceFilters) (map[string]float64, error)
 	GetTraceHistogram(ctx context.Context, filters TraceFilters, bucketSizeSeconds int64) (*TraceHistogramResult, error)
 	GetTraceBreakdown(ctx context.Context, filters TraceFilters, dimension string) ([]TraceBreakdownRow, error)
 	SearchTraceSessions(ctx context.Context, filters TraceFilters, pagination PaginationOptions) (*TraceSessionSearchResult, error)
@@ -430,6 +431,31 @@ func (s *RDBLogStore) GetTraceStats(ctx context.Context, filters TraceFilters) (
 		return nil, fmt.Errorf("failed to get trace stats: %w", err)
 	}
 	return &stats, nil
+}
+
+// GetTraceScoreMeans returns, for each numeric score name, the mean over the matching traces of
+// each trace's own mean: the same figure as averaging the traces' rollup scores, in one query.
+func (s *RDBLogStore) GetTraceScoreMeans(ctx context.Context, filters TraceFilters) (map[string]float64, error) {
+	traces := s.applyTraceFilters(s.db.WithContext(ctx).Model(&Trace{}), filters).Select("trace_id")
+	perTrace := s.db.WithContext(ctx).Model(&TraceScore{}).
+		Select("trace_id, name, AVG(value) AS trace_mean").
+		Where("value IS NOT NULL").Where("trace_id IN (?)", traces)
+	if len(filters.ProjectIDs) > 0 {
+		perTrace = perTrace.Where("project_id IN ?", filters.ProjectIDs)
+	}
+	perTrace = perTrace.Group("trace_id, name")
+	var rows []struct {
+		Name      string
+		ScoreMean float64
+	}
+	if err := s.db.WithContext(ctx).Table("(?) AS per_trace", perTrace).Select("name, AVG(trace_mean) AS score_mean").Group("name").Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to average trace scores: %w", err)
+	}
+	means := make(map[string]float64, len(rows))
+	for _, row := range rows {
+		means[row.Name] = row.ScoreMean
+	}
+	return means, nil
 }
 
 // traceBucketExpr buckets start_time into bucketSizeSeconds-wide unix buckets.

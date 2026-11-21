@@ -135,6 +135,26 @@ func (s *Service) SetFileStore(files FileStore) { s.files = files }
 
 // NewService returns a dataset service. logs may be nil, in which case rows cannot be
 // added from logs or sessions.
+// rowDatasetFinder is the store lookup of the dataset a row belongs to. A store without it cannot
+// answer RowDataset.
+type rowDatasetFinder interface {
+	FindEvalDatasetIDForRow(ctx context.Context, rowID string) (string, error)
+}
+
+// RowDataset returns the id of the dataset whose draft holds a row with this id, or "" when there is
+// none or the store cannot look a row up on its own.
+func (s *Service) RowDataset(ctx context.Context, rowID string) (string, error) {
+	finder, ok := s.store.(rowDatasetFinder)
+	if !ok || rowID == "" {
+		return "", nil
+	}
+	id, err := finder.FindEvalDatasetIDForRow(ctx, rowID)
+	if errors.Is(err, configstore.ErrNotFound) {
+		return "", nil
+	}
+	return id, err
+}
+
 func NewService(store Store, logs LogReader) *Service {
 	return &Service{store: store, logs: logs}
 }

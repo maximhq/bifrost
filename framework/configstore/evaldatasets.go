@@ -628,6 +628,22 @@ func evalDatasetRowSearch(query *gorm.DB, search string, columns []string) *gorm
 	return query.Where(`EXISTS (SELECT 1 FROM json_each(evals_dataset_rows.cells_json) AS cell WHERE cell.key IN ? AND LOWER(cell.value) LIKE ? ESCAPE '\')`, columns, pattern)
 }
 
+// FindEvalDatasetIDForRow returns the id of the live dataset, visible to the caller, whose draft
+// holds a row with this id. ErrNotFound when there is none.
+func (s *RDBConfigStore) FindEvalDatasetIDForRow(ctx context.Context, rowID string) (string, error) {
+	visible := s.ScopedDB(ctx).Model(&tables.TableEvalDataset{}).Select("evals_datasets.id").Where(evalDatasetLive)
+	var ids []string
+	query := evalDatasetRowsAt(s.DB().WithContext(ctx).Model(&tables.TableEvalDatasetRow{}), 0).
+		Where("evals_dataset_rows.row_id = ?", rowID).Where("evals_dataset_rows.dataset_id IN (?)", visible).Limit(1)
+	if err := query.Pluck("evals_dataset_rows.dataset_id", &ids).Error; err != nil {
+		return "", err
+	}
+	if len(ids) == 0 {
+		return "", ErrNotFound
+	}
+	return ids[0], nil
+}
+
 // ListEvalDatasetRows returns a page of rows in sequence order. Paging by sequence
 // number (AfterSeq) costs the same on a late page as on the first, and suits a reader
 // that walks the whole dataset. Paging by Offset reads a page by row position, which

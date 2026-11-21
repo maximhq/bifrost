@@ -769,6 +769,9 @@ func migrationClickHouseTraceTables(ctx context.Context, db *gorm.DB, cluster st
 		// mark expires after a week, since ClickHouse has no empty-trace cleanup to remove it; a
 		// pending mark never expires.
 		{&TraceDirtyMark{}, chTableOpts{table: "trace_dirty_marks", orderBy: "(project_id, trace_id)", ttl: "toDateTime(marked_at) + INTERVAL 7 DAY DELETE WHERE dirty = 0", version: "`ver` DateTime64(9) DEFAULT marked_at"}},
+		// Two replicas can both find no experiment and both insert one. The version counts down with
+		// insert time, as for parts, so the first registration wins the merge.
+		{&TraceExperiment{}, chTableOpts{table: "trace_experiments", orderBy: "(project_id, id)", ttl: chTraceRowTTL, version: "`ver` UInt64 DEFAULT 18446744073709551615 - toUnixTimestamp64Nano(now64(9))"}},
 	} {
 		if err := clickhouseCreateTable(ctx, db, table.model, table.opts, cluster); err != nil {
 			return fmt.Errorf("clickhouse: create %s table: %w", table.opts.table, err)
