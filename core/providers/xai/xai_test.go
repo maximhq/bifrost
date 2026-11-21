@@ -335,6 +335,43 @@ func TestXAISpeechError(t *testing.T) {
 	assert.Equal(t, "TTS synthesis failed: Voice 'nope' not found", bifrostErr.Error.Message)
 }
 
+// A proxy in front of xAI can answer 200 with a JSON error. Speech returns that error
+// instead of handing the JSON to the client as audio.
+func TestXAISpeechJSONErrorOn200(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name, body, message string
+		status              int
+	}{
+		{"openai envelope", `{"error":{"message":"rate limited","type":"rate_limit_error"}}`, "rate limited", http.StatusBadGateway},
+		{"xai shape", `{"code":"Some resource has been exhausted","error":"quota used up"}`, "quota used up", http.StatusBadGateway},
+		{"numeric code", `{"code":429,"error":"slow down"}`, "slow down", http.StatusTooManyRequests},
+		{"no error field", `{"status":"ok"}`, "xAI text-to-speech returned JSON instead of audio", http.StatusBadGateway},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				_, _ = w.Write([]byte(tc.body))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, bifrostErr := provider.Speech(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostSpeechRequest{
+				Model: "grok-tts",
+				Input: &schemas.SpeechInput{Input: "x"},
+			})
+			require.Nil(t, resp)
+			require.NotNil(t, bifrostErr)
+			assert.False(t, bifrostErr.IsBifrostError)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, tc.status, *bifrostErr.StatusCode)
+			require.NotNil(t, bifrostErr.Error)
+			assert.Equal(t, tc.message, bifrostErr.Error.Message)
+		})
+	}
+}
+
 func TestXAISpeechEmptyInputIsBadRequest(t *testing.T) {
 	t.Parallel()
 
@@ -410,6 +447,41 @@ func TestXAITranscription(t *testing.T) {
 	assert.Equal(t, "duration", resp.Usage.Type)
 	require.NotNil(t, resp.Usage.Seconds)
 	assert.Equal(t, 2.846, *resp.Usage.Seconds)
+}
+
+// A 200 body carrying an error instead of a transcript is returned as that error, not
+// decoded into an empty transcript.
+func TestXAITranscriptionJSONErrorOn200(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name, body, message string
+	}{
+		{"openai envelope", `{"error":{"message":"rate limited","type":"rate_limit_error"}}`, "rate limited"},
+		{"xai shape", `{"code":"Some resource has been exhausted","error":"quota used up"}`, "quota used up"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, bifrostErr := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostTranscriptionRequest{
+				Model: "grok-voice-transcribe-2.0",
+				Input: &schemas.TranscriptionInput{File: []byte("RIFF\x00\x00\x00\x00WAVEfake"), Filename: "a.wav"},
+			})
+			require.Nil(t, resp)
+			require.NotNil(t, bifrostErr)
+			assert.False(t, bifrostErr.IsBifrostError)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusBadGateway, *bifrostErr.StatusCode)
+			require.NotNil(t, bifrostErr.Error)
+			assert.Equal(t, tc.message, bifrostErr.Error.Message)
+		})
+	}
 }
 
 // /v1/stt only answers xAI's JSON, so a plain-text format would put that body in the

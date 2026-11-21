@@ -50,11 +50,21 @@ func (r *XAITranscriptionResponse) ToBifrostTranscriptionResponse() *schemas.Bif
 }
 
 // handleXAITranscriptionResponse decodes xAI's STT body for
-// openai.HandleOpenAITranscriptionRequest.
+// openai.HandleOpenAITranscriptionRequest. A 200 body that carries an error instead of
+// a transcript is returned as that error, not as an empty transcript.
 func handleXAITranscriptionResponse(responseBody []byte, response *schemas.BifrostTranscriptionResponse, _ []byte, _ bool, sendBackRawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
 	var xaiResp XAITranscriptionResponse
 	if err := sonic.Unmarshal(responseBody, &xaiResp); err != nil {
 		return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+	}
+	if bifrostErr := errorInSuccessfulBody(responseBody); bifrostErr != nil {
+		if sendBackRawResponse {
+			var rawResponse interface{}
+			if err := sonic.Unmarshal(responseBody, &rawResponse); err == nil {
+				bifrostErr.ExtraFields.RawResponse = rawResponse
+			}
+		}
+		return nil, nil, bifrostErr
 	}
 	*response = *xaiResp.ToBifrostTranscriptionResponse()
 

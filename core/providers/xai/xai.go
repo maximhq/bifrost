@@ -359,6 +359,19 @@ func (provider *XAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key
 	if len(body) == 0 {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("xAI text-to-speech response contained no audio", nil), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
+	// /v1/tts answers with audio only, so a JSON body on a 200 is an error, never audio.
+	if mediaType, _, _ := strings.Cut(string(resp.Header.ContentType()), ";"); strings.Contains(strings.ToLower(mediaType), "json") {
+		jsonErr := errorInSuccessfulBody(body)
+		if jsonErr == nil {
+			jsonErr = &schemas.BifrostError{
+				IsBifrostError: false,
+				StatusCode:     schemas.Ptr(fasthttp.StatusBadGateway),
+				Error:          &schemas.ErrorField{Message: "xAI text-to-speech returned JSON instead of audio"},
+			}
+		}
+		providerUtils.ApplyRetryAfter(jsonErr, &resp.Header)
+		return nil, providerUtils.EnrichError(ctx, jsonErr, jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
 
 	bifrostResponse := &schemas.BifrostSpeechResponse{
 		// The decoded body may alias the pooled response buffer, which is released on return.
