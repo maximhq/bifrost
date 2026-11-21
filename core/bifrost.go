@@ -8103,7 +8103,8 @@ func disableAnthropicPassthrough(ctx *schemas.BifrostContext) {
 // the request like any other. Gemini keeps it. Vertex keeps it for the models it serves with a
 // Google body (Gemini, Gemma, Imagen, Veo and numeric tuned endpoints), for batch jobs, whose body
 // is the job definition and which Vertex runs for Claude and Llama too, and for file and
-// cached-content requests, which name no model or a Gemini one; a Claude, Mistral or other Model
+// cached-content requests, which name no model or a Gemini one, and for Interactions agents, which
+// Vertex runs on /interactions with the caller's body; a Claude, Mistral or other Model
 // Garden model on Vertex is sent an Anthropic or OpenAI body, so it is converted. Call
 // this only after key-level alias resolution: the family predicates read the resolved alias.
 // Re-runs per attempt, so a fallback after a Gemini primary is caught. No-op outside the GenAI
@@ -8113,22 +8114,81 @@ func clearGenAIPassthroughForNonGoogleProvider(ctx *schemas.BifrostContext, base
 		return
 	}
 	if baseProvider == schemas.Gemini {
+		restoreGenAIPassthrough(ctx)
 		return
 	}
 	if baseProvider == schemas.Vertex && schemas.GetVertexEndpoint(ctx) != nil {
-		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
-		ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
+		suspendGenAIPassthrough(ctx)
 		return
 	}
+	// A Vertex Interactions read, cancel or delete names no model; it is still Google's own call.
 	if baseProvider == schemas.Vertex &&
 		(isBatchRequestType(requestType) || isFileRequestType(requestType) || isCachedContentRequestType(requestType) ||
+			isResponsesLifecycleRequestType(requestType) ||
+			gemini.IsGeminiInteractionsAgent(model) ||
 			schemas.IsGeminiModelFamily(ctx, model) || schemas.IsGemmaModelFamily(ctx, model) ||
 			schemas.IsImagenModelFamily(ctx, model) || schemas.IsVeoModelFamily(ctx, model) ||
 			schemas.IsAllDigitsASCII(model)) {
+		restoreGenAIPassthrough(ctx)
 		return
+	}
+	suspendGenAIPassthrough(ctx)
+}
+
+// genAIPassthroughSuspended holds what a non-Google attempt switched off (the raw-body flag, the
+// guardrail rewriter and the raw-response passthrough override), so a later Google attempt in the
+// same fallback chain gets them back.
+type genAIPassthroughSuspended struct {
+	rewriter       schemas.RawRequestBodyTextRewriter
+	sendBackRaw    *bool
+	overridePassed bool
+}
+
+// genAIPassthroughSuspendedKey stores a genAIPassthroughSuspended on the request context.
+const genAIPassthroughSuspendedKey schemas.BifrostContextKey = "bifrost-genai-passthrough-suspended"
+
+// suspendGenAIPassthrough turns the raw body off for a non-Google attempt, remembering what it
+// turned off. Only a request that had the raw body on is remembered.
+func suspendGenAIPassthrough(ctx *schemas.BifrostContext) {
+	if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); raw {
+		if _, saved := ctx.Value(genAIPassthroughSuspendedKey).(*genAIPassthroughSuspended); !saved {
+			rewriter, _ := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			suspended := &genAIPassthroughSuspended{rewriter: rewriter}
+			if v, ok := ctx.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok {
+				suspended.sendBackRaw = &v
+			}
+			suspended.overridePassed, _ = ctx.Value(schemas.BifrostContextKeyPassthroughOverridesPresent).(bool)
+			ctx.SetValue(genAIPassthroughSuspendedKey, suspended)
+			// A translated attempt sends back no raw response, so the passthrough override that
+			// asked for one goes too, as disableAnthropicPassthrough does.
+			if suspended.overridePassed {
+				ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, false)
+			}
+		}
 	}
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
+}
+
+// restoreGenAIPassthrough turns the raw body back on for a Google attempt that follows a
+// non-Google one. It does nothing for a request whose raw body was never switched off.
+func restoreGenAIPassthrough(ctx *schemas.BifrostContext) {
+	saved, ok := ctx.Value(genAIPassthroughSuspendedKey).(*genAIPassthroughSuspended)
+	if !ok {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	if saved.rewriter != nil {
+		ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter, saved.rewriter)
+	}
+	if saved.overridePassed {
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+		if saved.sendBackRaw != nil {
+			ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, *saved.sendBackRaw)
+		}
+	}
+	ctx.ClearValue(genAIPassthroughSuspendedKey)
 }
 
 // clearAnthropicPassthroughForUnsupportedStructuredOutput disables Anthropic raw-body passthrough

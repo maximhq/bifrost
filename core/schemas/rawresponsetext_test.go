@@ -327,6 +327,18 @@ func TestSyncRawResponseTextMapsProviderEvents(t *testing.T) {
 			before: syncChatChunk(Ptr("mail alex@example.com"), nil), after: syncChatChunk(Ptr("mail [EMAIL-1]"), nil),
 			want: `{"candidates":[{"content":{"role":"model","parts":[{"text":"check alex@example.com","thought":true},{"text":""},{"text":"mail [EMAIL-1]"}]},"index":0}]}`,
 		},
+		"gemini interactions text delta": {
+			format: RawResponseFormatGeminiInteractionsStreamEvent, raw: `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"mail alex@example.com"}}`,
+			before: syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, "mail alex@example.com"),
+			after:  syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, "mail [EMAIL-1]"),
+			want:   `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"mail [EMAIL-1]"}}`,
+		},
+		"gemini interactions thought summary": {
+			format: RawResponseFormatGeminiInteractionsStreamEvent, raw: `{"event_type":"step.delta","index":0,"delta":{"type":"thought_summary","content":{"type":"text","text":"mail alex@example.com"}}}`,
+			before: syncResponsesDelta(ResponsesStreamResponseTypeReasoningSummaryTextDelta, "mail alex@example.com"),
+			after:  syncResponsesDelta(ResponsesStreamResponseTypeReasoningSummaryTextDelta, "mail [EMAIL-1]"),
+			want:   `{"event_type":"step.delta","index":0,"delta":{"type":"thought_summary","content":{"type":"text","text":"mail [EMAIL-1]"}}}`,
+		},
 		"gemini responses delta": {
 			format: RawResponseFormatGeminiStreamChunk, raw: `{"candidates":[{"content":{"role":"model","parts":[{"text":"mail alex@example.com"}]}}]}`,
 			before: syncResponsesDelta(ResponsesStreamResponseTypeOutputTextDelta, "mail alex@example.com"),
@@ -601,6 +613,11 @@ func TestRedactRawResponseTextJoinsValuesSplitAcrossFrames(t *testing.T) {
 		"openai chat content": {
 			format: RawResponseFormatOpenAIChatCompletionChunk,
 			frames: twice(`{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":%s},"finish_reason":null}]}`),
+			texts:  text, want: redactedText,
+		},
+		"gemini interactions text": {
+			format: RawResponseFormatGeminiInteractionsStreamEvent,
+			frames: twice(`{"event_type":"step.delta","index":0,"delta":{"type":"text","text":%s}}`),
 			texts:  text, want: redactedText,
 		},
 		"openai chat tool arguments": {

@@ -1407,6 +1407,7 @@ func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, acce
 	routes = append(routes, CreateGenAIBatchRouteConfigs("/genai", handlerStore)...)
 	routes = append(routes, CreateVertexBatchRouteConfigs("/genai")...)
 	routes = append(routes, CreateGenAICachedContentRouteConfigs("/genai", handlerStore)...)
+	routes = append(routes, CreateGenAIInteractionsRouteConfigs("/genai")...)
 
 	return &GenAIRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
