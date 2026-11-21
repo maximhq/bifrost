@@ -7409,6 +7409,11 @@ func executeRequestWithRetries[T any](
 	// to wait out.
 	lastWasStructuredOutputForceTool := false
 
+	// An internal caller that needs the first upstream answer as is (a route probe) asks for
+	// exactly one attempt: a retry would be another billed call and would replace the error
+	// the caller is asking about.
+	disableRetries, _ := ctx.Value(schemas.BifrostContextKeyDisableRetries).(bool)
+
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
 
@@ -7946,7 +7951,7 @@ func executeRequestWithRetries[T any](
 		// returns false when there is nothing to strip, so the extra attempt is spent
 		// only on requests that carry a token. Runs once per request.
 		lastWasEncryptedContentStrip = false
-		if !shouldRetry && !strippedEncryptedContent && shouldStripReasoningAfterClientError(bifrostError) &&
+		if !disableRetries && !shouldRetry && !strippedEncryptedContent && shouldStripReasoningAfterClientError(bifrostError) &&
 			stripUnverifiableReasoning(ctx, req) {
 			strippedEncryptedContent = true
 			lastWasEncryptedContentStrip = true
@@ -7964,7 +7969,7 @@ func executeRequestWithRetries[T any](
 		// request works with the schema as the synthetic tool, so it gets one more attempt on the
 		// same key in that form. Once per request: a body that keeps its native schema cannot loop.
 		lastWasStructuredOutputForceTool = false
-		if !shouldRetry && !forcedStructuredOutputTool && ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputGrammarRejected {
+		if !disableRetries && !shouldRetry && !forcedStructuredOutputTool && ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputGrammarRejected {
 			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputForceTool)
 			forcedStructuredOutputTool = true
 			lastWasStructuredOutputForceTool = true
@@ -7974,7 +7979,7 @@ func executeRequestWithRetries[T any](
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Native structured-output schema rejected by %s/%s; re-sending once with the schema as a tool", providerKey, model))
 		}
 
-		if !shouldRetry {
+		if !shouldRetry || disableRetries {
 			break
 		}
 

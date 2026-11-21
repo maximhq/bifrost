@@ -264,6 +264,9 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	// newly served model (or re-check a failing key) without waiting.
 	r.POST("/api/providers/{provider}/refresh-models", lib.ChainMiddlewares(h.refreshProviderModels, middlewares...))
 	r.POST("/api/providers/{provider}/keys/{key_id}/refresh-models", lib.ChainMiddlewares(h.refreshProviderKeyModels, middlewares...))
+	// Sends one fixed decision request to exactly one provider/model, with no
+	// routing rules or fallbacks, so a decision route can be checked before use.
+	r.POST("/api/providers/{provider}/decisions/probe", lib.ChainMiddlewares(h.probeDecision, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
