@@ -105,6 +105,7 @@ type Service struct {
 	store  Store
 	logs   LogReader
 	files  FileStore
+	spans  SpanReader
 	logger schemas.Logger
 }
 

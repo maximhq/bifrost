@@ -1171,3 +1171,111 @@ func TestServiceRowSearchReadsTheColumnsValues(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, quoted.Total, "text with quotes matches as typed")
 }
+
+// fakeSpans is an in-memory span reader.
+type fakeSpans map[string]*logstore.TraceSpan
+
+func (f fakeSpans) FindTraceSpans(_ context.Context, projectID string, keys []logstore.TraceSpanKey) ([]*logstore.TraceSpan, error) {
+	var found []*logstore.TraceSpan
+	for _, key := range keys {
+		if span, ok := f[projectID+"/"+key.TraceID+"/"+key.SpanID]; ok {
+			found = append(found, span)
+		}
+	}
+	return found, nil
+}
+
+// TestServiceAddFromSpans pins rows curated from pushed traces: a model call's last user message is
+// the input and the messages before it the history, any other span's input is copied whole, the
+// span's expected value fills the expected output, and a span with no content is skipped.
+func TestServiceAddFromSpans(t *testing.T) {
+	ctx := context.Background()
+	spans := fakeSpans{
+		"p1/t1/llm": {
+			ProjectID: "p1", TraceID: "t1", SpanID: "llm", Kind: logstore.TraceSpanKindLLM,
+			Input:    `[{"role":"system","content":"be brief"},{"role":"user","content":[{"type":"text","text":"capital of France?"}]}]`,
+			Output:   `[{"message":{"role":"assistant","content":"Paris"}}]`,
+			Expected: "Paris",
+		},
+		"p1/t1/task":   {ProjectID: "p1", TraceID: "t1", SpanID: "task", Kind: logstore.TraceSpanKindTask, Input: `{"query":"weather"}`, Output: "Sunny."},
+		"p1/t1/hidden": {ProjectID: "p1", TraceID: "t1", SpanID: "hidden", ContentHidden: true},
+	}
+	without := newTestService(t, nil)
+	bare, err := without.Create(ctx, DatasetInput{Name: "no-traces", Template: "qa"})
+	require.NoError(t, err)
+	_, err = without.AddFromSpans(ctx, bare.ID, []SpanRef{{ProjectID: "p1", TraceID: "t1", SpanID: "llm"}}, "", "tester")
+	require.ErrorIs(t, err, ErrNoTraceStore)
+
+	svc := newTestService(t, nil)
+	svc.SetSpanReader(spans)
+	view, err := svc.Create(ctx, DatasetInput{Name: "from-traces", Columns: []ColumnSpec{
+		{Name: "input", Type: ColumnInput}, {Name: "history", Type: ColumnConversationHistory},
+		{Name: "output", Type: ColumnOutput}, {Name: "expected", Type: ColumnExpectedOutput},
+	}})
+	require.NoError(t, err)
+	llm := SpanRef{ProjectID: "p1", TraceID: "t1", SpanID: "llm"}
+	result, err := svc.AddFromSpans(ctx, view.ID, []SpanRef{
+		llm, llm, {ProjectID: "p1", TraceID: "t1", SpanID: "task"}, {ProjectID: "p1", TraceID: "t1", SpanID: "hidden"},
+		{ProjectID: "p1", TraceID: "t1", SpanID: "missing"}, {ProjectID: "other-project", TraceID: "t1", SpanID: "llm"},
+	}, "", "tester")
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.RowsAdded, "a repeated span is added once")
+	require.Len(t, result.Skipped, 3)
+	assert.Equal(t, "t1/missing", result.Skipped[0].ID)
+	assert.Equal(t, "span not found", result.Skipped[1].Reason, "a span is only read from the project it is named under")
+	assert.Contains(t, result.Skipped[2].Reason, "no content")
+
+	cells, ok := SpanCells(spans["p1/t1/llm"], []Column{{ID: "i", Type: ColumnInput}, {ID: "h", Type: ColumnConversationHistory}, {ID: "o", Type: ColumnOutput}, {ID: "e", Type: ColumnExpectedOutput}})
+	require.True(t, ok)
+	assert.Equal(t, "capital of France?", cells["i"])
+	assert.JSONEq(t, `[{"role":"system","content":"be brief"}]`, cells["h"])
+	assert.Equal(t, "Paris", cells["o"])
+	assert.Equal(t, "Paris", cells["e"])
+	plain, ok := SpanCells(spans["p1/t1/task"], []Column{{ID: "i", Type: ColumnInput}, {ID: "o", Type: ColumnOutput}})
+	require.True(t, ok)
+	assert.Equal(t, `{"query":"weather"}`, plain["i"], "input that is not a message list is copied as it is")
+	assert.Equal(t, "Sunny.", plain["o"])
+
+	_, err = svc.AddFromSpans(ctx, view.ID, []SpanRef{{TraceID: "t1", SpanID: "llm"}}, "", "tester")
+	assert.Error(t, err, "a span must name its project")
+
+	// A tool conversation keeps the assistant's tool_calls and the tool reply's tool_call_id, so
+	// the history replays as a valid chat request.
+	tools, ok := SpanCells(&logstore.TraceSpan{Kind: logstore.TraceSpanKindLLM, Input: `[
+		{"role":"user","content":"weather in Paris?"},
+		{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Paris\"}"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"sunny"},
+		{"role":"user","content":"and tomorrow?"}]`, Output: "rain"}, []Column{{ID: "i", Type: ColumnInput}, {ID: "h", Type: ColumnConversationHistory}})
+	require.True(t, ok)
+	assert.Equal(t, "and tomorrow?", tools["i"])
+	assert.JSONEq(t, `[
+		{"role":"user","content":"weather in Paris?"},
+		{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Paris\"}"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"sunny"}]`, tools["h"])
+
+	// Only a model call's input is read as messages; a task span's message-shaped input is kept whole.
+	taskInput := `[{"role":"user","content":"original task input"}]`
+	task, ok := SpanCells(&logstore.TraceSpan{Kind: logstore.TraceSpanKindTask, Input: taskInput, Output: "done"}, []Column{{ID: "i", Type: ColumnInput}, {ID: "h", Type: ColumnConversationHistory}})
+	require.True(t, ok)
+	assert.Equal(t, taskInput, task["i"])
+	assert.NotContains(t, task, "h")
+}
+
+// failingSpans is a span reader whose store is down.
+type failingSpans struct{}
+
+func (failingSpans) FindTraceSpans(context.Context, string, []logstore.TraceSpanKey) ([]*logstore.TraceSpan, error) {
+	return nil, errors.New("connection refused")
+}
+
+// A store failure while reading spans fails the call; only a lookup that finds nothing is a skip.
+func TestServiceAddFromSpansReturnsLookupErrors(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, nil)
+	svc.SetSpanReader(failingSpans{})
+	view, err := svc.Create(ctx, DatasetInput{Name: "down", Template: "qa"})
+	require.NoError(t, err)
+	_, err = svc.AddFromSpans(ctx, view.ID, []SpanRef{{ProjectID: "p1", TraceID: "t1", SpanID: "llm"}}, "", "tester")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection refused")
+}

@@ -74,6 +74,7 @@ func (h *EvalsDatasetsHandler) RegisterRoutes(r *router.Router, middlewares ...s
 	route(fasthttp.MethodPost, "/{id}/rows/batch", h.editCells)
 	route(fasthttp.MethodPost, "/{id}/rows/delete", h.deleteRows)
 	route(fasthttp.MethodPost, "/{id}/rows/from-logs", h.addFromLogs)
+	route(fasthttp.MethodPost, "/{id}/rows/from-spans", h.addFromSpans)
 	route(fasthttp.MethodPost, "/{id}/rows/from-sessions", h.addFromSessions)
 	route(fasthttp.MethodPatch, "/{id}/rows/{rowId}", h.updateRow)
 	route(fasthttp.MethodGet, "/{id}/rows/{rowId}/variables", h.rowVariables)
@@ -518,6 +519,24 @@ func (h *EvalsDatasetsHandler) rowVariables(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, map[string]any{"variables": variables})
+}
+
+// addFromSpans handles POST /api/evals/datasets/{id}/rows/from-spans: rows curated from spans of
+// traces pushed by observability SDKs.
+func (h *EvalsDatasetsHandler) addFromSpans(ctx *fasthttp.RequestCtx) {
+	var req struct {
+		Spans   []datasets.SpanRef `json:"spans"`
+		SplitID string             `json:"split_id"`
+	}
+	if !decodeBody(ctx, &req) {
+		return
+	}
+	result, err := h.service.AddFromSpans(ctx, pathValue(ctx, "id"), req.Spans, req.SplitID, evalsCaller(ctx))
+	if err != nil {
+		sendEvalsError(ctx, err)
+		return
+	}
+	SendJSON(ctx, result)
 }
 
 // addFromLogs handles POST /api/evals/datasets/{id}/rows/from-logs

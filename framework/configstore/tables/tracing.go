@@ -36,19 +36,34 @@ type TraceForwardTarget struct {
 	Enabled bool              `json:"enabled"`
 }
 
+// TraceEvaluatorRule runs one evaluator on the project's traces as they complete. The evaluator's
+// result is stored as a score on the trace.
+type TraceEvaluatorRule struct {
+	EvaluatorID string `json:"evaluator_id"`
+	// Name is the score name. Empty uses the evaluator id.
+	Name string `json:"name,omitempty"`
+	// SampleRate is the share of traces scored, 0 to 1.
+	SampleRate float64 `json:"sample_rate"`
+	// DailyCap bounds how many traces a day this rule scores. 0 means no cap.
+	DailyCap int  `json:"daily_cap"`
+	Enabled  bool `json:"enabled"`
+}
+
 // TableTraceProject is one Tracing project: the unit traces are grouped, retained and masked by.
 type TableTraceProject struct {
-	ID            string    `gorm:"primaryKey;type:varchar(64)" json:"id"`
-	Name          string    `gorm:"type:varchar(255);not null;uniqueIndex:idx_trace_projects_name" json:"name"`
-	Description   string    `gorm:"type:text" json:"description,omitempty"`
-	RetentionDays *int      `json:"retention_days,omitempty"` // nil = the global log retention
-	MaskingJSON   *string   `gorm:"type:text" json:"-"`
-	ForwardJSON   *string   `gorm:"type:text" json:"-"`
-	CreatedAt     time.Time `gorm:"not null" json:"created_at"`
-	UpdatedAt     time.Time `gorm:"not null" json:"updated_at"`
+	ID             string    `gorm:"primaryKey;type:varchar(64)" json:"id"`
+	Name           string    `gorm:"type:varchar(255);not null;uniqueIndex:idx_trace_projects_name" json:"name"`
+	Description    string    `gorm:"type:text" json:"description,omitempty"`
+	RetentionDays  *int      `json:"retention_days,omitempty"` // nil = the global log retention
+	MaskingJSON    *string   `gorm:"type:text" json:"-"`
+	ForwardJSON    *string   `gorm:"type:text" json:"-"`
+	EvaluatorsJSON *string   `gorm:"type:text" json:"-"`
+	CreatedAt      time.Time `gorm:"not null" json:"created_at"`
+	UpdatedAt      time.Time `gorm:"not null" json:"updated_at"`
 
-	MaskingRules []TraceMaskingRule  `gorm:"-" json:"masking_rules,omitempty"`
-	Forward      *TraceForwardTarget `gorm:"-" json:"forward,omitempty"`
+	MaskingRules []TraceMaskingRule   `gorm:"-" json:"masking_rules,omitempty"`
+	Forward      *TraceForwardTarget  `gorm:"-" json:"forward,omitempty"`
+	Evaluators   []TraceEvaluatorRule `gorm:"-" json:"evaluators,omitempty"`
 }
 
 func (TableTraceProject) TableName() string { return "trace_projects" }
@@ -57,7 +72,14 @@ func (p *TableTraceProject) BeforeSave(_ *gorm.DB) error {
 	if p.ID == "" {
 		p.ID = uuid.NewString()
 	}
-	p.MaskingJSON, p.ForwardJSON = nil, nil
+	p.MaskingJSON, p.ForwardJSON, p.EvaluatorsJSON = nil, nil, nil
+	if len(p.Evaluators) > 0 {
+		data, err := schemas.MarshalSorted(p.Evaluators)
+		if err != nil {
+			return fmt.Errorf("failed to serialize trace evaluator rules: %w", err)
+		}
+		p.EvaluatorsJSON = new(string(data))
+	}
 	if len(p.MaskingRules) > 0 {
 		data, err := schemas.MarshalSorted(p.MaskingRules)
 		if err != nil {
@@ -90,6 +112,11 @@ func (p *TableTraceProject) BeforeSave(_ *gorm.DB) error {
 const traceForwardEncryptedPrefix = "enc:"
 
 func (p *TableTraceProject) AfterFind(_ *gorm.DB) error {
+	if p.EvaluatorsJSON != nil && *p.EvaluatorsJSON != "" {
+		if err := sonic.Unmarshal([]byte(*p.EvaluatorsJSON), &p.Evaluators); err != nil {
+			return fmt.Errorf("failed to read trace evaluator rules: %w", err)
+		}
+	}
 	if p.MaskingJSON != nil && *p.MaskingJSON != "" {
 		if err := sonic.Unmarshal([]byte(*p.MaskingJSON), &p.MaskingRules); err != nil {
 			return fmt.Errorf("failed to read trace masking rules: %w", err)
