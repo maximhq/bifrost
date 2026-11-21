@@ -2378,6 +2378,30 @@
         "structured-data"
       ],
       "icon_url": "https://avatars.githubusercontent.com/u/287127998?v=4"
+    },
+    {
+      "name": "Wiro AI",
+      "description": "Search, price and run 1,000+ image, video, audio, 3D and LLM models on Wiro AI, upload input files and wait for results, build and run multi-step workflows, and deploy and message AI agents. Hosted remotely by Wiro AI. Needs a Wiro API key sent as an Authorization: Bearer <key> header, or Bearer <key>:<secret> for projects that use signature auth.",
+      "category": "AI Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.wiro.ai/v1",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://wiro.ai/docs/wiro-mcp-server",
+      "publisher": "Wiro AI",
+      "tags": [
+        "wiro",
+        "image-generation",
+        "video-generation",
+        "audio",
+        "llm",
+        "workflows",
+        "agents",
+        "hosted"
+      ],
+      "icon_url": "https://wiro.ai/images/favicon/icon-512x512.png"
     }
   ]
 }
