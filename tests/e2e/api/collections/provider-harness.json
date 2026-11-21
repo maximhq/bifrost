@@ -346911,6 +346911,160 @@
           }
         }
       ]
+    },
+    {
+      "name": "375. Computer toolset beside streamed function tools (computer toolset streaming)",
+      "description": "Anthropic rejects the fine-grained-tool-streaming-2025-05-14 beta beside a computer_toolset_20260801 entry with a 400. Agent requests carry function tools next to the toolset, and Bifrost defaults eager_input_streaming on for them on Bedrock and Vertex, which adds that beta. The Bedrock stream case sends the toolset beside a function tool with eager_input_streaming:true and asserts the stream completes with no error event and member calls tagged with toolset_name. The Haiku case pins that Haiku 5.5 keeps the toolset: the Claude API and Bedrock both serve it, though the computer-use docs do not list it.",
+      "item": [
+        {
+          "name": "Bedrock /v1/messages stream - toolset beside an eager function tool (bedrock/global.anthropic.claude-sonnet-5-5) - computer toolset streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var events = [];",
+                  "var lines = pm.response.text().split('\\n');",
+                  "for (var i = 0; i < lines.length; i++) {",
+                  "  if (lines[i].indexOf('data: ') !== 0) { continue; }",
+                  "  var payload = lines[i].slice(6).trim();",
+                  "  if (!payload || payload === '[DONE]') { continue; }",
+                  "  try { events.push(JSON.parse(payload)); } catch (e) {}",
+                  "}",
+                  "pm.test('stream completed without an error event', function () {",
+                  "  for (var i = 0; i < events.length; i++) {",
+                  "    pm.expect(events[i].type, 'error event in the stream: ' + JSON.stringify(events[i]).slice(0, 400)).to.not.eql('error');",
+                  "    pm.expect(events[i].type, 'failed response: ' + JSON.stringify(events[i]).slice(0, 400)).to.not.eql('response.failed');",
+                  "  }",
+                  "  var completed = events.filter(function (ev) { return ev.type === 'message_stop'; });",
+                  "  pm.expect(completed.length, 'no message_stop event: ' + pm.response.text().slice(-400)).to.be.above(0);",
+                  "  pm.expect(pm.response.text(), 'fine-grained beta reached upstream beside the toolset').to.not.include('fine-grained-tool-streaming');",
+                  "});",
+                  "pm.test('member calls carry toolset_name', function () {",
+                  "  var seen = 0;",
+                  "  for (var i = 0; i < events.length; i++) {",
+                  "    if (events[i].type !== 'content_block_start') { continue; }",
+                  "    var it = events[i].content_block || {};",
+                  "    if (it.type !== 'tool_use' || it.name === 'bash') { continue; }",
+                  "    seen++;",
+                  "    pm.expect(it.toolset_name, 'streamed member call lost toolset_name: ' + JSON.stringify(it)).to.eql('computer');",
+                  "  }",
+                  "  pm.expect(seen, 'no member call in the stream: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5-5\",\n  \"max_tokens\": 512,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    },\n    {\n      \"name\": \"bash\",\n      \"description\": \"Run a bash command in the sandbox.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"command\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"command\"\n        ]\n      },\n      \"eager_input_streaming\": true\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic /v1/messages - Haiku 5.5 keeps the computer toolset (anthropic/claude-haiku-5-5) - computer toolset streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var raw = (body.extra_fields || {}).raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the toolset reaches Haiku 5.5 bare', function () {",
+                  "  pm.expect(raw, 'raw request capture missing: ' + pm.response.text()).to.be.an('object');",
+                  "  var tools = raw.tools || [];",
+                  "  pm.expect(tools.length, 'toolset dropped: ' + JSON.stringify(tools)).to.eql(1);",
+                  "  pm.expect(tools[0].type).to.eql('computer_toolset_20260801');",
+                  "});",
+                  "pm.test('member calls come back tagged', function () {",
+                  "  var calls = (body.content || []).filter(function (b) { return b.type === 'tool_use'; });",
+                  "  pm.expect(calls.length, 'model made no tool call: ' + pm.response.text()).to.be.above(0);",
+                  "  for (var i = 0; i < calls.length; i++) {",
+                  "    pm.expect(calls[i].toolset_name, 'member call lost toolset_name').to.eql('computer');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Take a screenshot, then click at 100,200. Do it now.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"computer_toolset_20260801\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

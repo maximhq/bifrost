@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -1353,6 +1354,10 @@ func IsHaiku5Plus(model string) bool {
 	return strings.Contains(strings.ToLower(model), "haiku-5")
 }
 
+// haiku55PlusPattern matches Haiku 5.5 and later: haiku-5-5 through haiku-5-9,
+// and haiku-6 on.
+var haiku55PlusPattern = regexp.MustCompile(`haiku-(?:5-[5-9]|[6-9])`)
+
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
 // Mythos 5, Mythos Preview). These share Opus 4.7+'s request surface
 // (adaptive-only thinking, temperature/top_p/top_k removed) AND additionally
@@ -1545,13 +1550,73 @@ func isAnthropicCustomTool(tool *AnthropicTool) bool {
 	return tool.Type == nil || *tool.Type == AnthropicToolTypeCustom
 }
 
+// computerToolsetContextKey marks a request whose tools, or a tool defined by
+// value in its messages, carry a computer_toolset_20260801 entry.
+// MergeBetaHeaders then drops the fine-grained-tool-streaming beta, which
+// Anthropic rejects beside the toolset.
+// addMissingBetaHeadersToContext and scrubComputerToolsetStreaming write it on
+// every conversion, so a fallback attempt that shares the context records its
+// own tools.
+const computerToolsetContextKey schemas.BifrostContextKey = "bifrost-anthropic-computer-toolset"
+
+// SetComputerToolsetMarker records on ctx whether the request being built carries
+// a computer toolset, for MergeBetaHeaders.
+func SetComputerToolsetMarker(ctx *schemas.BifrostContext, present bool) {
+	if ctx != nil {
+		ctx.SetValue(computerToolsetContextKey, present)
+	}
+}
+
+// hasComputerToolset reports whether the tools carry a computer_toolset_20260801 entry.
+func hasComputerToolset(tools []AnthropicTool) bool {
+	for i := range tools {
+		if tools[i].Type != nil && *tools[i].Type == AnthropicToolTypeComputerToolset20260801 {
+			return true
+		}
+	}
+	return false
+}
+
+// definitionsHaveComputerToolset reports whether a tool defined by value in the
+// messages is a computer_toolset_20260801 entry.
+func definitionsHaveComputerToolset(definitions []*AnthropicTool) bool {
+	for _, tool := range definitions {
+		if tool != nil && tool.Type != nil && *tool.Type == AnthropicToolTypeComputerToolset20260801 {
+			return true
+		}
+	}
+	return false
+}
+
+// rawToolsHaveComputerToolset is the raw-body counterpart of hasComputerToolset.
+func rawToolsHaveComputerToolset(tools []gjson.Result) bool {
+	for _, tool := range tools {
+		if tool.Get("type").String() == string(AnthropicToolTypeComputerToolset20260801) {
+			return true
+		}
+	}
+	return false
+}
+
+// rawInlineDefinitionsHaveComputerToolset is the raw-body counterpart of
+// definitionsHaveComputerToolset.
+func rawInlineDefinitionsHaveComputerToolset(definitions []rawInlineToolDefinition) bool {
+	for _, tool := range definitions {
+		if tool.definition.Get("type").String() == string(AnthropicToolTypeComputerToolset20260801) {
+			return true
+		}
+	}
+	return false
+}
+
 // applyDefaultEagerInputStreaming sets eager_input_streaming on every custom
 // tool that leaves it unset, when DefaultEagerInputStreaming holds for the
-// pair. An explicit false from the caller is kept. Run it before
-// AddMissingBetaHeadersToContext so the fine-grained-tool-streaming beta is
-// derived from the flag.
+// pair. An explicit false from the caller is kept. A request with a computer
+// toolset gets no default; scrubComputerToolsetStreaming clears the flag on its
+// final body. Run it before AddMissingBetaHeadersToContext so the
+// fine-grained-tool-streaming beta is derived from the flag.
 func applyDefaultEagerInputStreaming(req *AnthropicMessageRequest, provider schemas.ModelProvider, model string) {
-	if req == nil || len(req.Tools) == 0 || !ShouldDefaultEagerInputStreaming(provider, model) {
+	if req == nil || len(req.Tools) == 0 || hasComputerToolset(req.Tools) || !ShouldDefaultEagerInputStreaming(provider, model) {
 		return
 	}
 	for i := range req.Tools {
@@ -1575,6 +1640,9 @@ func ApplyDefaultEagerInputStreamingToRawBody(jsonBody []byte, provider schemas.
 	// request body every time, making this O(tools × body).
 	// Pinned by TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling.
 	tools := toolsResult.Array()
+	if rawToolsHaveComputerToolset(tools) {
+		return jsonBody, nil
+	}
 	parts := make([][]byte, len(tools))
 	changed := false
 	for i, tool := range tools {
@@ -1598,6 +1666,139 @@ func ApplyDefaultEagerInputStreamingToRawBody(jsonBody []byte, provider schemas.
 	jsonBody, err := providerUtils.SetRawJSONField(jsonBody, "tools", rawJSONArrayOf(parts))
 	if err != nil {
 		return nil, fmt.Errorf("set raw tools eager_input_streaming: %w", err)
+	}
+	return jsonBody, nil
+}
+
+// dropRawEagerInputStreaming deletes eager_input_streaming from every raw tool
+// and every tool defined by value in the messages.
+func dropRawEagerInputStreaming(jsonBody []byte, tools []gjson.Result, inline []rawInlineToolDefinition) ([]byte, error) {
+	paths := make([]string, 0, len(tools)+len(inline))
+	for i, tool := range tools {
+		if tool.Get("eager_input_streaming").Exists() {
+			paths = append(paths, fmt.Sprintf("tools.%d.eager_input_streaming", i))
+		}
+	}
+	for _, tool := range inline {
+		if tool.definition.Get("eager_input_streaming").Exists() {
+			paths = append(paths, tool.path+".eager_input_streaming")
+		}
+	}
+	var err error
+	for _, path := range paths {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+		if err != nil {
+			return nil, fmt.Errorf("strip raw %s: %w", path, err)
+		}
+	}
+	return jsonBody, nil
+}
+
+// rawInlineToolDefinition is a tool defined by value inside a raw message, with
+// the JSON path of its definition object.
+type rawInlineToolDefinition struct {
+	path       string
+	definition gjson.Result
+}
+
+// rawInlineToolDefinitions lists the tools defined by value in the raw body's
+// tool_addition blocks and compaction tool_changes entries, the same set
+// noteRawToolChangeBlock collects for the beta headers. The scan is skipped only
+// when the body holds neither the literal discriminator nor a \u escape, which
+// could spell it.
+func rawInlineToolDefinitions(jsonBody []byte) []rawInlineToolDefinition {
+	if !bytes.Contains(jsonBody, []byte(AnthropicToolChangeTargetTypeToolDefinition)) && !bytes.Contains(jsonBody, []byte(`\u`)) {
+		return nil
+	}
+	messages := providerUtils.GetJSONField(jsonBody, "messages")
+	if !messages.IsArray() {
+		return nil
+	}
+	var definitions []rawInlineToolDefinition
+	note := func(path string, target gjson.Result) {
+		if target.Get("type").String() != AnthropicToolChangeTargetTypeToolDefinition {
+			return
+		}
+		if definition := target.Get("definition"); definition.IsObject() {
+			definitions = append(definitions, rawInlineToolDefinition{path: path + ".definition", definition: definition})
+		}
+	}
+	m := 0
+	messages.ForEach(func(_, message gjson.Result) bool {
+		if content := message.Get("content"); content.IsArray() {
+			b := 0
+			content.ForEach(func(_, block gjson.Result) bool {
+				base := fmt.Sprintf("messages.%d.content.%d", m, b)
+				if isToolChangeBlock(AnthropicContentBlockType(block.Get("type").String())) {
+					note(base+".tool", block.Get("tool"))
+				}
+				if changes := block.Get("tool_changes"); changes.IsArray() {
+					c := 0
+					changes.ForEach(func(_, change gjson.Result) bool {
+						note(fmt.Sprintf("%s.tool_changes.%d.tool", base, c), change.Get("tool"))
+						c++
+						return true
+					})
+				}
+				b++
+				return true
+			})
+		}
+		m++
+		return true
+	})
+	return definitions
+}
+
+// scrubComputerToolsetStreaming runs on the final request body, after every
+// merge. When the body carries computer_toolset_20260801, in tools or defined by
+// value in its messages, it deletes eager_input_streaming from every tool and
+// every inline definition, and drops fine-grained-tool-streaming tokens from the
+// body's anthropic_beta. It records on ctx whether the toolset is present, so
+// MergeBetaHeaders drops those tokens from the headers too.
+func scrubComputerToolsetStreaming(ctx *schemas.BifrostContext, jsonBody []byte) ([]byte, error) {
+	var tools []gjson.Result
+	if toolsResult := providerUtils.GetJSONField(jsonBody, "tools"); toolsResult.IsArray() {
+		tools = toolsResult.Array()
+	}
+	inline := rawInlineToolDefinitions(jsonBody)
+	present := rawToolsHaveComputerToolset(tools) || rawInlineDefinitionsHaveComputerToolset(inline)
+	SetComputerToolsetMarker(ctx, present)
+	if !present {
+		return jsonBody, nil
+	}
+	jsonBody, err := dropRawEagerInputStreaming(jsonBody, tools, inline)
+	if err != nil {
+		return nil, err
+	}
+	return dropRawFineGrainedBeta(jsonBody)
+}
+
+// dropRawFineGrainedBeta removes fine-grained-tool-streaming tokens from the
+// body's anthropic_beta array, and deletes the field when no token is left.
+func dropRawFineGrainedBeta(jsonBody []byte) ([]byte, error) {
+	field := providerUtils.GetJSONField(jsonBody, "anthropic_beta")
+	if !field.IsArray() {
+		return jsonBody, nil
+	}
+	tokens := field.Array()
+	kept := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if !strings.HasPrefix(token.String(), AnthropicEagerInputStreamingBetaHeaderPrefix) {
+			kept = append(kept, token.String())
+		}
+	}
+	if len(kept) == len(tokens) {
+		return jsonBody, nil
+	}
+	var err error
+	if len(kept) == 0 {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "anthropic_beta")
+	} else {
+		jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", kept)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("strip raw anthropic_beta fine-grained tokens: %w", err)
 	}
 	return jsonBody, nil
 }
@@ -2159,12 +2360,14 @@ func AcceptsComputerToolset(caps schemas.ModelCaps) bool {
 // DefaultSupportsComputerToolset is the name-based fallback for
 // ModelCaps.SupportsComputerToolset, listing the models the computer-use docs
 // publish for the toolset: the Fable/Mythos family, Opus 5.5, Opus 5, Sonnet 5
-// and Opus 4.8. Opus 4.7 and older take the dated tool only.
+// and Opus 4.8. Haiku 5.5 is not on that page, but the Claude API and Bedrock
+// both answer it with toolset member calls. Opus 4.7 and older take the dated
+// tool only.
 //
 // Source: https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool
 func DefaultSupportsComputerToolset(model string) bool {
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || schemas.IsOpus55Plus(m) || IsOpus5Plus(m) || IsSonnet5Plus(m) {
+	if IsFableFamily(m) || schemas.IsOpus55Plus(m) || IsOpus5Plus(m) || IsSonnet5Plus(m) || haiku55PlusPattern.MatchString(m) {
 		return true
 	}
 	return strings.Contains(m, "opus") &&
@@ -2629,6 +2832,7 @@ func appendAnthropicToolBetaHeaders(headers []string, tool *AnthropicTool, caps 
 // the caller supplies those signals — so the typed and raw-body entry points above stay
 // in lockstep by construction.
 func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicMessageRequest, provider schemas.ModelProvider, signals anthropicMessageBetaSignals) error {
+	SetComputerToolsetMarker(ctx, hasComputerToolset(req.Tools) || definitionsHaveComputerToolset(signals.inlineDefinitions))
 	features, hasProvider := ProviderFeatures[provider]
 	caps := schemas.ResolveModelCaps(provider, schemas.ResolveCanonicalModel(ctx, req.Model))
 	headers := []string{}
@@ -3494,12 +3698,21 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]schemas.SecretVar) []string {
 	seen := make(map[string]bool)
 	var all []string
+	var besideToolset bool
+	if ctx != nil {
+		besideToolset, _ = ctx.Value(computerToolsetContextKey).(bool)
+	}
 	add := func(v string) {
 		for part := range strings.SplitSeq(v, ",") {
-			if t := strings.TrimSpace(part); t != "" && !seen[t] {
-				seen[t] = true
-				all = append(all, t)
+			t := strings.TrimSpace(part)
+			if t == "" || seen[t] {
+				continue
 			}
+			if besideToolset && strings.HasPrefix(t, AnthropicEagerInputStreamingBetaHeaderPrefix) {
+				continue
+			}
+			seen[t] = true
+			all = append(all, t)
 		}
 	}
 	for k, v := range providerExtraHeaders {

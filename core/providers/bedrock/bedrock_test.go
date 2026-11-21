@@ -9017,6 +9017,7 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 		noTools    bool
 		clientBeta string
 		serverTool bool
+		toolset    bool
 		wantBeta   bool
 	}{
 		{name: "opus 5 tool without flag gets the default", model: "global.anthropic.claude-opus-5", wantBeta: true},
@@ -9028,6 +9029,7 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 		{name: "no custom tools", model: "global.anthropic.claude-opus-5", noTools: true, wantBeta: false},
 		{name: "non-Anthropic model", model: "amazon.nova-pro-v1:0", eager: schemas.Ptr(true), wantBeta: false},
 		{name: "dedupes against server-tool betas", model: "global.anthropic.claude-opus-5", serverTool: true, wantBeta: true},
+		{name: "beside the computer toolset", model: "global.anthropic.claude-opus-5-5", eager: schemas.Ptr(true), clientBeta: beta, toolset: true, wantBeta: false},
 	}
 
 	for _, tc := range cases {
@@ -9053,6 +9055,9 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 		}
 
 		t.Run(tc.name+"/responses", func(t *testing.T) {
+			if tc.toolset {
+				t.Skip("a Responses request with a computer tool goes to InvokeModel, not Converse")
+			}
 			req := &schemas.BifrostResponsesRequest{
 				Model:  tc.model,
 				Input:  []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("write the file")}}},
@@ -9088,9 +9093,20 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 			if tc.serverTool {
 				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: "memory_20250818", Name: "memory"})
 			}
-			bedrockReq, err := bedrock.ToBedrockChatCompletionRequest(newCtx(), req)
+			if tc.toolset {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: "computer_toolset_20260801"})
+			}
+			ctx := newCtx()
+			bedrockReq, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
 			require.NoError(t, err)
 			assertBeta(t, bedrockReq.AdditionalModelRequestFields)
+			if tc.toolset {
+				tunneled, err := json.Marshal(bedrockReq.AdditionalModelRequestFields)
+				require.NoError(t, err)
+				assert.Contains(t, string(tunneled), "computer_toolset_20260801", "toolset was not tunneled")
+				header := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, nil), schemas.Bedrock)
+				assert.NotContains(t, header, beta, "outgoing anthropic-beta header")
+			}
 			if tc.serverTool {
 				raw, ok := bedrockReq.AdditionalModelRequestFields.Get("anthropic_beta")
 				require.True(t, ok)
