@@ -1070,3 +1070,49 @@ func keysOf(m map[string]any) []string {
 	}
 	return keys
 }
+
+// TestPrepareDecisionRequestLocate pins that both body forms carry a locate question
+// through to the normalized request, with the input string untouched.
+func TestPrepareDecisionRequestLocate(t *testing.T) {
+	input := "Admit Date: 11/02/2026   Discharge Date: 11/09/2026\nO2: 2L nasal cannula, wean as tolerated\nApixaban 5 mg PO BID"
+	normalized := &fasthttp.RequestCtx{}
+	normalized.Request.SetBodyString(`{"model":"perplexity/pplx-decider-v1.3","input":` + strconvQuote(input) + `,"questions":[{"type":"locate","name":"value","instructions":"Oxygen."}]}`)
+	req, mapForm, err := prepareDecisionRequest(normalized, nil)
+	require.NoError(t, err)
+	assert.False(t, mapForm)
+	require.NotNil(t, req.Input.Text)
+	assert.Equal(t, input, *req.Input.Text)
+	require.Len(t, req.Questions, 1)
+	assert.Equal(t, schemas.DecisionTypeLocate, req.Questions[0].Type)
+
+	native := &fasthttp.RequestCtx{}
+	native.Request.SetBodyString(`{"model":"perplexity/pplx-decider-v1.3","state":"O2: 2L nasal cannula","questions":{"value":{"type":"locate","instructions":"Oxygen."}}}`)
+	req, mapForm, err = prepareDecisionRequest(native, nil)
+	require.NoError(t, err)
+	assert.True(t, mapForm)
+	require.Len(t, req.Questions, 1)
+	assert.Equal(t, schemas.DecisionTypeLocate, req.Questions[0].Type)
+	assert.Equal(t, "O2: 2L nasal cannula", *req.Input.Text)
+}
+
+// TestToDecisionMapFormResponseLocate pins the map-form locate answer: the spans as
+// its value and under "spans", with no match kept as an empty list.
+func TestToDecisionMapFormResponseLocate(t *testing.T) {
+	spans := []schemas.DecisionSpan{{Text: "2L nasal cannula", Start: 4, End: 20, Score: schemas.Ptr(0.97)}}
+	empty := []schemas.DecisionSpan{}
+	resp := toDecisionMapFormResponse(&schemas.BifrostDecisionResponse{Answers: []schemas.DecisionAnswer{
+		{Type: schemas.DecisionTypeLocate, Name: schemas.Ptr("value"), Spans: &spans},
+		{Type: schemas.DecisionTypeLocate, Name: schemas.Ptr("none"), Spans: &empty},
+	}})
+	wire, err := schemas.Marshal(resp.Answers["value"])
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"kind":"locate","value":[{"text":"2L nasal cannula","start":4,"end":20,"score":0.97}],"spans":[{"text":"2L nasal cannula","start":4,"end":20,"score":0.97}]}`, string(wire))
+	wire, err = schemas.Marshal(resp.Answers["none"])
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"kind":"locate","value":[],"spans":[]}`, string(wire))
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}

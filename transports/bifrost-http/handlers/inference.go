@@ -1642,13 +1642,16 @@ type DecisionMapFormResponse struct {
 }
 
 // DecisionMapAnswer is one answer of a map-form response. Value is the noul
-// probability, the chosen option, or the score; a refusal has no value.
+// probability, the chosen option, the score, the box, or a locate answer's
+// spans; a refusal has no value. A locate answer also carries its spans under
+// "spans", the key Perplexity's own response uses.
 type DecisionMapAnswer struct {
-	Kind          string             `json:"kind"`
-	Value         interface{}        `json:"value"`
-	Confidence    *float64           `json:"confidence,omitempty"`
-	Probabilities map[string]float64 `json:"probabilities,omitempty"`
-	Legend        map[string]any     `json:"legend,omitempty"`
+	Kind          string                   `json:"kind"`
+	Value         interface{}              `json:"value"`
+	Spans         *[]typesafe.TypesafeSpan `json:"spans,omitempty"`
+	Confidence    *float64                 `json:"confidence,omitempty"`
+	Probabilities map[string]float64       `json:"probabilities,omitempty"`
+	Legend        map[string]any           `json:"legend,omitempty"`
 
 	// Laya-specific fields
 	AnswerConfidence    *float64        `json:"answer_confidence,omitempty"`
@@ -1687,6 +1690,9 @@ func toDecisionMapFormResponse(resp *schemas.BifrostDecisionResponse) *DecisionM
 			answer.Value = *native.Score
 		case native.Box != nil:
 			answer.Value = *native.Box
+		case native.Spans != nil:
+			answer.Value = *native.Spans
+			answer.Spans = native.Spans
 		}
 		answers[name] = answer
 	}
