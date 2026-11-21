@@ -5484,7 +5484,18 @@ func virtualMCPToolsClientNeedle(clientID string) string {
 // UpdateVirtualMCP persists a Virtual MCP, keeping endpoint_slug and created_at immutable. Name
 // uniqueness is enforced by the table's own unique index.
 func (s *RDBConfigStore) UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error {
-	return s.DB().WithContext(ctx).Omit("endpoint_slug", "created_at").Save(def).Error
+	// config_issues belongs to config.json reconciliation (SetVirtualMCPConfigIssues), so a save from
+	// any other path never clears or forges it.
+	return s.DB().WithContext(ctx).Omit("endpoint_slug", "created_at", "config_issues").Save(def).Error
+}
+
+// SetVirtualMCPConfigIssues records (or clears, with nil) the parts of a Virtual MCP's config.json
+// declaration that could not be applied. Only that column is written, so the stored tools and
+// config hash are untouched.
+func (s *RDBConfigStore) SetVirtualMCPConfigIssues(ctx context.Context, id uint, issues *string) error {
+	return s.DB().WithContext(ctx).Model(&tables.TableVirtualMCP{}).
+		Where("id = ?", id).
+		UpdateColumn("config_issues", issues).Error
 }
 
 // DeleteVirtualMCP removes a Virtual MCP and its VK assignments (explicit, so it holds on any DB

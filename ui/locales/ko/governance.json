@@ -409,6 +409,24 @@
 		"unlockTitle": "범위가 지정된 액세스 및 지출을 위해 프로젝트 잠금 해제",
 		"unlockDescription": "이 기능은 Bifrost 엔터프라이즈 라이선스에 포함됩니다. 프로젝트는 요청이 선택한 것이에요. 프로젝트는 호출자가 이미 보유하고 있는 것과 함께 액세스 권한을 부여하고 지출이 누구의 원장에 있는지 결정해요."
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "모든 공급자의 AI 지출을 한곳에서 확인",
+			"unlockDescription": "이 기능은 Bifrost 엔터프라이즈 라이선스에 포함됩니다. FinOps는 공급자 계정에서 청구된 비용을 읽어 그중 얼마가 Bifrost를 거쳤는지 보여줍니다."
+		},
+		"connections": {
+			"unlockTitle": "공급자 결제 계정 연결",
+			"unlockDescription": "이 기능은 Bifrost 엔터프라이즈 라이선스에 포함됩니다. OpenAI, Anthropic, AWS Bedrock, Vertex AI, Azure OpenAI 결제를 읽기 전용 액세스로 연결하세요."
+		},
+		"explorer": {
+			"unlockTitle": "모델 및 계정별 AI 지출 분석",
+			"unlockDescription": "이 기능은 Bifrost 엔터프라이즈 라이선스에 포함됩니다. 청구된 지출과 Bifrost가 기록한 내용을 모델별로 비교하세요."
+		},
+		"forecast": {
+			"unlockTitle": "AI 지출 예측 및 이상 징후 감지",
+			"unlockDescription": "이 기능은 Bifrost 엔터프라이즈 라이선스에 포함됩니다. 예산 대비 이번 달 지출을 예측하고 지출이 급증하면 알림을 받으세요."
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "더 나은 가시성을 위해 사용자 순위 잠금 해제"
 	},
