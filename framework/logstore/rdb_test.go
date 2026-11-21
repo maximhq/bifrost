@@ -197,6 +197,33 @@ func TestSQLiteAutoVacuum_LegacyDatabaseIsMigrated(t *testing.T) {
 	require.Less(t, dbFileSize(t, store, path), peak/5)
 }
 
+// TestSQLiteAutoVacuum_CancelledContextStopsMigration pins that the one-off
+// VACUUM of a legacy file follows the constructor context: a cancelled start
+// returns the context error and leaves the file in NONE mode for the next start.
+func TestSQLiteAutoVacuum_CancelledContextStopsMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logs.db")
+	legacy, err := gorm.Open(sqlite.Open(path))
+	require.NoError(t, err)
+	require.NoError(t, legacy.Exec("CREATE TABLE legacy_marker (id INTEGER)").Error)
+	sqlDB, err := legacy.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = newSqliteLogStore(ctx, &SQLiteConfig{Path: path}, testLogger{})
+	require.ErrorIs(t, err, context.Canceled)
+
+	check, err := gorm.Open(sqlite.Open(path))
+	require.NoError(t, err)
+	checkDB, err := check.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = checkDB.Close() })
+	var mode int
+	require.NoError(t, check.Raw("PRAGMA auto_vacuum").Scan(&mode).Error)
+	require.Zero(t, mode, "a cancelled start must not run the VACUUM")
+}
+
 // TestSQLiteReclaimSpace_ShrinksWithoutManualCheckpoint pins that ReclaimSpace
 // itself checkpoints the WAL: the main file shrinks while the store stays open
 // and no one else checkpoints.

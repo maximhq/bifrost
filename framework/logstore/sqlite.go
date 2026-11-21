@@ -35,12 +35,14 @@ func sqliteDSN(path string, busyTimeoutMs int) string {
 // An existing file in the default NONE mode is converted with a one-off VACUUM,
 // which rewrites the file and needs free disk space about the size of the
 // database; if that fails the file keeps its mode and the next start retries. A
-// file already in FULL or INCREMENTAL mode is left alone.
-func initSQLiteAutoVacuum(path string, logger schemas.Logger) error {
+// file already in FULL or INCREMENTAL mode is left alone. Cancelling ctx stops
+// the VACUUM and returns the context error.
+func initSQLiteAutoVacuum(ctx context.Context, path string, logger schemas.Logger) error {
 	db, err := gorm.Open(sqlite.Open(path), &gorm.Config{Logger: gormlogger.Discard})
 	if err != nil {
 		return err
 	}
+	db = db.WithContext(ctx)
 	sqlDB, err := db.DB()
 	if err != nil {
 		return err
@@ -71,6 +73,9 @@ func initSQLiteAutoVacuum(path string, logger schemas.Logger) error {
 		return err
 	}
 	if err := db.Exec("VACUUM").Error; err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		logger.Warn("logs.db auto_vacuum migration failed, will retry on next start: %v", err)
 		return nil
 	}
@@ -88,7 +93,7 @@ func newSqliteLogStore(ctx context.Context, config *SQLiteConfig, logger schemas
 		}
 		_ = f.Close()
 	}
-	if err := initSQLiteAutoVacuum(config.Path, logger); err != nil {
+	if err := initSQLiteAutoVacuum(ctx, config.Path, logger); err != nil {
 		return nil, fmt.Errorf("failed to initialise sqlite auto_vacuum: %w", err)
 	}
 	dsn := sqliteDSN(config.Path, sqliteBusyTimeoutMs)
