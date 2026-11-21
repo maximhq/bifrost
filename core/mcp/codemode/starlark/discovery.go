@@ -96,9 +96,13 @@ type discoveryRankResponse struct {
 	Sufficient *float64             `json:"sufficient,omitempty"`
 }
 
-// discoveryTool is one visible tool with its lexical score.
+// discoveryTool is one visible tool with its lexical score. path is the
+// tool's .pyi file at tool binding. candidate.ID is path, except when tools
+// share a file: two raw names can come to one canonical name, and the ranker
+// contract needs one id per candidate, so later tools get a "#N" suffix.
 type discoveryTool struct {
 	candidate discoveryCandidate
+	path      string
 	lexical   float64
 }
 
@@ -144,6 +148,7 @@ func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context, bindingLevel 
 	toolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 	type entry struct {
 		tool       discoveryTool
+		rawName    string
 		definition []byte
 	}
 	entries := make([]entry, 0)
@@ -178,19 +183,41 @@ func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context, bindingLevel 
 			if err != nil {
 				definition = nil
 			}
+			path := fmt.Sprintf("servers/%s/%s.pyi", clientName, name)
 			entries = append(entries, entry{
-				tool: discoveryTool{candidate: discoveryCandidate{
-					ID:          fmt.Sprintf("servers/%s/%s.pyi", clientName, name),
+				tool: discoveryTool{path: path, candidate: discoveryCandidate{
 					Server:      clientName,
 					Name:        name,
 					Description: description,
 					Parameters:  parameters,
 				}},
+				rawName:    tool.Function.Name,
 				definition: definition,
 			})
 		}
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].tool.candidate.ID < entries[j].tool.candidate.ID })
+	// The raw name breaks ties between tools that share a file, so ids and the
+	// revision do not depend on the order the tools were listed in.
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].tool.path != entries[j].tool.path {
+			return entries[i].tool.path < entries[j].tool.path
+		}
+		return entries[i].rawName < entries[j].rawName
+	})
+	// A real path ends in ".pyi" and a canonical name has no '#', so a
+	// suffixed id cannot collide with another tool's path.
+	shared := 0
+	for i := range entries {
+		if i > 0 && entries[i-1].tool.path == entries[i].tool.path {
+			shared++
+		} else {
+			shared = 0
+		}
+		entries[i].tool.candidate.ID = entries[i].tool.path
+		if shared > 0 {
+			entries[i].tool.candidate.ID = fmt.Sprintf("%s#%d", entries[i].tool.path, shared+1)
+		}
+	}
 
 	hash := sha256.New()
 	hash.Write([]byte(bindingLevel))
@@ -282,7 +309,7 @@ func scoreDiscovery(items []discoveryTool, query string) []discoveryTool {
 				score += discoveryDescriptionWeight
 			}
 		}
-		explicit := containsDiscoveryReference(lowerQuery, strings.ToLower(c.ID)) ||
+		explicit := containsDiscoveryReference(lowerQuery, strings.ToLower(item.path)) ||
 			containsDiscoveryReference(lowerQuery, strings.ToLower(c.Server+"."+c.Name))
 		if explicit {
 			score += discoveryExplicitWeight
@@ -381,7 +408,7 @@ func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall s
 	// A query that is exactly a tool reference needs no ranking.
 	for _, item := range catalogue {
 		c := item.candidate
-		if strings.EqualFold(query, c.ID) || strings.EqualFold(query, c.Server+"."+c.Name) {
+		if strings.EqualFold(query, item.path) || strings.EqualFold(query, c.Server+"."+c.Name) {
 			return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, bindingLevel, []discoveryTool{item}, nil, limit,
 				fmt.Sprintf("# Exact match for this query: 1 of %d tools visible to this caller.", len(catalogue))), false), nil
 		}
@@ -473,7 +500,7 @@ func (s *StarlarkCodeMode) discoveryShortlist(ctx context.Context, bindingLevel 
 	byPath := map[string]*file{}
 	for _, item := range items {
 		c := item.candidate
-		path := c.ID
+		path := item.path
 		if bindingLevel == schemas.CodeModeBindingLevelServer {
 			path = fmt.Sprintf("servers/%s.pyi", c.Server)
 		}
