@@ -50,6 +50,21 @@ func (r warpLogReader) GetLogsByIDs(ctx context.Context, ids []string) ([]logsto
 	return logs, nil
 }
 
+// TopicStore hands Warp the log store's topic tables, when the manager can
+// reach its store. The plugin's manager can; a manager built for a test may
+// not, and then Warp has no topics, which is what it reports.
+func (r warpLogReader) TopicStore() logstore.WarpTopicStore {
+	provider, ok := r.LogManager.(interface{ LogStore() logstore.LogStore })
+	if !ok {
+		return nil
+	}
+	store := provider.LogStore()
+	if store == nil {
+		return nil
+	}
+	return store
+}
+
 // GetAvailableVirtualKeys converts the manager's key pairs into Warp's.
 func (r warpLogReader) GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]warp.KeyPair, error) {
 	return convertWarpKeyPairs(r.LogManager.GetAvailableVirtualKeys(ctx, limit, query))

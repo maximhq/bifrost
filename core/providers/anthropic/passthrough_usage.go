@@ -33,10 +33,10 @@ func ClassifyPassthroughPath(path string) schemas.RequestType {
 // the stripped request path; body is a single SSE data event (streaming) or the full response
 // body (non-streaming). Streaming /messages usage is assembled per-event by
 // AnthropicPassthroughStreamUsage, so here /messages only ever sees a plain JSON body.
-func ExtractAnthropicPassthroughUsage(path string, _, body []byte) *schemas.BifrostPassthroughUsage {
+func ExtractAnthropicPassthroughUsage(path string, reqBody, body []byte) *schemas.BifrostPassthroughUsage {
 	switch ClassifyPassthroughPath(path) {
 	case schemas.ResponsesRequest:
-		return extractAnthropicMessagesUsage(body)
+		return extractAnthropicMessagesUsageForRequest(reqBody, body)
 	case schemas.TextCompletionRequest:
 		return extractAnthropicCompleteUsage(body)
 	}
@@ -55,13 +55,31 @@ func ExtractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage
 	return extractAnthropicMessagesUsage(body)
 }
 
+// convertAnthropicUsageIterations converts usage.iterations[] to the neutral per-pass form, which is
+// what prices the passes billed at another model's rate (advisor). nil when there are none.
+func convertAnthropicUsageIterations(iterations []AnthropicUsage) []schemas.ResponsesResponseUsage {
+	if len(iterations) == 0 {
+		return nil
+	}
+	out := make([]schemas.ResponsesResponseUsage, 0, len(iterations))
+	for i := range iterations {
+		if converted := ConvertAnthropicUsageToBifrostUsage(&iterations[i]); converted != nil {
+			out = append(out, *converted)
+		}
+	}
+	return out
+}
+
 // buildAnthropicPassthroughUsage converts AnthropicUsage directly into BifrostPassthroughUsage.
+// The per-pass breakdown is kept alongside the folded totals, since folding drops it.
 func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthroughUsage {
 	if au == nil {
 		return nil
 	}
+	iterations := au.Iterations
 	au = billableAnthropicUsage(au)
-	totalInput := au.InputTokens + au.CacheReadInputTokens + au.CacheCreationInputTokens
+	cacheCreation := anthropicCacheCreationTotal(au)
+	totalInput := au.InputTokens + au.CacheReadInputTokens + cacheCreation
 	total := totalInput + au.OutputTokens
 	if total == 0 {
 		return nil
@@ -73,10 +91,10 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		TotalTokens:      total,
 	}
 
-	if au.CacheReadInputTokens > 0 || au.CacheCreationInputTokens > 0 {
+	if au.CacheReadInputTokens > 0 || cacheCreation > 0 {
 		details := &schemas.ChatPromptTokensDetails{
 			CachedReadTokens:  au.CacheReadInputTokens,
-			CachedWriteTokens: au.CacheCreationInputTokens,
+			CachedWriteTokens: cacheCreation,
 		}
 		if au.CacheCreation.Ephemeral5mInputTokens > 0 || au.CacheCreation.Ephemeral1hInputTokens > 0 {
 			details.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
@@ -104,7 +122,7 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		usage.CompletionTokensDetails.ReasoningTokens = au.OutputTokensDetails.ThinkingTokens
 	}
 
-	u := &schemas.BifrostPassthroughUsage{LLMUsage: usage}
+	u := &schemas.BifrostPassthroughUsage{LLMUsage: usage, Iterations: convertAnthropicUsageIterations(iterations)}
 	if au.ServiceTier != nil {
 		t := MapAnthropicServiceTierToBifrost(*au.ServiceTier)
 		u.ServiceTier = &t
@@ -120,25 +138,78 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 
 // AnthropicPassthroughStreamUsage incrementally merges /v1/messages stream usage across events
 // without retaining the response body. Anthropic splits usage: message_start nests it under
-// message.usage (input, cache tokens incl. 5m/1h split, service_tier), while message_delta has
-// it at the top level (final output). Taking the max of each field across events combines them
-// order-independently — the same merge the native Anthropic stream does (anthropic.go).
+// message.usage, while message_delta carries it at the top level. Non-prompt fields (output,
+// thinking, server tools, tier) take the max across events. The prompt split is resolved by
+// resolvePrompt, see ObserveEvent.
+//
+// usage.iterations[] is kept apart from the folded total: it is cumulative (the latest list names
+// every pass so far, so it replaces the previous one), and compaction passes are folded into the
+// emitted total once, at emit time.
 type AnthropicPassthroughStreamUsage struct {
-	combined AnthropicUsage
-	seen     bool
+	// RequestBody is the upstream request, read to decide whether the stream's container is billable.
+	RequestBody []byte
+
+	combined   AnthropicUsage
+	start      anthropicPromptSplit // per-field max of message.usage prompt counters
+	delta      anthropicPromptSplit // per-field max of top-level usage prompt counters, with presence
+	deltaFinal bool                 // a top-level usage frame reported a non-zero prompt counter
+	emit       AnthropicUsage       // scratch for usage(), reused so emitting does not allocate it
+	iterations []AnthropicUsage
+	container  *AnthropicResponseContainer
+	seen       bool
+}
+
+// anthropicPromptSplit is the prompt side of a usage frame: the counters that make up prompt_tokens.
+type anthropicPromptSplit struct {
+	input, cacheRead, cacheWrite, cacheWrite5m, cacheWrite1h int
+	reported                                                 anthropicPromptCounterBit
+}
+
+func (p *anthropicPromptSplit) merge(u *AnthropicUsage, reported anthropicPromptCounterBit) {
+	p.input = max(p.input, u.InputTokens)
+	p.cacheRead = max(p.cacheRead, u.CacheReadInputTokens)
+	p.cacheWrite = max(p.cacheWrite, u.CacheCreationInputTokens)
+	p.cacheWrite5m = max(p.cacheWrite5m, u.CacheCreation.Ephemeral5mInputTokens)
+	p.cacheWrite1h = max(p.cacheWrite1h, u.CacheCreation.Ephemeral1hInputTokens)
+	p.reported |= reported
+}
+
+// reportedAnthropicPromptCounters returns which prompt counters a top-level usage object carries
+// with a non-null value, whatever that value is.
+func reportedAnthropicPromptCounters(event []byte) anthropicPromptCounterBit {
+	const all = anthropicPromptCounterInputTokens | anthropicPromptCounterCacheCreationInputTokens |
+		anthropicPromptCounterCacheReadInputTokens | anthropicPromptCounterCacheCreation
+	return all &^ absentAnthropicPromptCounters(event)
 }
 
 // ObserveEvent merges one framed SSE data payload's usage into the running total and returns
 // the running usage (nil until any usage-bearing event is seen).
+//
+// The prompt counters are not max-merged field by field across events. Some Anthropic-dialect
+// upstreams (observed: QwenCloud, Moonshot/Kimi) put a prompt-scale input_tokens on message_start,
+// with cache counters zero or absent, and the real cache-aware split only on message_delta. A
+// per-field max keeps the prompt-scale input_tokens and adds the delta's cache_read on top of a
+// figure that already includes it (#5510). Instead, message_delta's usage is the final, cumulative
+// report (Anthropic documents it that way; with server tools its input_tokens grows past
+// message_start's). Once a message_delta reports any non-zero prompt counter, every prompt counter
+// it carries replaces message_start's, and counters it omits keep message_start's value. A delta
+// whose prompt counters are absent or all zero (Anthropic's minimal output-only delta) is ignored
+// for the prompt split. The choice keys on the event shape, not arrival order, so the merge
+// stays order-independent.
 func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.BifrostPassthroughUsage {
 	var evt AnthropicStreamEvent
 	if err := sonic.Unmarshal(event, &evt); err != nil {
 		return a.usage()
 	}
+	if evt.Delta != nil && evt.Delta.Container != nil {
+		a.container = evt.Delta.Container
+	}
 	// message_delta carries usage at the top level; message_start nests it under message.usage.
 	var u *AnthropicUsage
+	topLevel := false
 	if evt.Usage != nil {
 		u = evt.Usage
+		topLevel = true
 	} else if evt.Message != nil && evt.Message.Usage != nil {
 		u = evt.Message.Usage
 	}
@@ -146,27 +217,26 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 		return a.usage()
 	}
 
-	u = billableAnthropicUsage(u)
+	if len(u.Iterations) > 0 {
+		a.iterations = u.Iterations
+	}
 
 	a.seen = true
-	c := &a.combined
-	if u.InputTokens > c.InputTokens {
-		c.InputTokens = u.InputTokens
+	if topLevel {
+		// Only a delta with a non-zero prompt counter speaks for the prompt split, so the presence
+		// scan is skipped for output-only deltas.
+		if u.InputTokens != 0 || u.CacheReadInputTokens != 0 || u.CacheCreationInputTokens != 0 ||
+			u.CacheCreation.Ephemeral5mInputTokens != 0 || u.CacheCreation.Ephemeral1hInputTokens != 0 {
+			a.delta.merge(u, reportedAnthropicPromptCounters(event))
+			a.deltaFinal = true
+		}
+	} else {
+		a.start.merge(u, 0)
 	}
+
+	c := &a.combined
 	if u.OutputTokens > c.OutputTokens {
 		c.OutputTokens = u.OutputTokens
-	}
-	if u.CacheReadInputTokens > c.CacheReadInputTokens {
-		c.CacheReadInputTokens = u.CacheReadInputTokens
-	}
-	if u.CacheCreationInputTokens > c.CacheCreationInputTokens {
-		c.CacheCreationInputTokens = u.CacheCreationInputTokens
-	}
-	if u.CacheCreation.Ephemeral5mInputTokens > c.CacheCreation.Ephemeral5mInputTokens {
-		c.CacheCreation.Ephemeral5mInputTokens = u.CacheCreation.Ephemeral5mInputTokens
-	}
-	if u.CacheCreation.Ephemeral1hInputTokens > c.CacheCreation.Ephemeral1hInputTokens {
-		c.CacheCreation.Ephemeral1hInputTokens = u.CacheCreation.Ephemeral1hInputTokens
 	}
 	if u.ServerToolUse != nil {
 		if c.ServerToolUse == nil {
@@ -196,17 +266,69 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 	return a.usage()
 }
 
+// resolvePrompt returns the stream's prompt split: message_start's, with the counters a final
+// message_delta reported taking their place (see ObserveEvent).
+func (a *AnthropicPassthroughStreamUsage) resolvePrompt() anthropicPromptSplit {
+	p := a.start
+	if !a.deltaFinal {
+		return p
+	}
+	d := &a.delta
+	if d.reported&anthropicPromptCounterInputTokens != 0 {
+		p.input = d.input
+	}
+	if d.reported&anthropicPromptCounterCacheReadInputTokens != 0 {
+		p.cacheRead = d.cacheRead
+	}
+	if d.reported&anthropicPromptCounterCacheCreationInputTokens != 0 {
+		p.cacheWrite = d.cacheWrite
+	}
+	if d.reported&anthropicPromptCounterCacheCreation != 0 {
+		p.cacheWrite5m, p.cacheWrite1h = d.cacheWrite5m, d.cacheWrite1h
+		if d.reported&anthropicPromptCounterCacheCreationInputTokens == 0 {
+			// The split is a breakdown of the total, so a delta that reports only the split speaks
+			// for the total too; message_start's total would otherwise win over it in
+			// anthropicCacheCreationTotal.
+			p.cacheWrite = 0
+		}
+	} else if d.reported&anthropicPromptCounterCacheCreationInputTokens != 0 && p.cacheWrite5m+p.cacheWrite1h > p.cacheWrite {
+		// message_start's 5m/1h split no longer fits inside the total the delta replaced it with,
+		// so it described a different figure; keeping it would bill writes that did not happen.
+		p.cacheWrite5m, p.cacheWrite1h = 0, 0
+	}
+	return p
+}
+
 func (a *AnthropicPassthroughStreamUsage) usage() *schemas.BifrostPassthroughUsage {
 	if !a.seen {
 		return nil
 	}
-	return buildAnthropicPassthroughUsage(&a.combined)
+	a.emit = a.combined
+	c := &a.emit
+	p := a.resolvePrompt()
+	c.InputTokens = p.input
+	c.CacheReadInputTokens = p.cacheRead
+	c.CacheCreationInputTokens = p.cacheWrite
+	c.CacheCreation.Ephemeral5mInputTokens = p.cacheWrite5m
+	c.CacheCreation.Ephemeral1hInputTokens = p.cacheWrite1h
+	// Fold compaction passes from the latest cumulative iterations list exactly once.
+	c.Iterations = a.iterations
+	u := buildAnthropicPassthroughUsage(c)
+	if u != nil && u.LLMUsage != nil {
+		recordAnthropicContainerSession(&u.LLMUsage.ToolUsage, a.RequestBody, a.container)
+	}
+	return u
 }
 
 // extractAnthropicMessagesUsage parses usage from a /v1/messages response body. Streaming usage
 // is assembled per-event by AnthropicPassthroughStreamUsage, so this only sees a plain JSON
 // (non-streaming) body, which carries the full usage block at the top level.
 func extractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage {
+	return extractAnthropicMessagesUsageForRequest(nil, body)
+}
+
+// extractAnthropicMessagesUsageForRequest also reads reqBody to record a billable container session.
+func extractAnthropicMessagesUsageForRequest(reqBody, body []byte) *schemas.BifrostPassthroughUsage {
 	if len(body) == 0 {
 		return nil
 	}
@@ -214,7 +336,11 @@ func extractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage
 	if err := sonic.Unmarshal(body, &resp); err != nil || resp.Usage == nil {
 		return nil
 	}
-	return buildAnthropicPassthroughUsage(resp.Usage)
+	u := buildAnthropicPassthroughUsage(resp.Usage)
+	if u != nil && u.LLMUsage != nil {
+		recordAnthropicContainerSession(&u.LLMUsage.ToolUsage, reqBody, resp.Container)
+	}
+	return u
 }
 
 // extractAnthropicCompleteUsage handles the legacy /v1/complete endpoint.

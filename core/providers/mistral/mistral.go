@@ -693,6 +693,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		chunkIndex := -1

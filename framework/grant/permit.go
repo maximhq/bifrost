@@ -86,6 +86,9 @@ type Permit struct {
 	mcpPermits        []schemas.MCPPermit
 	agentPermits      []string
 	allowAllProviders bool
+
+	relayPermits []string
+	level        int
 }
 
 // PermitOption configures a Permit at construction. Options keep NewPermit's required arguments
@@ -98,11 +101,26 @@ func WithAgentPermits(agentNames []string) PermitOption {
 	return func(p *Permit) { p.agentPermits = slices.Clone(agentNames) }
 }
 
+// WithRelayPermits grants the named relays.
+func WithRelayPermits(endpointNames []string) PermitOption {
+	return func(p *Permit) { p.relayPermits = slices.Clone(endpointNames) }
+}
+
 // WithAllowAllProviders grants every provider, including ones the permit holds no provider permit
 // for: those are allowed with all models and all keys, while a provider it does hold a permit for
 // still applies that permit's rules. See schemas.Permit.AllowsAllProviders.
 func WithAllowAllProviders(allow bool) PermitOption {
 	return func(p *Permit) { p.allowAllProviders = allow }
+}
+
+// WithLevel places the permit on the caller's side when levels intersect (see schemas.Permit.Level).
+// The default, 0, is the caller's own; negative levels are ignored.
+func WithLevel(level int) PermitOption {
+	return func(p *Permit) {
+		if level > 0 {
+			p.level = level
+		}
+	}
 }
 
 // NewPermit builds a Permit. See schemas.Permit for what each value means. The lists are deep
@@ -225,6 +243,22 @@ func (p *Permit) AllowsAllProviders() bool {
 	return p != nil && p.allowAllProviders
 }
 
+// Level implements schemas.Permit.
+func (p *Permit) Level() int {
+	if p == nil {
+		return 0
+	}
+	return p.level
+}
+
+// RelayPermits implements schemas.Permit. See ProviderPermits for why this returns a copy.
+func (p *Permit) RelayPermits() []string {
+	if p == nil {
+		return nil
+	}
+	return slices.Clone(p.relayPermits)
+}
+
 // The rules below are written against schemas.Permit rather than *Permit, so the fold asks every
 // permit it holds the same questions whichever implementation answers them.
 
@@ -264,6 +298,12 @@ func blacklistsModel(p schemas.Permit, provider string, model string) bool {
 
 func allowsAgent(p schemas.Permit, agentName string) bool {
 	return !isNilPermit(p) && slices.Contains(p.AgentPermits(), agentName)
+}
+
+// allowsRelay reports whether the permit names this relay. There is no allow-all for relays, as
+// there is none for agents: a holder reaches exactly the relays it is granted.
+func allowsRelay(p schemas.Permit, endpointName string) bool {
+	return !isNilPermit(p) && slices.Contains(p.RelayPermits(), endpointName)
 }
 
 // allowsTool reports whether the permit permits toolPattern. The MCP permit that holds a client

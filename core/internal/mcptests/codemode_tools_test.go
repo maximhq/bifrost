@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -1218,4 +1219,44 @@ func TestCodeMode_QuotedScalarResultStaysString(t *testing.T) {
 	value, hasError, errorMsg := ParseCodeModeResponse(t, text)
 	require.False(t, hasError, errorMsg)
 	assert.Equal(t, []interface{}{"string", "123"}, value)
+}
+
+// A code-mode tool call whose upstream needs input only a user-facing client can provide reaches
+// the script with an explanation, not mcp-go's internal wording.
+func TestCodeMode_UpstreamNeedsUserInput_ExplainsWhy(t *testing.T) {
+	t.Parallel()
+
+	s := server.NewMCPServer("needs-input-upstream", "1.0.0", server.WithToolCapabilities(true))
+	s.AddTool(mcpgo.NewTool("elicit"), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		return server.NewInputRequestBuilder("").Elicit("github_login", mcpgo.ElicitationParams{Message: "Please provide your GitHub username"}).ToolResult(), nil
+	})
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(s))
+	t.Cleanup(func() {
+		ts.CloseClientConnections()
+		ts.Close()
+	})
+
+	manager := setupMCPManager(t, schemas.MCPClientConfig{
+		ID:                     "needs-input-codemode",
+		Name:                   "needsInput",
+		ConnectionType:         schemas.MCPConnectionTypeHTTP,
+		ConnectionString:       schemas.NewSecretVar(ts.URL),
+		NeedsSessionStickiness: schemas.Ptr(true),
+		IsCodeModeClient:       true,
+		ToolsToExecute:         []string{"*"},
+	})
+	bifrost := setupBifrost(t)
+	bifrost.SetMCPManager(manager)
+
+	argsJSON, _ := json.Marshal(map[string]interface{}{"code": "result = needsInput.elicit()"})
+	result, bifrostErr := bifrost.ExecuteChatMCPTool(createTestContext(), &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-needs-input"),
+		Type:     schemas.Ptr("function"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("executeToolCode"), Arguments: string(argsJSON)},
+	})
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, result)
+	reply := *result.Content.ContentStr
+	assert.Contains(t, reply, `MCP server "needsInput" asked for input from the user (elicitation), which Bifrost cannot provide`)
+	assert.NotContains(t, reply, "handler configured", "mcp-go's internal wording must not leak")
 }

@@ -91,3 +91,42 @@ func parseElevenlabsError(resp *fasthttp.Response) *schemas.BifrostError {
 	}
 	return bifrostErr
 }
+
+// ToElevenlabsError renders a failure of the gateway the way ElevenLabs writes its own, as
+// {"detail":{"status","message"}}, so an ElevenLabs SDK parses it. The status is the Bifrost error's own
+// (a governance decision such as "model_blocked"), else what its HTTP status stands for.
+func ToElevenlabsError(bifrostErr *schemas.BifrostError) *ElevenlabsError {
+	if bifrostErr == nil {
+		return nil
+	}
+	var status, message string
+	if bifrostErr.Type != nil {
+		status = *bifrostErr.Type
+	}
+	if bifrostErr.Error != nil {
+		message = bifrostErr.Error.Message
+		if status == "" && bifrostErr.Error.Type != nil {
+			status = *bifrostErr.Error.Type
+		}
+		if status == "" && bifrostErr.Error.Code != nil {
+			status = *bifrostErr.Error.Code
+		}
+	}
+	if status == "" {
+		switch bifrostErr.EffectiveHTTPStatus() {
+		case fasthttp.StatusBadRequest:
+			status = "invalid_request"
+		case fasthttp.StatusUnauthorized:
+			status = "invalid_api_key"
+		case fasthttp.StatusPaymentRequired:
+			status = "quota_exceeded"
+		case fasthttp.StatusNotFound:
+			status = "not_found"
+		case fasthttp.StatusTooManyRequests:
+			status = "rate_limited"
+		default:
+			status = "server_error"
+		}
+	}
+	return &ElevenlabsError{Detail: &ElevenlabsErrorDetail{Status: &status, Message: &message}}
+}

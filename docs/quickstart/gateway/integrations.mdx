@@ -33,6 +33,10 @@ client = openai.OpenAI(
 )
 ```
 
+<Note>
+  If Bifrost is served under a path prefix (`server.base_path`), include it in `base_url`, for example `https://example.com/bifrost/openai`. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix).
+</Note>
+
 **That's it!** Your application now has automatic fallbacks, governance, monitoring, and all Bifrost features.
 
 ## Available Integrations

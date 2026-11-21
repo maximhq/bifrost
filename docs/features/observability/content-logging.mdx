@@ -41,10 +41,10 @@ Attribution identifiers (user ID, team, customer, business unit, virtual key) ar
 
 | Destination | Governed by |
 |-------------|-------------|
-| **Log store** (Postgres / SQLite / ClickHouse row) | `client.disable_content_logging`, overridden per virtual key by the key's `disable_content_logging` |
-| **Object storage** (offloaded log payloads) | `client.disable_content_logging` + `client.retain_content_in_object_storage` |
+| **Log store** (Postgres / SQLite / ClickHouse row) | `client.disable_content_logging`, overridden per virtual key by the key's `disable_content_logging`, and per project by the project's |
+| **Object storage** (offloaded log payloads) | Whichever layer disabled content for the request + `client.retain_content_in_object_storage` |
 | **Logs UI and Logs API** | Whatever the log store holds, plus the hidden-content gate |
-| **Observability connectors** (BigQuery, Kafka, Pub/Sub, OpenTelemetry, Datadog) | Each connector's own `disable_content_logging`. A virtual key with content logging **off** also strips content from OpenTelemetry export |
+| **Observability connectors** (BigQuery, Kafka, Pub/Sub, OpenTelemetry, Datadog) | Each connector's own `disable_content_logging`. A virtual key or project with content logging **off** also strips content from connector export |
 | **Metrics** (Prometheus, Datadog metrics, OTLP metrics) | Never carry content. Counters, histograms, and dimension tags only |
 
 ---
@@ -91,22 +91,52 @@ The field is tri-state:
 | Value | Log store | Observability connectors |
 |-------|-----------|--------------------------|
 | omitted / `null` | Inherits `client.disable_content_logging` | Each connector's own flag |
-| `true` | Content is not stored for this key's traffic, whatever the client setting says, unless an allowed `x-bf-disable-content-logging: false` header re-enables it for one request | Content is stripped from OpenTelemetry export as well. Other connectors keep their own flag for now |
+| `true` | Content is not stored for this key's traffic, whatever the client setting says, unless an allowed `x-bf-disable-content-logging: false` header re-enables it for one request | Stripped from each connector's export the way that connector's own `disable_content_logging` strips it (BigQuery still writes `params` and `tools`) |
 | `false` | Content is stored for this key's traffic even when the client setting is `true` | Unchanged: a key can never loosen a connector's own `disable_content_logging` |
 
 The key's decision is admin configuration and needs no per-request override gate. `client.retain_content_in_object_storage` applies to a key-disabled request exactly as it does to a client-disabled one. On update, send `null` to clear the decision back to inherit; omitting the field leaves it unchanged.
 
-### 3. Per-request: `x-bf-disable-content-logging`
+A request scoped to a project that has its own decision follows the project instead of the key. See the next layer.
 
-Overrides the client and virtual key settings for a single request, in either direction: `true` suppresses content for a request that would otherwise be logged, `false` captures content while the client or key setting has turned it off.
+### 3. Per project: `disable_content_logging` on the project
 
-Per-request overrides are **off by default**. Enable `client.allow_per_request_content_storage_override` first. While it is off, the header is ignored and the client setting, overridden by the virtual key's own setting when it has one, is authoritative.
+**Enterprise.** A [project](/enterprise/projects) can carry its own decision for the requests scoped to it, set in the project's editor under **Content logging**, through `POST`/`PUT /api/governance/projects`, or in `config.json`:
+
+```json
+{
+  "governance": {
+    "projects": [
+      {
+        "name": "incident-review",
+        "access_rule": "union",
+        "disable_content_logging": true
+      }
+    ]
+  }
+}
+```
+
+The field is tri-state. A value overrides the virtual key's decision in both directions:
+
+| Value | Log store | Observability connectors |
+|-------|-----------|--------------------------|
+| omitted / `null` | Inherits the virtual key's decision, or `client.disable_content_logging` when the key has none or the request carries no key | Whatever the virtual key decided |
+| `true` | Content is not stored for the project's traffic, even when the virtual key turns content on, unless an allowed `x-bf-disable-content-logging: false` header re-enables it for one request | Stripped from each connector's export the way that connector's own `disable_content_logging` strips it (BigQuery still writes `params` and `tools`) |
+| `false` | Content is stored for the project's traffic even when the virtual key or the client setting turns it off | A virtual key's stripping is lifted, and each connector follows its own `disable_content_logging`. A project can never loosen a connector's own flag |
+
+The project's decision applies once the project admits the request: the caller is one of its members, or the project is open. Like the key's, it needs no per-request override gate, and `client.retain_content_in_object_storage` applies to a project-disabled request too. On update, send `null` to clear the decision back to inherit; omitting the field leaves it unchanged. See [Projects](/enterprise/projects#content-logging) for how a request names a project.
+
+### 4. Per-request: `x-bf-disable-content-logging`
+
+Overrides the client, virtual key and project settings for a single request, in either direction: `true` suppresses content for a request that would otherwise be logged, `false` captures content while the client, key or project setting has turned it off.
+
+Per-request overrides are **off by default**. Enable `client.allow_per_request_content_storage_override` first. While it is off, the header is ignored, and the client setting, overridden by the virtual key's own setting and then by the project's when they have one, is authoritative.
 
 See [Request Options](/providers/request-options#disable-content-logging-per-request) for headers, context keys, and SDK examples.
 
-### 4. Per-connector: each connector's own flag
+### 5. Per-connector: each connector's own flag
 
-Every observability connector has an independent `disable_content_logging`, defaulting to `false`. It is **not** inherited from the client setting. A virtual key with `disable_content_logging: true` tightens it for that key's traffic (OpenTelemetry today); nothing on a key can loosen it.
+Every observability connector has an independent `disable_content_logging`, defaulting to `false`. It is **not** inherited from the client setting. A virtual key or project with `disable_content_logging: true` tightens it for that traffic. Nothing on a key or project can loosen it: a project with `false` only lifts a key's tightening. Maxim has no content flag of its own and applies a key's or project's off to Agent Gateway traces only.
 
 | Connector | Flag | Notes |
 |-----------|------|-------|
@@ -119,7 +149,7 @@ Every observability connector has an independent `disable_content_logging`, defa
 Captured request headers (`request_headers` on a connector, `client.logging_headers` on the log store) are exported **regardless** of any content flag. Only capture headers you intend to export.
 
 <Warning>
-For a workload where content must not leave the deployment, set `disable_content_logging: true` on the client **and on every configured connector**. Setting only the client flag still exports full content everywhere. Two layers can still put content back into the log store: a virtual key with `disable_content_logging: false`, and the `x-bf-disable-content-logging: false` header while `client.allow_per_request_content_storage_override` is on. Audit your virtual keys for `false` and keep per-request overrides off. `client.retain_content_in_object_storage` keeps the full payload of every content-disabled request in the object storage bucket. If content must not be persisted at all, set it to `false`. If content may be retained but must not leave the deployment, it can stay on only with that bucket inside the approved deployment boundary.
+For a workload where content must not leave the deployment, set `disable_content_logging: true` on the client **and on every configured connector**. Setting only the client flag still exports full content everywhere. Three layers can still put content back into the log store: a virtual key with `disable_content_logging: false`, a project with `disable_content_logging: false`, and the `x-bf-disable-content-logging: false` header while `client.allow_per_request_content_storage_override` is on. Audit your virtual keys and projects for `false` and keep per-request overrides off. `client.retain_content_in_object_storage` keeps the full payload of every content-disabled request in the object storage bucket. If content must not be persisted at all, set it to `false`. If content may be retained but must not leave the deployment, it can stay on only with that bucket inside the approved deployment boundary.
 </Warning>
 
 ---
@@ -140,7 +170,7 @@ Disabling content logging normally drops content permanently. `client.retain_con
 
 In the UI this is **Retain Content in Object Storage**, under **Logs Settings**. The toggle is disabled unless object storage is configured on the logs store.
 
-When it is on and a request has content logging disabled, either by the global setting or by the `x-bf-disable-content-logging` header, Bifrost:
+When it is on and a request has content logging disabled, whether by the global setting, its virtual key, its project, or the `x-bf-disable-content-logging` header, Bifrost:
 
 - writes a **metadata-only database row**, with payload fields and the content preview cleared,
 - offloads the **complete payload** to object storage, marked hidden,
@@ -179,3 +209,5 @@ The content is readable only by someone with direct access to the storage bucket
 **Content on by default, suppressed for sensitive traffic.** Leave `disable_content_logging: false`, enable `allow_per_request_content_storage_override`, and send `x-bf-disable-content-logging: true` on the requests that need it.
 
 **Content in Bifrost, not in third-party tools.** Leave the client setting off and set `disable_content_logging: true` on each connector.
+
+**Content off for one piece of work.** Set `disable_content_logging: true` on its [project](/enterprise/projects) and keep `allow_per_request_content_storage_override` off. Every request scoped to it is then stored without content and stripped from connector export, whichever virtual key the caller uses. Keep `retain_content_in_object_storage` off as well if the content must not be persisted at all.

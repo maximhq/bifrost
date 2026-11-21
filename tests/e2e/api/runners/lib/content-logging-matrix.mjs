@@ -9,6 +9,10 @@
 //
 // Pure: no network. run-content-logging-matrix.mjs drives a live gateway through every case and
 // checks it against expectedOutcome; content-logging-matrix.test.mjs pins the table itself.
+//
+// Every case sends an LLM request and a relay request on the same key and header. Relay rows
+// follow the same log-store decision as LLM rows, so expectedOutcome.logStoresContent is the
+// contract for both; a relay row that differs from its LLM twin is a parity failure.
 
 export const VK_MODES = ["inherit", "on", "off"];
 export const GLOBAL_MODES = ["on", "off"];
@@ -130,6 +134,26 @@ export function logRowFailures(row, marker, expectStored) {
 	if (!hidden) failures.push("raw row is not content_hidden");
 	const leaked = Object.keys(row).filter((col) => columnText(row[col]).includes(marker));
 	if (leaked.length > 0) failures.push(`raw row still holds content in ${leaked.join(", ")}`);
+	return failures;
+}
+
+// relayRowFailures checks a raw relay_logs row for one case, the relay twin of logRowFailures. A
+// relay row's content is its request and response bodies and the query string of its path; the
+// marker travels in the request body and comes back in the reply.
+//   - expectStored false: the row must be content_hidden and no column may hold the marker.
+//   - expectStored true: the row must not be content_hidden and both bodies must hold the marker.
+export function relayRowFailures(row, marker, expectStored) {
+	const failures = [];
+	const hidden = isTrue(row.content_hidden);
+	if (expectStored) {
+		if (hidden) failures.push("raw relay row is content_hidden, want visible content");
+		if (!columnText(row.request_body).includes(marker)) failures.push("raw relay row request_body lacks the request's content");
+		if (!columnText(row.response_body).includes(marker)) failures.push("raw relay row response_body lacks the reply's content");
+		return failures;
+	}
+	if (!hidden) failures.push("raw relay row is not content_hidden");
+	const leaked = Object.keys(row).filter((col) => columnText(row[col]).includes(marker));
+	if (leaked.length > 0) failures.push(`raw relay row still holds content in ${leaked.join(", ")}`);
 	return failures;
 }
 

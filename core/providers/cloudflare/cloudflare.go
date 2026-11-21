@@ -284,7 +284,7 @@ func (provider *CloudflareProvider) Decision(ctx *schemas.BifrostContext, key sc
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*CloudflareDecisionRequest, error) {
 			return ToCloudflareDecisionRequest(request)
 		})
 	if bifrostErr != nil {

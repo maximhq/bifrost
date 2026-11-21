@@ -30,6 +30,8 @@ func TestClearGenAIPassthroughForNonGoogleProvider(t *testing.T) {
 		{"genai to vertex gemini keeps the raw body", "genai", schemas.Vertex, schemas.ChatCompletionRequest, "gemini-2.5-flash", nil, false},
 		{"genai to vertex gemma keeps the raw body", "genai", schemas.Vertex, schemas.ChatCompletionStreamRequest, "gemma-3-27b-it", nil, false},
 		{"genai to a vertex tuned endpoint keeps the raw body", "genai", schemas.Vertex, schemas.ChatCompletionRequest, "1234567890123456789", nil, false},
+		{"genai to a numeric Vertex OpenAI endpoint converts", "genai", schemas.Vertex, schemas.ChatCompletionRequest, "1234567890", &schemas.AliasConfig{VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}}}, true},
+		{"genai to a Gemma Vertex OpenAI endpoint converts", "genai", schemas.Vertex, schemas.ResponsesStreamRequest, "gemma-custom", &schemas.AliasConfig{ModelFamily: schemas.Ptr(schemas.ModelFamilyGemma), VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}}}, true},
 		{"genai to vertex imagen keeps the raw body", "genai", schemas.Vertex, schemas.ImageGenerationRequest, "imagen-4.0-generate-001", nil, false},
 		{"genai to vertex veo keeps the raw body", "genai", schemas.Vertex, schemas.VideoGenerationRequest, "veo-3.0-generate-001", nil, false},
 		{"genai to vertex claude converts", "genai", schemas.Vertex, schemas.ChatCompletionRequest, "claude-sonnet-4-5", nil, true},
