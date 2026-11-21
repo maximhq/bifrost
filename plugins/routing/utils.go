@@ -30,12 +30,14 @@ func (p *RoutingPlugin) resolveGovernanceScope(ctx *schemas.BifrostContext) (rul
 	if access == nil {
 		return rules.GovernanceScope{}, true
 	}
+	teamIDs, _ := ctx.Value(schemas.BifrostContextKeyGovernanceTeamIDs).([]string)
 	return rules.GovernanceScope{
 		VirtualKeyID:   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
 		VirtualKeyName: bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName),
 		UserID:         bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID),
 		TeamID:         bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID),
 		TeamName:       bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName),
+		TeamIDs:        teamIDs,
 		CustomerID:     bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID),
 		CustomerName:   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName),
 	}, true
