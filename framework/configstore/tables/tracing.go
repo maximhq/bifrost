@@ -143,19 +143,22 @@ func (p *TableTraceProject) AfterFind(_ *gorm.DB) error {
 // TableTracingKey is an ingest-only credential for the /tracing endpoints. It can write traces to
 // its bound projects and do nothing else. Only the SHA-256 of the key is stored.
 type TableTracingKey struct {
-	ID                string     `gorm:"primaryKey;type:varchar(64)" json:"id"`
-	Name              string     `gorm:"type:varchar(255);not null" json:"name"`
-	KeyHash           string     `gorm:"type:varchar(64);not null;uniqueIndex:idx_tracing_keys_hash" json:"-"`
-	KeyPrefix         string     `gorm:"type:varchar(32)" json:"key_prefix"`
-	ProjectIDsJSON    *string    `gorm:"type:text" json:"-"`
-	DefaultProjectID  string     `gorm:"type:varchar(64)" json:"default_project_id,omitempty"`
-	VirtualKeyIDsJSON *string    `gorm:"type:text" json:"-"`
-	LogContent        bool       `gorm:"not null;default:true" json:"log_content"` // false drops span input and output at ingest
-	CanCreateProjects bool       `gorm:"not null;default:false" json:"can_create_projects"`
-	Enabled           bool       `gorm:"not null;default:true" json:"enabled"`
-	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
-	CreatedAt         time.Time  `gorm:"not null" json:"created_at"`
-	UpdatedAt         time.Time  `gorm:"not null" json:"updated_at"`
+	ID                string  `gorm:"primaryKey;type:varchar(64)" json:"id"`
+	Name              string  `gorm:"type:varchar(255);not null" json:"name"`
+	KeyHash           string  `gorm:"type:varchar(64);not null;uniqueIndex:idx_tracing_keys_hash" json:"-"`
+	KeyPrefix         string  `gorm:"type:varchar(32)" json:"key_prefix"`
+	ProjectIDsJSON    *string `gorm:"type:text" json:"-"`
+	DefaultProjectID  string  `gorm:"type:varchar(64)" json:"default_project_id,omitempty"`
+	VirtualKeyIDsJSON *string `gorm:"type:text" json:"-"`
+	LogContent        bool    `gorm:"not null;default:true" json:"log_content"` // false drops span input and output at ingest
+	CanCreateProjects bool    `gorm:"not null;default:false" json:"can_create_projects"`
+	// CanReadPrompts lets the key fetch prompts from the prompt repository through the SDK prompt
+	// routes. It is off by default: a tracing key writes traces and does nothing else.
+	CanReadPrompts bool       `gorm:"not null;default:false" json:"can_read_prompts"`
+	Enabled        bool       `gorm:"not null;default:true" json:"enabled"`
+	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
+	CreatedAt      time.Time  `gorm:"not null" json:"created_at"`
+	UpdatedAt      time.Time  `gorm:"not null" json:"updated_at"`
 
 	ProjectIDs    []string `gorm:"-" json:"project_ids"`
 	VirtualKeyIDs []string `gorm:"-" json:"virtual_key_ids,omitempty"`

@@ -363,6 +363,35 @@ func (s *RDBConfigStore) GetAllPromptVersions(ctx context.Context) ([]tables.Tab
 	return versions, nil
 }
 
+// ListPromptSummaries lists the prompts the caller can see, newest first, without their folders or
+// versions: a lookup by name needs only the id and the name.
+func (s *RDBConfigStore) ListPromptSummaries(ctx context.Context) ([]tables.TablePrompt, error) {
+	var prompts []tables.TablePrompt
+	if err := s.ScopedDB(ctx).Select("prompts.id", "prompts.name", "prompts.folder_id", "prompts.created_at", "prompts.updated_at").
+		Order("prompts.created_at DESC").Find(&prompts).Error; err != nil {
+		return nil, err
+	}
+	return prompts, nil
+}
+
+// ListPromptVersionSummaries lists the versions of the given prompts, newest first, without their
+// messages. Prompts outside the caller's scope contribute no versions.
+func (s *RDBConfigStore) ListPromptVersionSummaries(ctx context.Context, promptIDs []string) ([]tables.TablePromptVersion, error) {
+	if len(promptIDs) == 0 {
+		return nil, nil
+	}
+	visible := s.ScopedDB(ctx).Model(&tables.TablePrompt{}).Select("prompts.id").Where("prompts.id IN ?", promptIDs)
+	var versions []tables.TablePromptVersion
+	if err := s.DB().WithContext(ctx).
+		Select("id", "prompt_id", "version_number", "commit_message", "model_params_json", "provider", "model", "is_latest", "created_at").
+		Where("prompt_id IN (?)", visible).
+		Order("prompt_id, version_number DESC").
+		Find(&versions).Error; err != nil {
+		return nil, err
+	}
+	return versions, nil
+}
+
 // GetPromptVersions gets all versions for a prompt.
 //
 // Returns ErrNotFound when the parent prompt is outside the caller's scope, matching
