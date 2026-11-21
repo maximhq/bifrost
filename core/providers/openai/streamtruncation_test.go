@@ -1081,6 +1081,73 @@ func TestResponsesStreamTruncatedBeforeCompleted(t *testing.T) {
 	assertTruncationError(t, chunks[len(chunks)-1].BifrostError)
 }
 
+// A Responses stream must end with a terminal event. [DONE] alone does not end
+// it: without the truncation error, no final chunk or error reaches the client
+// or the post-hooks, so the request never looks finished.
+func TestResponsesStreamDoneWithoutTerminalEvent(t *testing.T) {
+	const (
+		created   = `data: {"type":"response.created","sequence_number":0,"response":{"id":"r1","object":"response","created_at":1,"model":"repro-model","status":"in_progress"}}` + "\n\n"
+		delta     = `data: {"type":"response.output_text.delta","sequence_number":1,"delta":"partial"}` + "\n\n"
+		completed = `data: {"type":"response.completed","sequence_number":2,"response":{"id":"r1","object":"response","created_at":1,"model":"repro-model","status":"completed"}}` + "\n\n"
+		done      = "data: [DONE]\n\n"
+	)
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+	streams := map[string]func(*OpenAIProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError){
+		"create": func(p *OpenAIProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.ResponsesStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+		},
+		"retrieve": func(p *OpenAIProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.ResponsesRetrieveStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "r1"})
+		},
+	}
+	for name, open := range streams {
+		t.Run(name+"/done without terminal event is truncated", func(t *testing.T) {
+			server := completeSSEServer(t, created+delta+done)
+			defer server.Close()
+
+			stream, bifrostErr := open(newStreamTestProvider(server.URL))
+			if bifrostErr != nil {
+				t.Fatalf("stream setup failed: %v", bifrostErr)
+			}
+			chunks := collectChunks(t, stream)
+			if len(chunks) == 0 {
+				t.Fatal("expected at least the error chunk")
+			}
+			assertTruncationError(t, chunks[len(chunks)-1].BifrostError)
+		})
+		t.Run(name+"/completed then done ends cleanly", func(t *testing.T) {
+			server := completeSSEServer(t, created+delta+completed+done)
+			defer server.Close()
+
+			stream, bifrostErr := open(newStreamTestProvider(server.URL))
+			if bifrostErr != nil {
+				t.Fatalf("stream setup failed: %v", bifrostErr)
+			}
+			chunks := collectChunks(t, stream)
+			if len(chunks) == 0 {
+				t.Fatal("expected the stream to emit chunks")
+			}
+			for i, chunk := range chunks {
+				if chunk.BifrostError != nil {
+					t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
+				}
+			}
+			last := chunks[len(chunks)-1].BifrostResponsesStreamResponse
+			if last == nil || last.Type != schemas.ResponsesStreamResponseTypeCompleted {
+				t.Fatalf("expected the last chunk to be response.completed, got %+v", last)
+			}
+		})
+	}
+}
+
 // Azure/OpenAI Responses can accept a request with HTTP 200, emit lifecycle
 // events, and then report a semantic failure in a terminal SSE event. The
 // transport status is already committed, so the shared decoder must preserve
