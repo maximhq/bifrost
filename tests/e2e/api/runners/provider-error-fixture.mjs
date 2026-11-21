@@ -159,7 +159,7 @@ const server = http.createServer((req, res) => {
 		});
 		return;
 	}
-	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
+	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions" && path !== "/v1/messages")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
 	const chunks = [];
@@ -206,6 +206,18 @@ const server = http.createServer((req, res) => {
 		// than reaching the string handling below, which would throw and stop the fixture.
 		const model = typeof parsed.model === "string" ? parsed.model : "";
 		hits[model] = (hits[model] || 0) + 1;
+		if (path === "/v1/messages") {
+			if (req.headers["x-api-key"] !== "test-key") {
+				return send(401, {}, errorBody("Incorrect API key provided", "authentication_error", "invalid_api_key"));
+			}
+			if (model !== "upstream-anthropic-error-code") {
+				return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
+			}
+			return send(429, {}, JSON.stringify({
+				type: "error",
+				error: { type: "rate_limit_error", message: "slow down", code: "quota_exceeded" },
+			}));
+		}
 		// test-key is the only credential the fixture accepts. A request bearing any other key is refused
 		// with 401 before its model is looked at, which is how a provider refuses a caller's direct key.
 		const auth = req.headers.authorization;

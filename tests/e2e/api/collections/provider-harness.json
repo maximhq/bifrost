@@ -198266,6 +198266,52 @@
             },
             "url": "http://127.0.0.1:8791/v1/chat/completions"
           }
+        },
+        {
+          "name": "154.9 [EXPECT-429] anthropic upstream error.code survives the outward chat error (anthropic error code)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Anthropic upstream 429 keeps its machine-readable error code', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(429);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.error, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(j.error.code, pm.response.text()).to.equal('quota_exceeded');",
+                  "  pm.expect(j.error.type, pm.response.text()).to.equal('rate_limit_error');",
+                  "  pm.expect(j.error.message, pm.response.text()).to.equal('slow down');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/upstream-anthropic-error-code\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hi\" }],\n  \"max_tokens\": 8\n}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
         }
       ]
     },
