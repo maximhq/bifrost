@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"testing"
@@ -230,4 +231,18 @@ func TestOTLPJSONReadsLargeNumbersExactly(t *testing.T) {
 	assert.Equal(t, int64(1700000000000000001), spans[0].StartTime.UnixNano())
 	require.NotNil(t, spans[0].EndTime)
 	assert.Equal(t, int64(1700000001000000003), spans[0].EndTime.UnixNano())
+}
+
+// Every other Langfuse route stores into the key's default project, so the Langfuse OTLP route does
+// too: an x-project-name header there would split a trace's spans from its scores.
+func TestLangfuseOTLPIgnoresTheProjectHeader(t *testing.T) {
+	env := newTraceIngestTestEnv(t)
+	headers := map[string]string{"Content-Type": "application/x-protobuf", "Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("pk-lf-any:"+traceTestKey)), "x-project-name": "elsewhere"}
+	resp := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/otel/v1/traces", headers, otlpTestExport(t))
+	require.Equal(t, fasthttp.StatusOK, resp.Response.StatusCode(), string(resp.Response.Body()))
+	spans, err := env.store.ListTraceSpans(context.Background(), "p1", otlpTestTrace)
+	require.NoError(t, err)
+	assert.Len(t, spans, 3, "the spans land in the key's default project")
+	_, err = env.config.GetTraceProjectByName(context.Background(), "elsewhere")
+	assert.Error(t, err, "no project is made from the header")
 }
