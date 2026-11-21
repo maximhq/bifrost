@@ -461,6 +461,10 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// through the capability datasheet.
 	schemas.VLLM: {},
 	schemas.SGL:  {},
+	// Dagon accepts custom function tools but rejects built-in tool types on
+	// /v1/messages. Keep the feature map fail-closed; unsigned thinking replay
+	// is configured separately in AnthropicProviderRequestDefaultsMap.
+	schemas.Dagon: {},
 	// GitHub documents no feature list, so the cells are what the first-party
 	// VS Code Copilot Chat client sends. Tool search works with no beta header or
 	// advanced-tool-use-2025-11-20, but tool-search-tool-2025-10-19 is a 400.
