@@ -53,3 +53,4 @@
 - fix: streams cancelled before the upstream's first byte run their terminal post-hooks
 - chore: brotli 1.2.8 and dependency updates
 - chore: upgraded Go to 1.27.4
+- fix: Gemini chat completions forward seed to generationConfig.seed instead of dropping it

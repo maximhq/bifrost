@@ -1580,6 +1580,13 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 	if params.Stop != nil {
 		config.StopSequences = params.Stop
 	}
+	if params.Seed != nil {
+		if *params.Seed < math.MinInt32 || *params.Seed > math.MaxInt32 {
+			return config, providerUtils.InvalidRequestErrorf("seed must be between %d and %d for Gemini generationConfig.seed, got %d", math.MinInt32, math.MaxInt32, *params.Seed)
+		}
+		seed := int32(*params.Seed)
+		config.Seed = &seed
+	}
 	if params.MaxCompletionTokens != nil {
 		config.MaxOutputTokens = int32(*params.MaxCompletionTokens)
 	}
