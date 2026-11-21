@@ -550,6 +550,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	}
 
+	jsonBody, err = scrubComputerToolsetStreaming(ctx, jsonBody)
+	if err != nil {
+		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+	}
+
 	if defaults.InjectBetaHeadersIntoBody {
 		if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, cfg.ProviderExtraHeaders), cfg.Provider, cfg.BetaHeaderOverrides); len(betaHeaders) > 0 {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "anthropic_beta", betaHeaders)
@@ -855,6 +860,11 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
+	}
+
+	jsonBody, err = scrubComputerToolsetStreaming(ctx, jsonBody)
+	if err != nil {
+		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
 
 	if defaults.InjectBetaHeadersIntoBody {

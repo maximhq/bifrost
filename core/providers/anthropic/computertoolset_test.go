@@ -314,6 +314,9 @@ func TestComputerToolset_ForwardedWhenTargetAcceptsIt(t *testing.T) {
 		{schemas.Vertex, "claude-opus-5"},
 		{schemas.Bedrock, "claude-opus-5-5"},
 		{schemas.Bedrock, "claude-sonnet-5-5"},
+		{schemas.Anthropic, "claude-haiku-5-5"},
+		{schemas.Vertex, "claude-haiku-5-5"},
+		{schemas.Bedrock, "us.anthropic.claude-haiku-5-5"},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {

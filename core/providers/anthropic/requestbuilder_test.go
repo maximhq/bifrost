@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1800,6 +1801,195 @@ func TestBuildAnthropicRequestBody_DefaultEagerInputStreaming(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Anthropic rejects the fine-grained-tool-streaming beta beside a computer_toolset_20260801
+// entry with a 400. Whatever the shape of a request that carries the toolset, its final body
+// must hold no eager_input_streaming and no fine-grained beta, and neither may its headers.
+// Every request also carries a client fine-grained anthropic-beta header.
+func TestComputerToolset_FinalBodyCarriesNoFineGrainedStreaming(t *testing.T) {
+	const (
+		plain           = `tool_definition`
+		toolset         = `{"type":"computer_toolset_20260801"}`
+		writeTool       = `{"name":"Write","description":"Write a file","input_schema":{"type":"object"}}`
+		eagerTool       = `{"name":"Eager","input_schema":{"type":"object"},"eager_input_streaming":true}`
+		eagerDefinition = `{"name":"Inline","input_schema":{"type":"object"},"eager_input_streaming":true}`
+	)
+	addition := func(discriminator, definition string) string {
+		return `{"type":"tool_addition","tool":{"type":"` + discriminator + `","definition":` + definition + `}}`
+	}
+	raw := func(model, top, discriminator string, system ...string) string {
+		messages := `{"role":"user","content":"take a screenshot"}`
+		if discriminator != "" {
+			messages = `{"role":"assistant","content":[{"type":"compaction","content":"summary","tool_changes":[` +
+				addition(discriminator, eagerDefinition) + `]}]},` + messages +
+				`,{"role":"system","content":[` + strings.Join(system, ",") + `]}`
+		}
+		return `{"model":"` + model + `","max_tokens":1024,` + top + `,"messages":[` + messages + `]}`
+	}
+	inlineMessages := []interface{}{
+		map[string]interface{}{"role": "user", "content": "take a screenshot"},
+		map[string]interface{}{"role": "system", "content": []interface{}{map[string]interface{}{
+			"type": "tool_addition",
+			"tool": map[string]interface{}{"type": "tool_definition", "definition": map[string]interface{}{
+				"name": "Inline", "input_schema": map[string]interface{}{"type": "object"}, "eager_input_streaming": true,
+			}},
+		}}},
+	}
+	const bedrockOpus = "us.anthropic.claude-opus-5-5"
+	allTools := `"tools":[` + toolset + `,` + writeTool + `,` + eagerTool + `]`
+
+	type testCase struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		raw      string
+		extra    map[string]interface{}
+		chat     bool
+		inline   int
+	}
+	cases := []testCase{
+		{name: "toolset beside a merged messages array", provider: schemas.Bedrock, model: bedrockOpus,
+			extra: map[string]interface{}{"messages": inlineMessages}, inline: 1},
+		{name: "chat, toolset and messages merged from ExtraParams", provider: schemas.Bedrock, model: bedrockOpus, chat: true,
+			extra: map[string]interface{}{"messages": inlineMessages, "tools": []interface{}{map[string]interface{}{"type": "computer_toolset_20260801"}}}, inline: 1},
+		{name: "inline definitions beside the toolset", provider: schemas.Bedrock, model: bedrockOpus,
+			raw: raw(bedrockOpus, `"tools":[`+toolset+`,`+eagerTool+`]`, plain, addition(plain, eagerDefinition)), inline: 2},
+		{name: "toolset added by value", provider: schemas.Bedrock, model: bedrockOpus,
+			raw: raw(bedrockOpus, `"tools":[`+eagerTool+`]`, plain, addition(plain, toolset), addition(plain, eagerDefinition)), inline: 2},
+		{name: "body anthropic_beta with no derived beta", provider: schemas.Bedrock, model: bedrockOpus,
+			raw: raw(bedrockOpus, `"anthropic_beta":["fine-grained-tool-streaming-2025-05-14"],"tools":[`+toolset+`]`, "")},
+	}
+	for _, host := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"bedrock invoke opus 5.5", schemas.Bedrock, bedrockOpus},
+		{"bedrock invoke sonnet 5.5", schemas.Bedrock, "global.anthropic.claude-sonnet-5-5"},
+		{"vertex opus 5.5", schemas.Vertex, "claude-opus-5-5"},
+		{"anthropic direct opus 5.5", schemas.Anthropic, "claude-opus-5-5"},
+	} {
+		cases = append(cases,
+			testCase{name: host.name + "/typed", provider: host.provider, model: host.model},
+			testCase{name: host.name + "/raw", provider: host.provider, model: host.model, raw: raw(host.model, allTools, "")})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+				AnthropicBetaHeader: {AnthropicEagerInputStreamingBetaHeader},
+			})
+			if tc.extra != nil {
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			}
+			cfg := AnthropicRequestBuildConfig{Provider: tc.provider, IsStreaming: true}
+			if tc.provider != schemas.Anthropic {
+				cfg.Model = tc.model
+			}
+			var body []byte
+			var bErr *schemas.BifrostError
+			switch {
+			case tc.chat:
+				body, bErr = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{
+					Provider: tc.provider, Model: tc.model,
+					Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("take a screenshot")}}},
+					Params: &schemas.ChatParameters{ExtraParams: tc.extra},
+				}, cfg)
+			case tc.raw != "":
+				ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+				body, bErr = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{
+					Provider: tc.provider, Model: tc.model, Input: makeSimpleInput("take a screenshot"), RawRequestBody: []byte(tc.raw),
+				}, cfg)
+			default:
+				body, bErr = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{
+					Provider: tc.provider, Model: tc.model, Input: makeSimpleInput("take a screenshot"),
+					Params: &schemas.ResponsesParameters{ExtraParams: tc.extra, Tools: []schemas.ResponsesTool{
+						responsesToolFromJSON(t, `{"type":"computer"}`),
+						responsesToolFromJSON(t, `{"type":"function","name":"Write","description":"Write a file","parameters":{"type":"object"}}`),
+						responsesToolFromJSON(t, `{"type":"function","name":"Eager","parameters":{"type":"object"},"eager_input_streaming":true}`),
+					}},
+				}, cfg)
+			}
+			if bErr != nil {
+				t.Fatalf("building request body: %v", bErr.Error.Message)
+			}
+
+			if !bytes.Contains(body, []byte(AnthropicToolTypeComputerToolset20260801)) {
+				t.Fatalf("computer toolset missing from body: %s", body)
+			}
+			if bytes.Contains(body, []byte("eager_input_streaming")) {
+				t.Errorf("a tool kept eager_input_streaming beside the toolset: %s", body)
+			}
+			if got := bytes.Count(body, []byte(`"name":"Inline"`)); got != tc.inline {
+				t.Errorf("found %d inline definitions, want %d: %s", got, tc.inline, body)
+			}
+			betas := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), tc.provider)
+			for _, b := range providerUtils.GetJSONField(body, "anthropic_beta").Array() {
+				betas = append(betas, b.String())
+			}
+			for _, beta := range betas {
+				if strings.HasPrefix(beta, AnthropicEagerInputStreamingBetaHeaderPrefix) {
+					t.Errorf("betas %v carry %s beside the toolset", betas, beta)
+				}
+			}
+		})
+	}
+}
+
+// A discriminator spelled with a Unicode escape still names a tool definition.
+func TestRawInlineToolDefinitions_EscapedDiscriminator(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_\u0064efinition","definition":{"name":"Inline"}}}]}]}`)
+	if got := rawInlineToolDefinitions(body); len(got) != 1 || got[0].path != "messages.0.content.0.tool.definition" {
+		t.Errorf("definitions = %+v, want the escaped one", got)
+	}
+}
+
+func TestDropRawFineGrainedBeta(t *testing.T) {
+	for in, want := range map[string]string{
+		`["fine-grained-tool-streaming-2025-05-14","context-1m-2025-08-07"]`: `["context-1m-2025-08-07"]`,
+		`["fine-grained-tool-streaming-2025-05-14"]`:                         ``,
+		`["context-1m-2025-08-07"]`:                                          `["context-1m-2025-08-07"]`,
+	} {
+		out, err := dropRawFineGrainedBeta([]byte(`{"anthropic_beta":` + in + `}`))
+		if err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
+		if got := providerUtils.GetJSONField(out, "anthropic_beta").Raw; got != want {
+			t.Errorf("%s: anthropic_beta = %s, want %s", in, got, want)
+		}
+	}
+}
+
+// Fallback attempts share one context. A conversion without the computer toolset must
+// clear the marker an earlier attempt set, or its fine-grained beta is dropped while its
+// tools still carry eager_input_streaming.
+func TestComputerToolsetMarker_ClearedByConversionWithoutToolset(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	toolset := AnthropicTool{Type: schemas.Ptr(AnthropicToolTypeComputerToolset20260801)}
+	eagerBash := AnthropicTool{
+		Name:                "bash",
+		InputSchema:         &schemas.ToolFunctionParameters{Type: "object"},
+		EagerInputStreaming: schemas.Ptr(true),
+	}
+
+	if err := AddMissingBetaHeadersToContext(ctx, &AnthropicMessageRequest{
+		Model: "claude-opus-5-5",
+		Tools: []AnthropicTool{toolset},
+	}, schemas.Bedrock); err != nil {
+		t.Fatalf("first attempt: %v", err)
+	}
+	if err := AddMissingBetaHeadersToContext(ctx, &AnthropicMessageRequest{
+		Model: "claude-opus-5-5",
+		Tools: []AnthropicTool{eagerBash},
+	}, schemas.Bedrock); err != nil {
+		t.Fatalf("fallback attempt: %v", err)
+	}
+
+	if betas := MergeBetaHeaders(ctx, nil); !slices.Contains(betas, AnthropicEagerInputStreamingBetaHeader) {
+		t.Errorf("betas = %v, want %s for a fallback attempt without the toolset", betas, AnthropicEagerInputStreamingBetaHeader)
 	}
 }
 
