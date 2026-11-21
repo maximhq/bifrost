@@ -106,6 +106,21 @@ const responsesFor = (body, count) => {
 	};
 };
 
+// A streamed Responses answer: the lifecycle start and one text delta, then, only for the completed variant, the
+// terminal response.completed event, and always [DONE]. The done-only variant is an upstream that closes its
+// stream cleanly without ever saying how the response ended.
+const responsesStream = (id, model, terminal) => {
+	const response = (status) => ({ id, object: "response", created_at: 1, model, status });
+	const events = [
+		{ type: "response.created", sequence_number: 0, response: response("in_progress") },
+		{ type: "response.output_text.delta", sequence_number: 1, item_id: "msg_fixture_stream", output_index: 0, content_index: 0, delta: "partial" },
+	];
+	if (terminal) events.push({ type: "response.completed", sequence_number: 2, response: response("completed") });
+	return events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
+};
+const responsesStreamModels = { "upstream-responses-done-only": false, "upstream-responses-completed": true };
+const responsesStreamIds = { resp_fixture_done_only: ["upstream-responses-done-only", false], resp_fixture_completed: ["upstream-responses-completed", true] };
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 
@@ -158,6 +173,20 @@ const server = http.createServer((req, res) => {
 			res.end(transcripts[model]);
 		});
 		return;
+	}
+	// GET /v1/responses/{id}?stream=true replays a stored response as SSE.
+	const retrieve = req.method === "GET" && path.match(/^\/v1\/responses\/([^/]+)$/);
+	if (retrieve) {
+		if (req.headers.authorization !== "Bearer test-key") {
+			return send(401, {}, errorBody("Incorrect API key provided", "invalid_request_error", "invalid_api_key"));
+		}
+		const id = decodeURIComponent(retrieve[1]);
+		if (!Object.hasOwn(responsesStreamIds, id)) {
+			return send(404, {}, errorBody(`unknown fixture response ${id}`, "invalid_request_error", "response_not_found"));
+		}
+		const [model, terminal] = responsesStreamIds[id];
+		res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+		return res.end(responsesStream(id, model, terminal));
 	}
 	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
@@ -242,6 +271,10 @@ const server = http.createServer((req, res) => {
 		}
 		// The model's behaviour picks the response, so only an own entry may be looked up: "constructor" or
 		// "toString" must be an unknown model, not an inherited function.
+		if (path === "/v1/responses" && parsed.stream === true && Object.hasOwn(responsesStreamModels, model)) {
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			return res.end(responsesStream("resp_" + model, model, responsesStreamModels[model]));
+		}
 		const name = model.split("~")[0];
 		if (path === "/v1/responses") {
 			// A Responses request whose model names an error behaviour gets that error; any other model gets the
