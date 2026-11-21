@@ -171,6 +171,35 @@ func TestSetLiveStoreIsTakenOnce(t *testing.T) {
 	require.NotSame(t, preset, second.LiveStore)
 }
 
+// TestLiveStoreLoadHookRunsBeforeTheLoad checks that the registered hook runs with the config store
+// open and before the live store has loaded, only when there is a config store, and that its error
+// fails LoadConfig.
+func TestLiveStoreLoadHookRunsBeforeTheLoad(t *testing.T) {
+	initTestLogger()
+	// Build the shared template database first: its boot runs before any test's hook is registered.
+	createTempDir(t)
+	t.Cleanup(func() { RegisterLiveStoreLoadHook(nil) })
+	calls := 0
+	RegisterLiveStoreLoadHook(func(ctx context.Context, config *Config) error {
+		calls++
+		require.NotNil(t, config.ConfigStore)
+		// A store that has not loaded yet refuses a refresh with ErrNotLoaded, not the kind check.
+		require.ErrorIs(t, config.LiveStore.RefreshKind(ctx, livestore.Kind("missing")), livestore.ErrNotLoaded)
+		return nil
+	})
+	bootLive(t, true, "")
+	require.Equal(t, 1, calls)
+	bootLive(t, false, "")
+	require.Equal(t, 1, calls, "no config store, no hook")
+
+	RegisterLiveStoreLoadHook(func(context.Context, *Config) error { return fmt.Errorf("tables not ready") })
+	dir := createTempDir(t)
+	body := fmt.Sprintf(`{"$schema": "https://www.getbifrost.ai/schema", "config_store": {"enabled": true, "type": "sqlite", "config": {"path": %q}}}`, filepath.Join(dir, "config.db"))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0o600))
+	_, err := LoadConfig(context.Background(), dir)
+	require.ErrorContains(t, err, "tables not ready")
+}
+
 // TestLoadConfigLoadsProvidersInBothModes checks that the same config.json puts the same providers
 // and keys in the live store whether boot reads them back from the config store or loads them
 // from the file alone, and that boot drops what it held once the store has loaded.

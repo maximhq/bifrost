@@ -29,6 +29,36 @@ func SetLiveStore(store *livestore.Store) {
 	presetStoreMu.Unlock()
 }
 
+// LiveStoreLoadHook runs once LoadConfig has written everything it writes to the config store,
+// right before the live store loads from it. Use it to prepare the tables that registered
+// collections read, so the load finds them; its error fails LoadConfig. It does not run without a
+// config store.
+type LiveStoreLoadHook func(ctx context.Context, config *Config) error
+
+var (
+	liveStoreLoadHookMu sync.RWMutex
+	liveStoreLoadHook   LiveStoreLoadHook
+)
+
+// RegisterLiveStoreLoadHook installs the hook LoadConfig calls before the live store loads. Must be
+// called before LoadConfig. Passing nil clears it.
+func RegisterLiveStoreLoadHook(fn LiveStoreLoadHook) {
+	liveStoreLoadHookMu.Lock()
+	liveStoreLoadHook = fn
+	liveStoreLoadHookMu.Unlock()
+}
+
+// runLiveStoreLoadHook calls the registered hook, if any.
+func runLiveStoreLoadHook(ctx context.Context, config *Config) error {
+	liveStoreLoadHookMu.RLock()
+	hook := liveStoreLoadHook
+	liveStoreLoadHookMu.RUnlock()
+	if hook == nil {
+		return nil
+	}
+	return hook(ctx, config)
+}
+
 // takePresetStore returns the store SetLiveStore handed over, clearing it, or nil when there is
 // none.
 func takePresetStore() *livestore.Store {
@@ -53,6 +83,9 @@ func loadLiveStore(ctx context.Context, config *Config) error {
 		return err
 	}
 	if config.ConfigStore != nil {
+		if err := runLiveStoreLoadHook(ctx, config); err != nil {
+			return err
+		}
 		if err := live.LoadAll(ctx, config.ConfigStore.DB()); err != nil {
 			return fmt.Errorf("failed to load live store: %w", err)
 		}
