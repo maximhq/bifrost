@@ -596,8 +596,8 @@ func ParseCodeModeDiscoveryRankerModel(value string) (ModelProvider, string, err
 // internal request, which skips the plugin pipeline, so it is recorded on the
 // tool call's context and the logging plugin writes it as its own log row.
 type MCPDiscoveryRankerCall struct {
-	Provider  ModelProvider    // provider that served the call, else the configured one
-	Model     string           // model that served the call, else the configured one
+	Provider  ModelProvider    // provider that served the call, else the one asked
+	Model     string           // model that served the call, else the one asked
 	Usage     *BifrostLLMUsage // tokens used, or billed for a failed call; nil when unknown
 	StartedAt time.Time
 	Latency   time.Duration

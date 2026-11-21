@@ -105,9 +105,9 @@ func TestListToolFilesDecisionRanker(t *testing.T) {
 	if req.Provider != "typesafe" || req.Model != "system-one" {
 		t.Fatalf("unexpected model %s/%s", req.Provider, req.Model)
 	}
-	wantFallbacks := []schemas.Fallback{{Provider: "openai", Model: "gpt-5-nano"}, {Provider: "my-custom", Model: "org/model"}}
-	if len(req.Fallbacks) != len(wantFallbacks) || req.Fallbacks[0] != wantFallbacks[0] || req.Fallbacks[1] != wantFallbacks[1] {
-		t.Fatalf("unexpected fallbacks %+v", req.Fallbacks)
+	// The fallbacks are walked by the ranker, so core is asked for one model only.
+	if len(req.Fallbacks) != 0 {
+		t.Fatalf("expected no core fallbacks, got %+v", req.Fallbacks)
 	}
 	if req.Input.Text == nil || *req.Input.Text != "tell the team the deploy finished" {
 		t.Fatalf("the query must be the decision input, got %+v", req.Input)
@@ -321,7 +321,7 @@ func TestListToolFilesDecisionRankerRecordsCalls(t *testing.T) {
 		// wantError, when set, is the recorded error's message.
 		wantError string
 	}{
-		// A fallback answered, so the row names it rather than the configured model.
+		// The routing info names the model that served it, so the row names it rather than the configured model.
 		"answered by a fallback": {
 			answer: func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 				resp := decisionAnswers(map[string]float64{"servers/github/create_issue.pyi": 1}, nil)
@@ -365,7 +365,7 @@ func TestListToolFilesDecisionRankerRecordsCalls(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
-			useDecisionRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{DecisionModel: "typesafe/system-one", Fallbacks: []string{"openai/gpt-5-nano"}}, &fakeDecisions{answer: tc.answer})
+			useDecisionRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{DecisionModel: "typesafe/system-one"}, &fakeDecisions{answer: tc.answer})
 			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 			if _, err := mode.handleListToolFiles(ctx, schemas.ChatAssistantMessageToolCall{
 				ID:       schemas.Ptr("call-1"),
@@ -396,4 +396,85 @@ func TestListToolFilesDecisionRankerRecordsCalls(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestListToolFilesDecisionRankerUnusableAnswerTriesFallbacks configures
+// fallbacks and has the first models answer with something the ranker
+// rejects: each rejected answer moves on to the next model, as an error does.
+func TestListToolFilesDecisionRankerUnusableAnswerTriesFallbacks(t *testing.T) {
+	config := schemas.MCPCodeModeDiscoveryRanker{DecisionModel: "typesafe/system-one", Fallbacks: []string{"openai/gpt-5-nano", "anthropic/claude-haiku"}}
+	refusal := &schemas.BifrostDecisionResponse{Answers: []schemas.DecisionAnswer{{Type: schemas.DecisionTypeRefusal, Name: schemas.Ptr(discoveryDecisionRelevantQuestion)}}}
+	usable := decisionAnswers(map[string]float64{"servers/jira/create_issue.pyi": 0.9}, nil)
+	run := func(t *testing.T, answers map[string]func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError)) (string, []*schemas.BifrostDecisionRequest, []schemas.MCPDiscoveryRankerCall) {
+		t.Helper()
+		fake := &fakeDecisions{answer: func(_ *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+			return answers[req.Model]()
+		}}
+		mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+		useDecisionRanker(t, mode, config, fake)
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		msg, err := mode.handleListToolFiles(ctx, schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr(codemcp.ToolTypeListToolFiles), Arguments: `{"query":"create an issue"}`},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return *msg.Content.ContentStr, fake.calls(), schemas.TakeMCPDiscoveryRankerCallsFromContext(ctx)
+	}
+	models := func(requests []*schemas.BifrostDecisionRequest) string {
+		var names []string
+		for _, req := range requests {
+			if len(req.Fallbacks) != 0 {
+				t.Fatalf("each model is asked on its own, got fallbacks %+v", req.Fallbacks)
+			}
+			names = append(names, string(req.Provider)+"/"+req.Model)
+		}
+		return strings.Join(names, ",")
+	}
+
+	t.Run("a later model answers", func(t *testing.T) {
+		out, requests, calls := run(t, map[string]func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError){
+			"system-one": func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return refusal, nil },
+			"gpt-5-nano": func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				return decisionAnswers(map[string]float64{"servers/github/create_issue.pyi": 1.5}, nil), nil
+			},
+			"claude-haiku": func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return usable, nil },
+		})
+		if paths := shortlistPaths(out); !strings.Contains(out, "(discovery ranker)") || len(paths) != 1 || paths[0] != "servers/jira/create_issue.pyi" {
+			t.Fatalf("expected the last model's ranking, got %v\n%s", paths, out)
+		}
+		if got := models(requests); got != "typesafe/system-one,openai/gpt-5-nano,anthropic/claude-haiku" {
+			t.Fatalf("unexpected models asked: %s", got)
+		}
+		if len(calls) != 3 || calls[0].Model != "system-one" || calls[1].Model != "gpt-5-nano" || calls[2].Model != "claude-haiku" {
+			t.Fatalf("every call must be recorded under its own model, got %+v", calls)
+		}
+	})
+
+	t.Run("no model answers usably", func(t *testing.T) {
+		out, requests, calls := run(t, map[string]func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError){
+			"system-one":   func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return refusal, nil },
+			"gpt-5-nano":   func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "boom"}} },
+			"claude-haiku": func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return refusal, nil },
+		})
+		assertLexicalFallback(t, out)
+		if len(requests) != 3 || len(calls) != 3 {
+			t.Fatalf("expected every model to be asked once, got %d requests and %d recorded calls", len(requests), len(calls))
+		}
+	})
+
+	t.Run("an error that forbids fallbacks stops the walk", func(t *testing.T) {
+		out, requests, _ := run(t, map[string]func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError){
+			"system-one": func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "blocked"}, AllowFallbacks: schemas.Ptr(false)}
+			},
+			"gpt-5-nano":   func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return usable, nil },
+			"claude-haiku": func() (*schemas.BifrostDecisionResponse, *schemas.BifrostError) { return usable, nil },
+		})
+		assertLexicalFallback(t, out)
+		if got := models(requests); got != "typesafe/system-one" {
+			t.Fatalf("no fallback may run after an error that forbids it, asked %s", got)
+		}
+	})
 }

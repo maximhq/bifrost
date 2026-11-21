@@ -37,6 +37,8 @@ const (
 // relevances, and a predicate on whether the candidates cover the request,
 // which is the sufficiency. Its answer is rewritten into the external ranker
 // contract, so the same validation, shortlist and lexical fallback apply.
+// When a model fails or answers with something that cannot be used, the next
+// fallback model is asked.
 type decisionDiscoveryRanker struct {
 	provider  schemas.ModelProvider
 	model     string
@@ -58,8 +60,11 @@ func newDecisionDiscoveryRanker(config schemas.MCPCodeModeDiscoveryRanker, decid
 
 func (r *decisionDiscoveryRanker) maxCandidates() int { return discoveryMaxDecisionChoices }
 
-// rank asks the decision model, bounded by the configured timeout, and records
-// the call on the tool call's context for the logging plugin.
+// rank asks the decision model, then each fallback in order, until one gives
+// an answer that passes validation. The models are walked here rather than by
+// core, since core moves to a fallback only on an error, not on an answer the
+// ranker rejects. One deadline bounds the whole walk, and every call is
+// recorded on the tool call's context for the logging plugin.
 func (r *decisionDiscoveryRanker) rank(ctx context.Context, input discoveryRankRequest) (discoveryRankResponse, error) {
 	decide := r.decide.Load()
 	if decide == nil {
@@ -67,32 +72,59 @@ func (r *decisionDiscoveryRanker) rank(ctx context.Context, input discoveryRankR
 	}
 	decisionCtx := schemas.NewBifrostContext(ctx, time.Now().Add(r.timeout))
 	defer decisionCtx.Cancel()
-	started := time.Now()
-	resp, bifrostErr := (*decide)(decisionCtx, r.decisionRequest(input))
-	if resp == nil && bifrostErr == nil {
-		// Made before the call is recorded, so its log row is an error row.
-		bifrostErr = &schemas.BifrostError{Error: &schemas.ErrorField{Message: "decision request returned no response"}}
-	}
-	if toolCtx, ok := ctx.(*schemas.BifrostContext); ok {
-		schemas.AppendMCPDiscoveryRankerCallOnContext(toolCtx, r.call(started, resp, bifrostErr))
-	}
-	if bifrostErr != nil {
-		message := "unknown error"
-		if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-			message = bifrostErr.Error.Message
+	models := append([]schemas.Fallback{{Provider: r.provider, Model: r.model}}, r.fallbacks...)
+	failures := make([]string, 0, len(models))
+	base := decisionRequest(input)
+	for _, model := range models {
+		// A copy per attempt with only the model set: core walks no fallbacks
+		// of its own, and the questions are shared, not rebuilt.
+		req := *base
+		req.Provider, req.Model = model.Provider, model.Model
+		started := time.Now()
+		resp, bifrostErr := (*decide)(decisionCtx, &req)
+		if resp == nil && bifrostErr == nil {
+			// Made before the call is recorded, so its log row is an error row.
+			bifrostErr = &schemas.BifrostError{Error: &schemas.ErrorField{Message: "decision request returned no response"}}
 		}
-		return discoveryRankResponse{}, fmt.Errorf("decision request to %s/%s failed: %s", r.provider, r.model, message)
+		if toolCtx, ok := ctx.(*schemas.BifrostContext); ok {
+			schemas.AppendMCPDiscoveryRankerCallOnContext(toolCtx, r.call(model, started, resp, bifrostErr))
+		}
+		if bifrostErr != nil {
+			message := "unknown error"
+			if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+				message = bifrostErr.Error.Message
+			}
+			failures = append(failures, fmt.Sprintf("decision request to %s/%s failed: %s", model.Provider, model.Model, message))
+			// The same rules as core's own fallbacks: a cancelled request or an
+			// error that forbids fallbacks ends the walk.
+			if (bifrostErr.Error != nil && bifrostErr.Error.Type != nil && *bifrostErr.Error.Type == schemas.RequestCancelled) ||
+				(bifrostErr.AllowFallbacks != nil && !*bifrostErr.AllowFallbacks) {
+				break
+			}
+		} else {
+			out, err := decisionRankResponse(input, resp)
+			if err == nil {
+				_, err = validateDiscoveryRankResponse(input, out)
+			}
+			if err == nil {
+				return out, nil
+			}
+			failures = append(failures, fmt.Sprintf("decision answer from %s/%s was rejected: %v", model.Provider, model.Model, err))
+		}
+		if decisionCtx.Err() != nil {
+			break
+		}
 	}
-	return decisionRankResponse(input, resp)
+	return discoveryRankResponse{}, errors.New(strings.Join(failures, "; "))
 }
 
 // call describes one decision call for the log: the provider and model that
-// served it, else the configured ones, and its usage, which for a failed call
-// is what the provider billed anyway. When a key alias served the call, the
+// served it, else the asked ones, and its usage, which for a failed call is
+// what the provider billed anyway. When a key alias served the call, the
 // model is the alias's wire model, not the alias name, so the row is priced
 // for the model that ran.
-func (r *decisionDiscoveryRanker) call(started time.Time, resp *schemas.BifrostDecisionResponse, bifrostErr *schemas.BifrostError) schemas.MCPDiscoveryRankerCall {
-	call := schemas.MCPDiscoveryRankerCall{Provider: r.provider, Model: r.model, StartedAt: started, Latency: time.Since(started)}
+func (r *decisionDiscoveryRanker) call(asked schemas.Fallback, started time.Time, resp *schemas.BifrostDecisionResponse, bifrostErr *schemas.BifrostError) schemas.MCPDiscoveryRankerCall {
+	call := schemas.MCPDiscoveryRankerCall{Provider: asked.Provider, Model: asked.Model, StartedAt: started, Latency: time.Since(started)}
 	var served schemas.RoutingInfo
 	switch {
 	case bifrostErr != nil:
@@ -112,8 +144,8 @@ func (r *decisionDiscoveryRanker) call(started time.Time, resp *schemas.BifrostD
 
 // decisionRequest asks which candidate fits the query and whether the
 // candidates cover it. The query is the input, so it is judged as data rather
-// than read as instructions.
-func (r *decisionDiscoveryRanker) decisionRequest(input discoveryRankRequest) *schemas.BifrostDecisionRequest {
+// than read as instructions. rank sets the model for each attempt.
+func decisionRequest(input discoveryRankRequest) *schemas.BifrostDecisionRequest {
 	choices := make([]schemas.DecisionChoice, len(input.Candidates))
 	names := make([]string, len(input.Candidates))
 	for i, c := range input.Candidates {
@@ -125,10 +157,7 @@ func (r *decisionDiscoveryRanker) decisionRequest(input discoveryRankRequest) *s
 	}
 	query := input.Query
 	return &schemas.BifrostDecisionRequest{
-		Provider:  r.provider,
-		Model:     r.model,
-		Fallbacks: r.fallbacks,
-		Input:     schemas.DecisionInput{Text: &query},
+		Input: schemas.DecisionInput{Text: &query},
 		Questions: []schemas.DecisionQuestion{
 			{
 				Type: schemas.DecisionTypeChoice,
