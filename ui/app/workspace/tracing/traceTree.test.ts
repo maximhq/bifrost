@@ -205,3 +205,36 @@ describe("shouldPollTrace", () => {
 		expect(shouldPollTrace({ in_progress: false }, now)).toBe(false);
 	});
 });
+describe("audio, realtime and image generation payloads", () => {
+	const wav = "UklGRiQAAABXQVZF";
+	it("finds OpenAI audio parts, generated images and OpenInference audio attributes", () => {
+		const found = spanAttachments(
+			span("m", undefined, 0, 1, {
+				input: JSON.stringify([{ role: "user", content: [{ type: "input_audio", input_audio: { data: wav, format: "mp3" } }] }]),
+				output: JSON.stringify({
+					choices: [{ message: { role: "assistant", audio: { id: "audio_1", data: wav, transcript: "It is sunny." } } }],
+					data: [{ b64_json: "iVBORw0KGgo=", revised_prompt: "a fox" }],
+				}),
+				attributes: { audio: { url: "https://example.com/call.wav", mime_type: "audio/wav", transcript: "hello" } },
+			}),
+		);
+		expect(found.map((a) => [a.kind, a.field, a.contentType, a.src?.slice(0, 24)])).toEqual([
+			["inline", "input", "audio/mpeg", "data:audio/mpeg;base64,U"],
+			["inline", "output", "audio/wav", "data:audio/wav;base64,Uk"],
+			["inline", "output", "image/png", "data:image/png;base64,iV"],
+			["url", "attributes", "audio/wav", "https://example.com/call"],
+		]);
+	});
+
+	it("shows an audio turn in the thread as its transcript with the audio attached", () => {
+		const call = span("r", undefined, 0, 1, {
+			kind: "llm",
+			input: JSON.stringify([{ role: "user", content: [{ type: "input_audio", input_audio: { data: wav, format: "wav" } }] }]),
+			output: JSON.stringify([{ message: { role: "assistant", audio: { data: wav, transcript: "It is sunny in Oslo." } } }]),
+		});
+		expect(buildThread([call]).map((m) => [m.role, m.text, m.attachments.length])).toEqual([
+			["user", "", 1],
+			["assistant", "It is sunny in Oslo.", 1],
+		]);
+	});
+});
