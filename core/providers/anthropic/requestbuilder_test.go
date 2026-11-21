@@ -3837,7 +3837,7 @@ func TestSearchToolVersionKeepsDeclaredCodeExecution(t *testing.T) {
 
 // TestBuildAnthropicResponsesRequestBody_UnsignedThinkingReplay pins that a thinking
 // block with an empty signature is replayed verbatim to Anthropic-compatible
-// self-hosted servers (vLLM, SGLang), which never sign their own thinking, while
+// self-hosted servers (vLLM, SGLang) and Dagon's upstreams, which may not sign thinking, while
 // native Anthropic still has it stripped (it rejects an unsigned block).
 func TestBuildAnthropicResponsesRequestBody_UnsignedThinkingReplay(t *testing.T) {
 	const thinking = "I privately choose the code word PAMPLEMOUSSE-47."
@@ -3870,7 +3870,7 @@ func TestBuildAnthropicResponsesRequestBody_UnsignedThinkingReplay(t *testing.T)
 		return gjson.GetBytes(out, `messages.1.content.#(type=="thinking").thinking`).String()
 	}
 
-	for _, provider := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL} {
+	for _, provider := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL, schemas.Dagon} {
 		for _, raw := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s_raw=%v_keeps", provider, raw), func(t *testing.T) {
 				if got := thinkingOf(build(t, provider, raw)); got != thinking {

@@ -1,0 +1,261 @@
+---
+title: "Dagon"
+description: "Dagon Inference API conversion guide - OpenAI-compatible chat and Responses, optional Anthropic-compatible Messages, streaming, tool calling, list models and count tokens"
+icon: "d"
+---
+
+## Overview
+
+[Dagon Inference](https://inference.dagon.so) is a privacy-focused inference gateway for open-weight and uncensored (abliterated) models, with **OpenAI- and Anthropic-compatible** APIs on one host. Bifrost delegates to the shared OpenAI and Anthropic implementations. Key characteristics:
+- **OpenAI API compatibility** - Chat Completions via `/v1/chat/completions` and native Responses via `/v1/responses`
+- **Full streaming support** - Server-Sent Events with usage tracking
+- **Tool calling** - Function definitions and tool choice in the OpenAI schema
+- **Optional Anthropic-compatible mode** via `/v1/messages`, enabled per key or per alias with `use_anthropic_endpoints`
+- **Count tokens** via `/v1/messages/count_tokens`
+- **Namespaced model ids** - Ids such as `arcium-blackthorn/qwen3.8-27b-bllm` are sent to Dagon unchanged after the `dagon/` prefix
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint (default) | Endpoint (`use_anthropic_endpoints: true`) |
+|-----------|---------------|-----------|--------------------|--------------------------------------------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` | `/v1/messages` |
+| Responses API | ✅ | ✅ | `/v1/responses` | `/v1/messages` |
+| List Models | ✅ | - | `/v1/models` | `/v1/models` |
+| Count Tokens | ✅ | - | `/v1/messages/count_tokens` | `/v1/messages/count_tokens` |
+| Text Completions | ❌ | ❌ | - | - |
+| Embeddings | ❌ | - | - | - |
+| Images | ❌ | ❌ | - | - |
+| Speech / Transcription | ❌ | ❌ | - | - |
+| Files | ❌ | ❌ | - | - |
+| Batch | ❌ | ❌ | - | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Embeddings, Images, Speech, Transcriptions, Files, and Batch return `UnsupportedOperationError`. Dagon does not serve the legacy `/v1/completions` endpoint.
+</Note>
+
+## Setup & Configuration
+
+Bifrost calls `https://inference.dagon.so` by default and sends the Dagon API key (`gk_...`) as a bearer token. Bifrost appends the `/v1/...` paths itself, so a custom `base_url` must not end in `/v1`. To create an API key, see [inference.dagon.so](https://inference.dagon.so).
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Dagon** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Dagon**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.DAGON_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "dagon": {
+      "keys": [
+        {
+          "name": "dagon-key-1",
+          "value": "env.DAGON_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Dagon:
+    return []schemas.Key{{
+        Name:   "dagon-key-1",
+        Value:  *schemas.NewSecretVar("env.DAGON_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+## Anthropic-Compatible Endpoints (optional)
+
+Dagon exposes an Anthropic-compatible Messages endpoint (`/v1/messages`) alongside its default OpenAI-compatible APIs. Setting `use_anthropic_endpoints` routes Chat Completions and the Responses API through that endpoint instead. List Models and Count Tokens are unaffected.
+
+Authentication does not change between the two modes: Bifrost sends `Authorization: Bearer <key>` either way.
+
+The setting can be configured per key, and overridden per model alias:
+
+- **Key-level** - Sets the default endpoint mode for every request made with that key.
+- **Alias-level** - Overrides the key-level default for a single alias, so one key can serve some aliases through the OpenAI-compatible endpoints and others through the Anthropic-compatible endpoint.
+
+If neither is set, requests use Dagon's OpenAI-compatible endpoints.
+
+<Tabs>
+<Tab title="Web UI">
+
+On the key form, toggle **Use Anthropic Endpoints** (off by default). To override this for a specific alias, open that alias's expanded row in the deployments table and choose **On**, **Off**, or **Use key setting** under **Dagon overrides**.
+
+</Tab>
+<Tab title="API">
+The `use_anthropic_endpoints` boolean is part of the key payload used by [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider). For an alias override, set it in `aliases.<alias_name>` alongside `model_id`; `models` is the key's model allowlist.
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "dagon": {
+      "keys": [
+        {
+          "name": "dagon-key-1",
+          "value": "env.DAGON_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0,
+          "use_anthropic_endpoints": true
+        }
+      ]
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|--------------|
+| `use_anthropic_endpoints` | boolean | No | Routes chat completions and responses requests through Dagon's Anthropic-compatible `/v1/messages` endpoint. Default: `false`. |
+
+</Tab>
+</Tabs>
+
+<Warning>
+Dagon accepts client-executed function tools, but rejects Anthropic built-in tool types (`web_search`, `web_fetch`, `code_execution`, `computer`, `bash`, `memory`, `text_editor`, `tool_search`, `mcp_toolset`). Bifrost drops these unsupported tool definitions before forwarding a Messages request. Not all of these tools run on Anthropic infrastructure; the restriction is Dagon's API contract.
+</Warning>
+
+Non-empty unsigned thinking blocks are preserved when replaying conversation history to Dagon's `/v1/messages`. Dagon forwards Anthropic-format messages to its upstreams; applying Anthropic's signature requirement here would discard reasoning from upstreams that do not sign it. Empty thinking blocks are still removed by the shared handler.
+
+### Selecting a Dagon upstream
+
+To pin an upstream for this provider, set `providers.dagon.network_config.extra_headers`, for example:
+
+```json
+{
+  "x-dagon-provider": "refuseless"
+}
+```
+
+Use an enabled provider id from the model's `offers` in Dagon's `/v1/models`. An unknown or disabled id returns HTTP 400 with `invalid_provider`. This selects a host inside Dagon, not a Bifrost provider. Dagon identifies the selected host in its `X-Dagon-Provider` response header; Bifrost captures upstream response headers in its standard response metadata.
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Dagon accepts a subset of the OpenAI chat completion parameters. For Bifrost's conversion behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions). Dagon rejects unsupported parameters and hosted tools; available capabilities also depend on the selected model and upstream.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dagon/abliterated-model",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+Namespaced Dagon model ids keep their own slash:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dagon/arcium-blackthorn/qwen3.8-27b-bllm",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
+```
+
+### Filtered Parameters
+
+Removed before the request is sent, as for other OpenAI-compatible providers:
+- `prediction`
+- `prompt_cache_key`, `prompt_cache_retention`, `prompt_cache_options`
+- `verbosity`
+- `store`
+- `web_search_options`
+
+---
+
+# 2. Responses API
+
+By default, Responses requests go to Dagon's native `/v1/responses` endpoint rather than being converted to Chat Completions. This does not imply full OpenAI Responses feature support: Dagon rejects stored-state references such as `previous_response_id`, `conversation`, and `prompt`, and supports client-executed function/custom tools rather than hosted tools. Send the conversation history in `input`.
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dagon/abliterated-model",
+    "input": "Hello!"
+  }'
+```
+
+With `use_anthropic_endpoints` on, Responses are converted to the Anthropic Messages format instead, and Responses-only fields such as `previous_response_id` do not apply.
+
+---
+
+# 3. List Models
+
+Lists Dagon's models from `/v1/models`, prefixed with `dagon/` (for example `dagon/abliterated-model` and `dagon/arcium-blackthorn/qwen3.8-27b-bllm`). Context length and token limits come from Bifrost's model catalog when it has an entry for the model.
+
+---
+
+# 4. Count Tokens
+
+Token counting through Bifrost (`/v1/responses/input_tokens`, or `/anthropic/v1/messages/count_tokens` for Anthropic SDK clients) is served by Dagon's `/v1/messages/count_tokens`, whatever `use_anthropic_endpoints` is set to.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completions | Not offered by Dagon API |
+| Embeddings | Not offered by Dagon API |
+| Image Generation | Not offered by Dagon API |
+| Speech/TTS | Not offered by Dagon API |
+| Transcription/STT | Not offered by Dagon API |
+| Batch Operations | Not supported by the Dagon provider |
+| File Management | Not supported by the Dagon provider |
+
+---
+
+## Caveats
+
+<Note>
+On the Anthropic-compatible surface, Bifrost's shared error parser preserves HTTP status, error type and message, but does not yet expose Dagon's optional `error.code`. The OpenAI-compatible surface preserves it.
+</Note>
+
+<Accordion title="Pricing">
+**Severity**: Low
+**Behavior**: Costs are computed from Bifrost's model catalog
+**Impact**: A Dagon model without a catalog price is not costed
+**Fix**: Add the model's price as a [pricing override](/providers/custom-pricing)
+</Accordion>
+
+<Accordion title="Parameter Filtering">
+**Severity**: Low
+**Behavior**: OpenAI-specific parameters filtered out on Chat Completions
+**Impact**: prompt_cache_key, verbosity, store and the other fields listed above are removed
+**Code**: filterOpenAISpecificParameters
+</Accordion>

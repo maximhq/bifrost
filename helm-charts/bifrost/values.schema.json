@@ -8770,7 +8770,7 @@
         },
         "use_anthropic_endpoints": {
           "type": "boolean",
-          "description": "For deepseek, fireworks, vllm, and sgl keys: route chat completions and responses requests through Anthropic-compatible endpoints.",
+          "description": "For deepseek, fireworks, vllm, sgl, and dagon keys: route chat completions and responses requests through Anthropic-compatible endpoints.",
           "default": false
         },
         "use_openai_endpoints": {

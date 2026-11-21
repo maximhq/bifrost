@@ -1058,7 +1058,7 @@ func TestProviderFeatureMapCompleteness(t *testing.T) {
 func TestAnthropicCompatibleThirdPartyProvidersRejectServerTools(t *testing.T) {
 	t.Parallel()
 
-	// Unsupported on all three, whatever the host.
+	// Unsupported on all of them, whatever the host.
 	serverTools := []schemas.ResponsesToolType{
 		schemas.ResponsesToolTypeWebSearch,
 		schemas.ResponsesToolTypeWebSearchPreview,
@@ -1070,7 +1070,7 @@ func TestAnthropicCompatibleThirdPartyProvidersRejectServerTools(t *testing.T) {
 		schemas.ResponsesToolTypeMemory,
 	}
 
-	for _, provider := range []schemas.ModelProvider{schemas.Fireworks, schemas.VLLM, schemas.SGL} {
+	for _, provider := range []schemas.ModelProvider{schemas.Fireworks, schemas.VLLM, schemas.SGL, schemas.Dagon} {
 		t.Run(string(provider), func(t *testing.T) {
 			features, ok := anthropic.ProviderFeatures[provider]
 			require.True(t, ok, "%s must be in ProviderFeatures, or the validators fall back to keep-everything", provider)
@@ -1128,7 +1128,7 @@ func TestFireworksToolSearchCarveOut(t *testing.T) {
 	assert.True(t, anthropic.ProviderFeatures[schemas.Fireworks].ServiceTier,
 		"Fireworks documents service_tier: priority, so the field must not be stripped")
 
-	for _, provider := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL} {
+	for _, provider := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL, schemas.Dagon} {
 		caps := schemas.ResolveModelCaps(provider, "meta-llama/Llama-3.2-1B-Instruct")
 		keep, dropped := anthropic.ValidateResponsesToolsForProvider(
 			[]schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch}}, caps,

@@ -168,6 +168,8 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 	// needs its own unsigned reasoning back on the next turn.
 	schemas.SGL:  {KeepUnsignedThinking: true},
 	schemas.VLLM: {KeepUnsignedThinking: true},
+	// Dagon forwards Messages history to upstreams that may not sign thinking.
+	schemas.Dagon: {KeepUnsignedThinking: true},
 }
 
 // BuildAnthropicResponsesRequestBody is the single implementation of the
