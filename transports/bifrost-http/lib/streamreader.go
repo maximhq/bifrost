@@ -297,8 +297,9 @@ func StopSSEHeartbeat(reader *SSEStreamReader, done chan struct{}, exited <-chan
 // is still open, cancels the upstream request and drains stream so the provider goroutine
 // is not left blocked on a send, then returns so the producer's own deferred teardown
 // closes the client stream. A panic inside onPanic is contained; cancel and drain still run.
-// Before cancelling it marks ctx (when non-nil) with BifrostContextKeyStreamConsumerFailed, so
-// the provider reports a server error to the post-hooks instead of a client cancellation.
+// Before calling onPanic, which may itself cancel, it marks ctx (when non-nil) with
+// BifrostContextKeyStreamConsumerFailed, so the provider reports a server error to the
+// post-hooks instead of a client cancellation.
 //
 // Defer it after the producer's teardown defer, so it runs first and the drain finishes
 // before the trace completes, the same order the client-disconnect path uses.
@@ -310,11 +311,11 @@ func RecoverStreamProducer(ctx *schemas.BifrostContext, cancel context.CancelFun
 	if logger != nil {
 		logger.Error(fmt.Sprintf("recovered from panic in stream producer: %s\n%s", PanicSummary(r), debug.Stack()))
 	}
-	if onPanic != nil {
-		RunRecovered("stream producer error frame", onPanic)
-	}
 	if ctx != nil {
 		ctx.SetValue(schemas.BifrostContextKeyStreamConsumerFailed, true)
+	}
+	if onPanic != nil {
+		RunRecovered("stream producer error frame", onPanic)
 	}
 	if cancel != nil {
 		cancel()

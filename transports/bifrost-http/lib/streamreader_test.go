@@ -1468,6 +1468,16 @@ func TestRecoverStreamProducerReportsPanic(t *testing.T) {
 		})
 		require.True(t, markedAtCancel, "the provider must see the mark when the cancel reaches it")
 
+		onPanicCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		markedInOnPanic := false
+		require.NotPanics(t, func() {
+			defer RecoverStreamProducer(onPanicCtx, func() {}, nil, func() {
+				markedInOnPanic, _ = onPanicCtx.Value(schemas.BifrostContextKeyStreamConsumerFailed).(bool)
+			})
+			panic("boom")
+		})
+		require.True(t, markedInOnPanic, "onPanic may cancel, so the mark must already be set when it runs")
+
 		clean := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		func() {
 			defer RecoverStreamProducer(clean, func() {}, nil, nil)
