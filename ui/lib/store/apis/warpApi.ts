@@ -5,6 +5,7 @@ import type {
 	WarpConfigInput,
 	WarpConversation,
 	WarpConversationDetail,
+	WarpLeftBehindIndex,
 	WarpLogIndexStatus,
 } from "@/lib/types/warp";
 import { baseApi } from "./baseApi";
@@ -30,6 +31,16 @@ export const warpApi = baseApi.injectEndpoints({
 		}),
 		cancelWarpBackfill: builder.mutation<WarpBackfillStatus, { id?: string } | void>({
 			query: (body) => ({ url: "/warp/log-index/backfill/cancel", method: "POST", body: body ?? {} }),
+		}),
+		// An index Warp left in a store it moved off: delete it from the shared
+		// store, or dismiss one Bifrost no longer reaches.
+		deleteWarpLeftBehindIndex: builder.mutation<{ left_behind_indexes: WarpLeftBehindIndex[] }, string>({
+			query: (id) => ({ url: `/warp/log-index/backfill/left-behind/${encodeURIComponent(id)}/delete`, method: "POST" }),
+			invalidatesTags: ["WarpConfig"],
+		}),
+		dismissWarpLeftBehindIndex: builder.mutation<{ left_behind_indexes: WarpLeftBehindIndex[] }, string>({
+			query: (id) => ({ url: `/warp/log-index/backfill/left-behind/${encodeURIComponent(id)}/dismiss`, method: "POST" }),
+			invalidatesTags: ["WarpConfig"],
 		}),
 		// Topic clustering: the same job shape as the backfill, over the vectors
 		// the backfill and live indexing wrote.
@@ -71,6 +82,8 @@ export const {
 	useStartWarpBackfillMutation,
 	useGetWarpBackfillStatusQuery,
 	useCancelWarpBackfillMutation,
+	useDeleteWarpLeftBehindIndexMutation,
+	useDismissWarpLeftBehindIndexMutation,
 	useStartWarpTopicsMutation,
 	useGetWarpTopicsStatusQuery,
 	useCancelWarpTopicsMutation,

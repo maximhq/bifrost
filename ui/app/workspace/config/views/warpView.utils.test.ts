@@ -4,6 +4,7 @@ import {
 	requireFiniteNumber,
 	retainedWarpBackfillForSpace,
 	retainFinishedWarpBackfill,
+	syncUneditedFields,
 	validateWarpMaxIterations,
 	warpSavedSpaceKey,
 } from "./warpView.utils";
@@ -128,5 +129,37 @@ describe("retainedWarpBackfillForSpace", () => {
 	it("hides the job once the saved space moves off it", () => {
 		expect(retainedWarpBackfillForSpace({ job: completedJob, spaceKey: spaceA }, spaceB)).toBeNull();
 		expect(retainedWarpBackfillForSpace(null, spaceB)).toBeNull();
+	});
+});
+
+describe("syncUneditedFields", () => {
+	const hydrated = { model: "gpt-4o", limit: 10, writes: ["providers"] };
+
+	it("takes every new value on the first hydration", () => {
+		expect(syncUneditedFields(hydrated, null, { model: "o3", limit: 5, writes: [] })).toEqual({ model: "o3", limit: 5, writes: [] });
+	});
+
+	it("keeps an edited field and syncs the untouched ones", () => {
+		const current = { ...hydrated, limit: 25 };
+		const next = { model: "o3", limit: 10, writes: ["providers", "keys"] };
+		expect(syncUneditedFields(current, hydrated, next)).toEqual({ model: "o3", limit: 25, writes: ["providers", "keys"] });
+	});
+
+	it("keeps a group whole when any of it was edited", () => {
+		const groups = [["provider", "model"]] as const;
+		const baseline = { provider: "openai", model: "text-embedding-3-small", limit: 10 };
+		// This draft edited the model; another admin then switched the provider.
+		const current = { ...baseline, model: "text-embedding-3-large" };
+		const next = { provider: "cohere", model: "embed-v4", limit: 20 };
+		expect(syncUneditedFields(current, baseline, next, groups)).toEqual({ provider: "openai", model: "text-embedding-3-large", limit: 20 });
+		// Untouched, the whole group follows the server.
+		expect(syncUneditedFields(baseline, baseline, next, groups)).toEqual(next);
+	});
+
+	it("compares arrays by value", () => {
+		const current = { ...hydrated, writes: ["providers"] };
+		expect(syncUneditedFields(current, hydrated, { ...hydrated, writes: [] }).writes).toEqual([]);
+		const edited = { ...hydrated, writes: ["keys"] };
+		expect(syncUneditedFields(edited, hydrated, { ...hydrated, writes: [] }).writes).toEqual(["keys"]);
 	});
 });

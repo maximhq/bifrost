@@ -2699,6 +2699,21 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	return nil
 }
 
+// warpVectorStore is the store Warp's log index lives in: Warp's own when
+// config.json gives it one, otherwise the shared one. A dedicated store that
+// failed at startup gives nil, which leaves Warp unavailable; falling back to
+// the shared store would put the log index where the admin chose to keep it out of.
+func (s *BifrostHTTPServer) warpVectorStore() (vectorstore.VectorStore, warp.VectorStoreSource) {
+	if s.Config == nil {
+		return nil, warp.VectorStoreSource{}
+	}
+	if s.Config.WarpVectorStoreSource.Dedicated {
+		return s.Config.WarpVectorStore, s.Config.WarpVectorStoreSource
+	}
+	// The shared store, with its identity from startup.
+	return s.Config.VectorStore, s.Config.WarpVectorStoreSource
+}
+
 // vectorRetentionSetter is a plugin that bounds what it keeps by the vector
 // retention; the routing plugin's request capture is one.
 type vectorRetentionSetter interface {
@@ -3220,7 +3235,8 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WarpHandler != nil {
 		s.WarpHandler.Shutdown()
 	}
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool {
+	warpVectors, warpVectorSource := s.warpVectorStore()
+	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, loggerPlugin, s.Client, s.Config.LogsStore, warpVectors, warpVectorSource, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool {
 		return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp)
 	}, handlers.WarpResolvers{
 		ExternalQuotaBudgets: s.ExternalQuotaBudgetResolver,
@@ -3238,6 +3254,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// config.json's warp section saves through the service, so it is validated and provisions its
 	// vector namespace exactly like a save from the settings page.
 	s.Config.ApplyWarpFileConfig(s.Ctx, s.WarpHandler.Service())
+	// After the file config, whose namespace is the one the index uses now: note
+	// an index left in the store Warp used before, for the settings page.
+	s.WarpHandler.Service().ReconcileIndexStore(s.Ctx)
 	if s.BifrostMCP != nil {
 		s.WarpHandler.Service().SetManagementTools(handlers.NewWarpManagementTools(s.BifrostMCP))
 	}

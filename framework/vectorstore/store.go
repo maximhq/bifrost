@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -322,6 +325,62 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// Location names where a store keeps its data: its type and endpoint, never its
+// credentials. Two configurations with the same Location reach the same data, so
+// a caller can tell a moved store from a rotated key. Each part is the one the
+// client connects with, defaults filled in: an omitted Qdrant port is 6334 and
+// an omitted Redis database is 0, as the clients use them, and the Weaviate
+// scheme is kept, since http and https on one host are different endpoints. An
+// unknown type, or a config that does not match its type, has no location.
+func (c *Config) Location() string {
+	if c == nil {
+		return ""
+	}
+	value := func(v *schemas.SecretVar) string {
+		if v == nil {
+			return ""
+		}
+		return strings.TrimSpace(v.GetValue())
+	}
+	switch cfg := c.Config.(type) {
+	case WeaviateConfig:
+		return "weaviate+" + strings.ToLower(strings.TrimSpace(cfg.Scheme)) + "://" + value(cfg.Host)
+	case QdrantConfig:
+		return "qdrant://" + value(&cfg.Host) + ":" + strconv.Itoa(cfg.Port.CoerceInt(qdrantDefaultPort))
+	case RedisConfig:
+		db := value(cfg.DB)
+		if db == "" {
+			db = "0"
+		}
+		return "redis://" + value(cfg.Addr) + "/" + db
+	case PineconeConfig:
+		return "pinecone://" + value(&cfg.IndexHost)
+	case ChromemConfig:
+		// One directory written two ways ("/data/vectors/", "/data/./vectors")
+		// is one store. No path is memory-only and stays as it is.
+		path := strings.TrimSpace(cfg.Path)
+		if path != "" {
+			path = filepath.Clean(path)
+		}
+		return "chromem://" + path
+	case nil:
+		if c.Type == VectorStoreTypeChromem {
+			return "chromem://"
+		}
+	}
+	return ""
+}
+
+// InMemory reports whether the store keeps nothing across a restart: Chromem
+// with no path. Each start of one is a new, empty store, whatever its Location.
+func (c *Config) InMemory() bool {
+	if c == nil || c.Type != VectorStoreTypeChromem {
+		return false
+	}
+	cfg, _ := c.Config.(ChromemConfig)
+	return strings.TrimSpace(cfg.Path) == ""
 }
 
 // NewVectorStore returns a new vector store based on the configuration.

@@ -277,6 +277,39 @@ Vectors from different embedding models cannot be compared. When you change the 
 
 You cannot change the embedding configuration while a backfill is running. Cancel it first.
 
+### Give Warp its own vector store
+
+A store of Warp's own is optional. Without one, Warp uses the shared store and nothing needs to change.
+
+By default Warp's log index shares the deployment's [vector store](/architecture/framework/vector-store) with the semantic cache and the complexity router. Warp embeds every indexed log, so on a busy deployment its index is by far the largest thing in that store. To keep it on separately sized infrastructure, or behind its own access controls, give Warp a store of its own with `vector_store` in the `warp` section of `config.json`. It takes the same shape as the top-level `vector_store`:
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": { "addr": "env.REDIS_ADDR" }
+  },
+  "warp": {
+    "vector_store": {
+      "enabled": true,
+      "type": "qdrant",
+      "config": { "host": "env.WARP_QDRANT_HOST", "port": 6334, "api_key": "env.WARP_QDRANT_API_KEY" }
+    }
+  }
+}
+```
+
+- **Set at startup only.** It is read when Bifrost starts, never saved from the dashboard, and not part of the `warp` section's sync, so changing it does not re-apply the rest of the section. Restart Bifrost to apply a change.
+- **No fallback.** If the store is invalid or cannot be reached at startup, Warp is unavailable until it is fixed and Bifrost restarts. The server log has the connection error, and **Settings** > **Warp** says what happened. Warp never falls back to the shared store, and the rest of Bifrost runs normally.
+- **Run a backfill after adding or moving it.** The new store starts empty. The backfill section shows no completed run for it, so start a [backfill](#backfill) to index existing logs. Topics are kept: they live in the logs store.
+- **The old index stays where it was, and Warp tells you.** Bifrost does not delete Warp's vectors from the previous store. After the restart, **Settings** > **Warp** shows a notice for the index left behind:
+  - **Moved off the shared store:** Bifrost still connects to the shared store, so click **Delete old index** to remove Warp's namespace from it. With several replicas, wait until every one runs with `warp.vector_store`: a replica still on the old config keeps writing to that namespace. If the namespace is deleted some other way, the notice clears itself the next time the settings page loads.
+  - **Moved off a store of Warp's own:** Bifrost no longer connects to that store, so the notice names its type and namespace. Delete the namespace there yourself, then click **Dismiss**.
+- **Same retention.** [`vector_retention_days`](/deployment-guides/config-json/client) applies to Warp's store as it does to the shared one.
+
+A `warp.vector_store` that is disabled, or that points at the same location as the top-level `vector_store`, leaves Warp on the shared store.
+
 ---
 
 ## Use Warp
@@ -440,12 +473,12 @@ The response body has a `reason` field:
 |---|---|---|
 | `not_configured` | Warp is switched off or a required setting is missing. | Fill in the default model and the embedding settings, then turn on **Enable Warp**. |
 | `no_log_store` | The deployment persists no logs. | Configure a logs store. |
-| `no_vector_store` | No vector store is connected. | Configure a vector store. |
+| `no_vector_store` | No vector store is connected, or Warp's own store (`warp.vector_store`) could not be reached at startup. The message says which. | Configure a vector store, or fix Warp's own store and restart Bifrost. |
 
 ### The Enable Warp switch is disabled
 
-**Cause:** No vector store is connected.
-**Fix:** Configure a [vector store](/architecture/framework/vector-store). The settings page shows the connection status under **Conversation search**.
+**Cause:** No vector store is connected, or Warp's own store (`warp.vector_store`) could not be reached at startup.
+**Fix:** Configure a [vector store](/architecture/framework/vector-store), or check the server log for Warp's store, fix it, and restart Bifrost. The settings page shows the connection status under **Conversation search**.
 
 ### Saving fails with "namespace must change"
 

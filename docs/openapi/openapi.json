@@ -117696,6 +117696,231 @@
         }
       }
     },
+    "/api/warp/log-index/backfill/left-behind/{id}/delete": {
+      "post": {
+        "operationId": "deleteWarpLeftBehindIndex",
+        "summary": "Delete a Warp log index left in the shared vector store",
+        "description": "Deletes the namespace of a log index Warp left in the shared vector store\nwhen it moved to a store of its own, and takes it off\n`left_behind_indexes`. An index in a store Bifrost no longer connects to\ncannot be deleted from here (409).\n\nAdministrators only: the local admin in OSS, `Warp` Update in enterprise.\n",
+        "tags": [
+          "Warp"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `id` of an entry in `left_behind_indexes`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted; the entries that remain",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "left_behind_indexes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "A Warp log index in a vector store Warp no longer uses. Bifrost does not\ndelete it on the way out. One in the shared vector store can be deleted\nfrom Bifrost; one in a store of Warp's own that Bifrost no longer connects\nto has to be deleted in that store by hand, then dismissed.\n",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Identifies the entry for the delete and dismiss routes."
+                          },
+                          "dedicated": {
+                            "type": "boolean",
+                            "description": "The index is in a store of Warp's own (warp.vector_store), not the shared vector store."
+                          },
+                          "type": {
+                            "type": "string",
+                            "description": "The dedicated store's type, when dedicated."
+                          },
+                          "fingerprint": {
+                            "type": "string",
+                            "description": "Identifies the store's location without naming it, for the shared vector_store as well as a dedicated store. Absent only on an entry recorded before stores were fingerprinted, which is never deletable."
+                          },
+                          "namespace": {
+                            "type": "string",
+                            "description": "The namespace holding the index."
+                          },
+                          "moved_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "The startup at which Warp moved off this store."
+                          },
+                          "deletable": {
+                            "type": "boolean",
+                            "description": "Bifrost still connects to this store (the shared one) and can delete the index."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "dedicated",
+                          "namespace",
+                          "moved_at",
+                          "deletable"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "left_behind_indexes"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)"
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The index is in a store Bifrost no longer connects to; delete it there by hand, then dismiss it."
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/warp/log-index/backfill/left-behind/{id}/dismiss": {
+      "post": {
+        "operationId": "dismissWarpLeftBehindIndex",
+        "summary": "Dismiss a Warp log index left in another vector store",
+        "description": "Takes an entry off `left_behind_indexes` without touching its vectors,\nfor an index the admin has deleted by hand or wants to keep.\n\nAdministrators only: the local admin in OSS, `Warp` Update in enterprise.\n",
+        "tags": [
+          "Warp"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `id` of an entry in `left_behind_indexes`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dismissed; the entries that remain",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "left_behind_indexes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "A Warp log index in a vector store Warp no longer uses. Bifrost does not\ndelete it on the way out. One in the shared vector store can be deleted\nfrom Bifrost; one in a store of Warp's own that Bifrost no longer connects\nto has to be deleted in that store by hand, then dismissed.\n",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Identifies the entry for the delete and dismiss routes."
+                          },
+                          "dedicated": {
+                            "type": "boolean",
+                            "description": "The index is in a store of Warp's own (warp.vector_store), not the shared vector store."
+                          },
+                          "type": {
+                            "type": "string",
+                            "description": "The dedicated store's type, when dedicated."
+                          },
+                          "fingerprint": {
+                            "type": "string",
+                            "description": "Identifies the store's location without naming it, for the shared vector_store as well as a dedicated store. Absent only on an entry recorded before stores were fingerprinted, which is never deletable."
+                          },
+                          "namespace": {
+                            "type": "string",
+                            "description": "The namespace holding the index."
+                          },
+                          "moved_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "The startup at which Warp moved off this store."
+                          },
+                          "deletable": {
+                            "type": "boolean",
+                            "description": "Bifrost still connects to this store (the shared one) and can delete the index."
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "dedicated",
+                          "namespace",
+                          "moved_at",
+                          "deletable"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "left_behind_indexes"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)"
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/warp/log-index/topics": {
       "post": {
         "operationId": "startWarpTopicClustering",
@@ -161348,7 +161573,69 @@
           "vector_store_connected": {
             "type": "boolean",
             "readOnly": true,
-            "description": "Whether the shared runtime vector store is connected."
+            "description": "Whether Warp's vector store is connected - its own store when vector_store_dedicated, otherwise the shared runtime vector store."
+          },
+          "vector_store_dedicated": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "Whether Warp has its own vector store (warp.vector_store in config.json) rather than the shared one."
+          },
+          "vector_store_type": {
+            "type": "string",
+            "readOnly": true,
+            "description": "Type of Warp's own vector store, when vector_store_dedicated."
+          },
+          "vector_store_failed": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "Warp's own vector store could not be reached at startup, so Warp is unavailable until it is fixed and Bifrost restarts. Absent otherwise."
+          },
+          "left_behind_indexes": {
+            "type": "array",
+            "readOnly": true,
+            "items": {
+              "type": "object",
+              "description": "A Warp log index in a vector store Warp no longer uses. Bifrost does not\ndelete it on the way out. One in the shared vector store can be deleted\nfrom Bifrost; one in a store of Warp's own that Bifrost no longer connects\nto has to be deleted in that store by hand, then dismissed.\n",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Identifies the entry for the delete and dismiss routes."
+                },
+                "dedicated": {
+                  "type": "boolean",
+                  "description": "The index is in a store of Warp's own (warp.vector_store), not the shared vector store."
+                },
+                "type": {
+                  "type": "string",
+                  "description": "The dedicated store's type, when dedicated."
+                },
+                "fingerprint": {
+                  "type": "string",
+                  "description": "Identifies the store's location without naming it, for the shared vector_store as well as a dedicated store. Absent only on an entry recorded before stores were fingerprinted, which is never deletable."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "The namespace holding the index."
+                },
+                "moved_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "The startup at which Warp moved off this store."
+                },
+                "deletable": {
+                  "type": "boolean",
+                  "description": "Bifrost still connects to this store (the shared one) and can delete the index."
+                }
+              },
+              "required": [
+                "id",
+                "dedicated",
+                "namespace",
+                "moved_at",
+                "deletable"
+              ]
+            },
+            "description": "Log indexes Warp left in a vector store it no longer uses, after\nwarp.vector_store was added, changed or removed. Absent when there are none.\n"
           }
         },
         "required": [
@@ -161366,7 +161653,8 @@
           "semantic_search_threshold",
           "semantic_search_limit",
           "topic_discovery_min_requests",
-          "vector_store_connected"
+          "vector_store_connected",
+          "vector_store_dedicated"
         ]
       },
       "WarpConfigInput": {

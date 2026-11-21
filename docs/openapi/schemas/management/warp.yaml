@@ -167,7 +167,27 @@ WarpConfig:
     vector_store_connected:
       type: boolean
       readOnly: true
-      description: Whether the shared runtime vector store is connected.
+      description: Whether Warp's vector store is connected - its own store when vector_store_dedicated, otherwise the shared runtime vector store.
+    vector_store_dedicated:
+      type: boolean
+      readOnly: true
+      description: Whether Warp has its own vector store (warp.vector_store in config.json) rather than the shared one.
+    vector_store_type:
+      type: string
+      readOnly: true
+      description: Type of Warp's own vector store, when vector_store_dedicated.
+    vector_store_failed:
+      type: boolean
+      readOnly: true
+      description: Warp's own vector store could not be reached at startup, so Warp is unavailable until it is fixed and Bifrost restarts. Absent otherwise.
+    left_behind_indexes:
+      type: array
+      readOnly: true
+      items:
+        $ref: '#/WarpLeftBehindIndex'
+      description: |
+        Log indexes Warp left in a vector store it no longer uses, after
+        warp.vector_store was added, changed or removed. Absent when there are none.
   required:
     - configured
     - enabled
@@ -184,7 +204,49 @@ WarpConfig:
     - semantic_search_limit
     - topic_discovery_min_requests
     - vector_store_connected
+    - vector_store_dedicated
 
+
+WarpLeftBehindIndex:
+  type: object
+  description: |
+    A Warp log index in a vector store Warp no longer uses. Bifrost does not
+    delete it on the way out. One in the shared vector store can be deleted
+    from Bifrost; one in a store of Warp's own that Bifrost no longer connects
+    to has to be deleted in that store by hand, then dismissed.
+  properties:
+    id:
+      type: string
+      description: Identifies the entry for the delete and dismiss routes.
+    dedicated:
+      type: boolean
+      description: The index is in a store of Warp's own (warp.vector_store), not the shared vector store.
+    type:
+      type: string
+      description: The dedicated store's type, when dedicated.
+    fingerprint:
+      type: string
+      description: Identifies the store's location without naming it, for the shared vector_store as well as a dedicated store. Absent only on an entry recorded before stores were fingerprinted, which is never deletable.
+    namespace:
+      type: string
+      description: The namespace holding the index.
+    moved_at:
+      type: string
+      format: date-time
+      description: The startup at which Warp moved off this store.
+    deletable:
+      type: boolean
+      description: Bifrost still connects to this store (the shared one) and can delete the index.
+  required: [id, dedicated, namespace, moved_at, deletable]
+
+WarpLeftBehindIndexList:
+  type: object
+  properties:
+    left_behind_indexes:
+      type: array
+      items:
+        $ref: '#/WarpLeftBehindIndex'
+  required: [left_behind_indexes]
 
 WarpConfigInput:
   type: object

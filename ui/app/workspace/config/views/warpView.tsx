@@ -52,12 +52,14 @@ import {
 	type WarpEmbeddingFields,
 	type WarpModelRow,
 } from "./warpConfig.utils";
+import WarpLeftBehindIndexes from "./warpLeftBehindIndexes";
 import WarpManagementToolsSection from "./warpManagementToolsSection";
 import WarpTopicsSection from "./warpTopicsSection";
 import {
 	isFiniteNumber,
 	retainedWarpBackfillForSpace,
 	retainFinishedWarpBackfill,
+	syncUneditedFields,
 	validateWarpMaxIterations,
 	validateWarpRetentionDays,
 	warpSavedSpaceKey,
@@ -118,6 +120,13 @@ interface WarpFormState {
 	// Kinds of configuration change Warp may offer; empty is reads only.
 	managementWrites: WarpManagementWrite[];
 }
+
+// Fields a refetch syncs as one group (see syncUneditedFields): the embedding
+// model, key and dimension belong to the provider, and the namespace to the
+// embedding space they make.
+const WARP_FORM_FIELD_GROUPS = [
+	["embeddingProvider", "embeddingModel", "embeddingAPIKeyID", "embeddingDimension", "namespace"],
+] as const satisfies readonly (readonly (keyof WarpFormState)[])[];
 
 const EMPTY_FORM: WarpFormState = {
 	enabled: false,
@@ -343,10 +352,14 @@ export default function WarpView() {
 		new Date(backfillStartCompare).getTime() === new Date(backfillStatus.start_time).getTime() &&
 		new Date(backfillEndCompare).getTime() === new Date(backfillStatus.end_time).getTime();
 
-	// One hydration point. Everything the form shows comes from here.
+	// One hydration point. Everything the form shows comes from here. A refetch
+	// syncs only the fields the user has not edited since the last one (see
+	// syncUneditedFields): clearing a left-behind index notice refetches the
+	// config, and must not throw away a draft.
+	const hydratedForm = useRef<WarpFormState | null>(null);
 	useEffect(() => {
 		if (!config) return;
-		setForm({
+		const next: WarpFormState = {
 			enabled: config.enabled,
 			models: warpModelRowsFromConfig(config),
 			maxIterations: config.max_iterations || DEFAULT_MAX_ITERATIONS,
@@ -368,7 +381,10 @@ export default function WarpView() {
 			searchLimit: config.semantic_search_limit || DEFAULT_SEARCH_LIMIT,
 			discoveryMinRequests: config.topic_discovery_min_requests || DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS,
 			managementWrites: config.management_writes ?? [],
-		});
+		};
+		const previous = hydratedForm.current;
+		hydratedForm.current = next;
+		setForm((current) => syncUneditedFields(current, previous, next, WARP_FORM_FIELD_GROUPS));
 	}, [config]);
 
 	// The date pickers default to "last 7 days" at mount time, which no longer
@@ -484,6 +500,7 @@ export default function WarpView() {
 	const onSubmit = async (event: React.FormEvent) => {
 		event.preventDefault();
 		if (invalid || !hasChanges) return;
+		const submitted = form;
 
 		const payload: WarpConfigInput = {
 			enabled: form.enabled,
@@ -509,6 +526,11 @@ export default function WarpView() {
 		};
 		try {
 			await updateWarpConfig(payload).unwrap();
+			// The draft is saved, so what was submitted is the baseline from now
+			// on. Not cleared: a save that stores the same values brings back the
+			// same config, so no hydration follows to rebuild one, and a later
+			// refetch would then overwrite edits made after the save.
+			hydratedForm.current = submitted;
 			toast.success(t("warp.saved"));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
@@ -612,7 +634,8 @@ export default function WarpView() {
 							)}
 							{!config?.vector_store_connected && (
 								<p className="text-destructive flex items-center gap-1.5 text-xs" data-testid="warp-vector-store-required">
-									<AlertTriangle className="h-3.5 w-3.5" /> {t("warp.vectorRequired")}
+									<AlertTriangle className="h-3.5 w-3.5" />{" "}
+									{config?.vector_store_failed ? t("warp.dedicatedVectorFailed") : t("warp.vectorRequired")}
 								</p>
 							)}
 						</div>
@@ -825,10 +848,28 @@ export default function WarpView() {
 									) : (
 										<Database className="mr-1 h-3.5 w-3.5" />
 									)}
-									{config?.vector_store_connected ? t("warp.vectorConnected") : t("warp.vectorDisconnected")}
+									{config?.vector_store_dedicated
+										? config.vector_store_connected
+											? t("warp.dedicatedVectorConnected", { type: config.vector_store_type ?? "" })
+											: t("warp.dedicatedVectorUnavailable")
+										: config?.vector_store_connected
+											? t("warp.vectorConnected")
+											: t("warp.vectorDisconnected")}
 								</Badge>
 							}
 						>
+							{config?.vector_store_dedicated && config.vector_store_connected && (
+								<p className="text-muted-foreground mb-4 text-xs" data-testid="warp-dedicated-vector-store-note">
+									{t("warp.dedicatedVectorHelp", { type: config.vector_store_type ?? "" })}
+								</p>
+							)}
+							{/* The default: say a store of Warp's own is an option, not a requirement. */}
+							{config && !config.vector_store_dedicated && config.vector_store_connected && (
+								<p className="text-muted-foreground mb-4 text-xs" data-testid="warp-shared-vector-store-note">
+									{t("warp.sharedVectorHelp")}
+								</p>
+							)}
+							<WarpLeftBehindIndexes indexes={config?.left_behind_indexes ?? []} canUpdate={hasWarpUpdateAccess} />
 							<div className="grid gap-x-6 gap-y-5 md:grid-cols-2">
 								<WarpField label={t("warp.embeddingProvider")} htmlFor="warp-embedding-provider">
 									<ProviderSelector

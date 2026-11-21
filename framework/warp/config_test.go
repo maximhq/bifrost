@@ -859,3 +859,38 @@ func TestWarpManagementWritesAreConfigurable(t *testing.T) {
 		require.ErrorIs(t, err, ErrInvalidConfig, bad)
 	}
 }
+
+// Warp's own store (warp.vector_store) that failed at startup leaves Warp
+// unavailable with an error that says so, never the shared store in its place,
+// and the config view tells the settings page which store it is and that it
+// failed.
+func TestWarpDedicatedVectorStoreFailedMakesWarpUnavailable(t *testing.T) {
+	service := NewService(nil, WithConfigStore(&recordingStore{}),
+		WithVectorStoreSource(VectorStoreSource{Dedicated: true, Type: "weaviate", Fingerprint: "abc", Failed: true}))
+	_, err := service.SaveConfig(context.Background(), validWarpConfigInput())
+	require.ErrorIs(t, err, ErrDedicatedVectorStoreFailed)
+	require.ErrorIs(t, err, ErrNoVectorStore, "callers matching the generic error still see Warp as unavailable")
+
+	view, err := service.ConfigView(context.Background())
+	require.NoError(t, err)
+	require.False(t, view.VectorStoreConnected)
+	require.True(t, view.VectorStoreDedicated)
+	require.Equal(t, "weaviate", view.VectorStoreType)
+	require.True(t, view.VectorStoreFailed)
+
+	shared := NewService(nil, WithConfigStore(&recordingStore{}))
+	_, err = shared.SaveConfig(context.Background(), validWarpConfigInput())
+	require.ErrorIs(t, err, ErrNoVectorStore)
+	require.NotErrorIs(t, err, ErrDedicatedVectorStoreFailed, "a deployment without warp.vector_store gets the generic error")
+}
+
+func TestWarpConfigViewReportsConnectedDedicatedVectorStore(t *testing.T) {
+	service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(newFakeWarpVectorStore()),
+		WithVectorStoreSource(VectorStoreSource{Dedicated: true, Type: "qdrant", Fingerprint: "abc"}))
+	view, err := service.ConfigView(context.Background())
+	require.NoError(t, err)
+	require.True(t, view.VectorStoreConnected)
+	require.True(t, view.VectorStoreDedicated)
+	require.Equal(t, "qdrant", view.VectorStoreType)
+	require.False(t, view.VectorStoreFailed)
+}
