@@ -1,6 +1,9 @@
 package handlers
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -85,6 +88,85 @@ func endpointRequestPath(full string) (string, string, bool) {
 	return name, "/" + path, true
 }
 
+// relayForwardHeaders collects the caller headers a relay forwards to its endpoint, lowercased.
+// The Connection header is read in place (Peek returns the header's own bytes) and each key is
+// lowercased into one reused buffer, so a header that is dropped, including Connection itself and
+// any header it names, allocates nothing; only a forwarded header's name and value are copied.
+func relayForwardHeaders(header *fasthttp.RequestHeader) map[string]string {
+	headers := make(map[string]string)
+	connection := header.Peek(fasthttp.HeaderConnection)
+	var lowerBuf [64]byte
+	lower := lowerBuf[:0]
+	header.All()(func(key, value []byte) bool {
+		lower = lowerASCII(lower[:0], key)
+		if _, drop := relayDroppedHeaders[string(lower)]; drop {
+			return true
+		}
+		if connectionNames(connection, lower) {
+			return true
+		}
+		// Beyond the fixed list, any credential-looking header is dropped (Cf-Access-Jwt-Assertion,
+		// x-amzn-oidc-*, X-Forwarded-Access-Token, *secret*, *-token): an auth proxy in front of
+		// Bifrost adds these to every request, and a relay's upstream is a third party that could
+		// replay them against Bifrost. Provider passthrough reaches only known providers. A caller
+		// who means to send such a header names it with x-bf-eh-*, which is exempt.
+		if bytes.HasPrefix(lower, []byte("x-bf-")) {
+			return true
+		}
+		name := string(lower)
+		if schemas.IsSensitiveHeader(name) {
+			return true
+		}
+		headers[name] = string(value)
+		return true
+	})
+	return headers
+}
+
+// lowerASCII appends b to dst with ASCII letters lowercased; a header name is ASCII (RFC 9110 §5.1).
+func lowerASCII(dst, b []byte) []byte {
+	for _, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		dst = append(dst, c)
+	}
+	return dst
+}
+
+// connectionNames reports whether the Connection header value lists the header name (lowercase)
+// as one of its comma-separated tokens, compared case-insensitively with surrounding whitespace
+// trimmed. A header named there is hop-by-hop (RFC 9110 §7.6.1) and is not forwarded.
+func connectionNames(connection, name []byte) bool {
+	for len(connection) > 0 {
+		token := connection
+		if i := bytes.IndexByte(connection, ','); i >= 0 {
+			token, connection = connection[:i], connection[i+1:]
+		} else {
+			connection = nil
+		}
+		token = bytes.TrimSpace(token)
+		if len(token) != len(name) {
+			continue
+		}
+		matched := true
+		for i := range token {
+			c := token[i]
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != name[i] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 	name, path, ok := endpointRequestPath(string(ctx.Path()))
 	if !ok {
@@ -97,32 +179,7 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 	}
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, r.handlerStore)
-	headers := make(map[string]string)
-	connectionTokens := map[string]struct{}{}
-	for _, token := range strings.Split(string(ctx.Request.Header.Peek("Connection")), ",") {
-		if token = strings.ToLower(strings.TrimSpace(token)); token != "" {
-			connectionTokens[token] = struct{}{}
-		}
-	}
-	ctx.Request.Header.All()(func(key, value []byte) bool {
-		name := strings.ToLower(string(key))
-		if _, drop := relayDroppedHeaders[name]; drop {
-			return true
-		}
-		if _, drop := connectionTokens[name]; drop {
-			return true
-		}
-		// Beyond the fixed list, any credential-looking header is dropped (Cf-Access-Jwt-Assertion,
-		// x-amzn-oidc-*, X-Forwarded-Access-Token, *secret*, *-token): an auth proxy in front of
-		// Bifrost adds these to every request, and a relay's upstream is a third party that could
-		// replay them against Bifrost. Provider passthrough reaches only known providers. A caller
-		// who means to send such a header names it with x-bf-eh-*, which is exempt.
-		if strings.HasPrefix(name, "x-bf-") || schemas.IsSensitiveHeader(name) {
-			return true
-		}
-		headers[name] = string(value)
-		return true
-	})
+	headers := relayForwardHeaders(&ctx.Request.Header)
 	result, bifrostErr := r.manager.Serve(bifrostCtx, relay.Request{
 		Endpoint: name,
 		Method:   string(ctx.Method()),
@@ -167,7 +224,8 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 	// stall it; a second goroutine hands the chunks to fasthttp through an SSEStreamReader; and an SSE
 	// reply gets the comment heartbeat, so a caller who left is noticed while the upstream is quiet.
 	reader := lib.NewSSEStreamReader()
-	ctx.Response.SetBodyStream(reader, -1)
+	body := &relayStreamBody{SSEStreamReader: reader}
+	ctx.Response.SetBodyStream(body, -1)
 	var heartbeatDone chan struct{}
 	var heartbeatExited <-chan struct{}
 	if relayHeartbeatEligible(stream.Headers) {
@@ -179,6 +237,8 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 	// When the upstream read ended; written before chunks closes, so the writer reads it once the
 	// channel is drained.
 	var upstreamEnded time.Time
+	// The read error that ended the upstream, other than EOF; written before chunks closes too.
+	var upstreamErr error
 	go func() {
 		defer close(producerDone)
 		defer close(chunks)
@@ -211,8 +271,11 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 			}
 			// EOF ends the stream normally; any other error (an idle timeout, an upstream reset, the
 			// context cancelled once the caller left) has been reported to the post-hooks by the
-			// stream itself.
+			// stream itself, and cuts the caller's reply short (relayStreamBody).
 			if readErr != nil {
+				if readErr != io.EOF {
+					upstreamErr = readErr
+				}
 				return
 			}
 		}
@@ -237,6 +300,11 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 				}
 				close(stop)
 				<-producerDone
+				// A stream the upstream did not finish ends without the terminating chunk; set before
+				// reader.Done() below, which is what lets fasthttp read the end of the body.
+				if upstreamErr != nil {
+					body.abort(upstreamErr)
+				}
 				// The producer has returned, so the stream is no longer read and can be closed: a
 				// stream the producer did not finish ends as cancelled with what was forwarded.
 				_ = stream.Close()
@@ -274,6 +342,33 @@ func (r *RelayGatewayHandler) handle(ctx *fasthttp.RequestCtx) {
 	}()
 }
 
+// relayStreamBody is the body fasthttp writes a relayed stream from: the SSEStreamReader it wraps,
+// except that a stream whose upstream failed partway (a read error, an idle timeout, a reset, a
+// usage-parse failure) ends in an error rather than io.EOF. fasthttp's writeBodyChunked then
+// returns that error without writing the terminating "0\r\n\r\n" chunk and the server closes the
+// connection, so the caller's HTTP client reports an incomplete reply (Go: io.ErrUnexpectedEOF)
+// instead of a complete one. Only this relay path uses it; LLM and passthrough streams keep their
+// own endings.
+type relayStreamBody struct {
+	*lib.SSEStreamReader
+	aborted error // set by the stream writer before reader.Done(); read only once the event channel is closed
+}
+
+// abort makes the end of the body an error. It must be called before the reader's Done: the close
+// of its event channel is what orders this write before Read sees the end.
+func (b *relayStreamBody) abort(cause error) {
+	b.aborted = fmt.Errorf("relay stream aborted before the upstream reply ended: %w", cause)
+}
+
+// Read implements io.Reader, replacing the end of an aborted stream with its error.
+func (b *relayStreamBody) Read(p []byte) (int, error) {
+	n, err := b.SSEStreamReader.Read(p)
+	if err == io.EOF && b.aborted != nil {
+		return n, b.aborted
+	}
+	return n, err
+}
+
 // endStream runs one step of a stream's teardown, recovering a panic in it (a post-hook, a span,
 // trace export) so the steps after it still run and the caller's response still ends.
 func (r *RelayGatewayHandler) endStream(step func() []schemas.PluginLogEntry) (logs []schemas.PluginLogEntry) {
@@ -302,15 +397,22 @@ var relayHeartbeatInterval = lib.DefaultSSEHeartbeatInterval
 // relayHeartbeatEligible reports whether a relayed stream may carry the SSE comment heartbeat: only
 // a reply whose media type is exactly text/event-stream, as passthroughHeartbeatEligible rules, since
 // the relay forwards the upstream's bytes unchanged and extra bytes in any other format would
-// corrupt it.
+// corrupt it. A stream still content-encoded is excluded for the same reason: plain comment lines
+// inside a compressed body break it.
 func relayHeartbeatEligible(headers map[string]string) bool {
+	eventStream := false
 	for k, v := range headers {
-		if strings.EqualFold(k, "content-type") {
+		switch {
+		case strings.EqualFold(k, "content-encoding"):
+			if coding := strings.TrimSpace(v); coding != "" && !strings.EqualFold(coding, "identity") {
+				return false
+			}
+		case strings.EqualFold(k, "content-type"):
 			mediaType, _, _ := strings.Cut(v, ";")
-			return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
+			eventStream = strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
 		}
 	}
-	return false
+	return eventStream
 }
 
 // runTransportPostHookCompleter runs the deferred transport post-hooks once a relay stream ends and
@@ -341,8 +443,10 @@ func writeEndpointHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
 		if lib.IsGatewayOwnedResponseHeader(k) {
 			continue
 		}
+		// Content-Encoding is kept: core/relay hands a buffered reply over decoded and drops it there,
+		// and names it only on a stream it forwards still encoded, which the caller must decode.
 		switch strings.ToLower(k) {
-		case "content-length", "transfer-encoding", "connection", "keep-alive", "content-encoding":
+		case "content-length", "transfer-encoding", "connection", "keep-alive":
 			continue
 		}
 		ctx.Response.Header.Set(k, v)

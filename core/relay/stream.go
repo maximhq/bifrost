@@ -39,6 +39,7 @@ type Stream struct {
 	usage        *schemas.RelayUsage
 	bytesOut     int64
 	eofPending   bool // the last bytes arrived with EOF; the next Read reports it
+	flushed      bool // the framer's trailing event has been read
 
 	capture  []byte        // the whole body for the log row; nil when content logging is off
 	activity *atomic.Int64 // the logging plugin's last-activity slot; nil without the plugin
@@ -60,7 +61,7 @@ type Stream struct {
 func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, start time.Time, mapping resolvedUsage, billable bool, requestUnits usageFields, finish func(*schemas.BifrostRelayResponse, *schemas.BifrostError)) *Stream {
 	s := &Stream{
 		StatusCode: resp.StatusCode,
-		Headers:    e.responseHeaders(resp),
+		Headers:    e.streamResponseHeaders(resp),
 		ctx:        ctx,
 		body:       resp.Body,
 		start:      start,
@@ -77,7 +78,10 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 	}
 	s.defaultUsage = mapping.defaultUsage(requestUnits)
 	observe, final := mapping.streamUsage(requestUnits)
-	if isEventStream(resp.Header.Get("Content-Type")) {
+	// Only a route that reads usage from the events frames them (eventPaths is every path an event
+	// is probed for): a flat fee, request-side units or a whole-body measure never look inside an
+	// event, so such a stream pays nothing to frame it.
+	if len(mapping.eventPaths) > 0 && isEventStream(resp.Header.Get("Content-Type")) {
 		s.framer = &providerUtils.SSEFramer{}
 		s.hasUsage = mapping.hasUsageEvent
 		s.observe = observe
@@ -151,6 +155,17 @@ func (s *Stream) Read(p []byte) (int, error) {
 		if s.runes != nil {
 			s.runes.Write(p[:n])
 		}
+		// The capture keeps the whole reply for the post-hooks, as a buffered reply's body does and
+		// as the stream accumulator keeps an LLM stream; there is no bound of the relay's own. It is
+		// taken before the events are read, so a chunk that fails the stream, which the caller still
+		// receives, is in the logged body too, as an LLM row logs every chunk its caller was sent.
+		if s.capture != nil {
+			chunk := p[:n]
+			if s.captureLimit > 0 {
+				chunk = chunk[:min(len(chunk), max(s.captureLimit-len(s.capture), 0))]
+			}
+			s.capture = append(s.capture, chunk...)
+		}
 		if s.framer != nil {
 			// Reading usage from the events is Bifrost's own work on the stream, as decoding an
 			// LLM stream's events is (the breakdown's response-parse bucket).
@@ -158,19 +173,11 @@ func (s *Stream) Read(p []byte) (int, error) {
 			parseErr := s.observeChunk(p[:n])
 			schemas.AddStreamParse(s.ctx, time.Since(parseStart))
 			if parseErr != nil {
-				// The bytes read are still handed over; the stream ends with an internal error.
+				// The bytes read are still handed over; the stream ends with the error (a panic in
+				// the usage mapping).
 				s.complete(parseErr)
 				return n, parseErr
 			}
-		}
-		// The capture keeps the whole reply for the post-hooks, as a buffered reply's body does and
-		// as the stream accumulator keeps an LLM stream; there is no bound of the relay's own.
-		if s.capture != nil {
-			chunk := p[:n]
-			if s.captureLimit > 0 {
-				chunk = chunk[:min(len(chunk), max(s.captureLimit-len(s.capture), 0))]
-			}
-			s.capture = append(s.capture, chunk...)
 		}
 	}
 	switch {
@@ -201,11 +208,12 @@ func (s *Stream) finishEOF() error {
 	return err
 }
 
-// flushFramer observes the event the framer still holds at EOF; see observeChunk.
+// flushFramer observes the event the framer still holds at EOF, once; see observeChunk.
 func (s *Stream) flushFramer() (err error) {
-	if s.framer == nil {
+	if s.framer == nil || s.flushed {
 		return nil
 	}
+	s.flushed = true
 	defer func() {
 		if rec := recover(); rec != nil {
 			err = streamPanic{value: rec}
@@ -218,7 +226,9 @@ func (s *Stream) flushFramer() (err error) {
 }
 
 // observeChunk feeds a chunk's complete events to the usage mapping. A panic in it is Bifrost's own
-// fault, not the caller's or the upstream's, so it comes back as a streamPanic.
+// fault, not the caller's or the upstream's, so it comes back as a streamPanic. An event past the
+// framer's 10 MiB ceiling (the native SSE scanner's, which passthrough streams also use) is skipped
+// rather than failing the stream: it is still forwarded, and only its usage goes unread.
 func (s *Stream) observeChunk(chunk []byte) (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -272,9 +282,18 @@ func (s *Stream) finalUsage() (usage *schemas.RelayUsage, err error) {
 }
 
 // Close releases the upstream connection. Closing before EOF ends the stream as cancelled; the
-// usage observed so far is still reported, so a caller cannot avoid the charge by hanging up.
+// usage observed so far is still reported, so a caller cannot avoid the charge by hanging up. When
+// the upstream had already ended (its last bytes came with EOF and the reader left before asking
+// for more), the trailing event it left undelimited is complete and is read too, as finishEOF reads
+// it; before that, what the framer holds is a partial event and is never read.
 func (s *Stream) Close() error {
-	s.complete(context.Canceled)
+	var err error = context.Canceled
+	if s.eofPending {
+		if flushErr := s.flushFramer(); flushErr != nil {
+			err = flushErr
+		}
+	}
+	s.complete(err)
 	return s.body.Close()
 }
 
@@ -292,6 +311,9 @@ func (s *Stream) complete(readErr error) {
 		}
 		if len(s.capture) > 0 {
 			resp.Body = s.capture
+		}
+		if s.framer != nil {
+			resp.OversizedEvents = s.framer.Skipped()
 		}
 		if s.counted {
 			usage, usageErr := s.finalUsage()

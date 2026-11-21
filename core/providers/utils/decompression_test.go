@@ -630,3 +630,47 @@ func TestIsDecompressionSizeLimitError(t *testing.T) {
 		t.Error("nil is not an error")
 	}
 }
+
+// DecodeContentEncodedBody decodes a body held as bytes for callers that keep the original (the
+// relay measures usage on a decoded copy and forwards what the upstream sent); CheckAndDecodeBody
+// delegates to it, so its own tests pin the same behaviour through a fasthttp response.
+func TestDecodeContentEncodedBody(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     []byte
+		encoding string
+		want     []byte
+		wantErr  bool
+	}{
+		{"gzip", compressGzip(testPayload), "gzip", testPayload, false},
+		{"x-gzip", compressGzip(testPayload), "x-gzip", testPayload, false},
+		{"deflate", compressFlate(testPayload), "deflate", testPayload, false},
+		{"brotli", compressBrotli(testPayload), "br", testPayload, false},
+		{"zstd", compressZstd(testPayload), "zstd", testPayload, false},
+		{"stacked, applied left to right", compressBrotli(compressGzip(testPayload)), " GZIP , br ", testPayload, false},
+		{"unsupported coding", testPayload, "compress", nil, true},
+		{"corrupt body", []byte("not brotli"), "br", nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			original := append([]byte(nil), tc.body...)
+			got, err := DecodeContentEncodedBody(tc.body, tc.encoding)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %q", got)
+				}
+			} else if err != nil || !bytes.Equal(got, tc.want) {
+				t.Fatalf("got %q, %v; want %q", got, err, tc.want)
+			}
+			if !bytes.Equal(tc.body, original) {
+				t.Fatal("the input body was modified")
+			}
+		})
+	}
+	for _, enc := range []string{"", "identity", "  Identity "} {
+		got, err := DecodeContentEncodedBody(testPayload, enc)
+		if err != nil || len(got) == 0 || &got[0] != &testPayload[0] {
+			t.Fatalf("encoding %q: an uncoded body is returned as is, got %q, %v", enc, got, err)
+		}
+	}
+}

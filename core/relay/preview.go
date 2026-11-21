@@ -119,8 +119,13 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	if _, set := headers["accept"]; !set && in.Accept != "" {
 		headers["accept"] = in.Accept
 	}
-	// One content type for the whole preview, the one the upstream receives: the sample's, else the
-	// operator's, as a passthrough call's caller header replaces the extra header.
+	// The sample's headers go through the filter a real call's do (see Serve): a header the relay
+	// keeps off the upstream request (a caller's x-amz-* other than X-Amz-Target under SigV4, its
+	// Authorization or copy of the credential header, a connection-level header) selects no route,
+	// and headerValue reads the operator's extra header over the sample's copy.
+	headers = e.routeHeaders(headers, nil)
+	// One content type for the whole preview, the one the upstream receives: the operator's, since
+	// the relay drops a caller's copy of an extra header, else the sample's.
 	contentType, _ := headerValue("content-type", headers, e.operatorHeaders)
 	route := e.matchRoute(method, path, headers)
 	usage, billable := e.usage, billableByDefault(method, nil)

@@ -76,33 +76,41 @@ func TestPreviewUsage(t *testing.T) {
 		require.NotNil(t, out.RouteIndex, "the route is matched on the path without its query")
 		assert.False(t, out.Streams, "a JSON reply is read and priced whatever the caller asked for")
 	})
-	t.Run("routes match on the sample's headers over the operator's extra headers, as on the relay", func(t *testing.T) {
+	t.Run("routes match on the operator's extra headers over the sample's, as on the relay", func(t *testing.T) {
 		extra := map[string]schemas.SecretVar{"X-Amz-Target": *schemas.NewSecretVar("Textract.AnalyzeDocument")}
 		in := textract
 		in.Headers = map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}
 		out, err := previewUsage(cfg, extra, in, false)
 		require.NoError(t, err)
 		require.NotNil(t, out.RouteIndex)
-		assert.Equal(t, 1, *out.RouteIndex, "the sample's X-Amz-Target replaces the operator's on the wire, so it picks the route")
+		assert.Equal(t, 0, *out.RouteIndex, "the operator's X-Amz-Target is sent and the sample's dropped, so the operator's picks the route")
 		in.Headers = nil
 		out, err = previewUsage(cfg, extra, in, false)
 		require.NoError(t, err)
 		require.NotNil(t, out.RouteIndex)
 		assert.Equal(t, 0, *out.RouteIndex, "with no sample copy the operator's X-Amz-Target picks the route")
 	})
-	t.Run("under sigv4 a route can match on an x-amz header the upstream never receives", func(t *testing.T) {
+	t.Run("routes match only on sample headers a real call sends upstream", func(t *testing.T) {
 		s3 := &schemas.RelayConfig{
 			Auth: schemas.RelayAuthConfig{Type: schemas.RelayAuthAWSSigV4, AWS: &schemas.RelayAWSAuthConfig{Service: "s3"}},
 			Routes: []schemas.RelayRouteConfig{
 				{Method: "PUT", Path: "/**", Headers: map[string]string{"X-Amz-Storage-Class": "GLACIER"}, Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.02)}},
+				{Method: "PUT", Path: "/**", Headers: map[string]string{"Authorization": "Bearer free"}, Billable: schemas.Ptr(false)},
+				{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}, Billable: schemas.Ptr(false)},
 				{Method: "PUT", Path: "/**", Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.01)}},
+				{Method: "POST", Path: "/"},
 			},
 		}
 		require.NoError(t, s3.Validate())
-		out, err := previewUsage(s3, nil, UsagePreviewInput{Method: "PUT", Path: "/bucket/key", Headers: map[string]string{"X-Amz-Storage-Class": "GLACIER"}}, false)
-		require.NoError(t, err)
-		require.NotNil(t, out.RouteIndex)
-		assert.Equal(t, 0, *out.RouteIndex, "the caller's x-amz-storage-class picks the route")
+		route := func(method, path string, headers map[string]string) int {
+			out, err := previewUsage(s3, nil, UsagePreviewInput{Method: method, Path: path, Headers: headers}, false)
+			require.NoError(t, err)
+			require.NotNil(t, out.RouteIndex)
+			return *out.RouteIndex
+		}
+		assert.Equal(t, 3, route("PUT", "/bucket/key", map[string]string{"X-Amz-Storage-Class": "GLACIER"}), "under sigv4 a caller's x-amz-* header is not sent, so it selects nothing, as on a real call")
+		assert.Equal(t, 3, route("PUT", "/bucket/key", map[string]string{"Authorization": "Bearer free"}), "the caller's Authorization is replaced by the credential")
+		assert.Equal(t, 2, route("POST", "/", map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}), "x-amz-target is forwarded, so it still selects its route")
 	})
 	t.Run("the sample path is decoded before matching, as the transport decodes it", func(t *testing.T) {
 		files := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{{Method: "GET", Path: "/files/*"}}}

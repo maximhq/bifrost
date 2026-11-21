@@ -197,19 +197,26 @@ func TestRouteCheckAllowlist(t *testing.T) {
 	assert.False(t, allowed("GET", "/jobs/42/status"))
 }
 
-// A route matches on the header value that is actually sent: the operator's extra header when one
-// replaces the caller's, so a caller cannot select a cheaper route by naming another operation;
-// and a Go SDK caller's header names match whatever their casing.
+// A route matches on the header value that is actually sent: the operator's extra header, which a
+// caller's copy (plain or x-bf-eh-*, any spelling) never replaces, so a caller cannot select a
+// cheaper route by naming another operation; and a Go SDK caller's header names match whatever
+// their casing.
 func TestMatchRouteSeesSentHeaders(t *testing.T) {
 	cfg := &schemas.RelayConfig{SkipRouteCheck: true, Routes: []schemas.RelayRouteConfig{
 		{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}, Billable: schemas.Ptr(false)},
 		{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.AnalyzeDocument"}},
 	}}
 	operator := &endpoint{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(nil, nil), operatorHeaders: map[string]string{"x-amz-target": "Textract.AnalyzeDocument"}}
-	route := operator.matchRoute("POST", "/", map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis"})
-	require.NotNil(t, route)
-	assert.False(t, route.billable, "the caller's header replaces the operator's on the wire, as on a passthrough call, so its route matches")
-	route = operator.matchRoute("POST", "/", nil)
+	for _, caller := range []map[string]string{
+		{"x-amz-target": "Textract.GetDocumentAnalysis"},
+		{"X-Amz-Target": "Textract.GetDocumentAnalysis"},
+		operator.routeHeaders(nil, map[string][]string{"x-amz-target": {"Textract.GetDocumentAnalysis"}}),
+	} {
+		route := operator.matchRoute("POST", "/", caller)
+		require.NotNil(t, route)
+		assert.True(t, route.billable, "the operator's header is what is sent, so a caller's copy %v cannot select the free route", caller)
+	}
+	route := operator.matchRoute("POST", "/", nil)
 	require.NotNil(t, route)
 	assert.True(t, route.billable, "with no caller copy the operator's header is what is sent")
 

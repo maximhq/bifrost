@@ -8,37 +8,89 @@ import (
 
 // SSEFramer splits a byte stream into SSE events incrementally, for relays that forward a body
 // unchanged and only observe its events. Each Write returns the data payloads of the events it
-// completed. The buffer is bounded by the same ceiling as the native SSE scanner: an event that
-// grows past it is dropped rather than buffered without limit.
+// completed. An event is held until its delimiter arrives, up to sseMaxBufSize, the ceiling the
+// native SSE scanner and passthrough streams use: one that grows past it is skipped, as a
+// passthrough stream drops it, and framing resumes after its delimiter. The bytes are still
+// forwarded by the caller; only the usage the skipped event carried goes unread, and Skipped counts
+// it. What it retains is the one event in progress, at most the ceiling plus one write.
 type SSEFramer struct {
-	pending bytes.Buffer
+	pending  bytes.Buffer
+	scanned  int  // bytes of pending the delimiter search already covered without a match
+	skipping bool // the event in progress passed the ceiling; its bytes are dropped up to its delimiter
+	skipped  int  // events skipped for passing the ceiling
 }
 
+// sseResumeOverlap is how far before the end of the bytes already searched a resumed search starts:
+// one byte short of the longest delimiter (CRLF CRLF), so a delimiter split across writes is found.
+const sseResumeOverlap = len("\r\n\r\n") - 1
+
 // Write appends chunk and returns the data payload of every event it completed. The returned
-// slices are copies and stay valid after the next call.
+// slices are copies and stay valid after the next call. The delimiter search resumes where the
+// last one stopped, so an event fed in many writes is scanned once, not once per write.
 func (f *SSEFramer) Write(chunk []byte) [][]byte {
 	f.pending.Write(chunk)
 	var out [][]byte
 	for {
 		data := f.pending.Bytes()
-		idx, delimLen := findFirstSSEFrameDelimiter(data)
+		// No delimiter starts before from: it would have ended inside the bytes already searched,
+		// and been found there. So each delimiter's first match in data[from:] is its first in data,
+		// and the result is the one a search of the whole of data returns.
+		from := max(f.scanned-sseResumeOverlap, 0)
+		idx, delimLen := findFirstSSEFrameDelimiter(data[from:])
 		if idx < 0 {
+			if f.skipping || len(data) > sseMaxBufSize {
+				f.skipEventInProgress(data)
+			} else {
+				f.scanned = len(data)
+			}
 			break
 		}
-		if p := extractSSEDataPayload(data[:idx]); isSSEEventPayload(p) {
-			out = append(out, append([]byte(nil), p...))
+		idx += from
+		switch {
+		case f.skipping:
+			f.skipping = false // the delimiter ends the skipped event; the next one is framed
+		case idx > sseMaxBufSize:
+			// Delimited within one write but past the ceiling all the same: skipped, so the outcome
+			// does not depend on how the upstream's bytes were split into writes.
+			f.skipped++
+		default:
+			if p := extractSSEDataPayload(data[:idx]); isSSEEventPayload(p) {
+				out = append(out, append([]byte(nil), p...))
+			}
 		}
 		f.pending.Next(idx + delimLen)
-	}
-	if f.pending.Len() > sseMaxBufSize {
-		f.pending.Reset()
+		f.scanned = 0
 	}
 	return out
 }
 
+// skipEventInProgress drops the held bytes of an event past the ceiling, keeping only the tail a
+// delimiter split across writes could start in, so a skipped event holds a few bytes, not its size.
+func (f *SSEFramer) skipEventInProgress(data []byte) {
+	if !f.skipping {
+		f.skipping = true
+		f.skipped++
+	}
+	var tail [sseResumeOverlap]byte
+	n := copy(tail[:], data[len(data)-min(len(data), sseResumeOverlap):])
+	f.pending.Reset()
+	f.pending.Write(tail[:n])
+	f.scanned = n
+}
+
+// Skipped reports how many events passed the ceiling and were skipped.
+func (f *SSEFramer) Skipped() int { return f.skipped }
+
 // Flush returns the payload of a trailing event the stream ended without delimiting, if any.
 func (f *SSEFramer) Flush() []byte {
-	defer f.pending.Reset()
+	defer func() {
+		f.pending.Reset()
+		f.scanned = 0
+		f.skipping = false
+	}()
+	if f.skipping {
+		return nil // the tail of a skipped event
+	}
 	if p := extractSSEDataPayload(f.pending.Bytes()); isSSEEventPayload(p) {
 		return append([]byte(nil), p...)
 	}

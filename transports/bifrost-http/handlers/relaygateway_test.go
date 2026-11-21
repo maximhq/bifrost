@@ -222,6 +222,34 @@ func TestRelayStreamHeartbeatFollowsPassthrough(t *testing.T) {
 	}
 }
 
+// A stream the upstream content-encoded beyond the gzip net/http decodes is forwarded as it came: the
+// caller gets its Content-Encoding so it can decode the bytes, and no heartbeat is written into them,
+// since plain comment lines inside a compressed body would corrupt it.
+func TestRelayStreamForwardsContentEncodingWithoutHeartbeat(t *testing.T) {
+	previous := relayHeartbeatInterval
+	relayHeartbeatInterval = 20 * time.Millisecond
+	t.Cleanup(func() { relayHeartbeatInterval = previous })
+	encoded := []byte{0x1b, 0x2a, 0x00, 0xf8, 0x8d, 0x94, 0x6e, 0xde, 0x0a, 0x0a, 0x45}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Encoding", "br")
+		_, _ = w.Write(encoded[:10]) // ends on "\n\n", where a heartbeat would be written
+		w.(http.Flusher).Flush()
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write(encoded[10:])
+	}))
+	defer upstream.Close()
+	base := serveRelayGatewayHTTP(t, streamingRelay(t, "enc", upstream.URL))
+	client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+	resp, err := client.Post(base+"/relay/enc/s", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "br", resp.Header.Get("Content-Encoding"), "the caller is told how the bytes are encoded")
+	assert.Equal(t, encoded, body, "the encoded bytes arrive unchanged, with no heartbeat written into them")
+}
+
 // A caller that hangs up during a quiet stream is noticed by the heartbeat and the upstream request
 // is cancelled, as a passthrough stream's is, rather than held open until the idle timeout.
 func TestRelayStreamCancelsUpstreamWhenCallerLeaves(t *testing.T) {
@@ -336,5 +364,172 @@ func BenchmarkRelayStreamForward(b *testing.B) {
 		if len(body) != len(payload) {
 			b.Fatalf("got %d bytes, want %d", len(body), len(payload))
 		}
+	}
+}
+
+// relayHeadersRequest builds the request headers a typical relay call carries; connection is the
+// Connection header value, omitted when empty.
+func relayHeadersRequest(connection string) *fasthttp.RequestHeader {
+	var h fasthttp.RequestHeader
+	h.SetMethod(fasthttp.MethodPost)
+	h.SetRequestURI("/relay/tavily/search")
+	h.SetHost("gateway.example.com")
+	h.SetContentType("application/json")
+	h.SetUserAgent("relay-client/1.0")
+	h.Set("Authorization", "Bearer sk-bf-virtual-key")
+	h.Set("Accept", "text/event-stream")
+	h.Set("X-Custom", "kept")
+	if connection != "" {
+		h.Set("Connection", connection)
+	}
+	return &h
+}
+
+// A header the caller names in Connection is hop-by-hop (RFC 9110 §7.6.1) and never forwarded,
+// matched case-insensitively and with the whitespace around each token ignored.
+func TestRelayForwardHeadersDropsConnectionTokens(t *testing.T) {
+	h := relayHeadersRequest(" keep-alive ,  X-Hop-One,x-hop-TWO , ,")
+	h.Set("X-Hop-One", "1")
+	h.Set("X-Hop-Two", "2")
+	h.Set("X-Hop-Three", "3")
+	got := relayForwardHeaders(h)
+	assert.NotContains(t, got, "x-hop-one")
+	assert.NotContains(t, got, "x-hop-two")
+	assert.Equal(t, "3", got["x-hop-three"], "a header the Connection header does not name is forwarded")
+	assert.Equal(t, "kept", got["x-custom"])
+	assert.Equal(t, "text/event-stream", got["accept"])
+	assert.NotContains(t, got, "connection")
+	assert.NotContains(t, got, "authorization")
+	assert.NotContains(t, got, "host")
+}
+
+// Reading the Connection header costs nothing on a request whose Connection header names only
+// tokens the relay drops anyway (keep-alive, close) or that has none: the header is parsed in
+// place, never split into strings or a set.
+func TestRelayForwardHeadersConnectionParseDoesNotAllocate(t *testing.T) {
+	without := relayHeadersRequest("")
+	keepAlive := relayHeadersRequest("keep-alive")
+	closing := relayHeadersRequest("close")
+	base := testing.AllocsPerRun(100, func() { _ = relayForwardHeaders(without) })
+	assert.Equal(t, base, testing.AllocsPerRun(100, func() { _ = relayForwardHeaders(keepAlive) }), "Connection: keep-alive allocates nothing extra")
+	assert.Equal(t, base, testing.AllocsPerRun(100, func() { _ = relayForwardHeaders(closing) }), "Connection: close allocates nothing extra")
+}
+
+// BenchmarkRelayForwardHeaders measures collecting the forwarded headers for a typical relay call,
+// which every relay request pays before it is served.
+func BenchmarkRelayForwardHeaders(b *testing.B) {
+	for _, connection := range []string{"", "keep-alive", "keep-alive, X-Hop"} {
+		name := connection
+		if name == "" {
+			name = "none"
+		}
+		b.Run(name, func(b *testing.B) {
+			h := relayHeadersRequest(connection)
+			h.Set("X-Hop", "1")
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = relayForwardHeaders(h)
+			}
+		})
+	}
+}
+
+// recordingRelayPipeline keeps the error the post-hooks are given, which is what the log row records.
+type recordingRelayPipeline struct {
+	err *atomic.Pointer[schemas.BifrostError]
+}
+
+func (recordingRelayPipeline) RunRelayPreHooks(_ *schemas.BifrostContext, req *schemas.BifrostRelayRequest, _ func(int)) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, int) {
+	return req, nil, 0
+}
+
+func (p recordingRelayPipeline) RunRelayPostHooks(_ *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError, _ int) (*schemas.BifrostRelayResponse, *schemas.BifrostError) {
+	if bifrostErr != nil {
+		p.err.Store(bifrostErr)
+	}
+	return resp, bifrostErr
+}
+
+// rawRelayCall sends a relay request on a raw connection that asks the gateway to close it after the
+// reply, and returns every byte the gateway wrote before the connection closed.
+func rawRelayCall(t *testing.T, base, path string) string {
+	t.Helper()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(base, "http://"))
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, conn.SetDeadline(time.Now().Add(10*time.Second)))
+	_, err = io.WriteString(conn, "POST "+path+" HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+	require.NoError(t, err)
+	raw, err := io.ReadAll(conn)
+	require.NoError(t, err, "the gateway closes the connection once the reply ends")
+	return string(raw)
+}
+
+// A relayed stream the upstream fails partway (a reset, an idle timeout) is cut off without the
+// chunked body's terminating chunk, so the caller's HTTP client reports an incomplete reply instead
+// of a complete one; the bytes forwarded before the failure still reach the caller, and the log row
+// still records the error. A stream the upstream completes ends with the terminating chunk.
+func TestRelayStreamAbortsCallerWhenUpstreamFails(t *testing.T) {
+	const terminator = "\r\n0\r\n\r\n"
+	for _, tc := range []struct {
+		name     string
+		idle     int
+		upstream func(w http.ResponseWriter, r *http.Request)
+		fails    bool
+	}{
+		{name: "upstream completes", upstream: func(w http.ResponseWriter, r *http.Request) {}},
+		{name: "upstream resets", fails: true, upstream: func(w http.ResponseWriter, r *http.Request) {
+			panic(http.ErrAbortHandler) // closes the connection without the terminating chunk
+		}},
+		{name: "upstream goes idle", idle: 1, fails: true, upstream: func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(10 * time.Second):
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: one\n\n")
+				w.(http.Flusher).Flush()
+				tc.upstream(w, r)
+			}))
+			defer upstream.Close()
+			manager := relay.NewManager(nil, nil)
+			cfg := &schemas.RelayConfig{
+				Name: "flaky", BaseURL: upstream.URL,
+				Auth:       schemas.RelayAuthConfig{Type: schemas.RelayAuthBearer},
+				Credential: &schemas.RelayCredential{Value: schemas.NewSecretVar("sk-endpoint")},
+				Routes:     []schemas.RelayRouteConfig{{Method: "POST", Path: "/s", Stream: schemas.Ptr(true)}},
+			}
+			if tc.idle > 0 {
+				cfg.Network = &schemas.RelayNetworkConfig{StreamIdleTimeoutInSeconds: tc.idle}
+			}
+			require.NoError(t, manager.Upsert(cfg))
+			var recorded atomic.Pointer[schemas.BifrostError]
+			pipeline := recordingRelayPipeline{err: &recorded}
+			manager.SetPluginPipeline(func() relay.PluginPipeline { return pipeline }, func(relay.PluginPipeline) {})
+			base := serveRelayGatewayHTTP(t, NewRelayGatewayHandler(manager, nil, nil))
+
+			raw := rawRelayCall(t, base, "/relay/flaky/s")
+			require.True(t, strings.HasPrefix(raw, "HTTP/1.1 200"), raw)
+			assert.Contains(t, raw, "data: one\n\n", "the bytes forwarded before the end reach the caller")
+			if !tc.fails {
+				assert.True(t, strings.HasSuffix(raw, terminator), "a completed stream ends with the terminating chunk: %q", raw)
+				assert.Nil(t, recorded.Load())
+				return
+			}
+			assert.NotContains(t, raw, terminator, "a failed stream is cut off without the terminating chunk: %q", raw)
+			assert.NotNil(t, recorded.Load(), "the log row records the upstream failure")
+
+			// What an HTTP client sees: the reply is reported incomplete, never as a clean end.
+			client := &http.Client{Timeout: 10 * time.Second}
+			resp, err := client.Post(base+"/relay/flaky/s", "application/json", strings.NewReader(`{}`))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			_, err = io.ReadAll(resp.Body)
+			assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		})
 	}
 }

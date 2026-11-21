@@ -2599,6 +2599,9 @@ func TestPostRelayHookReconcilesEvictedPartialRow(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "relay-late")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, "prod")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-7")
+	ctx.SetValue(schemas.BifrostContextKeyUserName, "Ada")
+	ctx.SetValue(schemas.BifrostContextKeyUserEmail, "ada@example.com")
 	_, _, err = plugin.PostRelayHook(ctx, &schemas.BifrostRelayResponse{
 		StatusCode: 200, Latency: 120, BytesOut: 42, Streamed: true, Body: []byte(`{"ok":true}`),
 		Usage: &schemas.RelayUsage{Cost: 0.033, Units: schemas.Ptr(4.0), BilledUnits: schemas.Ptr(4.0)},
@@ -2625,6 +2628,14 @@ func TestPostRelayHookReconcilesEvictedPartialRow(t *testing.T) {
 	}
 	if row.Cost == nil || *row.Cost != 0.033 || row.VirtualKeyID == nil || *row.VirtualKeyID != "vk-1" {
 		t.Fatal("expected cost and attribution on the reconciled row")
+	}
+	// The user is resolved after the pending entry is taken, so the reconcile is the only write that
+	// can carry it: the email must land with the id and name, as on a row written in one shot.
+	if row.UserID == nil || *row.UserID != "user-7" || row.UserName == nil || *row.UserName != "Ada" {
+		t.Fatalf("expected the user on the reconciled row, got id=%v name=%v", row.UserID, row.UserName)
+	}
+	if row.UserEmail == nil || *row.UserEmail != "ada@example.com" {
+		t.Fatalf("expected the user email on the reconciled row, got %v", row.UserEmail)
 	}
 	if row.ResponseBody == nil || *row.ResponseBody != `{"ok":true}` || row.RequestBody == nil {
 		t.Fatal("expected both bodies on the reconciled row")

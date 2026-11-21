@@ -391,8 +391,9 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	if name, dup := ambiguousHeader(in.Headers); dup {
 		return nil, statusError(http.StatusBadRequest, fmt.Sprintf("header %s is set under two spellings; send it once", name))
 	}
-	// Routes match, and the model is read, on the headers the upstream receives: the caller's, its
-	// x-bf-eh-* headers beneath them, then the operator's (see buildRequest).
+	// Routes match, and the model is read, on the headers the upstream receives: the operator's
+	// extra headers, then for any other name the caller's, its x-bf-eh-* headers beneath them (see
+	// buildRequest).
 	headers := e.routeHeaders(in.Headers, callerExtraHeaders(ctx))
 	contentType, _ := headerValue("content-type", headers, e.operatorHeaders)
 	p := e.plan(in.Method, in.Path, headers)
@@ -627,6 +628,7 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		Latency:    reply.latency.Milliseconds(),
 	}
 	if p.billing && reply.status >= 200 && reply.status < 300 {
+		// The body is already decoded (decodeReply), so usage is read from the bytes the caller gets.
 		resp.Usage = extractUsage(p.usage, reply.contentType, reply.body, requestUnits)
 		// A route that starts a job hands the job id and its settlement snapshot to the logging
 		// plugin, which records it for the sweeper. The start call is still counted here.
