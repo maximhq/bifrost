@@ -53,3 +53,4 @@
 - fix: streams cancelled before the upstream's first byte run their terminal post-hooks
 - chore: brotli 1.2.8 and dependency updates
 - chore: upgraded Go to 1.27.4
+- [fix]: Cohere chat completion streams report the cached prompt tokens from the final message-end usage in `usage.prompt_tokens_details.cached_read_tokens`, as non-streaming Cohere chat and both Cohere Responses paths already do (thanks [@pcbeingused333](https://github.com/pcbeingused333)!) (#8672)
