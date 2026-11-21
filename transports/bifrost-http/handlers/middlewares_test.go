@@ -6646,3 +6646,134 @@ func BenchmarkTransportInterceptorMiddlewareBody(b *testing.B) {
 		}
 	})
 }
+
+type failingStreamReader struct {
+	err error
+}
+
+func (r failingStreamReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+// TestRequestBodyMiddleware_MaterializesKnownLengthStream pins that known-length
+// non-multipart streamed bodies (including >64 KB payloads) are materialized via
+// BodyWriteTo + SetBodyRaw so IsBodyStream is cleared before any downstream Body() call.
+func TestRequestBodyMiddleware_MaterializesKnownLengthStream(t *testing.T) {
+	largePayload := []byte(`{"model":"openai/gpt-4o-mini","prompt":"` + strings.Repeat("x", 80<<10) + `"}`)
+
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+	}{
+		{name: "over 64KB read buffer", payload: largePayload},
+		{name: "small non-empty", payload: []byte(`{"ok":true}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var wasStream bool
+			var hadBodyStream bool
+			var gotBody []byte
+
+			handler := RequestBodyMiddleware(nil)(func(ctx *fasthttp.RequestCtx) {
+				wasStream = ctx.Request.IsBodyStream()
+				hadBodyStream = ctx.RequestBodyStream() != nil
+				gotBody = append([]byte(nil), ctx.Request.Body()...)
+				ctx.SetStatusCode(fasthttp.StatusOK)
+			})
+
+			req := &fasthttp.Request{}
+			req.SetRequestURI("http://bifrost/v1/chat/completions")
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.SetBody(tc.payload)
+
+			resp := serveStreamingRequest(t, handler, 10<<20, req)
+			if resp.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("status = %d (%s), want 200", resp.StatusCode(), resp.Body())
+			}
+			if wasStream || hadBodyStream {
+				t.Fatalf("downstream still saw active body stream (IsBodyStream=%v, RequestBodyStream!=nil=%v)", wasStream, hadBodyStream)
+			}
+			if !bytes.Equal(gotBody, tc.payload) {
+				t.Fatalf("handler got %d bytes, want %d", len(gotBody), len(tc.payload))
+			}
+		})
+	}
+
+	t.Run("zero length stream", func(t *testing.T) {
+		var wasStream bool
+		var gotLen int
+		handler := RequestBodyMiddleware(nil)(func(ctx *fasthttp.RequestCtx) {
+			wasStream = ctx.Request.IsBodyStream()
+			gotLen = len(ctx.Request.Body())
+			ctx.SetStatusCode(fasthttp.StatusOK)
+		})
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.Header.SetContentLength(0)
+		ctx.Request.SetBodyStream(bytes.NewReader(nil), 0)
+
+		handler(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status = %d, want 200", ctx.Response.StatusCode())
+		}
+		if wasStream || gotLen != 0 {
+			t.Fatalf("wasStream=%v gotLen=%d, want false and 0", wasStream, gotLen)
+		}
+	})
+}
+
+// TestRequestBodyMiddleware_StreamErrorAndIncompleteBody verifies that stream
+// read errors are surfaced even when len(err.Error()) matches Content-Length, and
+// truncated streams are rejected with 400 and Connection: close.
+func TestRequestBodyMiddleware_StreamErrorAndIncompleteBody(t *testing.T) {
+	t.Run("read error matching content length", func(t *testing.T) {
+		streamErr := errors.New("boom123456") // len == 10
+		handlerRan := false
+		handler := RequestBodyMiddleware(nil)(func(*fasthttp.RequestCtx) {
+			handlerRan = true
+		})
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.Header.SetContentLength(len(streamErr.Error()))
+		ctx.Request.SetBodyStream(failingStreamReader{err: streamErr}, len(streamErr.Error()))
+
+		handler(ctx)
+		if handlerRan {
+			t.Fatal("handler should not run on failed stream read")
+		}
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", ctx.Response.StatusCode())
+		}
+		if !ctx.Response.ConnectionClose() {
+			t.Fatal("expected Connection: close on stream read error")
+		}
+		if !strings.Contains(string(ctx.Response.Body()), streamErr.Error()) {
+			t.Fatalf("expected error %q in response body, got %s", streamErr.Error(), ctx.Response.Body())
+		}
+	})
+
+	t.Run("truncated stream", func(t *testing.T) {
+		handlerRan := false
+		handler := RequestBodyMiddleware(nil)(func(*fasthttp.RequestCtx) {
+			handlerRan = true
+		})
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.Header.SetContentLength(10)
+		ctx.Request.SetBodyStream(strings.NewReader("short"), 10)
+
+		handler(ctx)
+		if handlerRan {
+			t.Fatal("handler should not run on incomplete stream")
+		}
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", ctx.Response.StatusCode())
+		}
+		if !ctx.Response.ConnectionClose() {
+			t.Fatal("expected Connection: close on incomplete stream")
+		}
+	})
+}
