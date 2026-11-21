@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -414,9 +415,9 @@ func TestListToolFilesExternalRankerSuccess(t *testing.T) {
 	}
 }
 
-// Two raw tool names that come to one canonical name share a file but get
-// distinct candidate ids, so a ranker that scores every candidate once is
-// accepted, and each id still names its own tool.
+// Two raw tool names that come to one canonical name get distinct candidate
+// ids, so a ranker that scores every candidate once is accepted, and each id
+// still names its own tool. Each is listed under its own raw-name file.
 func TestListToolFilesExternalRankerSharedFileGetsUniqueIDs(t *testing.T) {
 	rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
 		scores := []map[string]interface{}{}
@@ -442,8 +443,8 @@ func TestListToolFilesExternalRankerSharedFileGetsUniqueIDs(t *testing.T) {
 	if !strings.Contains(out, "(discovery ranker)") {
 		t.Fatalf("expected the ranker answer to be used:\n%s", out)
 	}
-	if paths := shortlistPaths(out); len(paths) != 1 || paths[0] != "servers/crm/get_user.pyi" {
-		t.Fatalf("expected the shared file once, got %v\n%s", paths, out)
+	if paths := shortlistPaths(out); len(paths) != 2 || !slices.Contains(paths, "servers/crm/get-user.pyi") || !slices.Contains(paths, "servers/crm/get_user.pyi") {
+		t.Fatalf("expected one raw-name file per colliding tool, got %v\n%s", paths, out)
 	}
 	req := nextRankRequest(t, rs, "find a user", out)
 	descriptions := map[string]string{}
@@ -468,6 +469,53 @@ func TestListToolFilesExternalRankerSharedFileGetsUniqueIDs(t *testing.T) {
 	for _, item := range items {
 		if item.candidate.ID == "servers/crm/get_user.pyi#2" && item.candidate.Description != "Look up a user record" {
 			t.Fatalf("id moved to another tool after reordering: %+v", item.candidate)
+		}
+	}
+}
+
+// A colliding tool picked by the ranker is listed under a file that
+// readToolFile resolves to that tool, not to the other tool sharing its
+// canonical name, whichever of the two is listed first.
+func TestListToolFilesSharedFilePathReadsRankedTool(t *testing.T) {
+	rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+		scores := []map[string]interface{}{}
+		for _, c := range req.Candidates {
+			relevance := 0.0
+			if c.Description == "Fetch a user by email" {
+				relevance = 0.9
+			}
+			scores = append(scores, map[string]interface{}{"id": c.ID, "relevance": relevance})
+		}
+		writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": scores})
+	})
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["crm"] = &schemas.MCPClientState{Name: "crm", ExecutionConfig: &schemas.MCPClientConfig{ID: "crm-id", Name: "crm", IsCodeModeClient: true}}
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+
+	for _, tools := range [][]schemas.ChatTool{
+		{discoveryTestTool("get_user", "Look up a user record", "id"), discoveryTestTool("get-user", "Fetch a user by email", "email")},
+		{discoveryTestTool("get-user", "Fetch a user by email", "email"), discoveryTestTool("get_user", "Look up a user record", "id")},
+	} {
+		manager.tools["crm"] = tools
+		out := listToolFiles(t, mode, `{"query":"find a user by email"}`)
+		nextRankRequest(t, rs, "find a user by email", out)
+		if !strings.Contains(out, "(discovery ranker)") {
+			t.Fatalf("expected the ranker answer to be used:\n%s", out)
+		}
+		paths := shortlistPaths(out)
+		if len(paths) != 1 {
+			t.Fatalf("expected only the ranked tool, got %v\n%s", paths, out)
+		}
+		msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("call-2"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: fmt.Sprintf(`{"fileName":%q}`, paths[0])},
+		})
+		if err != nil || msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+			t.Fatalf("readToolFile(%s) failed: %v", paths[0], err)
+		}
+		if content := *msg.Content.ContentStr; !strings.Contains(content, "email") || strings.Contains(content, "Look up a user record") {
+			t.Fatalf("readToolFile(%s) returned the other colliding tool:\n%s", paths[0], content)
 		}
 	}
 }
