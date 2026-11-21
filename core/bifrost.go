@@ -7735,6 +7735,7 @@ func executeRequestWithRetries[T any](
 			ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
 			ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
 			ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
+			providerUtils.ResetStreamTerminalHandled(ctx)
 			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
 				tracer.ResetStreamAccumulator(traceID)
 			}

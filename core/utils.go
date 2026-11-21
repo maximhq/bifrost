@@ -16,6 +16,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/network"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -464,6 +465,7 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
+	providerUtils.ResetStreamTerminalHandled(ctx)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 	ctx.ClearValue(schemas.BifrostContextKeyDisableStore)
 	// A fallback model decides its own structured-output path.

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -2138,4 +2139,109 @@ func TestCancelDuringAFallbackStopsTheChain(t *testing.T) {
 	if n := lastHits.Load(); n != 0 {
 		t.Fatalf("the last fallback ran %d time(s) after the caller cancelled", n)
 	}
+}
+
+// panickingChunkTracer panics while tracing the streamed chunk that carries trigger, the
+// way a faulty tracer or chunk converter would on a provider's stream goroutine.
+type panickingChunkTracer struct {
+	schemas.NoOpTracer
+	trigger string
+}
+
+func (t *panickingChunkTracer) CreateTrace(_ string, _ ...string) string { return "panic-trace" }
+
+func (t *panickingChunkTracer) AddStreamingChunk(_ string, resp *schemas.BifrostResponse) {
+	if resp == nil || resp.ChatResponse == nil {
+		return
+	}
+	for _, choice := range resp.ChatResponse.Choices {
+		if d := choice.ChatStreamResponseChoice; d != nil && d.Delta != nil && d.Delta.Content != nil && *d.Delta.Content == t.trigger {
+			panic("tracing the chunk")
+		}
+	}
+}
+
+// A stream attempt that panics after an earlier attempt of the same request failed on
+// its first chunk still ends with its own terminal error through the post-hooks. The
+// earlier attempt's terminal bookkeeping belongs to that attempt; before the fix it
+// survived the retry or fallback, so the recovered panic sent nothing and plugins never
+// saw the served attempt end.
+func TestStreamPanicAfterRetryOrFallbackReachesPostHooks(t *testing.T) {
+	served := sseHandler(
+		`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"he"}}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"llo"}}]}`,
+		`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`,
+	)
+	cases := []struct {
+		name       string
+		maxRetries int
+		fallbacks  []schemas.Fallback
+	}{
+		{name: "retry", maxRetries: 1},
+		{name: "fallback", fallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if hits.Add(1) == 1 {
+					sseHandler(streamRateLimitEvent)(w, r)
+					return
+				}
+				served(w, r)
+			}))
+			defer server.Close()
+
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = tc.maxRetries
+			account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+				{ID: "panic-key", Value: *schemas.NewSecretVar("sk-panic"), Models: schemas.WhiteList{"*"}, Weight: 100},
+			})
+			recorder := &streamHookRecorder{}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+				Tracer:     &panickingChunkTracer{trigger: "llo"},
+				LLMPlugins: []schemas.LLMPlugin{recorder},
+			})
+			if err != nil {
+				t.Fatalf("failed to initialize bifrost: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider:  schemas.OpenAI,
+				Model:     "gpt-4o-mini",
+				Input:     []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+				Fallbacks: tc.fallbacks,
+			})
+			if bifrostErr != nil {
+				t.Fatalf("stream failed before output (server hit %d time(s)): %s", hits.Load(), bifrostErr.GetErrorString())
+			}
+			_, chunkErrs := drainChatStream(stream)
+			if hits.Load() != 2 {
+				t.Fatalf("server hits = %d, want 2", hits.Load())
+			}
+			if len(chunkErrs) != 1 || chunkErrs[0] != providerUtils.ErrStreamPanicMessage {
+				t.Errorf("client error chunks = %v, want one %q", chunkErrs, providerUtils.ErrStreamPanicMessage)
+			}
+			_, errs, _, _ := recorder.snapshot()
+			if n := countContaining(errs, providerUtils.ErrStreamPanicMessage); n != 1 {
+				t.Errorf("error post-hooks = %v, want the served attempt's panic error exactly once", errs)
+			}
+		})
+	}
+}
+
+func countContaining(list []string, sub string) int {
+	n := 0
+	for _, s := range list {
+		if strings.Contains(s, sub) {
+			n++
+		}
+	}
+	return n
 }
