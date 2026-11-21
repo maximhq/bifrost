@@ -1828,6 +1828,7 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 	m.logger.Debug("%s Closed client transport connection for MCP server '%s'", MCPLogPrefix, client.ExecutionConfig.Name)
 	// Drop the client's discovery from the store
 	m.discoveryStore.DeleteDiscovery(m.ctx, client.ExecutionConfig)
+	m.forgetSkippedToolWarnings(client.ExecutionConfig.Name)
 
 	delete(m.clientMap, id)
 	m.dropPerCallConn(id)
@@ -2398,6 +2399,11 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		if oldMax, newMax := m.maxProtocolVersionFor(client.ExecutionConfig), m.maxProtocolVersionFor(newConfig); oldMax != newMax {
 			m.dropPerCallConn(id)
 			renegotiate = client.Conn != nil && !wasDisabled && needsRenegotiation(client.Conn.ProtocolVersion(), oldMax, newMax)
+		}
+
+		// Warnings are recorded under the client name: drop the old name's on a rename.
+		if oldName := client.ExecutionConfig.Name; oldName != updatedConfig.Name {
+			m.forgetSkippedToolWarnings(oldName)
 		}
 
 		// Atomically replace the config pointer
@@ -4411,4 +4417,10 @@ func unmatchedToolSelections(selected schemas.WhiteList, toolMap map[string]sche
 		}
 	}
 	return unmatched
+}
+
+// forgetSkippedToolWarnings drops the invalid-tool warning record of a removed or renamed
+// client, so a client added later under the same name warns about its invalid tools again.
+func (m *MCPManager) forgetSkippedToolWarnings(clientName string) {
+	pruneSkippedToolWarnings(&m.skippedToolWarned, clientName, nil)
 }
