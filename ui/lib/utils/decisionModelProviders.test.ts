@@ -58,6 +58,7 @@ describe("decision model provider helpers", () => {
 			},
 		} as Partial<ModelProvider>);
 	const typesafe = provider({ name: "typesafe" } as Partial<ModelProvider>);
+	const subq = provider({ name: "subq" } as Partial<ModelProvider>);
 	const openrouter = provider({ name: "openrouter" } as Partial<ModelProvider>);
 	const openai = provider({ name: "openai" } as Partial<ModelProvider>);
 	const cloudflare = provider({ name: "cloudflare" } as Partial<ModelProvider>);
@@ -75,6 +76,7 @@ describe("decision model provider helpers", () => {
 	test("offers only providers that answer decisions natively", () => {
 		for (const candidate of [
 			typesafe,
+			subq,
 			openrouter,
 			openai,
 			gemini,
@@ -138,6 +140,7 @@ describe("decision model provider helpers", () => {
 
 	test("starts each provider on its known model", () => {
 		expect(defaultDecisionModel(typesafe)).toBe("jev-latest");
+		expect(defaultDecisionModel(subq)).toBe("subq-snap-1.2");
 		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
 		expect(defaultDecisionModel(openai)).toBe("gpt-6-luna");
 		expect(defaultDecisionModel(gemini)).toBe("gemini-decision-1");
@@ -169,7 +172,7 @@ describe("decision model provider helpers", () => {
 		).toBe(true);
 		expect(listsDecisionModels(undefined, "openai")).toBe(true);
 		expect(listsDecisionModels(undefined, "gemini")).toBe(true);
-		for (const candidate of [typesafe, laya, clef]) expect(listsDecisionModels(candidate, candidate.name)).toBe(false);
+		for (const candidate of [typesafe, subq, laya, clef]) expect(listsDecisionModels(candidate, candidate.name)).toBe(false);
 	});
 
 	test("starts a self-hosted provider whose name says nothing on none", () => {

@@ -5780,3 +5780,76 @@ func TestToOpenAIResponsesRequest_MessageItemWithEncryptedContent(t *testing.T) 
 		})
 	}
 }
+
+func TestToOpenAIResponsesRequest_SubqDropsEffortNone(t *testing.T) {
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Subq,
+		Model:    "subq-savant-1.4",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort: schemas.Ptr(schemas.ReasoningEffortNone),
+			},
+		},
+	})
+	require.NotNil(t, req)
+	require.NotNil(t, req.Reasoning)
+	require.Nil(t, req.Reasoning.Effort, "Subq rejects effort none; Bifrost must drop it")
+
+	kept := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Subq,
+		Model:    "subq-savant-1.4",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort: schemas.Ptr(schemas.ReasoningEffortHigh),
+			},
+		},
+	})
+	require.NotNil(t, kept.Reasoning)
+	require.NotNil(t, kept.Reasoning.Effort)
+	require.Equal(t, schemas.ReasoningEffortHigh, *kept.Reasoning.Effort)
+}
+
+func TestToOpenAIResponsesRequest_SubqDowngradesForcedToolChoice(t *testing.T) {
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Subq,
+		Model:    "subq-savant-1.4",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("ping")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStr: schemas.Ptr(string(schemas.ResponsesToolChoiceTypeRequired)),
+			},
+		},
+	})
+	require.NotNil(t, req)
+	require.NotNil(t, req.ToolChoice)
+	require.NotNil(t, req.ToolChoice.ResponsesToolChoiceStr)
+	require.Equal(t, string(schemas.ResponsesToolChoiceTypeAuto), *req.ToolChoice.ResponsesToolChoiceStr)
+
+	none := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Subq,
+		Model:    "subq-savant-1.4",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("ping")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			ToolChoice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStr: schemas.Ptr(string(schemas.ResponsesToolChoiceTypeNone)),
+			},
+		},
+	})
+	require.NotNil(t, none.ToolChoice)
+	require.NotNil(t, none.ToolChoice.ResponsesToolChoiceStr)
+	require.Equal(t, string(schemas.ResponsesToolChoiceTypeNone), *none.ToolChoice.ResponsesToolChoiceStr)
+}

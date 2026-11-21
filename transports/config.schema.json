@@ -965,6 +965,9 @@
         "soniox": {
           "$ref": "#/$defs/provider"
         },
+        "subq": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
