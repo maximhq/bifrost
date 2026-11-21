@@ -1990,6 +1990,13 @@
 			"deleteTraceConfirm": "Delete this trace? This cannot be undone.",
 			"noProjects": "There is no project yet. Create a tracing key first."
 		},
+		"player": {
+			"play": "Play conversation",
+			"pause": "Pause",
+			"previous": "Previous",
+			"next": "Next",
+			"position": "{{current}} of {{total}}"
+		},
 		"attachments": {
 			"heading": "Attachments ({{count}})",
 			"missing": "The file was not uploaded",
@@ -2088,7 +2095,8 @@
 			"descriptionAuth": "Send your dashboard username and password as the SDK's API key: username:password, or for Langfuse the username as the public key and the password as the secret key.",
 			"descriptionOpen": "Admin auth is not set up on this gateway, so SDKs send no API key: leave the key unset. If an SDK refuses to start without one, any value works.",
 			"descriptionEnterprise": "SDKs authenticate with an API key. Create one for tracing and use it as the SDK's API key.",
-			"createApiKey": "Create a tracing API key"
+			"createApiKey": "Create a tracing API key",
+			"copySetup": "Copier la configuration {{sdk}}"
 		},
 		"viewer": {
 			"untitled": "Untitled trace",
