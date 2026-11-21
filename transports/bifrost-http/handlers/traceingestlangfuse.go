@@ -205,7 +205,11 @@ func (h *TraceIngestHandler) langfuseCreateMedia(ctx *fasthttp.RequestCtx) {
 		if existing.Status == logstore.TraceUploadStatusDone || time.Since(existing.CreatedAt) < traceUploadWindow {
 			var uploadURL any
 			if existing.Status != logstore.TraceUploadStatusDone {
-				uploadURL = h.publicBaseURL(ctx) + tracingPrefix + "/uploads/" + mediaID
+				url := h.publicBaseURL(ctx) + tracingPrefix + "/uploads/" + mediaID
+				if existing.Token != "" {
+					url += "?token=" + existing.Token
+				}
+				uploadURL = url
 			}
 			writeJSONStatus(ctx, fasthttp.StatusCreated, map[string]any{"mediaId": mediaID, "uploadUrl": uploadURL})
 			return
