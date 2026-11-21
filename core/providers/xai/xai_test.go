@@ -2,6 +2,8 @@ package xai_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -111,4 +113,71 @@ func TestXAIModelRetrieve(t *testing.T) {
 	_, bifrostErr = provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "../models"})
 	require.NotNil(t, bifrostErr)
 	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
+}
+
+func TestXAIImageGenerationForwardsQuality(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotPath string
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		mu.Lock()
+		gotPath, gotBody = r.URL.Path, body
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"aGk="}],"usage":{"cost_in_usd_ticks":200000000}}`))
+	}))
+	defer server.Close()
+
+	provider, err := xai.NewXAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: *schemas.NewSecretVar("xai-test")}
+
+	for _, tc := range []struct {
+		quality      string
+		wantQuality  string
+		wantIncluded bool
+	}{
+		{quality: "low", wantQuality: "low", wantIncluded: true},
+		{quality: "high"},
+	} {
+		t.Run(tc.quality, func(t *testing.T) {
+			_, bifrostErr := provider.ImageGeneration(ctx, key, &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.XAI,
+				Model:    "grok-imagine-image-2.0",
+				Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+				Params: &schemas.ImageGenerationParameters{
+					Quality: schemas.Ptr(tc.quality),
+					Size:    schemas.Ptr("1024x1024"),
+				},
+			})
+			require.Nil(t, bifrostErr)
+
+			mu.Lock()
+			path := gotPath
+			body := append([]byte(nil), gotBody...)
+			mu.Unlock()
+
+			require.Equal(t, "/v1/images/generations", path)
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal(body, &decoded))
+			if tc.wantIncluded {
+				require.Equal(t, tc.wantQuality, decoded["quality"])
+			} else {
+				_, exists := decoded["quality"]
+				require.False(t, exists)
+			}
+			_, hasSize := decoded["size"]
+			require.False(t, hasSize)
+		})
+	}
 }

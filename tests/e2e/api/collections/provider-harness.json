@@ -346911,6 +346911,138 @@
           }
         }
       ]
+    },
+    {
+      "name": "375. xAI image generation forwards quality (xai image quality) (#10226 / PR #10251)",
+      "description": "xAI grok-imagine-image-2.0 accepts quality (low, medium, auto). filterXAISpecificParameters used to nil quality for every xAI image request, so the provider served its default while the response echoed the client's value. Case 1 pins that a supported quality reaches xAI (raw_request) and size stays off the wire; case 2 pins that an unsupported quality (high) is still not sent.",
+      "item": [
+        {
+          "name": "xai/grok-imagine-image-2.0 native /v1/images/generations quality low reaches xAI - #10226",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "pm.test('xAI image generation returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400) + '; wire: ' + wire.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('raw_request is available as an object', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + wire.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "",
+                  "pm.test('quality low reaches xAI', function () {",
+                  "  pm.expect(rr ? rr.quality : undefined, 'quality missing from xAI wire: ' + wire.slice(0, 400)).to.eql('low');",
+                  "});",
+                  "",
+                  "pm.test('size stays off the xAI wire', function () {",
+                  "  pm.expect(rr ? rr.size : undefined, 'size must stay off xAI wire: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-imagine-image-2.0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\",\n  \"quality\": \"low\",\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "xai/grok-imagine-image-2.0 native /v1/images/generations quality high stays off the wire - #10226",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "pm.test('xAI image generation returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400) + '; wire: ' + wire.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('raw_request is available as an object', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable: ' + wire.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "",
+                  "pm.test('size stays off the xAI wire', function () {",
+                  "  pm.expect(rr ? rr.size : undefined, 'size must stay off xAI wire: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "});",
+                  "",
+                  "pm.test('unsupported quality high stays off the xAI wire', function () {",
+                  "  pm.expect(rr ? rr.quality : undefined, 'quality high must stay off xAI wire: ' + wire.slice(0, 400)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-imagine-image-2.0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\",\n  \"quality\": \"high\",\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
