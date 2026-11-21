@@ -41,6 +41,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { Trans, useTranslation } from "react-i18next";
 import {
+	initialVKConfigs,
 	mcpGlobalSettings,
 	stateDescription,
 	toolExecutionTimeoutToSeconds,
@@ -119,8 +120,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	const resourceItems = useMemo(() => resourceExposeItems(mcpClient), [mcpClient]);
 
 	// Initial VK configs come directly from the MCP client response — always complete, no pagination issue.
-	const initialVKConfigs = useMemo<MCPVKConfig[]>(
-		() => (mcpClient.vk_configs ?? []).map((vc) => ({ virtual_key_id: vc.virtual_key_id, tools_to_execute: vc.tools_to_execute })),
+	const normalizedVKConfigs = useMemo<MCPVKConfig[]>(
+		() => initialVKConfigs(mcpClient.vk_configs),
 		[mcpClient.vk_configs],
 	);
 
@@ -135,10 +136,10 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 
 	// Sync vkConfigs when mcpClient changes
 	useEffect(() => {
-		setVKConfigs(initialVKConfigs);
+		setVKConfigs(normalizedVKConfigs);
 		setVKConfigsDirty(false);
 		setLocalVKNames({});
-	}, [initialVKConfigs]);
+	}, [normalizedVKConfigs]);
 
 	// Sync allowedExtraHeadersRaw when mcpClient changes
 	useEffect(() => {

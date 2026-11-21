@@ -6,7 +6,7 @@ import i18n, { getLocale } from "@/lib/i18n";
 import { mcpMaxProtocolVersionLabel } from "@/lib/constants/mcp";
 import type { MCPClientAccessGrantLabels } from "@/lib/registries/mcpClientAccessGrants";
 import type { CoreConfig } from "@/lib/types/config";
-import type { MCPClient, MCPClientConfig, MCPClientTool } from "@/lib/types/mcp";
+import type { MCPClient, MCPClientConfig, MCPClientTool, MCPVKConfig } from "@/lib/types/mcp";
 import type { MCPSessionKind, MCPSessionRow, MCPSessionStatus } from "@/lib/types/mcpSessions";
 import {
 	failureStageLabel,
@@ -51,6 +51,21 @@ export function mcpGlobalSettings(
 		toolExecutionTimeoutSeconds: clientConfig?.mcp_tool_execution_timeout ?? 30,
 		maxInstructionsLength: clientConfig?.mcp_max_instructions_per_client || 4096,
 	};
+}
+
+/**
+ * initialVKConfigs normalizes the virtual-key assignments from an MCP client
+ * response into the shape the edit sheet's Access tab consumes. A key written
+ * through the management API without a `tools_to_execute` field is stored and
+ * returned as `null`, but the Access tab calls `.includes()` and `.length` on
+ * the field directly; every other view treats `null` as "no tools". Coalescing
+ * to `[]` here keeps a valid null from crashing the whole page.
+ */
+export function initialVKConfigs(vkConfigs: MCPClient["vk_configs"] | undefined): MCPVKConfig[] {
+	return (vkConfigs ?? []).map((vc) => ({
+		virtual_key_id: vc.virtual_key_id,
+		tools_to_execute: vc.tools_to_execute ?? [],
+	}));
 }
 
 // stateDescription is the sentence under the sheet title. The pending and
