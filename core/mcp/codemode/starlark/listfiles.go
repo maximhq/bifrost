@@ -45,6 +45,9 @@ func (s *StarlarkCodeMode) createListToolFilesTool() schemas.ChatTool {
 			"Examples that should trigger this tool: user names a server you don't recognize (e.g. 'localserver', 'mydb'), asks 'who am I on X', 'what can X do', 'does X have a tool for Y', or asks you to perform an action and you are unsure whether a matching tool exists. " +
 			"Do NOT tell the user a server or capability is unavailable until you have called listToolFiles and confirmed it is absent."
 	}
+	description += " Optional query: a short description of what you want to do (e.g. 'create a github issue'); " +
+		"returns a ranked shortlist of the most relevant files instead of the complete listing, at most limit (1-20, default 8) files. " +
+		"A shortlist is not exhaustive: omit query for the complete listing before concluding a capability is absent."
 
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
@@ -52,17 +55,41 @@ func (s *StarlarkCodeMode) createListToolFilesTool() schemas.ChatTool {
 			Name:        codemcp.ToolTypeListToolFiles,
 			Description: schemas.Ptr(description),
 			Parameters: &schemas.ToolFunctionParameters{
-				Type:       "object",
-				Properties: schemas.NewOrderedMap(),
-				Required:   []string{},
+				Type: "object",
+				Properties: schemas.NewOrderedMapFromPairs(
+					schemas.KV("query", map[string]interface{}{
+						"type":        "string",
+						"maxLength":   discoveryMaxQueryRunes,
+						"description": "Optional. Short intent to rank tools by, e.g. 'search slack messages'. Omit for the complete listing.",
+					}),
+					schemas.KV("limit", map[string]interface{}{
+						"type":        "integer",
+						"minimum":     1,
+						"maximum":     discoveryMaxLimit,
+						"description": fmt.Sprintf("Optional. Maximum files in a ranked shortlist, default %d. Ignored without query.", discoveryDefaultLimit),
+					}),
+				),
+				Required: []string{},
 			},
 		},
 	}
 }
 
-// handleListToolFiles handles the listToolFiles tool call.
-// It builds a tree structure listing all virtual .pyi files available for code mode clients.
+// handleListToolFiles handles the listToolFiles tool call. Without a query it
+// returns the complete listing; with one, a ranked shortlist.
 func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
+	query, limit, err := parseListToolFilesArgs(toolCall.Function.Arguments)
+	if err != nil {
+		return nil, err
+	}
+	if query != "" {
+		return s.handleRankedToolFiles(ctx, toolCall, query, limit)
+	}
+	return s.handleCompleteToolFiles(ctx, toolCall)
+}
+
+// handleCompleteToolFiles builds a tree structure listing all virtual .pyi files available for code mode clients.
+func (s *StarlarkCodeMode) handleCompleteToolFiles(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	if len(availableToolsPerClient) == 0 {

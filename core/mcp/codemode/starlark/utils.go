@@ -512,6 +512,26 @@ func matchesToolReference(requestedToolName, clientName, originalToolName string
 	return false
 }
 
+// findToolReference returns the index of the tool requestedToolName names, or
+// -1. Two raw names such as get-user and get_user share one canonical name, so
+// a tool whose raw name is exactly requestedToolName wins over the first loose
+// match: the raw-name file discovery lists for such a tool resolves to it.
+func findToolReference(tools []schemas.ChatTool, requestedToolName, clientName string) int {
+	loose := -1
+	for i, tool := range tools {
+		if tool.Function == nil {
+			continue
+		}
+		if stripClientPrefix(tool.Function.Name, clientName) == requestedToolName {
+			return i
+		}
+		if loose < 0 && matchesToolReference(requestedToolName, clientName, tool.Function.Name) {
+			loose = i
+		}
+	}
+	return loose
+}
+
 // isValidStarlarkIdentifier reports whether name can be used directly in Starlark code.
 func isValidStarlarkIdentifier(name string) bool {
 	if name == "" {

@@ -443,10 +443,10 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 					BindingLevel:         mcpConfig.ToolManagerConfig.CodeModeBindingLevel,
 					ToolExecutionTimeout: time.Duration(mcpConfig.ToolManagerConfig.ToolExecutionTimeout),
 					Limits:               mcpConfig.ToolManagerConfig.CodeModeLimits,
+					DiscoveryRanker:      mcpConfig.ToolManagerConfig.CodeModeDiscoveryRanker,
 				}
 			}
-			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig, bifrost.logger)
-			bifrost.MCPManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
+			bifrost.MCPManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, bifrost.newCodeMode(codeModeConfig))
 			bifrost.logger.Info("MCP integration initialized successfully")
 		})
 	}
@@ -1736,6 +1736,17 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 		return nil, err
 	}
 	return response.DecisionResponse, nil
+}
+
+// codeModeDecisionRequest serves the code mode decision-model discovery ranker.
+// Like the complexity router's classifier, it issues an internal request: the
+// plugin pipeline is skipped and the caller's key routing and body state are
+// shed, so the ranker call is not governed or routed as the caller's. The code
+// mode records the call on the tool call's context instead, and the logging
+// plugin writes it as its own row from the tool call's PostMCPHook.
+func (bifrost *Bifrost) codeModeDecisionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	PrepareContextForInternalRequest(ctx)
+	return bifrost.DecisionRequest(ctx, req)
 }
 
 // OCRRequest sends an OCR request to the specified provider.
@@ -4856,6 +4867,14 @@ func (bifrost *Bifrost) SetMCPInProcessServerFactory(factory schemas.InProcessSe
 	}
 }
 
+// newCodeMode builds the Starlark code mode with its decision callback, so a
+// decision-model discovery ranker works however the MCP manager was created.
+func (bifrost *Bifrost) newCodeMode(config *mcp.CodeModeConfig) *starlark.StarlarkCodeMode {
+	codeMode := starlark.NewStarlarkCodeMode(config, bifrost.logger)
+	codeMode.SetDecisionRequestFunc(bifrost.codeModeDecisionRequest)
+	return codeMode
+}
+
 // ensureLazyMCPManager creates the MCP manager on first use when Init did not
 // (no mcp block in the config). Callers run it before reading MCPManager, so
 // the sync.Once publishes the manager to every caller; a manager injected with
@@ -4867,7 +4886,7 @@ func (bifrost *Bifrost) ensureLazyMCPManager() {
 		if bifrost.MCPManager != nil {
 			return
 		}
-		bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, bifrost.lazyMCPConfig(), bifrost.mcpCredStore, bifrost.logger, starlark.NewStarlarkCodeMode(nil, bifrost.logger))
+		bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, bifrost.lazyMCPConfig(), bifrost.mcpCredStore, bifrost.logger, bifrost.newCodeMode(nil))
 		if bifrost.mcpDiscoveryChangeCallback != nil {
 			bifrost.MCPManager.SetDiscoveryChangeCallback(bifrost.mcpDiscoveryChangeCallback)
 		}
