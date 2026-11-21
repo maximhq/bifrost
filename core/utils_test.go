@@ -471,8 +471,7 @@ func TestStampRequestedRoute(t *testing.T) {
 		assert.Equal(t, "gpt-4o-mini", model)
 	})
 
-	// bifrost.ctx is shared by every nil-ctx caller, so an empty provider must overwrite the
-	// previous request's rather than leave it in place.
+	// A caller may reuse its context for a request with an empty provider.
 	t.Run("reused context does not keep the previous request's route", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		stampRequestedRoute(ctx, schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
