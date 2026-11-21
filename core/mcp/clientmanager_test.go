@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"sort"
@@ -2188,17 +2187,6 @@ func startedStdioClient(t *testing.T, command string, args ...string) *client.Cl
 	return cli
 }
 
-// requireSentinel polls until path exists, failing with msg if it never
-// does. Used to detect whether a subprocess finished writing stderr (i.e.
-// wasn't left blocked on a full pipe).
-func requireSentinel(t *testing.T, path, msg string) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		_, err := os.Stat(path)
-		return err == nil
-	}, 5*time.Second, 10*time.Millisecond, msg)
-}
-
 // lineCollector is a concurrency-safe StderrHandler sink for assertions.
 type lineCollector struct {
 	mu    sync.Mutex
@@ -2288,21 +2276,19 @@ func TestForwardStderrIgnoresNonSTDIOConfig(t *testing.T) {
 
 func TestForwardStderrTruncatesOversizedLine(t *testing.T) {
 	t.Parallel()
-	sentinel := filepath.Join(t.TempDir(), "done")
 
-	// One unbroken 200KB write with no newline, well past maxStderrLineBytes,
-	// followed by a trailing newline and a normal line.
-	cmd := fmt.Sprintf(`head -c 200000 /dev/zero | tr '\0' 'a' >&2; echo >&2; echo second >&2; touch %q`, sentinel)
-	cli := startedStdioClient(t, "sh", "-c", cmd)
-
+	// Feed forwardStderrLines from a pipe rather than a subprocess: the stdio
+	// transport keeps only the newest bytes of stderr, so a late reader could
+	// see a shortened first line and make the length assertion timing-dependent.
+	pr, pw := io.Pipe()
 	var collector lineCollector
-	config := &schemas.MCPClientConfig{
-		ConnectionType: schemas.MCPConnectionTypeSTDIO,
-		StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: collector.handle},
-	}
-	forwardStderr(cli, config)
+	forwardStderrLines(pr, collector.handle)
 
-	requireSentinel(t, sentinel, "subprocess did not finish writing stderr; oversized line likely blocked the reader")
+	go func() {
+		// One unbroken write well past maxStderrLineBytes, then a normal line.
+		_, _ = pw.Write([]byte(strings.Repeat("a", maxStderrLineBytes*3) + "\nsecond\n"))
+		_ = pw.Close()
+	}()
 
 	require.Eventually(t, func() bool {
 		return len(collector.snapshot()) == 2
