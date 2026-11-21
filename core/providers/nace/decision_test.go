@@ -2,6 +2,7 @@ package nace_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,6 +33,31 @@ func fixture(t testing.TB, handler http.HandlerFunc) *nace.NaceProvider {
 	}}, bifrost.NewNoOpLogger(), "1.15.1\n")
 	require.NoError(t, err)
 	return provider
+}
+
+// observedRequest transfers fixture observations to the test goroutine before the response.
+type observedRequest struct {
+	path, method string
+	header       http.Header
+	body         []byte
+	err          error
+}
+
+func observeRequest(r *http.Request) observedRequest {
+	body, err := io.ReadAll(r.Body)
+	return observedRequest{r.URL.Path, r.Method, r.Header.Clone(), body, err}
+}
+
+func takeRequest(t testing.TB, observations <-chan observedRequest) observedRequest {
+	t.Helper()
+	select {
+	case got := <-observations:
+		require.NoError(t, got.err)
+		return got
+	default:
+		t.Fatal("expected an upstream request")
+		return observedRequest{}
+	}
 }
 
 // key returns a test key that allows every model.
@@ -71,23 +97,9 @@ func TestDecision(t *testing.T) {
 			var questions map[string]typesafe.TypesafeQuestion
 			require.NoError(t, json.Unmarshal([]byte(test.questions), &questions))
 			req := request(t, test.state, questions)
+			observations := make(chan observedRequest, 1)
 			provider := fixture(t, func(w http.ResponseWriter, r *http.Request) {
-				require.Equal(t, "/v1/systemone", r.URL.Path)
-				require.Equal(t, "POST", r.Method)
-				require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
-				require.Equal(t, "bifrost/1.15.1", r.Header.Get("X-Nace-Client"))
-				require.Equal(t, "bifrost/1.15.1", r.UserAgent())
-				body, err := io.ReadAll(r.Body)
-				require.NoError(t, err)
-				var sent typesafe.TypesafeDecisionRequest
-				require.NoError(t, json.Unmarshal(body, &sent))
-				require.Equal(t, questions, sent.Questions)
-				require.Equal(t, "drex-v2.0", sent.Model)
-				expected, err := json.Marshal(test.state)
-				require.NoError(t, err)
-				actual, err := json.Marshal(sent.State)
-				require.NoError(t, err)
-				require.JSONEq(t, string(expected), string(actual))
+				observations <- observeRequest(r)
 				w.Header().Set("X-Request-ID", "req_test")
 				_, _ = fmt.Fprintf(w, `{"model":"drex-v2.0","request_id":"req_test","answers":%s,"usage":{"input_tokens":42,"output_tokens":0}}`, test.answers)
 			})
@@ -95,6 +107,21 @@ func TestDecision(t *testing.T) {
 			context.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"x-nace-client": {"context-override"}, "user-agent": {"context-override"}})
 			response, err := provider.Decision(context, key(), req)
 			require.Nil(t, err)
+			got := takeRequest(t, observations)
+			require.Equal(t, "/v1/systemone", got.path)
+			require.Equal(t, "POST", got.method)
+			require.Equal(t, "Bearer test-key", got.header.Get("Authorization"))
+			require.Equal(t, "bifrost/1.15.1", got.header.Get("X-Nace-Client"))
+			require.Equal(t, "bifrost/1.15.1", got.header.Get("User-Agent"))
+			var sent typesafe.TypesafeDecisionRequest
+			require.NoError(t, json.Unmarshal(got.body, &sent))
+			require.Equal(t, questions, sent.Questions)
+			require.Equal(t, "drex-v2.0", sent.Model)
+			expected, marshalErr := json.Marshal(test.state)
+			require.NoError(t, marshalErr)
+			actual, marshalErr := json.Marshal(sent.State)
+			require.NoError(t, marshalErr)
+			require.JSONEq(t, string(expected), string(actual))
 			require.Equal(t, "drex-v2.0", response.Model)
 			require.Equal(t, "req_test", response.ID)
 			require.Equal(t, 42, response.Usage.PromptTokens)
@@ -102,12 +129,15 @@ func TestDecision(t *testing.T) {
 			require.Len(t, response.Answers, len(questions))
 			for i, answer := range response.Answers {
 				require.Equal(t, req.Questions[i].Name, answer.Name)
+				require.Equal(t, req.Questions[i].Type, answer.Type)
 				require.NotNil(t, answer.Confidence)
 				if answer.Type == schemas.DecisionTypePredicate {
 					require.NotNil(t, answer.Probability)
 					require.Equal(t, 0.9, *answer.Probability)
 				}
 				if answer.Type == schemas.DecisionTypeScore {
+					require.NotNil(t, answer.Score)
+					require.Equal(t, 0.8, *answer.Score)
 					require.Equal(t, map[string]any{"0": "low", "1": "high"}, answer.Legend)
 					require.Equal(t, []schemas.DecisionProbability{
 						{Value: schemas.DecisionScalar{Num: schemas.Ptr(0.0)}, Label: schemas.Ptr("0"), Probability: 0.2},
@@ -115,6 +145,12 @@ func TestDecision(t *testing.T) {
 					}, answer.Probabilities)
 				}
 				if answer.Type == schemas.DecisionTypeChoice {
+					require.NotNil(t, answer.Choice)
+					chosen := "greeting"
+					if test.name == "mixed" {
+						chosen = "yes"
+					}
+					require.Equal(t, schemas.Ptr(chosen), answer.Choice.Str)
 					want := []schemas.DecisionProbability{
 						{Value: schemas.DecisionScalar{Str: schemas.Ptr("greeting")}, Probability: 0.9},
 						{Value: schemas.DecisionScalar{Str: schemas.Ptr("other")}, Probability: 0.1},
@@ -212,26 +248,21 @@ func TestNaceImages(t *testing.T) {
 		{"drex-max-v1.1", []string{"aGVsbG8="}, false},
 		{"drex-max-finance", []string{"aGVsbG8="}, false},
 		{"drex-v1.0", []string{"aGVsbG8="}, false},
-		{"drex-v1.1", []string{"aGVsbG8="}, true},
-		{"nacedm-latest", []string{"aGVsbG8="}, true},
+		{"drex-v1.1", []string{"aGVsbG8="}, false},
+		{"nacedm-latest", []string{"aGVsbG8="}, false},
 		{"drex-v2.0", []string{"aGVsbG8="}, true},
 		{"drex-v1.5", []string{"aGVsbG8="}, true},
-		{"drex-latest", []string{"aGVsbG8="}, true},
+		{"drex-latest", []string{"aGVsbG8="}, false},
 		{"drex-max", []string{"https://example.com/image.png"}, true},
 		{"drex-max", []string{"bad base64"}, true},
 		{"drex-max", []string{"aGVsbG8=", "aGVsbG8=", "aGVsbG8=", "aGVsbG8=", "aGVsbG8=", "aGVsbG8=", "aGVsbG8=", "aGVsbG8=", "aGVsbG8="}, true},
 	} {
 		t.Run(fmt.Sprintf("%s/%v", test.model, test.images), func(t *testing.T) {
 			var calls atomic.Int32
+			observations := make(chan observedRequest, 1)
 			provider := fixture(t, func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
-				var body struct {
-					Images []string `json:"images"`
-					Assets any      `json:"assets"`
-				}
-				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-				require.Equal(t, test.images, body.Images)
-				require.Nil(t, body.Assets)
+				observations <- observeRequest(r)
 				_, _ = fmt.Fprintf(w, `{"model":%q,"request_id":"req_images","answers":{"q":{"type":"noul","noul":0.9,"confidence":0.9}},"usage":{"input_tokens":200,"image_tokens":150}}`, test.model)
 			})
 			req := request(t, "hello", map[string]typesafe.TypesafeQuestion{"q": {Type: "noul", Instructions: "Greeting?"}})
@@ -255,6 +286,14 @@ func TestNaceImages(t *testing.T) {
 			}
 			require.Nil(t, err)
 			require.EqualValues(t, 1, calls.Load())
+			got := takeRequest(t, observations)
+			var body struct {
+				Images []string `json:"images"`
+				Assets any      `json:"assets"`
+			}
+			require.NoError(t, json.Unmarshal(got.body, &body))
+			require.Equal(t, test.images, body.Images)
+			require.Nil(t, body.Assets)
 			require.Equal(t, 150, response.Usage.PromptTokensDetails.ImageTokens)
 			require.Equal(t, 200, response.Usage.TotalTokens)
 		})
@@ -264,12 +303,9 @@ func TestNaceImages(t *testing.T) {
 // TestNaceListModels checks the GET /v1/models request headers and the conversion of the Drex
 // catalog.
 func TestNaceListModels(t *testing.T) {
+	observations := make(chan observedRequest, 1)
 	provider := fixture(t, func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "GET", r.Method)
-		require.Equal(t, "/v1/models", r.URL.Path)
-		require.Equal(t, "bifrost/1.15.1", r.Header.Get("X-Nace-Client"))
-		require.Equal(t, "bifrost/1.15.1", r.UserAgent())
-		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+		observations <- observeRequest(r)
 		_, _ = fmt.Fprint(w, `{"models":[{"name":"drex-v2.0","description":"Text"},{"name":"drex-max","description":"Images"},{"name":"drex-latest","alias_for":"drex-v2.0"},{"name":"drex-v1.0","description":"Retired on 2026-10-21.","alias_for":"drex-max"}]}`)
 	})
 	for _, unfiltered := range []bool{false, true} {
@@ -277,6 +313,12 @@ func TestNaceListModels(t *testing.T) {
 		credential.Models = []string{"drex-max"}
 		response, err := provider.ListModels(ctx(), []schemas.Key{credential}, &schemas.BifrostListModelsRequest{Unfiltered: unfiltered})
 		require.Nil(t, err)
+		got := takeRequest(t, observations)
+		require.Equal(t, "GET", got.method)
+		require.Equal(t, "/v1/models", got.path)
+		require.Equal(t, "bifrost/1.15.1", got.header.Get("X-Nace-Client"))
+		require.Equal(t, "bifrost/1.15.1", got.header.Get("User-Agent"))
+		require.Equal(t, "Bearer test-key", got.header.Get("Authorization"))
 		if unfiltered {
 			require.Len(t, response.Data, 4)
 		} else {
@@ -392,6 +434,15 @@ func TestDecisionHTMLRawResponseOwnsBuffer(t *testing.T) {
 				}
 			}
 			require.Equal(t, html, raw())
+			encoded, marshalErr := json.Marshal(err)
+			require.NoError(t, marshalErr, "HTML errors must remain JSON-serializable")
+			var wire struct {
+				ExtraFields struct {
+					RawResponse string `json:"raw_response"`
+				} `json:"extra_fields"`
+			}
+			require.NoError(t, json.Unmarshal(encoded, &wire))
+			require.Equal(t, html, wire.ExtraFields.RawResponse)
 			// Reuse fasthttp buffers after the provider has released its response.
 			for i := 0; i < 64; i++ {
 				pooled := fasthttp.AcquireResponse()
@@ -400,6 +451,120 @@ func TestDecisionHTMLRawResponseOwnsBuffer(t *testing.T) {
 			}
 			require.Equal(t, html, raw(), "raw error must outlive the pooled response")
 		})
+	}
+}
+
+// Tool images must retain conversation order and tool-call identity without changing the input.
+func TestNaceImagesInToolOutput(t *testing.T) {
+	req := routerShapedDecisionRequest()
+	req.Model = "drex-max-v1.1"
+	req.Input = schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Compare these images")},
+			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("aGVsbG8=")},
+		}}},
+		{Type: schemas.Ptr("function_call"), CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("lookup"), Arguments: schemas.Ptr("{}")},
+		{Type: schemas.Ptr("function_call_output"), CallID: schemas.Ptr("call_1"), Output: &schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Found another image")},
+			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("d29ybGQ=")},
+		}}},
+	}}
+	before, err := json.Marshal(req)
+	require.NoError(t, err)
+	native, err := nace.ToNaceDecisionRequest(req)
+	require.NoError(t, err)
+	require.Equal(t, []string{"aGVsbG8=", "d29ybGQ="}, native.Images)
+	state, err := json.Marshal(native.State)
+	require.NoError(t, err)
+	require.Contains(t, string(state), "call_1")
+	require.Contains(t, string(state), "Found another image")
+	require.NotContains(t, string(state), "d29ybGQ=")
+	after, err := json.Marshal(req)
+	require.NoError(t, err)
+	require.JSONEq(t, string(before), string(after))
+}
+
+func TestNaceImageSizeLimit(t *testing.T) {
+	for _, size := range []int{16*1024*1024 - 1, 16 * 1024 * 1024, 16*1024*1024 + 1, 16*1024*1024 + 2} {
+		for _, raw := range []bool{false, true} {
+			t.Run(fmt.Sprintf("bytes=%d/raw=%v", size, raw), func(t *testing.T) {
+				part := schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage}
+				if raw {
+					part.Data.File = make([]byte, size)
+				} else {
+					part.ImageURL = schemas.Ptr(base64.StdEncoding.EncodeToString(make([]byte, size)))
+				}
+				req := routerShapedDecisionRequest()
+				req.Model = "drex-max"
+				req.Input = schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{part}}}}}
+				_, err := nace.ToNaceDecisionRequest(req)
+				if size > 16*1024*1024 {
+					require.ErrorContains(t, err, "at most 16 MiB")
+				} else {
+					require.NoError(t, err)
+				}
+			})
+		}
+	}
+}
+
+func TestNaceCatalogAliasRetargeting(t *testing.T) {
+	observed := make(chan string, 1)
+	provider := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = fmt.Fprint(w, `{"models":[{"name":"drex-latest","alias_for":"drex-max-v1.1"}]}`)
+			return
+		}
+		var sent struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		observed <- sent.Model
+		_, _ = fmt.Fprint(w, `{"model":"drex-max-v1.1","answers":{"complexity_tier":{"type":"choice","choice":"SIMPLE"}},"usage":{"input_tokens":1}}`)
+	})
+	catalog, bErr := provider.ListModels(ctx(), []schemas.Key{key()}, &schemas.BifrostListModelsRequest{})
+	require.Nil(t, bErr)
+	require.Len(t, catalog.Data, 1)
+	require.Contains(t, catalog.Data[0].Architecture.InputModalities, "image")
+	req := routerShapedDecisionRequest()
+	req.Model = strings.TrimPrefix(catalog.Data[0].ID, "nace/")
+	req.Input = schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("aGVsbG8=")}}}}}}
+	_, bErr = provider.Decision(ctx(), key(), req)
+	require.Nil(t, bErr)
+	select {
+	case model := <-observed:
+		require.Equal(t, "drex-latest", model, "upstream resolves the current alias")
+	default:
+		t.Fatal("advertised image-capable alias never reached upstream")
+	}
+}
+
+func TestNaceBackfilledModels(t *testing.T) {
+	provider := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"models":[{"name":"drex-max"}]}`)
+	})
+	credential := key()
+	credential.Models = []string{"drex-max", "drex-max-v1.1", "custom-max", "future-model"}
+	credential.Aliases = schemas.KeyAliases{"custom-max": {ModelID: "drex-max-v1.1"}}
+	catalog, err := provider.ListModels(ctx(), []schemas.Key{credential}, &schemas.BifrostListModelsRequest{})
+	require.Nil(t, err)
+	require.Len(t, catalog.Data, 4)
+	for _, model := range catalog.Data {
+		if model.ID == "nace/future-model" {
+			require.Nil(t, model.Pricing)
+			continue
+		}
+		require.Equal(t, []string{"decisions"}, model.SupportedMethods)
+		require.Contains(t, model.Architecture.InputModalities, "image")
+		require.Equal(t, 262144, *model.MaxInputTokens)
+		require.Equal(t, "0.00000003", *model.Pricing.Prompt)
+		if model.ID == "nace/custom-max" {
+			require.Equal(t, "drex-max-v1.1", *model.Alias)
+		}
 	}
 }
 
@@ -425,10 +590,10 @@ func BenchmarkToNaceDecisionRequest(b *testing.B) {
 	}
 }
 
-// TestNaceAliasImageCapability checks that a model accepts image input only when its catalog entry
-// lists image input, aliases included.
-func TestNaceAliasImageCapability(t *testing.T) {
-	for _, model := range []string{"drex-v1.0", "drex-v1.1", "drex-latest", "nacedm-latest", "drex-max", "drex-max-v1.1", "drex-max-finance", "drex-v2.0"} {
+// TestNacePinnedImageCapability checks that pinned text-only IDs reject images locally.
+// Mutable aliases are validated by the upstream that resolves them, including before listing.
+func TestNacePinnedImageCapability(t *testing.T) {
+	for _, model := range []string{"drex-max", "drex-max-v1.1", "drex-max-finance", "drex-v2.0", "drex-v1.5"} {
 		t.Run(model, func(t *testing.T) {
 			entry := nace.ToBifrostModel(nace.NaceModel{Name: model}, schemas.Nace)
 			req := routerShapedDecisionRequest()

@@ -592,6 +592,12 @@ func TestPreRequestHook_NaceFailurePreservesOriginalModel(t *testing.T) {
 	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
 
 	require.Equal(t, 1, decision.calls())
+	decision.mu.Lock()
+	provider, model := decision.requests[0].Provider, decision.requests[0].Model
+	decision.mu.Unlock()
+	require.Equal(t, schemas.Nace, provider)
+	require.Equal(t, "drex-v2.0", model)
+	require.Contains(t, routingLogs(bfCtx), "Semantic complexity rejected")
 	require.Nil(t, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
 	require.Equal(t, complexity.MechanismSkipped, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 	_, modelOut, _ := req.GetRequestFields()

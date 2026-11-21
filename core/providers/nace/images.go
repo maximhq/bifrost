@@ -8,7 +8,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// readsImages shares alias resolution with the model catalog.
+const maxImageBytes = 16 * 1024 * 1024
+
+// readsImages describes known catalog targets; requests leave mutable aliases to Nace.
 func readsImages(model string) bool {
 	switch resolveModelAlias(model) {
 	case "drex-max", "drex-max-v1.1", "drex-max-finance":
@@ -25,12 +27,16 @@ func splitImages(input schemas.DecisionInput) (schemas.DecisionInput, []string, 
 	var images []string
 	messages := make([]schemas.DecisionInputMessage, 0, len(input.Messages))
 	for _, message := range input.Messages {
-		if message.Content.Parts == nil {
+		content := message.Content
+		if message.Output != nil {
+			content = *message.Output
+		}
+		if content.Parts == nil {
 			messages = append(messages, message)
 			continue
 		}
-		parts := make([]schemas.DecisionInputPart, 0, len(message.Content.Parts))
-		for _, part := range message.Content.Parts {
+		parts := make([]schemas.DecisionInputPart, 0, len(content.Parts))
+		for _, part := range content.Parts {
 			if part.Type != schemas.DecisionInputPartTypeImage {
 				parts = append(parts, part)
 				continue
@@ -43,6 +49,9 @@ func splitImages(input schemas.DecisionInput) (schemas.DecisionInput, []string, 
 			case part.ImageURL != nil:
 				image = *part.ImageURL
 			case part.Data.File != nil:
+				if len(part.Data.File) > maxImageBytes {
+					return schemas.DecisionInput{}, nil, providerUtils.InvalidRequestErrorf("nace images must be base64 and at most 16 MiB each")
+				}
 				image = base64.StdEncoding.EncodeToString(part.Data.File)
 			default:
 				return schemas.DecisionInput{}, nil, providerUtils.InvalidRequestErrorf("nace image requires base64 data or a data URL")
@@ -52,7 +61,15 @@ func splitImages(input schemas.DecisionInput) (schemas.DecisionInput, []string, 
 			}
 			images = append(images, image)
 		}
-		if len(parts) > 0 {
+		if message.Output != nil {
+			// Preserve a tool result and its call ID even when it only contained images.
+			output := schemas.DecisionInputContent{Parts: parts}
+			if len(parts) == 0 {
+				output = schemas.DecisionInputContent{Text: schemas.Ptr("")}
+			}
+			message.Output = &output
+			messages = append(messages, message)
+		} else if len(parts) > 0 {
 			message.Content.Parts = parts
 			messages = append(messages, message)
 		}
@@ -75,7 +92,7 @@ func validateImage(image string) error {
 		data = body
 	}
 	// Validate without allocating a decoded copy of a potentially large image.
-	if len(data) == 0 || len(data)%4 != 0 || base64.StdEncoding.DecodedLen(len(data)) > 16*1024*1024+2 {
+	if len(data) == 0 || len(data)%4 != 0 || base64.StdEncoding.DecodedLen(len(data)) > maxImageBytes+2 {
 		return providerUtils.InvalidRequestErrorf("nace images must be base64 and at most 16 MiB each")
 	}
 	for i, c := range data {
@@ -86,6 +103,10 @@ func validateImage(image string) error {
 			continue
 		}
 		return providerUtils.InvalidRequestErrorf("nace images must be base64; URLs and paths are not accepted")
+	}
+	padding := len(data) - len(strings.TrimRight(data, "="))
+	if base64.StdEncoding.DecodedLen(len(data))-padding > maxImageBytes {
+		return providerUtils.InvalidRequestErrorf("nace images must be base64 and at most 16 MiB each")
 	}
 	return nil
 }

@@ -42,6 +42,9 @@ func clientIdentity(version string) string {
 			clean.WriteByte(byte(c))
 		}
 	}
+	if clean.Len() == len("bifrost/") {
+		return "bifrost/dev"
+	}
 	return clean.String()
 }
 

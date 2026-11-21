@@ -62,7 +62,15 @@ func (provider *NaceProvider) listModelsByKey(ctx *schemas.BifrostContext, key s
 			included[strings.ToLower(result.ResolvedID)] = true
 		}
 	}
-	response.Data = append(response.Data, pipeline.BackfillModels(included)...)
+	for _, backfilled := range pipeline.BackfillModels(included) {
+		modelID := strings.TrimPrefix(backfilled.ID, string(provider.GetProviderKey())+"/")
+		if backfilled.Alias != nil {
+			modelID = *backfilled.Alias
+		}
+		entry := ToBifrostModel(NaceModel{Name: modelID}, provider.GetProviderKey())
+		entry.ID, entry.Name, entry.Alias = backfilled.ID, backfilled.Name, backfilled.Alias
+		response.Data = append(response.Data, entry)
+	}
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = headers
 	return response, nil
