@@ -49,7 +49,7 @@ func (r traceExportResult) diagnostic() string {
 		addMatches(value)
 		if strings.EqualFold(name, "Authorization") {
 			if _, credential, ok := strings.Cut(value, " "); ok {
-				addMatches(credential)
+				addMatches(strings.TrimSpace(credential))
 			}
 		}
 	}

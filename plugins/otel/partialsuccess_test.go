@@ -46,7 +46,7 @@ func (c *partialSuccessCollector) Export(context.Context, *collectorpb.ExportTra
 }
 
 func TestInjectObservesPartialSuccess(t *testing.T) {
-	const diagnostic = "collector span limit"
+	const diagnostic = `deprecated credential "example-credential": collector span limit`
 	response := &collectorpb.ExportTraceServiceResponse{
 		PartialSuccess: &collectorpb.ExportTracePartialSuccess{
 			RejectedSpans: 1,
@@ -74,7 +74,7 @@ func TestInjectObservesPartialSuccess(t *testing.T) {
 					_, _ = w.Write(payload)
 				}))
 				t.Cleanup(server.Close)
-				client, err = NewOtelClientHTTP(server.URL, nil, "", false, time.Second)
+				client, err = NewOtelClientHTTP(server.URL, map[string]string{"Authorization": "Bearer  example-credential"}, "", false, time.Second)
 				require.NoError(t, err)
 			case ProtocolGRPC:
 				listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -85,7 +85,7 @@ func TestInjectObservesPartialSuccess(t *testing.T) {
 				collectorpb.RegisterTraceServiceServer(server, receiver)
 				go func() { _ = server.Serve(listener) }()
 				t.Cleanup(server.Stop)
-				client, err = NewOtelClientGRPC(listener.Addr().String(), nil, "", true)
+				client, err = NewOtelClientGRPC(listener.Addr().String(), map[string]string{"Authorization": "Bearer  example-credential"}, "", true)
 				require.NoError(t, err)
 			}
 			t.Cleanup(func() { require.NoError(t, client.Close()) })
@@ -116,7 +116,8 @@ func TestInjectObservesPartialSuccess(t *testing.T) {
 			require.EqualValues(t, breakerFailureThreshold+1, plugin.ExportRejectionStats()[target.profileIndex].RejectedSpans)
 			require.EqualValues(t, breakerFailureThreshold+1, plugin.ExportRejectionStats()[target.profileIndex].PartialExports)
 			require.Len(t, log.warnings, 1)
-			require.Contains(t, log.warnings[0], diagnostic)
+			require.Contains(t, log.warnings[0], fmt.Sprintf("%q", `deprecated credential "[redacted]": collector span limit`))
+			require.NotContains(t, log.warnings[0], "example-credential")
 			var collected metricdata.ResourceMetrics
 			require.NoError(t, reader.Collect(t.Context(), &collected))
 			counters := map[string]int64{}
@@ -259,6 +260,25 @@ func TestDiagnosticRedactsOverlappingValues(t *testing.T) {
 			require.NotContains(t, diagnostic, "acme")
 			require.Contains(t, diagnostic, "[redacted]")
 		}
+	}
+}
+
+func TestDiagnosticRedactsAuthorizationWhitespace(t *testing.T) {
+	for _, authorization := range []string{
+		"Bearer example-credential",
+		"Bearer  example-credential",
+		"Bearer   example-credential ",
+		"Basic  example-credential",
+	} {
+		t.Run(authorization, func(t *testing.T) {
+			result := traceExportResult{
+				partialSuccess: &collectorpb.ExportTracePartialSuccess{ErrorMessage: `deprecated credential "example-credential"; tenant example`},
+				headers:        map[string]string{"authorization": authorization, "X-Tenant": "example"},
+			}
+			for range 100 {
+				require.Equal(t, `deprecated credential "[redacted]"; tenant [redacted]`, result.diagnostic())
+			}
+		})
 	}
 }
 
