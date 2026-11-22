@@ -304,6 +304,11 @@
 	"configSyncAlert": {
 		"message": "이 구성은 <code0>config.json</code0>에서 동기화돼요. config.json을 이후에 업데이트하면 UI에서 변경한 내용을 덮어써요. config.json을 초기 구성을 부트스트랩하는 용도로만 사용한다면 이 알림은 무시해도 돼요."
 	},
+	"configIssuesAlert": {
+		"title": "config.json 선언의 일부가 적용되지 않았습니다",
+		"badge": "구성 문제",
+		"hint": "선언의 나머지는 적용되었습니다. 위의 각 항목은 참조하는 대상이 생기면 자동으로 사라집니다(예: 누락된 MCP 클라이언트를 등록할 때)."
+	},
 	"breadcrumb": {
 		"label": "탐색 경로",
 		"more": "더 보기"
