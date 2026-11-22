@@ -956,7 +956,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						hasContentModification = true
 					}
 
-					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
+					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0) || responsesAudioURLShadowedByData(block.Audio)
 					if needsBlockCopy {
 						hasContentModification = true
 						blockCopy := block
@@ -986,6 +986,11 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 							fileCopy.FileData, fileCopy.Filename = openAIWireFile(fileCopy.FileData, fileCopy.Filename, fileCopy.FileType)
 							fileCopy.FileType = nil
 							blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
+						}
+						if responsesAudioURLShadowedByData(blockCopy.Audio) {
+							audioCopy := *blockCopy.Audio
+							audioCopy.URL = ""
+							blockCopy.Audio = &audioCopy
 						}
 						contentCopy.ContentBlocks = append(contentCopy.ContentBlocks, blockCopy)
 					} else {
@@ -1068,7 +1073,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					// Strip CacheControl and FileType from tool message output blocks if needed
 					hasToolModification := hadToolReferences || rewroteFileContent
 					for _, block := range outputBlocks {
-						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || responsesBlockHasFileContent(&block) || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) {
+						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || responsesBlockHasFileContent(&block) || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) || responsesAudioURLShadowedByData(block.Audio) {
 							hasToolModification = true
 							break
 						}
@@ -1078,7 +1083,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						outputCopy := *msg.ResponsesToolMessage.Output
 						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(outputBlocks))
 						for j, block := range outputBlocks {
-							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType))
+							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) || responsesAudioURLShadowedByData(block.Audio)
 							if needsBlockCopy {
 								blockCopy := block
 								blockCopy.CacheControl = nil
@@ -1091,6 +1096,11 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 									fileCopy.FileData, fileCopy.Filename = openAIWireFile(fileCopy.FileData, fileCopy.Filename, fileCopy.FileType)
 									fileCopy.FileType = nil
 									blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
+								}
+								if responsesAudioURLShadowedByData(blockCopy.Audio) {
+									audioCopy := *blockCopy.Audio
+									audioCopy.URL = ""
+									blockCopy.Audio = &audioCopy
 								}
 								outputCopy.ResponsesFunctionToolCallOutputBlocks[j] = blockCopy
 							} else {
@@ -1331,6 +1341,12 @@ func audioURLShadowedByData(audio *schemas.ChatInputAudio) bool {
 	return audio != nil && audio.Data != "" && audio.URL != ""
 }
 
+// responsesAudioURLShadowedByData is audioURLShadowedByData for Responses input_audio blocks:
+// OpenAI's Responses input_audio takes only data and format, so a url beside data is dropped.
+func responsesAudioURLShadowedByData(audio *schemas.ResponsesInputMessageContentBlockAudio) bool {
+	return audio != nil && audio.Data != "" && audio.URL != ""
+}
+
 // Helper function to check if a responses message has any CacheControl fields or FileType in file blocks
 func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 	// Check message-level CacheControl (used by Anthropic for function_call/function_call_output messages)
@@ -1347,6 +1363,9 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			}
 			// Gemini's per-part media resolution; OpenAI 400s on the unknown parameter.
 			if block.MediaResolution != nil {
+				return true
+			}
+			if responsesAudioURLShadowedByData(block.Audio) {
 				return true
 			}
 			if block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType) {
@@ -1399,6 +1418,9 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 					return true
 				}
 				if block.MediaResolution != nil {
+					return true
+				}
+				if responsesAudioURLShadowedByData(block.Audio) {
 					return true
 				}
 				if block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType) {
