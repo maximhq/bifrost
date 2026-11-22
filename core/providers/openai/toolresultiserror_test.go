@@ -137,6 +137,38 @@ func TestToolResultIsErrorSurvivesAnthropicToOpenAIResponsesRoundTrip(t *testing
 	}
 }
 
+// ConvertBifrostMessagesToOpenAIMessages has no destination model to check, so
+// media a tool returned becomes a placeholder naming it, never base64 text and
+// never an image part a text-only model would reject.
+func TestToolResultMediaFlattenedOnOpenAIWire(t *testing.T) {
+	content := &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+		{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+		{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}},
+	}}
+	input := []schemas.ChatMessage{{
+		Role:            schemas.ChatMessageRoleTool,
+		ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+		Content:         content,
+	}}
+	for name, converted := range map[string][]OpenAIMessage{
+		"exported":       ConvertBifrostMessagesToOpenAIMessages(input),
+		"hoist disabled": convertBifrostMessagesToOpenAIMessages(input, false),
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Len(t, converted, 1, "no user turn may be added")
+			require.NotNil(t, converted[0].Content)
+			require.NotNil(t, converted[0].Content.ContentStr, "expected a string tool message, got %+v", converted[0].Content)
+			got := *converted[0].Content.ContentStr
+			for _, want := range []string{"chart below", "[image/png", "[audio/mp3"} {
+				require.Contains(t, got, want)
+			}
+			require.NotContains(t, got, "iVBORw0KGgo", "base64 must not reach the model as text")
+		})
+	}
+	require.Len(t, content.ContentBlocks, 3, "caller's content must not be mutated")
+}
+
 // Strict Chat accepts images in user content, not tool content. The image must
 // survive on the serialized wire without interrupting parallel tool results.
 func TestToolResultImagesHoistedOnOpenAIWire(t *testing.T) {
@@ -175,17 +207,17 @@ func TestToolResultImagesHoistedOnOpenAIWire(t *testing.T) {
 		{
 			name: "mixed content", input: []schemas.ChatMessage{tool("call_a", text("before"), image(png), text("after"), audio, file)},
 			wantRoles:    "tool,user",
-			wantToolText: []string{"before", "Image attached below.", "after", "[audio/mp3, 3 bytes returned by the tool, not shown]", "[application/pdf report.pdf, 6 bytes returned by the tool, not shown]"},
+			wantToolText: []string{"before\nImage attached below.\nafter\n[audio/mp3, 3 bytes returned by the tool, not shown]\n[application/pdf report.pdf, 6 bytes returned by the tool, not shown]"},
 			wantUserText: []string{"Images returned by tool call call_a:"}, wantImages: []string{png},
 		},
 		{
 			name: "refusal remains tool text", input: []schemas.ChatMessage{tool("call_a", schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeRefusal, Refusal: schemas.Ptr("not available")}, image(png))},
-			wantRoles: "tool,user", wantToolText: []string{"not available", "Image attached below."},
+			wantRoles: "tool,user", wantToolText: []string{"not available\nImage attached below."},
 			wantUserText: []string{"Images returned by tool call call_a:"}, wantImages: []string{png},
 		},
 		{
 			name: "multiple images precede next user string", input: []schemas.ChatMessage{tool("call_a", image(png), image(jpeg)), user("describe both")},
-			wantRoles: "tool,user", wantToolText: []string{"Image attached below.", "Image attached below."},
+			wantRoles: "tool,user", wantToolText: []string{"Image attached below.\nImage attached below."},
 			wantUserText: []string{"Images returned by tool call call_a:", "describe both"}, wantImages: []string{png, jpeg},
 		},
 		{
@@ -244,7 +276,7 @@ func TestToolResultImagesHoistedOnOpenAIWire(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			before, err := schemas.MarshalSorted(tt.input)
 			require.NoError(t, err)
-			converted := ConvertBifrostMessagesToOpenAIMessages(tt.input)
+			converted := convertBifrostMessagesToOpenAIMessages(tt.input, true)
 			wire, err := schemas.MarshalSorted(converted)
 			require.NoError(t, err)
 			var messages []OpenAIMessage
@@ -297,11 +329,11 @@ func TestToolResultImagesHoistedOnOpenAIWire(t *testing.T) {
 			after, err := schemas.MarshalSorted(tt.input)
 			require.NoError(t, err)
 			require.Equal(t, string(before), string(after), "caller input was mutated")
-			repeated, err := schemas.MarshalSorted(ConvertBifrostMessagesToOpenAIMessages(tt.input))
+			repeated, err := schemas.MarshalSorted(convertBifrostMessagesToOpenAIMessages(tt.input, true))
 			require.NoError(t, err)
 			require.Equal(t, string(wire), string(repeated), "serialization must be deterministic")
 			if len(tt.wantImages) > 0 {
-				roundTrip, err := schemas.MarshalSorted(ConvertBifrostMessagesToOpenAIMessages(ConvertOpenAIMessagesToBifrostMessages(messages)))
+				roundTrip, err := schemas.MarshalSorted(convertBifrostMessagesToOpenAIMessages(ConvertOpenAIMessagesToBifrostMessages(messages), true))
 				require.NoError(t, err)
 				require.Equal(t, string(wire), string(roundTrip), "already hoisted images must not be duplicated")
 			}

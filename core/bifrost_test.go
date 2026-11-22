@@ -10701,9 +10701,14 @@ func TestChatToolImages(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		captures <- capturedRequest{r.URL.Path, body}
+		// Never block the handler: a subtest that fails before reading its capture
+		// would otherwise stall every later request.
+		select {
+		case captures <- capturedRequest{r.URL.Path, body}:
+		default:
+		}
 		for _, message := range gjson.GetBytes(body, "messages").Array() {
-			if message.Get("role").String() != "tool" {
+			if message.Get("role").String() != "tool" || !message.Get("content").IsArray() {
 				continue
 			}
 			for _, part := range message.Get("content").Array() {
@@ -10736,17 +10741,19 @@ func TestChatToolImages(t *testing.T) {
 		}
 	}))
 	t.Cleanup(upstream.Close)
+	// Ollama and SGL serve text-only models too; with no datasheet record saying
+	// the model takes images they keep the placeholder and get no extra user turn.
 	cases := []struct {
-		name              string
-		provider          schemas.ModelProvider
-		responses, native bool
+		name                           string
+		provider                       schemas.ModelProvider
+		responses, native, placeholder bool
 	}{
-		{"custom direct Chat", "custom_chat", false, false},
-		{"custom Responses fallback", "custom_chat", true, false},
-		{"strict OpenAI Chat", schemas.OpenAI, false, false},
-		{"Ollama Responses fallback", schemas.Ollama, true, false},
-		{"SGL Responses fallback", schemas.SGL, true, false},
-		{"custom native Responses", "custom_native", true, true},
+		{"custom direct Chat", "custom_chat", false, false, false},
+		{"custom Responses fallback", "custom_chat", true, false, false},
+		{"strict OpenAI Chat", schemas.OpenAI, false, false, false},
+		{"Ollama Responses fallback", schemas.Ollama, true, false, true},
+		{"SGL Responses fallback", schemas.SGL, true, false, true},
+		{"custom native Responses", "custom_native", true, true, false},
 	}
 	account := NewMockAccount()
 	for _, tc := range cases {
@@ -10770,6 +10777,10 @@ func TestChatToolImages(t *testing.T) {
 	for _, tc := range cases {
 		for _, streaming := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, streaming), func(t *testing.T) {
+				select {
+				case <-captures: // a capture left by an earlier failed subtest
+				default:
+				}
 				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
 				defer ctx.Cancel()
 				assistant := &schemas.ChatAssistantMessage{}
@@ -10840,6 +10851,20 @@ func TestChatToolImages(t *testing.T) {
 							}
 						}
 					}
+				} else if tc.placeholder {
+					require.Equal(t, "/v1/chat/completions", captured.path)
+					messages := gjson.GetBytes(captured.body, "messages").Array()
+					require.Len(t, messages, 4, "no user turn may be added: %s", captured.body)
+					for i, id := range []string{"call_a", "call_b"} {
+						tool := messages[2+i]
+						require.Equal(t, id, tool.Get("tool_call_id").String())
+						require.Equal(t, "[image/png, 9 bytes returned by the tool, not shown]", tool.Get("content").String(), string(captured.body))
+					}
+					require.NotContains(t, string(captured.body), "image_url")
+					after, err := schemas.MarshalSorted(chat.Input)
+					require.NoError(t, err)
+					require.Equal(t, string(before), string(after), "dispatch mutated the caller's history")
+					return
 				} else {
 					require.Equal(t, "/v1/chat/completions", captured.path)
 					messages := gjson.GetBytes(captured.body, "messages").Array()

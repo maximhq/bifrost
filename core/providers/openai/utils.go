@@ -332,12 +332,23 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 // carrier for. Over-long tool call IDs are stripped of embedded provider
 // reasoning signatures, and tool messages lose is_error so providers that reject
 // unknown message parameters never see it.
-// Tool images are hoisted into user content because the Chat tool wire takes text only.
+// Media a tool returned becomes a text placeholder, since a Chat tool message
+// takes text only; ToOpenAIChatRequest moves the images into user content
+// instead when the destination model accepts images.
 // The caller's messages are never mutated: shared pointers are cloned before edit.
 func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []OpenAIMessage {
+	return convertBifrostMessagesToOpenAIMessages(messages, false)
+}
+
+// convertBifrostMessagesToOpenAIMessages is ConvertBifrostMessagesToOpenAIMessages
+// with hoistToolImages choosing what happens to a tool's images. When it is
+// true they move into user content after the run of tool results; when false
+// they become placeholders, because a model without image input rejects an
+// image_url part outright and the placeholder keeps the request valid.
+func convertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage, hoistToolImages bool) []OpenAIMessage {
 	hasToolImages := false
 	keepToolImage := func(block schemas.ChatContentBlock) bool {
-		if !schemas.IsImageBlock(block) || block.ImageURLStruct.URL == "" {
+		if !hoistToolImages || !schemas.IsImageBlock(block) || block.ImageURLStruct.URL == "" {
 			return false
 		}
 		hasToolImages = true
@@ -465,9 +476,7 @@ func hoistChatToolResultImages(messages []OpenAIMessage) []OpenAIMessage {
 					block.Refusal = nil
 					blocks[j] = block
 				}
-				content := *message.Content
-				content.ContentBlocks = blocks
-				message.Content = &content
+				message.Content = toolTextContent(message.Content, blocks)
 			}
 		}
 		out = append(out, message)
@@ -493,6 +502,30 @@ func hoistChatToolResultImages(messages []OpenAIMessage) []OpenAIMessage {
 		attachments = nil
 	}
 	return out
+}
+
+// toolTextContent is content with blocks, all text, in place of its parts. They
+// are joined into one string, the form FlattenToolResultMedia gives a text-only
+// tool result and the one strict servers accept, unless a part carries a cache
+// marker that needs a part to stay on.
+func toolTextContent(content *schemas.ChatMessageContent, blocks []schemas.ChatContentBlock) *schemas.ChatMessageContent {
+	out := *content
+	for _, block := range blocks {
+		if block.CacheControl != nil || block.PromptCacheBreakpoint != nil {
+			out.ContentBlocks = blocks
+			return &out
+		}
+	}
+	texts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Text != nil {
+			texts = append(texts, *block.Text)
+		}
+	}
+	joined := strings.Join(texts, "\n")
+	out.ContentBlocks = nil
+	out.ContentStr = &joined
+	return &out
 }
 
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field
