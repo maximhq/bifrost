@@ -347861,6 +347861,46 @@
               ]
             }
           }
+        },
+        {
+          "name": "376.14 bedrock/claude-haiku-5-5 responses custom content beside an empty file_data is accepted (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty file_data beside file_content is not a second source', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var j=pm.response.json(), text='', citations=0;",
+                  "(j.output || []).forEach(function (o) { (o.content || []).forEach(function (b) { text += b.text || ''; citations += (b.annotations || []).length; }); });",
+                  "pm.test('custom document still answers with citations', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); pm.expect(citations, pm.response.text()).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_data\": \"\",\n          \"file_content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"The audit committee met on 3 March.\"\n            }\n          ],\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": false,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
         }
       ]
     },
