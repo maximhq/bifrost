@@ -26,6 +26,15 @@ func defaultSupportsReasoningContentBlocks(provider schemas.ModelProvider, model
 // isGPTOSS reports whether model is gpt-oss, which accepts sampling params at any effort.
 func isGPTOSS(model string) bool { return strings.Contains(strings.ToLower(model), "gpt-oss") }
 
+// reasoningEffortUnsupported reports whether the row says the model takes no
+// reasoning effort: the unsupported_fields entry wins, then the boolean flag.
+func reasoningEffortUnsupported(caps schemas.ModelCaps) bool {
+	if caps.FieldUnsupported(schemas.FieldReasoningEffort, false) {
+		return true
+	}
+	return !caps.SupportsReasoningEffort(true)
+}
+
 // joinReasoningBlocks collapses reasoning text blocks into one, in order, joined by "\n" as
 // vLLM's harmony reader does; vLLM's general reader keeps only content[0]. Blocks holding
 // anything but reasoning text are returned unchanged.
@@ -152,7 +161,24 @@ func defaultReasoningEffort(model string) string {
 // the name-based default.
 func omittedEffortReasons(caps schemas.ModelCaps, model string) bool {
 	effort := caps.DefaultReasoningEffort(defaultReasoningEffort(model))
-	return effort != "" && effort != schemas.ReasoningEffortNone
+	if effort == "" {
+		// No declared default: a row that can never disable reasoning still
+		// reasons when the caller omits effort.
+		return caps.SupportsReasoning(false) && !caps.CanDisableReasoning(true)
+	}
+	if effort == schemas.ReasoningEffortNone {
+		return false
+	}
+	// A row can spell its disabled default in its own dialect (none → off);
+	// omitted effort then agrees with an explicit disabled label. Only on a
+	// model that can disable reasoning — an always-reasoning row maps "none"
+	// onto its lowest rung, which is not the disabled state.
+	if caps.CanDisableReasoning(defaultCanDisableReasoning(model)) {
+		if label, ok := caps.EffortLabelFor(schemas.ReasoningEffortNone); ok && label == effort {
+			return false
+		}
+	}
+	return true
 }
 
 // defaultEffortControl widens the base low/medium/high ladder with the effort

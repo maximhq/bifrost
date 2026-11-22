@@ -50,8 +50,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		return nil
 	}
 
+	// Canonical model for capability gating only; wire model (openaiReq.Model) is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
+	// The request's own row wins; base-family rows are only a fallback.
+	caps := schemas.ResolveModelCapsForRequest(ctx, bifrostReq.Provider, capModel)
 
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
@@ -278,6 +280,8 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
+			// This branch returns before the generic filter, so renames must run here too.
+			openaiReq.normalizeReasoningEffort(caps)
 			// A custom provider reports its own name, so a DeepSeek-based one lands here
 			// and still needs the json_schema downgrade DeepSeek's endpoint requires.
 			if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.DeepSeek {
@@ -340,25 +344,34 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelC
 	}
 }
 
+// normalizeReasoningEffort renames an effort onto the row's ladder and estimates
+// one from a token budget. A row that rejects reasoning_effort gets no effort:
+// the disabled state is recorded for the compat pass, then the field is dropped.
 func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 	if req.ChatParameters.Reasoning != nil {
 		reasoningCopy := *req.ChatParameters.Reasoning
 		req.ChatParameters.Reasoning = &reasoningCopy
+		req.effortNormalized = true
+		// A row that rejects reasoning_effort still gets a budget-and-effort
+		// request normalized, but never gains an estimate from a token budget.
+		rejectsEffort := reasoningEffortUnsupported(caps)
 		if req.ChatParameters.Reasoning.Effort != nil {
 			// Native field is provided, use it (and clear max_tokens)
 			effort := *req.ChatParameters.Reasoning.Effort
 			req.ChatParameters.Reasoning.Effort = schemas.Ptr(normalizeReasoningEffort(req.Provider, caps, effort))
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
-		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
+		} else if req.ChatParameters.Reasoning.MaxTokens != nil && !rejectsEffort {
 			// Estimate effort from max_tokens
 			maxTokens := *req.ChatParameters.Reasoning.MaxTokens
-			maxCompletionTokens := utils.GetMaxOutputTokensOrDefault(req.Provider, req.Model, DefaultCompletionMaxTokens)
+			// The resolved row already answers for this request, including a row
+			// inherited from the base provider; re-resolving here would miss it.
+			maxCompletionTokens := caps.MaxOutputTokens(utils.GetMaxOutputTokensOrDefault(req.Provider, req.Model, DefaultCompletionMaxTokens))
 			if req.ChatParameters.MaxCompletionTokens != nil {
 				maxCompletionTokens = *req.ChatParameters.MaxCompletionTokens
 			}
 			effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxCompletionTokens)
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(effort)
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(normalizeReasoningEffort(req.Provider, caps, effort))
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		}
@@ -367,7 +380,31 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 			!caps.CanDisableReasoning(defaultCanDisableReasoning(caps.Model())) {
 			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(req.Provider, caps.Model())))
 		}
+		// A row that rejects reasoning_effort must not carry one. Record the
+		// disabled state first: the MiniMax/BytePlus pass still translates it
+		// into thinking:disabled, and a row can spell "none" in its own dialect.
+		if rejectsEffort {
+			if e := req.ChatParameters.Reasoning.Effort; e != nil {
+				req.reasoningDisabled = *e == schemas.ReasoningEffortNone
+				if !req.reasoningDisabled && caps.CanDisableReasoning(defaultCanDisableReasoning(caps.Model())) {
+					if label, ok := caps.EffortLabelFor(schemas.ReasoningEffortNone); ok && label == *e {
+						req.reasoningDisabled = true
+					}
+				}
+				req.ChatParameters.Reasoning.Effort = nil
+			}
+		}
 	}
+}
+
+// isReasoningDisabled reports whether reasoning was explicitly turned off,
+// including when the row's unsupported reasoning_effort entry made
+// normalizeReasoningEffort drop the field.
+func (req *OpenAIChatRequest) isReasoningDisabled() bool {
+	if req.reasoningDisabled {
+		return true
+	}
+	return req.Reasoning != nil && req.Reasoning.Effort != nil && *req.Reasoning.Effort == schemas.ReasoningEffortNone
 }
 
 // stripUnsupportedSamplingParams drops sampling fields OpenAI rejects at the request's reasoning effort.

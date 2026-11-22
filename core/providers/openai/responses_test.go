@@ -508,7 +508,7 @@ func TestToOpenAIResponsesRequest_VLLMKeepsReplayedReasoningContent(t *testing.T
 	thinking := "I privately choose the code word PAMPLEMOUSSE-47."
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider: schemas.VLLM,
-		Model:    "deepseek-v4.1-flash",
+		Model:    "frontier-gpt-5.4",
 		Input: []schemas.ResponsesMessage{{
 			Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 			Role:               schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
@@ -5781,6 +5781,241 @@ func TestToOpenAIResponsesRequest_MessageItemWithEncryptedContent(t *testing.T) 
 	}
 }
 
+// TestToOpenAIResponsesRequest_CustomProviderBudgetEffortFollowsDatasheet is
+// the Responses-API twin of the chat budget-effort test.
+func TestToOpenAIResponsesRequest_CustomProviderBudgetEffortFollowsDatasheet(t *testing.T) {
+	commandCodeRow := &schemas.ModelCapabilities{
+		ReasoningEffortLevels:  []string{"off", "low", "medium", "xhigh", "max"},
+		ReasoningEffortRenames: map[string]string{"high": "off"},
+	}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == "commandcode" && m == "deepseek-v4.1-flash" {
+			return commandCodeRow
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	req := &schemas.BifrostResponsesRequest{
+		Provider: "commandcode",
+		Model:    "deepseek-v4.1-flash",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Reasoning:       &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(20000)},
+			MaxOutputTokens: schemas.Ptr(10000),
+		},
+	}
+	out := ToOpenAIResponsesRequest(customProviderContext(schemas.OpenAI), req)
+	require.NotNil(t, out)
+	require.NotNil(t, out.ResponsesParameters)
+	require.NotNil(t, out.ResponsesParameters.Reasoning)
+	require.NotNil(t, out.ResponsesParameters.Reasoning.Effort)
+	require.Equal(t, "off", *out.ResponsesParameters.Reasoning.Effort)
+}
+
+// TestToOpenAIResponsesRequest_BudgetEstimateReadsResolvedOutputLimit pins that
+// the budget-derived effort is scaled against the ceiling the request's own
+// resolved row publishes, including when that row is inherited from the base
+// provider. Re-resolving the cap here looked the custom provider up a second
+// time, missed the inherited row, and scaled the budget against the generic
+// default instead.
+func TestToOpenAIResponsesRequest_BudgetEstimateReadsResolvedOutputLimit(t *testing.T) {
+	// The base row's ceiling is deliberately tiny, so the same budget maps to a
+	// different rung than the DefaultCompletionMaxTokens fallback would give.
+	baseRow := &schemas.ModelCapabilities{MaxOutputTokens: schemas.Ptr(1000)}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == schemas.OpenAI && m == "inherited-ceiling" {
+			return baseRow
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	newReq := func(budget int) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: "acme",
+			Model:    "inherited-ceiling",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Reasoning: &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(budget)},
+			},
+		}
+	}
+
+	ctx := customProviderContext(schemas.OpenAI)
+
+	// A budget of 300 against the row's own 1000 ceiling normalizes to a ratio of
+	// 0.299, which lands on "medium". Against the generic 4096 default it is a
+	// ratio of 0.073, which lands on "low" — so the two answers discriminate.
+	out := ToOpenAIResponsesRequest(ctx, newReq(300))
+	require.NotNil(t, out)
+	require.NotNil(t, out.ResponsesParameters.Reasoning)
+	require.NotNil(t, out.ResponsesParameters.Reasoning.Effort)
+	require.Equal(t, "medium", *out.ResponsesParameters.Reasoning.Effort,
+		"the budget is scaled against the inherited row's ceiling, not the generic default")
+}
+
+// TestToOpenAIResponsesRequest_CustomProviderEffortRenamesFollowDatasheet is
+// the Responses-API twin of the chat renames test.
+func TestToOpenAIResponsesRequest_CustomProviderEffortRenamesFollowDatasheet(t *testing.T) {
+	commandCodeRow := &schemas.ModelCapabilities{
+		ReasoningEffortLevels:  []string{"off", "low", "medium", "high", "xhigh", "max"},
+		ReasoningEffortRenames: map[string]string{"none": "off"},
+	}
+	opencodeGoRow := &schemas.ModelCapabilities{
+		ReasoningEffortLevels:    []string{"none", "low", "medium", "high"},
+		ReasoningEffortRenames:   map[string]string{"off": "none"},
+		SupportsReasoningDisable: schemas.Ptr(true),
+	}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		switch {
+		case p == "commandcode" && m == "deepseek-v4.1-flash":
+			return commandCodeRow
+		case p == "opencode-go" && m == "deepseek-v4.1-flash":
+			return opencodeGoRow
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		effort   string
+		expected string
+	}{
+		{name: "commandcode renames none to off", provider: "commandcode", effort: "none", expected: "off"},
+		{name: "opencode-go renames off to none", provider: "opencode-go", effort: "off", expected: "none"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tt.provider,
+				Model:    "deepseek-v4.1-flash",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr(tt.effort)}},
+			}
+			out := ToOpenAIResponsesRequest(customProviderContext(schemas.OpenAI), req)
+			require.NotNil(t, out)
+			require.NotNil(t, out.ResponsesParameters)
+			require.NotNil(t, out.ResponsesParameters.Reasoning)
+			require.NotNil(t, out.ResponsesParameters.Reasoning.Effort)
+			require.Equal(t, tt.expected, *out.ResponsesParameters.Reasoning.Effort)
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_UnsupportedEffortRowDropsEffort pins that a row
+// rejecting reasoning_effort never receives an effort — neither estimated from a
+// token budget nor the caller's own value — and that the serialized request has
+// no reasoning.effort key at all.
+func TestToOpenAIResponsesRequest_UnsupportedEffortRowDropsEffort(t *testing.T) {
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == "commandcode" && m == "no-effort-model" {
+			return &schemas.ModelCapabilities{
+				UnsupportedFields: map[string]bool{schemas.FieldReasoningEffort: true},
+			}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	ctx := customProviderContext(schemas.OpenAI)
+	newReq := func(model string, reasoning *schemas.ResponsesParametersReasoning) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: "commandcode",
+			Model:    model,
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Reasoning:       reasoning,
+				MaxOutputTokens: schemas.Ptr(10000),
+			},
+		}
+	}
+
+	t.Run("a budget does not synthesize a rejected effort", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(ctx, newReq("no-effort-model", &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(20000)}))
+		require.NotNil(t, out)
+		require.Nil(t, out.ResponsesParameters.Reasoning, "the row rejects reasoning_effort, so no reasoning object goes out")
+		body, err := sonic.Marshal(out)
+		require.NoError(t, err)
+		require.NotContains(t, string(body), `"effort"`, "reasoning.effort must be absent, not null: %s", body)
+	})
+
+	t.Run("an explicit effort is dropped", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(ctx, newReq("no-effort-model", &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high")}))
+		require.NotNil(t, out)
+		require.Nil(t, out.ResponsesParameters.Reasoning)
+	})
+
+	t.Run("a permitted row still emits the effort", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(ctx, newReq("deepseek-v4.1-flash", &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high")}))
+		require.NotNil(t, out)
+		require.NotNil(t, out.ResponsesParameters.Reasoning)
+		require.NotNil(t, out.ResponsesParameters.Reasoning.Effort)
+	})
+}
+
+// TestToOpenAIResponsesRequest_AlwaysReasoningRowTreatsOmittedEffortAsActive pins
+// that an omitted effort counts as reasoning on for a row that can never disable
+// reasoning, so a when_effort_none field is stripped without a declared default.
+func TestToOpenAIResponsesRequest_AlwaysReasoningRowTreatsOmittedEffortAsActive(t *testing.T) {
+	tests := []struct {
+		name       string
+		canDisable bool
+		stripped   bool
+	}{
+		{name: "always reasoning strips", canDisable: false, stripped: true},
+		{name: "can disable keeps", canDisable: true, stripped: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			row := &schemas.ModelCapabilities{
+				SupportsReasoning:        schemas.Ptr(true),
+				SupportsReasoningDisable: schemas.Ptr(tt.canDisable),
+				ConditionallyUnsupportedFields: map[string]string{
+					schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
+				},
+			}
+			schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+				if p == "commandcode" && m == "omitted-effort-model" {
+					return row
+				}
+				return nil
+			})
+			t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+			out := ToOpenAIResponsesRequest(customProviderContext(schemas.OpenAI), &schemas.BifrostResponsesRequest{
+				Provider: "commandcode",
+				Model:    "omitted-effort-model",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ResponsesParameters{Temperature: schemas.Ptr(0.5)},
+			})
+			require.NotNil(t, out)
+			if tt.stripped {
+				require.Nil(t, out.Temperature, "the row always reasons, so the when_effort_none condition fires")
+			} else {
+				require.NotNil(t, out.Temperature, "the row can disable reasoning, so an omitted effort counts as off")
+			}
+		})
+	}
+}
+
 // Codex replays function_call items carrying encrypted_content, which decodes into the
 // embedded ResponsesReasoning; the request then went out with summary:null and OpenAI
 // rejected it with "Unknown parameter: 'input[N].summary'".
@@ -5895,6 +6130,61 @@ func TestToOpenAIResponsesRequest_AccessPrograms_ProviderGating(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestToOpenAIResponsesRequest_CustomRowTranslatedDisabledLabelKeepsConditionalTopP
+// pins that a custom row spelling its disabled state in its own dialect (none ->
+// off) is still recognized as reasoning off by the sampling gate: normalization
+// translates "none" to "off" before the gate runs, so a literal-"none" match
+// silently dropped a top_p the row permits when reasoning is off.
+func TestToOpenAIResponsesRequest_CustomRowTranslatedDisabledLabelKeepsConditionalTopP(t *testing.T) {
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == "commandcode" && m == "deepseek-v4.1-flash" {
+			return &schemas.ModelCapabilities{
+				ReasoningEffortLevels:    []string{"off", "low", "medium", "high"},
+				ReasoningEffortRenames:   map[string]string{"none": "off"},
+				SupportsReasoningDisable: schemas.Ptr(true),
+				ConditionallyUnsupportedFields: map[string]string{
+					schemas.FieldTopP: schemas.ConditionWhenEffortNone,
+				},
+			}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	newReq := func(effort string) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: "commandcode",
+			Model:    "deepseek-v4.1-flash",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr(effort)},
+				TopP:      schemas.Ptr(0.5),
+			},
+		}
+	}
+
+	t.Run("the translated disabled label keeps the conditional top_p", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(customProviderContext(schemas.OpenAI), newReq("none"))
+		require.NotNil(t, out)
+		require.NotNil(t, out.ResponsesParameters.Reasoning)
+		require.NotNil(t, out.ResponsesParameters.Reasoning.Effort)
+		require.Equal(t, "off", *out.ResponsesParameters.Reasoning.Effort,
+			"the row renames none to off on the wire")
+		require.NotNil(t, out.ResponsesParameters.TopP,
+			"the row's translated disabled label counts as reasoning off, so the conditional top_p stays")
+	})
+
+	t.Run("an active effort still strips it", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(customProviderContext(schemas.OpenAI), newReq("low"))
+		require.NotNil(t, out)
+		require.Nil(t, out.ResponsesParameters.TopP,
+			"low is active reasoning, so the when_effort_none condition fires")
+	})
 }
 
 // TestOpenAIResponsesRequest_AccessProgramsNativeRoute pins the /openai/v1/responses
