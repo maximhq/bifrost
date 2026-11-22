@@ -3636,7 +3636,7 @@ func TestToAnthropicInvokeStreamBytes_MessageDeltaStopReason(t *testing.T) {
 		},
 		{name: "end_turn", events: textTurn("end_turn"), expected: "end_turn"},
 		{name: "max_tokens", events: textTurn("max_tokens"), expected: "max_tokens"},
-		{name: "guardrail_intervened", events: textTurn("guardrail_intervened"), expected: "refusal"},
+		{name: "guardrail_intervened", events: textTurn("guardrail_intervened"), expected: "end_turn"},
 		{name: "model_context_window_exceeded", events: textTurn("model_context_window_exceeded"), expected: "model_context_window_exceeded"},
 	}
 
@@ -3678,7 +3678,7 @@ func TestToAnthropicInvokeStreamBytes_StopReasonWithoutIncompleteDetails(t *test
 		{stopReason: "stop", expected: "end_turn"},
 		{stopReason: "compaction", expected: "compaction"},
 		{stopReason: "pause_turn", expected: "pause_turn"},
-		{stopReason: "guardrail_intervened", expected: "refusal"},
+		{stopReason: "guardrail_intervened", expected: "end_turn"},
 		{stopReason: "content_filter", expected: "refusal"},
 		{stopReason: "some_future_reason", expected: "end_turn"},
 	}
@@ -3798,5 +3798,134 @@ func TestInvokeAnthropicBody_MidConvSystemReminderStableAcrossTurns(t *testing.T
 		assert.Equal(t, "system", msg.Get("role").String(), "messages=%s", gjson.GetBytes(body, "messages").Raw)
 		assert.Equal(t, reminder, msg.Get("content.0.text").String(), "messages=%s", gjson.GetBytes(body, "messages").Raw)
 		assert.Equal(t, "ephemeral", msg.Get("content.0.cache_control.type").String())
+	}
+}
+
+// InvokeModel non-streaming stop_reason follows the Anthropic enum and matches the streaming
+// route: StopReason wins over IncompleteDetails, so a guardrail block (end_turn) is not
+// reported as a model content filter (refusal). Issues #9379, #9495, #9497.
+func TestToBedrockInvokeAnthropicResponse_StopReason(t *testing.T) {
+	tests := []struct {
+		name       string
+		stopReason *string
+		incomplete *schemas.ResponsesResponseIncompleteDetails
+		expected   string
+	}{
+		{"max_tokens from length", schemas.Ptr("length"), nil, "max_tokens"},
+		{"max_tokens from incomplete max_output_tokens", nil, &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens}, "max_tokens"},
+		{"refusal from content_filter", schemas.Ptr("content_filter"), nil, "refusal"},
+		{"refusal from incomplete content_filter", nil, &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonContentFilter}, "refusal"},
+		{"guardrail_intervened becomes end_turn", schemas.Ptr("guardrail_intervened"), &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonContentFilter}, "end_turn"},
+		{"model_context_window_exceeded is kept", schemas.Ptr("model_context_window_exceeded"), nil, "model_context_window_exceeded"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &schemas.BifrostResponsesResponse{StopReason: tt.stopReason, IncompleteDetails: tt.incomplete}
+			result := toBedrockInvokeAnthropicResponse(resp, "claude-sonnet-4-6")
+			assert.Equal(t, tt.expected, result.StopReason)
+		})
+	}
+}
+
+// A function_call output item upgrades end_turn to tool_use (Gemini reports a plain stop on
+// a tool turn), but never overrides a truncation, a refusal or a guardrail block.
+func TestToBedrockInvokeAnthropicResponse_StopReasonWithToolCall(t *testing.T) {
+	tests := []struct {
+		name       string
+		stopReason *string
+		expected   string
+	}{
+		{"stop with tool call is tool_use", schemas.Ptr("stop"), "tool_use"},
+		{"no stop reason with tool call is tool_use", nil, "tool_use"},
+		{"tool_calls is tool_use", schemas.Ptr("tool_calls"), "tool_use"},
+		{"length with tool call stays max_tokens", schemas.Ptr("length"), "max_tokens"},
+		{"content_filter with tool call stays refusal", schemas.Ptr("content_filter"), "refusal"},
+		{"guardrail_intervened with tool call stays end_turn", schemas.Ptr("guardrail_intervened"), "end_turn"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &schemas.BifrostResponsesResponse{
+				StopReason: tt.stopReason,
+				Output:     []schemas.ResponsesMessage{invokeStopReasonToolCallItem()},
+			}
+			result := toBedrockInvokeAnthropicResponse(resp, "claude-sonnet-4-6")
+			assert.Equal(t, tt.expected, result.StopReason)
+		})
+	}
+}
+
+// The streaming route applies the same tool_use upgrade as the non-streaming one: a
+// provider that reports a plain stop on a function-call turn (Gemini) still ends the
+// stream with tool_use once a tool_use block was streamed. A server-side tool search is
+// not a client tool call and does not upgrade.
+func TestToAnthropicInvokeStreamBytes_StopReasonWithToolCall(t *testing.T) {
+	toolItem := invokeStopReasonToolCallItem()
+	searchItem := schemas.ResponsesMessage{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("srvtoolu_1"), Name: schemas.Ptr("tool_search")},
+	}
+	tests := []struct {
+		name       string
+		item       *schemas.ResponsesMessage
+		stopReason *string
+		expected   string
+	}{
+		{"stop with streamed tool call is tool_use", &toolItem, schemas.Ptr("stop"), "tool_use"},
+		{"no stop reason with streamed tool call is tool_use", &toolItem, nil, "tool_use"},
+		{"tool_calls is tool_use", &toolItem, schemas.Ptr("tool_calls"), "tool_use"},
+		{"length with streamed tool call stays max_tokens", &toolItem, schemas.Ptr("length"), "max_tokens"},
+		{"content_filter with streamed tool call stays refusal", &toolItem, schemas.Ptr("content_filter"), "refusal"},
+		{"guardrail_intervened with streamed tool call stays end_turn", &toolItem, schemas.Ptr("guardrail_intervened"), "end_turn"},
+		{"stop with only a server tool search stays end_turn", &searchItem, schemas.Ptr("stop"), "end_turn"},
+		{"stop without a tool call stays end_turn", nil, schemas.Ptr("stop"), "end_turn"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.item != nil {
+				_, err := toAnthropicInvokeStreamBytes(ctx, &schemas.BifrostResponsesStreamResponse{
+					Type:         schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					OutputIndex:  schemas.Ptr(0),
+					ContentIndex: schemas.Ptr(0),
+					Item:         tt.item,
+				})
+				require.NoError(t, err)
+			}
+			frames, err := toAnthropicInvokeStreamBytes(ctx, &schemas.BifrostResponsesStreamResponse{
+				Type:     schemas.ResponsesStreamResponseTypeCompleted,
+				Response: &schemas.BifrostResponsesResponse{StopReason: tt.stopReason},
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, frames)
+			assert.Equal(t, tt.expected, gjson.GetBytes(frames[0], "delta.stop_reason").String())
+		})
+	}
+}
+
+func invokeStopReasonToolCallItem() schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:    schemas.Ptr("toolu_1"),
+			Name:      schemas.Ptr("get_weather"),
+			Arguments: schemas.Ptr(`{"city":"Paris"}`),
+		},
+	}
+}
+
+func BenchmarkToBedrockInvokeAnthropicResponse_StopReason(b *testing.B) {
+	resp := &schemas.BifrostResponsesResponse{
+		ID:                schemas.Ptr("msg_1"),
+		StopReason:        schemas.Ptr("length"),
+		IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+		Output: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = toBedrockInvokeAnthropicResponse(resp, "claude-sonnet-4-6")
 	}
 }
