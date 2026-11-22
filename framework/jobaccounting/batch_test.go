@@ -267,6 +267,20 @@ func (fakePricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimen
 	}
 }
 
+// Interaction rates for the settler tests: one agent priced per token at the standard (not batch)
+// rate, and nothing for anything else. It prices only what a passthrough read would have carried.
+func (fakePricing) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *modelcatalog.PricingLookupScopes) *schemas.BifrostCost {
+	if result == nil || result.PassthroughResponse == nil || result.PassthroughResponse.PassthroughUsage == nil {
+		return nil
+	}
+	usage := result.PassthroughResponse.PassthroughUsage.LLMUsage
+	if usage == nil || result.PassthroughResponse.ExtraFields.RoutingInfo.Model != "deep-research-preview-04-2026" {
+		return nil
+	}
+	total := float64(usage.PromptTokens)*0.000002 + float64(usage.CompletionTokens)*0.000012
+	return &schemas.BifrostCost{TotalCost: total}
+}
+
 func (fakePricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
 	if usage == nil || requestType != schemas.BatchResultsRequest {
 		return modelcatalog.BatchCostDetails{}
@@ -315,6 +329,11 @@ type requestTypePricing struct {
 func (p *requestTypePricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
 	p.requestTypes = append(p.requestTypes, requestType)
 	return modelcatalog.BatchCostDetails{Cost: float64(usage.PromptTokens), Priced: true}
+}
+
+// This fake exists to record batch request types; interaction pricing is fakePricing's job.
+func (p *requestTypePricing) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *modelcatalog.PricingLookupScopes) *schemas.BifrostCost {
+	return nil
 }
 
 // This fake exists to record batch request types; video pricing is fakePricing's job.

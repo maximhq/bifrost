@@ -92,15 +92,15 @@ func (s *RDBLogStore) triggerMatViewSelfHeal() {
 	if !s.matViewHealInFlight.CompareAndSwap(false, true) {
 		return // a heal is already running
 	}
-	go func() {
+	started := s.goMaintenance(func() {
 		defer s.matViewHealInFlight.Store(false)
 		if time.Since(time.Unix(0, s.matViewHealLastAttempt.Load())) < matViewHealCooldown {
 			return
 		}
 		s.matViewHealLastAttempt.Store(time.Now().UnixNano())
 
-		ctx := context.Background()
-		if err := ensureMatViews(ctx, s.db); err != nil {
+		ctx := s.maintenanceContext()
+		if err := ensureMatViewsLimited(ctx, s.db, s.matViewLimits); err != nil {
 			if s.logger != nil {
 				s.logger.Warn(fmt.Sprintf("logstore: matview self-heal creation failed: %s (still serving from raw tables)", err))
 			}
@@ -114,7 +114,7 @@ func (s *RDBLogStore) triggerMatViewSelfHeal() {
 			refreshCtx, cancel = context.WithTimeout(ctx, s.matViewRefreshTimeout)
 		}
 		// minGap 0: a heal follows a shape error, so the record cannot be trusted.
-		err := refreshMatViews(refreshCtx, s.db, 0)
+		err := refreshMatViewsLimited(refreshCtx, s.db, 0, s.matViewLimits)
 		cancel()
 		if err != nil {
 			if s.logger != nil {
@@ -126,7 +126,10 @@ func (s *RDBLogStore) triggerMatViewSelfHeal() {
 		if s.logger != nil {
 			s.logger.Info("logstore: materialized views self-healed after shape error")
 		}
-	}()
+	})
+	if !started {
+		s.matViewHealInFlight.Store(false) // the store is closed
+	}
 }
 
 // resetMatViewHeal clears the single-flight and cooldown state. Test helper.

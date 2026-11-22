@@ -93,6 +93,23 @@ func assertGuardrailOutcomeFilter(t *testing.T, store LogStore, prefix string, a
 			assert.Equal(t, want, got)
 		})
 	}
+
+	// The list rows carry what the Incidents view renders: the guardrail
+	// metadata, and error details for guardrail blocks only, never for other
+	// failures whose provider payload is unbounded.
+	result, err := store.SearchLogs(ctx, SearchFilters{StartTime: &start, EndTime: &end}, PaginationOptions{Limit: 50})
+	require.NoError(t, err)
+	listed := map[string]Log{}
+	for _, row := range result.Logs {
+		listed[row.ID[len(prefix):]] = row
+	}
+	require.NotNil(t, listed["blocked"].GuardrailDebugParsed)
+	assert.Equal(t, "block-secrets", listed["blocked"].GuardrailDebugParsed.Interventions[0].RuleName)
+	require.NotNil(t, listed["detected"].GuardrailDebugParsed)
+	assert.Equal(t, "pii-audit", listed["detected"].GuardrailDebugParsed.Detections[0].RuleName)
+	require.NotNil(t, listed["legacy-blocked"].ErrorDetailsParsed)
+	assert.Equal(t, "Request blocked by guardrail", listed["legacy-blocked"].ErrorDetailsParsed.Error.Message)
+	assert.Nil(t, listed["rate-limited"].ErrorDetailsParsed, "non-guardrail errors stay out of the list")
 }
 
 // TestGuardrailOutcomeFilterSQLite verifies the guardrail outcome filter on SQLite.

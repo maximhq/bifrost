@@ -236,9 +236,9 @@ func buildProviderConfigWithRateLimit(provider string, allowedModels []string, r
 func resolverCtx(store GovernanceStore, virtualKeyValue string) *schemas.BifrostContext {
 	ctx := presentCtx(virtualKeyValue)
 	if store != nil {
-		bases, scoping, mode := store.ResolvePermits(ctx)
+		bases, levelMode, scoping, mode := store.ResolvePermits(ctx)
 		if len(bases) > 0 || scoping != nil {
-			ctx.Grant().SetAccess(grant.NewAccess(bases, scoping, mode, nil))
+			ctx.Grant().SetAccess(grant.NewAccess(bases, levelMode, scoping, mode, nil))
 		}
 	}
 	return ctx
@@ -565,7 +565,7 @@ func scopedModelLimits(gs *LocalGovernanceStore, ctx context.Context, scope, sco
 	if providerName != "" {
 		providerArg = &providerName
 	}
-	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerArg) {
+	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerArg, gs.aliasTargets(ctx, providerArg, model)) {
 		if mc == nil {
 			continue
 		}

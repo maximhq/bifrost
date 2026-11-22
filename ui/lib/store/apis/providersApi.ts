@@ -1,6 +1,8 @@
 import {
 	AddProviderRequest,
 	CreateProviderKeyRequest,
+	GithubCopilotDeviceCode,
+	GithubCopilotSignInPollResult,
 	ListProviderKeysResponse,
 	ListProvidersResponse,
 	ModelProvider,
@@ -100,6 +102,85 @@ export interface ModelPricingAttributesEntry {
 	additional_attributes?: Record<string, string>;
 }
 
+// Datasheet editor (/api/models/datasheet). A datasheet override is the
+// user's edit of one synced entry; the server re-applies it after every
+// datasheet sync, so upstream updates never undo it.
+export interface DatasheetPricingRow {
+	model: string;
+	provider: string;
+	mode: string;
+	base_model?: string;
+	context_length?: number;
+	max_input_tokens?: number;
+	max_output_tokens?: number;
+	is_deprecated?: boolean;
+	input_cost_per_token?: number;
+	output_cost_per_token?: number;
+	[key: string]: unknown;
+}
+
+export interface DatasheetOverride {
+	id: string;
+	provider: string;
+	model: string;
+	// Empty applies the pricing patch to every mode of the model.
+	mode: string;
+	is_custom: boolean;
+	pricing_patch?: Record<string, unknown>;
+	params_patch?: Record<string, unknown>;
+	// Upstream value of each patched key when the override was saved.
+	baseline?: { pricing?: Record<string, unknown>; params?: Record<string, unknown> };
+	config_hash?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface DatasheetEntry {
+	provider: string;
+	model: string;
+	mode: string;
+	is_custom: boolean;
+	upstream: DatasheetPricingRow | null;
+	effective: DatasheetPricingRow | null;
+	overrides?: DatasheetOverride[];
+	// Patched fields whose upstream value changed since the save, as "pricing.<key>" or "params.<key>".
+	drifted_fields?: string[];
+}
+
+export interface DatasheetEntryDetail extends DatasheetEntry {
+	upstream_params?: Record<string, unknown>;
+	effective_params?: Record<string, unknown>;
+}
+
+export interface ListDatasheetEntriesResponse {
+	entries: DatasheetEntry[];
+	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
+}
+
+export interface GetDatasheetEntriesRequest {
+	query?: string;
+	provider?: string;
+	overridden_only?: boolean;
+	limit?: number;
+	offset?: number;
+}
+
+export interface DatasheetEntryTarget {
+	provider: string;
+	model: string;
+	mode: string;
+}
+
+// An empty pricing_patch and params_patch on a non-custom target removes its override.
+export interface SaveDatasheetOverrideRequest extends DatasheetEntryTarget {
+	is_custom?: boolean;
+	pricing_patch?: Record<string, unknown>;
+	params_patch?: Record<string, unknown>;
+}
+
 export interface GetModelsRequest {
 	query?: string;
 	provider?: string;
@@ -151,13 +232,15 @@ type UpdateProviderMutationArg = UpdateProviderRequest & {
 	name: ModelProviderName;
 };
 
+// Used when a model has no datasheet entry (404). Parameter names and help text normally come from the
+// server-provided datasheet in English, so this fallback mirrors it instead of adding a translated variant.
 const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 	mode: "chat",
 	base_model: "default",
 	model_parameters: [
 		{
 			id: "temperature",
-			label: "Temperature",
+			label: "Temperature", // i18n-ignore
 			helpText:
 				"What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.",
 			type: "number",
@@ -165,14 +248,14 @@ const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 		},
 		{
 			id: "max_tokens",
-			label: "Max Tokens",
+			label: "Max Tokens", // i18n-ignore
 			helpText: "The maximum number of tokens that can be generated in the Result.",
 			type: "number",
 			range: { min: 1, max: 8192, step: 1 },
 		},
 		{
 			id: "stream",
-			label: "Stream",
+			label: "Stream", // i18n-ignore
 			helpText:
 				"The stream parameter in the API controls whether the response is sent in incremental updates, like tokenized data as it's generated, or as a complete result in one go.",
 			type: "boolean",
@@ -204,6 +287,20 @@ export const providersApi = baseApi.injectEndpoints({
 		getProviderKey: builder.query<ModelProviderKey, { provider: string; keyId: string }>({
 			query: ({ provider, keyId }) => `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
 			providesTags: (result, error, { provider }) => [{ type: "ProviderKeys", id: provider }],
+		}),
+
+		// GitHub Copilot "Sign in with GitHub" (device flow). The gateway talks to GitHub; the UI
+		// shows the code and polls, and puts the returned token in the key's value.
+		startGithubCopilotSignIn: builder.mutation<GithubCopilotDeviceCode, { provider: string }>({
+			query: ({ provider }) => ({ url: `/providers/${encodeURIComponent(provider)}/sign-in`, method: "POST" }),
+		}),
+
+		pollGithubCopilotSignIn: builder.mutation<GithubCopilotSignInPollResult, { provider: string; deviceCode: string }>({
+			query: ({ provider, deviceCode }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/sign-in/poll`,
+				method: "POST",
+				body: { device_code: deviceCode },
+			}),
 		}),
 
 		// Create new provider
@@ -472,6 +569,7 @@ export const providersApi = baseApi.injectEndpoints({
 
 		// Get model parameters (parameters, capabilities) from local API
 		// Falls back to default parameters if the API returns an error (e.g. model not found)
+		// Tagged Datasheet: a datasheet override changes the parameters it returns.
 		getModelParameters: builder.query<ModelDatasheetResponse, string>({
 			queryFn: async (model, _queryApi, _extraOptions, baseQuery) => {
 				const result = await baseQuery(`/models/parameters?model=${encodeURIComponent(model)}`);
@@ -484,6 +582,7 @@ export const providersApi = baseApi.injectEndpoints({
 				}
 				return { data: result.data as ModelDatasheetResponse };
 			},
+			providesTags: ["Datasheet"],
 		}),
 
 		// List models with capability metadata + additional_attributes via the
@@ -526,6 +625,46 @@ export const providersApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["Models"],
 		}),
+
+		getDatasheetEntries: builder.query<ListDatasheetEntriesResponse, GetDatasheetEntriesRequest>({
+			query: ({ query, provider, overridden_only, limit, offset }) => ({
+				url: "/models/datasheet",
+				params: {
+					...(query && { query }),
+					...(provider && { provider }),
+					...(overridden_only && { overridden_only: true }),
+					...(limit !== undefined && { limit }),
+					...(offset !== undefined && { offset }),
+				},
+			}),
+			providesTags: ["Datasheet"],
+		}),
+
+		getDatasheetEntry: builder.query<DatasheetEntryDetail, DatasheetEntryTarget>({
+			query: ({ provider, model, mode }) => ({
+				url: "/models/datasheet/entry",
+				params: { provider, model, mode },
+			}),
+			providesTags: ["Datasheet"],
+		}),
+
+		// Overrides change effective prices and limits everywhere models are listed.
+		saveDatasheetOverride: builder.mutation<{ message: string; override: DatasheetOverride | null }, SaveDatasheetOverrideRequest>({
+			query: (body) => ({
+				url: "/models/datasheet/overrides",
+				method: "PUT",
+				body,
+			}),
+			invalidatesTags: ["Datasheet", "Models"],
+		}),
+
+		deleteDatasheetOverride: builder.mutation<{ message: string }, string>({
+			query: (id) => ({
+				url: `/models/datasheet/overrides/${encodeURIComponent(id)}`,
+				method: "DELETE",
+			}),
+			invalidatesTags: ["Datasheet", "Models"],
+		}),
 	}),
 });
 
@@ -556,4 +695,10 @@ export const {
 	useGetModelDetailsQuery,
 	useLazyGetModelDetailsQuery,
 	useUpsertModelCatalogEntriesMutation,
+	useStartGithubCopilotSignInMutation,
+	usePollGithubCopilotSignInMutation,
+	useGetDatasheetEntriesQuery,
+	useGetDatasheetEntryQuery,
+	useSaveDatasheetOverrideMutation,
+	useDeleteDatasheetOverrideMutation,
 } = providersApi;

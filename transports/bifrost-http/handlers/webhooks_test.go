@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -572,4 +573,32 @@ func TestWebhookHandlerPrivateEndpointRegistrationRequiresAuth(t *testing.T) {
 	due, err := config.ConfigStore.ListDueWebhookJobs(context.Background(), 0)
 	require.NoError(t, err)
 	assert.Empty(t, due)
+}
+
+// failingReloadWebhookManager reports a reload failure after the database write has committed.
+type failingReloadWebhookManager struct{ configWebhookManager }
+
+func (failingReloadWebhookManager) ReloadWebhookEndpoint(context.Context, string) error {
+	return errors.New("reload failed")
+}
+
+func TestWebhookHandlerAuditsCommittedChangesWhenReloadFails(t *testing.T) {
+	handler, config := newWebhookTestHandler(t)
+	id, _ := createTestWebhookEndpoint(t, handler, "reload-fail")
+	failing := NewWebhookHandler(failingReloadWebhookManager{configWebhookManager{config}}, config, nil)
+
+	createCtx := newWebhookRequestCtx(`{"name":"reload-fail-new","url":"https://93.184.216.34/hook","events":["async_job.completed"]}`, nil)
+	failing.createWebhookEndpoint(createCtx)
+	require.Equal(t, fasthttp.StatusInternalServerError, createCtx.Response.StatusCode())
+	requireSingleAuditChange(t, createCtx, "webhook.created")
+
+	updateCtx := newWebhookRequestCtx(`{"name":"reload-fail","url":"https://93.184.216.34/other","events":["async_job.completed"]}`, map[string]string{"id": id})
+	failing.updateWebhookEndpoint(updateCtx)
+	require.Equal(t, fasthttp.StatusInternalServerError, updateCtx.Response.StatusCode())
+	requireSingleAuditChange(t, updateCtx, "webhook.updated")
+
+	rotateCtx := newWebhookRequestCtx("", map[string]string{"id": id})
+	failing.rotateWebhookEndpointSecret(rotateCtx)
+	require.Equal(t, fasthttp.StatusInternalServerError, rotateCtx.Response.StatusCode())
+	requireSingleAuditChange(t, rotateCtx, "webhook.secret_rotated")
 }

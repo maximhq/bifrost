@@ -24,6 +24,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { ImagePlus, Loader2, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 interface RSSSourcesSheetProps {
@@ -36,6 +37,7 @@ interface RSSSourcesSheetProps {
  * Builtin feeds can only be toggled; custom feeds can be added and removed.
  */
 export default function RSSSourcesSheet({ open, onClose }: RSSSourcesSheetProps) {
+	const { t } = useTranslation("shell");
 	const canEdit = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data, isLoading, isError, refetch } = useGetRSSFeedsQuery(undefined, { skip: !open });
 	const { data: settings, isError: isSettingsError, refetch: refetchSettings } = useGetRSSSettingsQuery(undefined, { skip: !open });
@@ -45,9 +47,9 @@ export default function RSSSourcesSheet({ open, onClose }: RSSSourcesSheetProps)
 	const setNewsEnabled = async (enabled: boolean) => {
 		try {
 			await updateSettings({ enabled }).unwrap();
-			toast.success(enabled ? "News turned on" : "News turned off for this gateway");
+			toast.success(enabled ? t("rssSources.newsOn") : t("rssSources.newsOff"));
 		} catch (error) {
-			toast.error("Couldn't update news settings", { description: getErrorMessage(error) });
+			toast.error(t("rssSources.updateSettingsFailed"), { description: getErrorMessage(error) });
 		}
 	};
 	const [updateFeed] = useUpdateRSSFeedMutation();
@@ -64,16 +66,16 @@ export default function RSSSourcesSheet({ open, onClose }: RSSSourcesSheetProps)
 		try {
 			await updateFeed({ id: feed.id, enabled }).unwrap();
 		} catch (error) {
-			toast.error(`Couldn't update ${feed.name}`, { description: getErrorMessage(error) });
+			toast.error(t("rssSources.updateFeedFailed", { name: feed.name }), { description: getErrorMessage(error) });
 		}
 	};
 
 	const setLogo = async (feed: RSSFeed, iconUrl: string) => {
 		try {
 			await updateFeed({ id: feed.id, icon_url: iconUrl }).unwrap();
-			toast.success(iconUrl ? `Updated the logo for ${feed.name}` : `Removed the logo from ${feed.name}`);
+			toast.success(iconUrl ? t("rssSources.updatedLogo", { name: feed.name }) : t("rssSources.removedLogo", { name: feed.name }));
 		} catch (error) {
-			toast.error(`Couldn't update the logo for ${feed.name}`, { description: getErrorMessage(error) });
+			toast.error(t("rssSources.updateLogoFailed", { name: feed.name }), { description: getErrorMessage(error) });
 		}
 	};
 
@@ -81,9 +83,9 @@ export default function RSSSourcesSheet({ open, onClose }: RSSSourcesSheetProps)
 		setDeletingIds((ids) => new Set(ids).add(feed.id));
 		try {
 			await deleteFeed(feed.id).unwrap();
-			toast.success(`Removed ${feed.name}`);
+			toast.success(t("rssSources.removed", { name: feed.name }));
 		} catch (error) {
-			toast.error(`Couldn't remove ${feed.name}`, { description: getErrorMessage(error) });
+			toast.error(t("rssSources.removeFailed", { name: feed.name }), { description: getErrorMessage(error) });
 		} finally {
 			setDeletingIds((ids) => {
 				const next = new Set(ids);
@@ -97,26 +99,22 @@ export default function RSSSourcesSheet({ open, onClose }: RSSSourcesSheetProps)
 		<Sheet open={open} onOpenChange={(next) => !next && onClose()}>
 			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0" data-testid="rss-sources-sheet">
 				<SheetHeader className="flex flex-col items-start pt-8" headerClassName="px-4 md:px-6">
-					<SheetTitle>News sources</SheetTitle>
-					<SheetDescription>
-						Choose which RSS feeds appear in the News tab of the notification tray for everyone on this gateway.
-					</SheetDescription>
+					<SheetTitle>{t("rssSources.title")}</SheetTitle>
+					<SheetDescription>{t("rssSources.description")}</SheetDescription>
 				</SheetHeader>
 
 				<div className="flex-1 space-y-6 overflow-y-auto px-4 pb-8 md:px-6">
 					<section className="flex items-start gap-3 rounded-sm border p-4" data-testid="rss-news-switch">
 						<div className="min-w-0 flex-1 space-y-0.5">
 							<Label htmlFor="rss-news-enabled" className="text-sm font-semibold">
-								Show news in the notification tray
+								{t("rssSources.showNews")}
 							</Label>
-							<p className="text-muted-foreground text-xs">
-								Turning this off hides the News tab for everyone on this gateway and stops fetching news items. Your sources below are kept.
-							</p>
+							<p className="text-muted-foreground text-xs">{t("rssSources.showNewsHelp")}</p>
 							{newsSwitch.failed && (
 								<p className="text-destructive pt-1 text-xs" data-testid="rss-news-settings-error">
-									Couldn&apos;t load this setting.{" "}
+									{t("rssSources.settingLoadFailed")}{" "}
 									<button type="button" onClick={() => refetchSettings()} className="cursor-pointer font-medium underline">
-										Try again
+										{t("rssSources.tryAgain")}
 									</button>
 								</p>
 							)}
@@ -132,19 +130,19 @@ export default function RSSSourcesSheet({ open, onClose }: RSSSourcesSheetProps)
 
 					{isLoading ? (
 						<div className="text-muted-foreground flex h-32 items-center justify-center gap-2 text-sm">
-							<Loader2 className="size-4 animate-spin" /> Loading sources
+							<Loader2 className="size-4 animate-spin" /> {t("rssSources.loading")}
 						</div>
 					) : isError ? (
 						<div className="flex h-32 flex-col items-center justify-center gap-3 text-center">
-							<p className="text-muted-foreground text-sm">Sources could not be loaded.</p>
+							<p className="text-muted-foreground text-sm">{t("rssSources.loadFailed")}</p>
 							<Button variant="outline" size="sm" onClick={() => refetch()}>
-								<RefreshCw className="size-3.5" /> Try again
+								<RefreshCw className="size-3.5" /> {t("rssSources.tryAgain")}
 							</Button>
 						</div>
 					) : (
 						<div className={cn("space-y-6", newsSwitch.ready && !newsSwitch.checked && "opacity-60")}>
 							<section className="space-y-2">
-								<h3 className="text-sm font-semibold">Built-in feeds</h3>
+								<h3 className="text-sm font-semibold">{t("rssSources.builtinFeeds")}</h3>
 								<div className="divide-y rounded-sm border">
 									{builtin.map((feed) => (
 										<FeedRow key={feed.id} feed={feed} canEdit={canEdit} onToggle={toggle} />
@@ -153,7 +151,7 @@ export default function RSSSourcesSheet({ open, onClose }: RSSSourcesSheetProps)
 							</section>
 
 							<section className="space-y-2">
-								<h3 className="text-sm font-semibold">Custom feeds</h3>
+								<h3 className="text-sm font-semibold">{t("rssSources.customFeeds")}</h3>
 								{custom.length > 0 ? (
 									<div className="divide-y rounded-sm border">
 										{custom.map((feed) => (
@@ -170,7 +168,7 @@ export default function RSSSourcesSheet({ open, onClose }: RSSSourcesSheetProps)
 									</div>
 								) : (
 									<p className="text-muted-foreground text-sm" data-testid="rss-custom-feeds-empty">
-										No custom feeds yet. Add any RSS or Atom URL below.
+										{t("rssSources.noCustomFeeds")}
 									</p>
 								)}
 							</section>
@@ -194,6 +192,7 @@ interface FeedRowProps {
 }
 
 function FeedRow({ feed, canEdit, onToggle, onDelete, onSetLogo, deleting }: FeedRowProps) {
+	const { t } = useTranslation("shell");
 	return (
 		<div className="flex items-center gap-3 px-3 py-2.5" data-testid={`rss-feed-row-${feed.slug}`}>
 			<RSSFeedIcon icon={feed.icon} iconUrl={feed.icon_url} feedUrl={feed.url} name={feed.name} size={20} />
@@ -209,7 +208,7 @@ function FeedRow({ feed, canEdit, onToggle, onDelete, onSetLogo, deleting }: Fee
 					variant="ghost"
 					size="icon"
 					className="text-muted-foreground hover:text-destructive size-7"
-					aria-label={`Remove ${feed.name}`}
+					aria-label={t("rssSources.removeAria", { name: feed.name })}
 					disabled={deleting}
 					onClick={() => onDelete(feed)}
 					data-testid={`rss-feed-delete-${feed.id}`}
@@ -220,7 +219,7 @@ function FeedRow({ feed, canEdit, onToggle, onDelete, onSetLogo, deleting }: Fee
 			<Switch
 				checked={feed.enabled}
 				disabled={!canEdit}
-				aria-label={`${feed.enabled ? "Disable" : "Enable"} ${feed.name}`}
+				aria-label={t(feed.enabled ? "rssSources.disableAria" : "rssSources.enableAria", { name: feed.name })}
 				onAsyncCheckedChange={(checked) => onToggle(feed, checked)}
 				data-testid={`rss-feed-toggle-${feed.slug}`}
 			/>
@@ -230,6 +229,7 @@ function FeedRow({ feed, canEdit, onToggle, onDelete, onSetLogo, deleting }: Fee
 
 /** Upload or remove the logo of an existing custom feed. */
 function FeedLogoMenu({ feed, onSetLogo }: { feed: RSSFeed; onSetLogo: (feed: RSSFeed, iconUrl: string) => Promise<void> }) {
+	const { t } = useTranslation("shell");
 	const fileInput = useRef<HTMLInputElement>(null);
 
 	const onFile = async (file: File | undefined) => {
@@ -265,7 +265,7 @@ function FeedLogoMenu({ feed, onSetLogo }: { feed: RSSFeed; onSetLogo: (feed: RS
 						variant="ghost"
 						size="icon"
 						className="text-muted-foreground size-7"
-						aria-label={`Change the logo for ${feed.name}`}
+						aria-label={t("rssSources.changeLogoAria", { name: feed.name })}
 						data-testid={`rss-feed-logo-${feed.id}`}
 					>
 						<ImagePlus className="size-3.5" />
@@ -273,11 +273,11 @@ function FeedLogoMenu({ feed, onSetLogo }: { feed: RSSFeed; onSetLogo: (feed: RS
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">
 					<DropdownMenuItem onSelect={() => fileInput.current?.click()} data-testid={`rss-feed-logo-upload-${feed.id}`}>
-						<Upload className="size-3.5" /> Upload logo
+						<Upload className="size-3.5" /> {t("rssSources.uploadLogo")}
 					</DropdownMenuItem>
 					{feed.icon_url && (
 						<DropdownMenuItem onSelect={() => void onSetLogo(feed, "")} data-testid={`rss-feed-logo-remove-${feed.id}`}>
-							<X className="size-3.5" /> Remove logo
+							<X className="size-3.5" /> {t("rssSources.removeLogo")}
 						</DropdownMenuItem>
 					)}
 				</DropdownMenuContent>
@@ -287,6 +287,7 @@ function FeedLogoMenu({ feed, onSetLogo }: { feed: RSSFeed; onSetLogo: (feed: RS
 }
 
 function AddFeedForm() {
+	const { t } = useTranslation("shell");
 	const [createFeed, { isLoading }] = useCreateRSSFeedMutation();
 	const fileInput = useRef<HTMLInputElement>(null);
 	const {
@@ -323,7 +324,7 @@ function AddFeedForm() {
 	const onSubmit = async (values: RSSFeedFormSchema) => {
 		try {
 			const feed = await createFeed({ name: values.name, url: values.url, icon_url: values.icon_url || undefined }).unwrap();
-			toast.success(`Added ${feed.name}`);
+			toast.success(t("rssSources.addedFeed", { name: feed.name }));
 			reset();
 		} catch (error) {
 			const message = getErrorMessage(error);
@@ -333,12 +334,12 @@ function AddFeedForm() {
 
 	return (
 		<form onSubmit={handleSubmit(onSubmit)} className="space-y-3 rounded-sm border p-4" data-testid="rss-add-feed-form">
-			<h3 className="text-sm font-semibold">Add a feed</h3>
+			<h3 className="text-sm font-semibold">{t("rssSources.addFeedTitle")}</h3>
 			<div className="space-y-1.5">
-				<Label htmlFor="rss-add-feed-name">Name</Label>
+				<Label htmlFor="rss-add-feed-name">{t("rssSources.name")}</Label>
 				<Input
 					id="rss-add-feed-name"
-					placeholder="Bifrost releases"
+					placeholder={t("rssSources.namePlaceholder")}
 					data-testid="rss-add-feed-name"
 					aria-invalid={!!errors.name}
 					className={errors.name ? "border-destructive" : ""}
@@ -351,7 +352,7 @@ function AddFeedForm() {
 				)}
 			</div>
 			<div className="space-y-1.5">
-				<Label htmlFor="rss-add-feed-url">Feed URL</Label>
+				<Label htmlFor="rss-add-feed-url">{t("rssSources.feedUrl")}</Label>
 				<Input
 					id="rss-add-feed-url"
 					placeholder="https://github.com/maximhq/bifrost/releases.atom"
@@ -368,14 +369,16 @@ function AddFeedForm() {
 			</div>
 			<div className="space-y-1.5">
 				<Label htmlFor="rss-add-feed-logo">
-					Logo <span className="text-muted-foreground font-normal">(optional)</span>
+					{t("rssSources.logo")} <span className="text-muted-foreground font-normal">{t("rssSources.optional")}</span>
 				</Label>
 				<div className="flex items-center gap-2">
 					<span className="flex size-9 shrink-0 items-center justify-center rounded-md border" data-testid="rss-add-feed-logo-preview">
-						<RSSFeedIcon iconUrl={iconUrl} feedUrl={feedUrl} name="Logo preview" size={20} />
+						<RSSFeedIcon iconUrl={iconUrl} feedUrl={feedUrl} name={t("rssSources.logoPreviewName")} size={20} />
 					</span>
 					{isUploadedLogo ? (
-						<div className="text-muted-foreground flex h-9 min-w-0 flex-1 items-center rounded-md border px-3 text-sm">Uploaded image</div>
+						<div className="text-muted-foreground flex h-9 min-w-0 flex-1 items-center rounded-md border px-3 text-sm">
+							{t("rssSources.uploadedImage")}
+						</div>
 					) : (
 						<Input
 							id="rss-add-feed-logo"
@@ -404,7 +407,7 @@ function AddFeedForm() {
 						onClick={() => fileInput.current?.click()}
 						data-testid="rss-add-feed-logo-upload"
 					>
-						<Upload className="size-3.5" /> Upload
+						<Upload className="size-3.5" /> {t("rssSources.upload")}
 					</Button>
 					{iconUrl && (
 						<Button
@@ -412,7 +415,7 @@ function AddFeedForm() {
 							variant="ghost"
 							size="icon"
 							className="text-muted-foreground size-8"
-							aria-label="Remove logo"
+							aria-label={t("rssSources.removeLogo")}
 							onClick={() => setValue("icon_url", "", { shouldDirty: true })}
 							data-testid="rss-add-feed-logo-clear"
 						>
@@ -425,15 +428,13 @@ function AddFeedForm() {
 						{errors.icon_url.message}
 					</p>
 				) : (
-					<p className="text-muted-foreground text-xs">
-						An image URL or a PNG, JPEG, GIF, WebP, SVG or ICO up to 96 KB. Defaults to the site&apos;s favicon.
-					</p>
+					<p className="text-muted-foreground text-xs">{t("rssSources.logoHelp")}</p>
 				)}
 			</div>
 			<div className="flex justify-end">
 				<Button type="submit" size="sm" disabled={isLoading} data-testid="rss-add-feed-submit">
 					{isLoading ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
-					Add feed
+					{t("rssSources.addFeed")}
 				</Button>
 			</div>
 		</form>

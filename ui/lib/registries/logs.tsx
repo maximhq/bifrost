@@ -30,8 +30,8 @@ export function getLogRoutingPanel(): ComponentType<LogRoutingPanelProps> | unde
 }
 
 // A labelled metadata filter offers the values of one metadata key under readable names. It writes
-// the same metadata_filters entry as the generic Metadata section, one value per key, so a link that
-// sets that entry lands on it checked.
+// the same metadata_filters entry as the generic Metadata section, any number of values per key, so
+// a link that sets that entry lands on those values checked.
 export interface LabelledMetadataFilterField {
 	key: string;
 	label: string;
@@ -64,23 +64,23 @@ export function registerMetadataFilterGroup(group: LabelledMetadataFilterGroup):
 /**
  * listedOptions is what a field lists: every option while the recorded values are unknown, else the
  * options rows hold, in the field's order, then any recorded value the field does not name under
- * the value itself. The checked value stays listed either way, under the value itself when the
- * field does not name it, so it can be unchecked.
+ * the value itself. Checked values stay listed either way, under the value itself when the field
+ * does not name them, so they can be unchecked.
  */
 export function listedOptions(
 	field: LabelledMetadataFilterField,
 	recorded: Record<string, string[]> | undefined,
-	checked: string | undefined,
+	checked: readonly string[] = [],
 ): LabelledMetadataFilterField["options"] {
 	let options = field.options;
 	if (recorded) {
 		const held = new Set(recorded[field.key] ?? []);
-		const named = field.options.filter((option) => held.has(option.value) || option.value === checked);
+		const named = field.options.filter((option) => held.has(option.value) || checked.includes(option.value));
 		const unnamed = [...held].filter((value) => !field.options.some((option) => option.value === value));
 		options = [...named, ...unnamed.map((value) => ({ value, label: value }))];
 	}
-	if (!checked || options.some((option) => option.value === checked)) return options;
-	return [...options, { value: checked, label: checked }];
+	const missing = checked.filter((value) => !options.some((option) => option.value === value));
+	return missing.length === 0 ? options : [...options, ...missing.map((value) => ({ value, label: value }))];
 }
 
 /** Returns the registered filter groups, empty in builds without any. */

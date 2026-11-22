@@ -94,6 +94,14 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 				copyName := *tc.Function.Name
 				copyTc.Function.Name = &copyName
 			}
+			if tc.Custom != nil {
+				copyCustom := *tc.Custom
+				if tc.Custom.Name != nil {
+					copyName := *tc.Custom.Name
+					copyCustom.Name = &copyName
+				}
+				copyTc.Custom = &copyCustom
+			}
 			// Deep copy ExtraContent (json.RawMessage is a []byte)
 			if len(tc.ExtraContent) > 0 {
 				copyTc.ExtraContent = append(json.RawMessage(nil), tc.ExtraContent...)
@@ -133,6 +141,23 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 		}
 	}
 
+	// Deep copy Images slice
+	if original.Images != nil {
+		copy.Images = make([]schemas.ChatAssistantMessageImage, len(original.Images))
+		for i, image := range original.Images {
+			copyImage := image
+			if image.ImageURL.FileID != nil {
+				copyFileID := *image.ImageURL.FileID
+				copyImage.ImageURL.FileID = &copyFileID
+			}
+			if image.ImageURL.Detail != nil {
+				copyDetail := *image.ImageURL.Detail
+				copyImage.ImageURL.Detail = &copyDetail
+			}
+			copy.Images[i] = copyImage
+		}
+	}
+
 	return copy
 }
 
@@ -142,7 +167,7 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 }
 
 // BuildChatMessageFromChunks assembles the complete assistant message from a stream's chat chunks
-// (content, refusal, reasoning, reasoning details, audio, annotations and tool calls). It sorts
+// (content, refusal, reasoning, reasoning details, audio, images, annotations and tool calls). It sorts
 // chunks in place by ChunkIndex and holds no state, so callers that rebuild a stream outside the
 // Accumulator (e.g. from a recorded passthrough body) get the same result the live path produces.
 // Uses strings.Builder for O(n) accumulation instead of O(n²) string concatenation.
@@ -163,6 +188,7 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 	var audioTranscriptBuilder strings.Builder
 	hasContent, hasRefusal, hasReasoning := false, false, false
 	var annotations []schemas.ChatAssistantMessageAnnotation
+	var images []schemas.ChatAssistantMessageImage
 
 	// Reasoning details builders keyed by detail index
 	type rdAccum struct {
@@ -179,6 +205,7 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 		typ          *string
 		name         *string
 		args         strings.Builder
+		custom       *strings.Builder // input of a custom tool call
 		extraContent json.RawMessage
 	}
 	var tcAccums map[uint16]*tcAccum
@@ -240,8 +267,9 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 				acc.id = &idCopy
 			}
 		}
-		// Collect annotations (arrive whole per chunk, not incrementally)
+		// Collect annotations and images (arrive whole per chunk, not incrementally)
 		annotations = append(annotations, chunk.Delta.Annotations...)
+		images = append(images, chunk.Delta.Images...)
 		// Handle audio data
 		if chunk.Delta.Audio != nil {
 			if completeMessage.ChatAssistantMessage == nil {
@@ -288,6 +316,16 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 			}
 			if args := deltaToolCall.Function.Arguments; args != "" {
 				acc.args.WriteString(args)
+			}
+			if custom := deltaToolCall.Custom; custom != nil {
+				if acc.custom == nil {
+					acc.custom = &strings.Builder{}
+				}
+				if custom.Name != nil {
+					n := *custom.Name
+					acc.name = &n
+				}
+				acc.custom.WriteString(custom.Input)
 			}
 			if len(deltaToolCall.ExtraContent) > 0 {
 				acc.extraContent = make(json.RawMessage, len(deltaToolCall.ExtraContent))
@@ -364,6 +402,14 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 		completeMessage.ChatAssistantMessage.Annotations = annotations
 	}
 
+	// Finalize images
+	if len(images) > 0 {
+		if completeMessage.ChatAssistantMessage == nil {
+			completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		completeMessage.ChatAssistantMessage.Images = images
+	}
+
 	// Finalize audio
 	if completeMessage.ChatAssistantMessage != nil && completeMessage.ChatAssistantMessage.Audio != nil {
 		completeMessage.ChatAssistantMessage.Audio.Data = audioDataBuilder.String()
@@ -391,6 +437,10 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 					Name:      acc.name,
 					Arguments: acc.args.String(),
 				},
+			}
+			if acc.custom != nil {
+				tc.Function = schemas.ChatAssistantMessageToolCallFunction{}
+				tc.Custom = &schemas.ChatAssistantMessageToolCallCustom{Name: acc.name, Input: acc.custom.String()}
 			}
 			if len(acc.extraContent) > 0 {
 				tc.ExtraContent = acc.extraContent
@@ -520,6 +570,10 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 					rawBuilder.WriteString("\n\n")
 				}
 				rawBuilder.WriteString(*chunk.RawResponse)
+				// Every frame comes from one provider stream, so the first declared format describes them all.
+				if data.RawResponseFormat == "" {
+					data.RawResponseFormat = chunk.RawResponseFormat
+				}
 			}
 		}
 		if rawBuilder.Len() > 0 {
@@ -573,6 +627,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		chunk.ChunkIndex = result.TextCompletionResponse.ExtraFields.ChunkIndex
 		if result.TextCompletionResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.TextCompletionResponse.ExtraFields.RawResponse))
+			chunk.RawResponseFormat = result.TextCompletionResponse.ExtraFields.RawResponseFormat
 		}
 		if isFinalChunk {
 			if a.pricingManager != nil {
@@ -603,6 +658,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
 		if result.ChatResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ChatResponse.ExtraFields.RawResponse))
+			chunk.RawResponseFormat = result.ChatResponse.ExtraFields.RawResponseFormat
 		}
 		if isFinalChunk {
 			if a.pricingManager != nil {

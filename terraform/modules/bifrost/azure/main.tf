@@ -178,6 +178,7 @@ module "aks" {
   image                        = var.image
   container_port               = var.container_port
   health_check_path            = var.health_check_path
+  ingress_path                 = var.ingress_path
   desired_count                = var.desired_count
   cpu                          = var.cpu
   memory                       = var.memory

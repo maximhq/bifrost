@@ -24,7 +24,7 @@ make e2e-ui-down                                  # stop KEEP=1 servers and the 
 
 1. Builds the UI and `tmp/e2e/bifrost-http` from the working tree.
 2. Starts a **dedicated Postgres** (`env/docker-compose.yml`, compose project `bifrost-e2e`, `127.0.0.1:55432`, tmpfs). Your local Postgres on 5432 is never touched. Override the port with `BIFROST_E2E_PG_PORT`.
-3. **Schedules** the selected spec files onto `WORKERS` workers: longest file first, each to the currently lightest worker. Weights are the per-file durations the last full run wrote to `reports/e2e-timings.json`; files without a timing are estimated from their test count. The plan is printed and saved to `tmp/e2e/plan.json`.
+3. **Schedules** the selected spec files onto `WORKERS` workers: longest file first, each to the currently lightest worker. Weights are the per-file durations the last full run wrote to `reports/e2e-timings.json`; files without a timing are estimated from their test count. Specs under `features/base-path/` get one extra worker of their own, started with `--base-path /bifrost`. The plan is printed and saved to `tmp/e2e/plan.json`.
 4. Boots one Bifrost per worker (ports from 18181, override with `BIFROST_E2E_BASE_PORT`), each on its own freshly created database seeded from **`env/config.json`**: providers, the `TestClient001` MCP client, dashboard auth (`admin` / `bifrost-e2e-password`).
 5. Seeds LLM logs into workers that got dashboard/logs specs (needs `OPENAI_API_KEY`).
 6. Runs Playwright with one browser per worker. Each worker runs its files one at a time against its own server, so specs never share state across workers and there is nothing to group by hand.
@@ -62,7 +62,7 @@ Put fixed preconditions in `env/config.json` (validated against `transports/conf
 cd tests/e2e && E2E_BASE_URL=http://localhost:8080 BIFROST_ADMIN_USERNAME=... BIFROST_ADMIN_PASSWORD=... npx playwright test features/providers
 ```
 
-Without a runner plan, everything runs on a single worker against that server.
+Without a runner plan, everything runs on a single worker against that server. `features/base-path/` is skipped unless `E2E_BASE_PATH` names the prefix that server was started with (`-base-path`); run only that folder then, since the other specs assume the domain root.
 
 ## Folder Structure
 
@@ -119,6 +119,7 @@ const keyData = createProviderKeyData({ name: 'My Key' })
 
 Environment variables:
 - `E2E_BASE_URL` - Run everything against one existing server instead of runner-started workers
+- `E2E_BASE_PATH` - With `E2E_BASE_URL`: the `-base-path` that server was started with; enables `features/base-path/`
 - `WORKERS` - Number of isolated Bifrost+browser workers (default: 4)
 - `BIFROST_E2E_PG_PORT` - Port for the dedicated Postgres (default: 55432)
 - `SEED_MODEL` - Model used to seed logs (default: openai/gpt-4o-mini)

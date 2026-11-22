@@ -181,6 +181,91 @@ func TestThinkingParam(t *testing.T) {
 	}
 }
 
+// TestOutputConfigParam pins where the effort label goes on adaptive-only Claude endpoints:
+// adaptive thinking has no budget, so output_config.effort is the only knob that scales how
+// hard the model thinks.
+func TestOutputConfigParam(t *testing.T) {
+	t.Parallel()
+
+	adaptiveThinking := map[string]any{"type": "adaptive"}
+	tests := []struct {
+		name     string
+		thinking map[string]any
+		params   *schemas.ChatParameters
+		want     map[string]any
+	}{
+		{
+			name:     "effort rides output_config next to adaptive thinking",
+			thinking: adaptiveThinking,
+			params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("max")}},
+			want:     map[string]any{"effort": "max"},
+		},
+		{
+			name:     "minimal lands on low as it does on the Anthropic provider",
+			thinking: adaptiveThinking,
+			params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("minimal")}},
+			want:     map[string]any{"effort": "low"},
+		},
+		{
+			name:     "extra-param reasoning_effort spelling is honoured",
+			thinking: adaptiveThinking,
+			params:   &schemas.ChatParameters{ExtraParams: map[string]any{"reasoning_effort": "low"}},
+			want:     map[string]any{"effort": "low"},
+		},
+		{
+			name:     "no effort sends no output_config",
+			thinking: adaptiveThinking,
+			params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Enabled: schemas.Ptr(true)}},
+		},
+		{
+			name:     "enabled true overriding effort none sends no output_config",
+			thinking: adaptiveThinking,
+			params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Enabled: schemas.Ptr(true), Effort: schemas.Ptr("none")}},
+		},
+		{
+			name:     "budget thinking has no output_config",
+			thinking: map[string]any{"type": "enabled", "budget_tokens": 2048},
+			params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")}},
+		},
+		{
+			name:   "no thinking sent means no output_config",
+			params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")}},
+		},
+		{
+			name:     "caller-supplied output_config passes through untouched",
+			thinking: adaptiveThinking,
+			params: &schemas.ChatParameters{
+				Reasoning:   &schemas.ChatReasoning{Effort: schemas.Ptr("high")},
+				ExtraParams: map[string]any{"output_config": map[string]any{"effort": "low"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := outputConfigParam(tt.thinking, tt.params)
+			if len(got) != len(tt.want) {
+				t.Fatalf("output_config: got %#v, want %#v", got, tt.want)
+			}
+			for k, want := range tt.want {
+				if got[k] != want {
+					t.Errorf("output_config[%s]: got %#v, want %#v", k, got[k], want)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkOutputConfigParam(b *testing.B) {
+	thinking := map[string]any{"type": "adaptive"}
+	params := &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("max")}}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = outputConfigParam(thinking, params)
+	}
+}
+
 // TestNormalizeReasoningBlocks pins the rewrite from Databricks' reasoning content blocks to
 // the fields Bifrost's OpenAI-shaped parser reads, for both the unary message and the
 // streaming delta as observed on a live workspace.

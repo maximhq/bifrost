@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
+	"github.com/maximhq/bifrost/framework/warp"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
@@ -42,14 +43,110 @@ func TestShouldUseFilterDataCacheAllowsUnscopedEmptyQuery(t *testing.T) {
 
 // TestParseComplexityFilters verifies complexity-specific query filters are
 // parsed independently from generic log filters.
+// mcpScopeOptionsLogManager serves one fixed option per MCP scope dimension and none for the others.
+type mcpScopeOptionsLogManager struct {
+	loggingplugin.LogManager
+}
+
+func (mcpScopeOptionsLogManager) GetAvailableToolNames(context.Context, int, string) ([]string, error) {
+	return nil, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableServerLabels(context.Context, int, string) ([]string, error) {
+	return nil, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPApps(context.Context, int, string) ([]string, error) {
+	return nil, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPUserAgents(context.Context, int, string) ([]string, error) {
+	return nil, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPVirtualKeys(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPUsers(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return []loggingplugin.KeyPair{{ID: "user-1", Name: "Ada"}}, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPTeams(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return []loggingplugin.KeyPair{{ID: "team-1", Name: "Platform"}}, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPCustomers(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return []loggingplugin.KeyPair{{ID: "customer-1", Name: "Acme"}}, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPBusinessUnits(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return []loggingplugin.KeyPair{{ID: "bu-1", Name: "Advisory"}}, nil
+}
+func (mcpScopeOptionsLogManager) GetAvailableMCPProjects(context.Context, int, string) ([]loggingplugin.KeyPair, error) {
+	return []loggingplugin.KeyPair{{ID: "project-1", Name: "Apollo"}}, nil
+}
+
+// TestGetMCPLogsFilterDataServesScopeDimensions pins the user, team, customer, business unit and project
+// options on /api/mcp-logs/filterdata, each as {id, name} pairs like /api/logs/filterdata, and that
+// a narrowed request carries only the dimensions it named.
+func TestGetMCPLogsFilterDataServesScopeDimensions(t *testing.T) {
+	SetLogger(&mockLogger{})
+	fetch := func(t *testing.T, dimensions string) map[string][]loggingplugin.KeyPair {
+		t.Helper()
+		h := &LoggingHandler{logManager: mcpScopeOptionsLogManager{}}
+		var req fasthttp.Request
+		// A search query bypasses the filter-data cache, which a bare handler lacks.
+		req.SetRequestURI("/api/mcp-logs/filterdata?dimensions=" + dimensions + "&q=a")
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+		h.getMCPLogsFilterData(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var body map[string][]loggingplugin.KeyPair
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body), string(ctx.Response.Body()))
+		return body
+	}
+
+	require.Equal(t, map[string][]loggingplugin.KeyPair{
+		"users":          {{ID: "user-1", Name: "Ada"}},
+		"teams":          {{ID: "team-1", Name: "Platform"}},
+		"customers":      {{ID: "customer-1", Name: "Acme"}},
+		"business_units": {{ID: "bu-1", Name: "Advisory"}},
+		"projects":       {{ID: "project-1", Name: "Apollo"}},
+	}, fetch(t, "users,teams,customers,business_units,projects"))
+	require.Equal(t, map[string][]loggingplugin.KeyPair{"teams": {{ID: "team-1", Name: "Platform"}}}, fetch(t, "teams"))
+}
+
+// TestGetMCPLatencyHistogramServesPercentiles pins GET /api/mcp-logs/histogram/latency: it reads the MCP
+// filters and the window's bucket size, as /api/mcp-logs/histogram does, and returns the store's buckets
+// in the /api/logs/histogram/latency shape.
+func TestGetMCPLatencyHistogramServesPercentiles(t *testing.T) {
+	SetLogger(&mockLogger{})
+	mgr := &dashboardLogManager{}
+	h := &LoggingHandler{logManager: mgr}
+	var req fasthttp.Request
+	req.SetRequestURI("/api/mcp-logs/histogram/latency?tool_names=calculator&period=24h")
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.getMCPLatencyHistogram(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Equal(t, []string{"calculator"}, mgr.lastMCPFilters.ToolNames)
+	require.NotNil(t, mgr.lastMCPFilters.StartTime)
+	require.Equal(t, calculateBucketSize(mgr.lastMCPFilters.StartTime, mgr.lastMCPFilters.EndTime), mgr.mcpLatencyBucketSize)
+	var body logstore.LatencyHistogramResult
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+	require.Len(t, body.Buckets, 1)
+	require.EqualValues(t, 3, body.Buckets[0].TotalRequests)
+	require.InDelta(t, 29, body.Buckets[0].P95Latency, 1e-9)
+}
+
 func TestParseComplexityFilters(t *testing.T) {
 	t.Run("parses tier and mechanism", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		ctx.QueryArgs().Set("complexity_tiers", "SIMPLE,COMPLEX")
 		ctx.QueryArgs().Set("complexity_mechanisms", "semantic,lexical")
+		ctx.QueryArgs().Set("model_router_ids", "billing,support")
 		filters := &logstore.SearchFilters{}
 
 		parseComplexityFilters(ctx, filters)
+
+		if got, want := filters.ModelRouterIDs, []string{"billing", "support"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("model router ids = %#v, want %#v", got, want)
+		}
 
 		if got, want := filters.ComplexityTiers, []string{"SIMPLE", "COMPLEX"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("complexity tiers = %#v, want %#v", got, want)
@@ -111,6 +208,56 @@ func TestParseToolCallNamesFilter(t *testing.T) {
 	})
 }
 
+// TestParseMetadataFilters verifies metadata_<key> params carry one or several values per key.
+func TestParseMetadataFilters(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  map[string][]string
+	}{
+		{"plain value is one literal", `metadata_env=prod&metadata_note=a,b`, map[string][]string{"env": {"prod"}, "note": {"a,b"}}},
+		{"json array is several values", `metadata_env=%5B%22prod%22%2C%22staging%22%5D`, map[string][]string{"env": {"prod", "staging"}}},
+		{"repeated params accumulate without duplicates", `metadata_env=prod&metadata_env=staging&metadata_env=prod`, map[string][]string{"env": {"prod", "staging"}}},
+		{"bracketed text that is not a json array stays literal", `metadata_env=%5Bbeta`, map[string][]string{"env": {"[beta"}}},
+		{"empty values are dropped", `metadata_env=&metadata_tier=%5B%5D`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI("/api/logs?" + tc.query)
+			filters := &logstore.SearchFilters{}
+			parseMetadataFilters(ctx, filters)
+			if !reflect.DeepEqual(map[string][]string(filters.MetadataFilters), tc.want) {
+				t.Fatalf("metadata filters = %#v, want %#v", filters.MetadataFilters, tc.want)
+			}
+		})
+	}
+	t.Run("values beyond the per-key cap are dropped", func(t *testing.T) {
+		values := make([]string, 0, logstore.MaxMetadataFilterValuesPerKey+50)
+		for i := 0; i < logstore.MaxMetadataFilterValuesPerKey+50; i++ {
+			values = append(values, fmt.Sprintf("v%d", i))
+		}
+		raw, _ := json.Marshal(values)
+		encoded := string(raw)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("metadata_env", encoded)
+		ctx.QueryArgs().Add("metadata_env", "extra")
+		filters := &logstore.SearchFilters{}
+		parseMetadataFilters(ctx, filters)
+		if got := filters.MetadataFilters["env"]; !reflect.DeepEqual(got, values[:logstore.MaxMetadataFilterValuesPerKey]) {
+			t.Fatalf("env values = %d (first %v), want the first %d", len(got), got[:1], logstore.MaxMetadataFilterValuesPerKey)
+		}
+	})
+	t.Run("histogram filters honour it", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(`/api/logs/histogram?metadata_env=%5B%22prod%22%2C%22staging%22%5D`)
+		filters := parseHistogramFilters(ctx)
+		if got, want := map[string][]string(filters.MetadataFilters), map[string][]string{"env": {"prod", "staging"}}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("histogram metadata filters = %#v, want %#v", got, want)
+		}
+	})
+}
+
 // TestParseGuardrailOutcomesFilter verifies guardrail_outcomes reaches the list and histogram filters.
 func TestParseGuardrailOutcomesFilter(t *testing.T) {
 	t.Run("parses comma-separated outcomes", func(t *testing.T) {
@@ -143,6 +290,192 @@ func TestParseGuardrailOutcomesFilter(t *testing.T) {
 			t.Fatalf("histogram guardrail outcomes = %#v, want %#v", got, want)
 		}
 	})
+}
+
+// TestParseTopicIDsFilter verifies the Warp topic filter reaches every logs
+// query that takes filters: the rows, the stats, and everything parsed as a
+// histogram (histograms, rankings, the dashboard).
+func TestParseTopicIDsFilter(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("topic_ids", "topic-a,topic-b")
+	want := []string{"topic-a", "topic-b"}
+
+	filters := &logstore.SearchFilters{}
+	parseTopicIDsFilter(ctx, filters)
+	if !reflect.DeepEqual(filters.TopicIDs, want) {
+		t.Fatalf("topic ids = %#v, want %#v", filters.TopicIDs, want)
+	}
+	if got := parseHistogramFilters(ctx).TopicIDs; !reflect.DeepEqual(got, want) {
+		t.Fatalf("histogram topic ids = %#v, want %#v", got, want)
+	}
+
+	kept := &logstore.SearchFilters{TopicIDs: []string{"topic-a"}}
+	parseTopicIDsFilter(&fasthttp.RequestCtx{}, kept)
+	if !reflect.DeepEqual(kept.TopicIDs, []string{"topic-a"}) {
+		t.Fatalf("an absent parameter must leave the filter alone, got %#v", kept.TopicIDs)
+	}
+}
+
+// topicFilterLogManager records the filters the rows and stats routes query
+// with, so the inline parse blocks of both can be checked end to end.
+type topicFilterLogManager struct {
+	loggingplugin.LogManager
+	searched     *logstore.SearchFilters
+	counted      *logstore.SearchFilters
+	histogrammed *logstore.SearchFilters
+}
+
+func (m *topicFilterLogManager) GetHistogram(_ context.Context, filters *logstore.SearchFilters, _ int64) (*logstore.HistogramResult, error) {
+	m.histogrammed = filters
+	return &logstore.HistogramResult{}, nil
+}
+
+func (m *topicFilterLogManager) Search(_ context.Context, filters *logstore.SearchFilters, _ *logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	m.searched = filters
+	return &logstore.SearchResult{}, nil
+}
+
+func (m *topicFilterLogManager) GetStats(_ context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
+	if m.counted == nil {
+		m.counted = filters
+	}
+	return &logstore.SearchStats{}, nil
+}
+
+// TestLogsRoutesCarryTheTopicFilter drives the rows and stats routes, which
+// parse their filters inline rather than through parseHistogramFilters, and
+// checks the topic filter reaches the store from both.
+func TestLogsRoutesCarryTheTopicFilter(t *testing.T) {
+	mgr := &topicFilterLogManager{}
+	h := &LoggingHandler{logManager: mgr, redactedKeysManager: noRedactedKeys{}, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("topic_ids", "topic-a,topic-b")
+	h.getLogs(ctx)
+	if mgr.searched == nil || !reflect.DeepEqual(mgr.searched.TopicIDs, []string{"topic-a", "topic-b"}) {
+		t.Fatalf("GET /api/logs searched with %#v", mgr.searched)
+	}
+
+	ctx = &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("topic_ids", "topic-a")
+	h.getLogsStats(ctx)
+	if mgr.counted == nil || !reflect.DeepEqual(mgr.counted.TopicIDs, []string{"topic-a"}) {
+		t.Fatalf("GET /api/logs/stats counted with %#v", mgr.counted)
+	}
+}
+
+// TestLogsRoutesRejectTopicIDsNamingNoTopic checks a topic_ids that parses to
+// no id is refused before the store is queried. Read as absent, it widened the
+// rows, stats and histograms to every topic.
+func TestLogsRoutesRejectTopicIDsNamingNoTopic(t *testing.T) {
+	mgr := &topicFilterLogManager{}
+	h := &LoggingHandler{logManager: mgr, redactedKeysManager: noRedactedKeys{}, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	routes := map[string]fasthttp.RequestHandler{
+		"GET /api/logs":           h.getLogs,
+		"GET /api/logs/stats":     h.getLogsStats,
+		"GET /api/logs/histogram": h.getLogsHistogram,
+	}
+	for name, route := range routes {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("topic_ids", " , ")
+		route(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("%s answered %d: %s", name, ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+	if mgr.searched != nil || mgr.counted != nil || mgr.histogrammed != nil {
+		t.Fatalf("the store was queried: searched %#v, counted %#v, histogrammed %#v", mgr.searched, mgr.counted, mgr.histogrammed)
+	}
+	if !parseTopicIDsFilter(&fasthttp.RequestCtx{}, &logstore.SearchFilters{}) {
+		t.Fatal("an absent topic_ids must be accepted")
+	}
+}
+
+// fakeTopicLister answers list_topics queries for the filter-data tests and
+// records the query it was asked.
+type fakeTopicLister struct {
+	list  *warp.TopicList
+	err   error
+	query warp.TopicQuery
+}
+
+// It applies NameContains the way the reader does, so a test sees what a
+// name search returns.
+func (f *fakeTopicLister) ListTopics(_ context.Context, query warp.TopicQuery) (*warp.TopicList, error) {
+	f.query = query
+	if f.list == nil || query.NameContains == "" {
+		return f.list, f.err
+	}
+	matched := &warp.TopicList{}
+	for _, topic := range f.list.Topics {
+		if strings.Contains(strings.ToLower(topic.Label), query.NameContains) {
+			matched.Topics = append(matched.Topics, topic)
+		}
+	}
+	return matched, f.err
+}
+
+// TestTopicFilterDataListsWhatTheReaderShows verifies the topics dimension is
+// the reader's own answer over the last month - the same scoped list Warp
+// gives the caller - narrowed by name, and empty rather than failing where
+// Warp has no topics to offer.
+func TestTopicFilterDataListsWhatTheReaderShows(t *testing.T) {
+	lister := &fakeTopicLister{list: &warp.TopicList{Topics: []warp.Topic{
+		{ID: "t-1", Label: "Refund requests", Requests: 40},
+		{ID: "t-2", Label: "Password resets", Requests: 12},
+		{ID: "t-3", Label: "Refund fraud", Requests: 3},
+	}}}
+	pairs, err := topicFilterData(context.Background(), lister, 25, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []loggingplugin.KeyPair{{ID: "t-1", Name: "Refund requests"}, {ID: "t-2", Name: "Password resets"}, {ID: "t-3", Name: "Refund fraud"}}
+	if !reflect.DeepEqual(pairs, want) {
+		t.Fatalf("pairs = %#v, want %#v", pairs, want)
+	}
+	if lister.query.Limit != 25 {
+		t.Fatalf("limit = %d, want 25", lister.query.Limit)
+	}
+	if lister.query.Filter.StartTime == nil || lister.query.Filter.EndTime == nil {
+		t.Fatal("the reader needs both ends of a window")
+	}
+	// Upkeep retires a topic silent for 30 days, so a month back is exactly
+	// the topics still in use; a shorter window would hide live ones.
+	if span := lister.query.Filter.EndTime.Sub(*lister.query.Filter.StartTime); span != 30*24*time.Hour {
+		t.Fatalf("window = %s, want 30 days", span)
+	}
+	if lister.query.BucketSeconds != 0 {
+		t.Fatal("a filter dropdown has no use for a series")
+	}
+
+	pairs, err = topicFilterData(context.Background(), lister, 25, "  REFUND ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []loggingplugin.KeyPair{{ID: "t-1", Name: "Refund requests"}, {ID: "t-3", Name: "Refund fraud"}}; !reflect.DeepEqual(pairs, got) {
+		t.Fatalf("name search = %#v, want %#v", pairs, got)
+	}
+	// The search goes to the reader, which applies it before its limit: a
+	// matching topic outside the largest 25 is still offered.
+	if lister.query.NameContains != "refund" {
+		t.Fatalf("NameContains = %q, want the normalized search %q", lister.query.NameContains, "refund")
+	}
+
+	for name, lister := range map[string]warp.TopicLister{
+		"no lister":        nil,
+		"warp unavailable": &fakeTopicLister{err: warp.ErrUnavailable},
+	} {
+		pairs, err := topicFilterData(context.Background(), lister, 25, "")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if pairs == nil || len(pairs) != 0 {
+			t.Fatalf("%s: want an empty list on the wire, got %#v", name, pairs)
+		}
+	}
+	if _, err := topicFilterData(context.Background(), &fakeTopicLister{err: errors.New("boom")}, 25, ""); err == nil {
+		t.Fatal("a store error is the caller's to see")
+	}
 }
 
 // TestParseParentRequestIDFilter verifies the explicit parent-request filter
@@ -234,6 +567,58 @@ func TestGetMCPLogByIDRedactionMapping(t *testing.T) {
 			}
 			if tt.resolver != nil && tt.resolver.calls != tt.wantCalls {
 				t.Fatalf("resolver calls = %d, want %d", tt.resolver.calls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+// timestampHintLogManager records the timestamp hint GET /api/logs/{id} hands the store.
+type timestampHintLogManager struct {
+	loggingplugin.LogManager
+	calls int
+	hint  any
+}
+
+func (m *timestampHintLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
+	m.calls++
+	m.hint = ctx.Value(logstore.LogTimestampContextKey)
+	return &logstore.Log{ID: id}, nil
+}
+
+// TestGetLogByIDTimestampHint covers #9316: the detail route forwards the row's
+// timestamp so a ClickHouse store can prune the lookup, and rejects a malformed one.
+func TestGetLogByIDTimestampHint(t *testing.T) {
+	SetLogger(&mockLogger{})
+	tests := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantHint   any
+		wantCalls  int
+	}{
+		{name: "no hint", wantStatus: fasthttp.StatusOK, wantCalls: 1},
+		{name: "rfc3339 millis", query: "timestamp=2026-09-30T17:34:19.870Z", wantStatus: fasthttp.StatusOK, wantHint: time.Date(2026, 9, 30, 17, 34, 19, 870_000_000, time.UTC), wantCalls: 1},
+		{name: "offset", query: "timestamp=2026-09-30T11:34:19-06:00", wantStatus: fasthttp.StatusOK, wantHint: time.Date(2026, 9, 30, 17, 34, 19, 0, time.UTC), wantCalls: 1},
+		{name: "malformed", query: "timestamp=yesterday", wantStatus: fasthttp.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := &timestampHintLogManager{}
+			h := &LoggingHandler{logManager: mgr}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI("/api/logs/log-1?" + tt.query)
+			ctx.SetUserValue("id", "log-1")
+
+			h.getLogByID(ctx)
+
+			require.Equal(t, tt.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Equal(t, tt.wantCalls, mgr.calls)
+			if want, ok := tt.wantHint.(time.Time); ok {
+				got, isTime := mgr.hint.(time.Time)
+				require.True(t, isTime, "hint = %#v, want a time.Time", mgr.hint)
+				require.True(t, want.Equal(got), "hint = %s, want %s", got, want)
+			} else {
+				require.Nil(t, mgr.hint)
 			}
 		})
 	}
@@ -860,6 +1245,9 @@ type dashboardLogManager struct {
 	// statsFunc, when set, supplies the SearchStats for each GetStats call so a
 	// test can tell the current and previous periods apart.
 	statsFunc              func(filters *logstore.SearchFilters) (*logstore.SearchStats, error)
+	mcpStatsCalls          []logstore.MCPToolLogSearchFilters // every GetMCPToolLogStats filter, in call order
+	mcpStatsFunc           func(filters *logstore.MCPToolLogSearchFilters) (*logstore.MCPToolLogStats, error)
+	mcpLatencyBucketSize   int64
 	projects               []loggingplugin.KeyPair
 	mcpLog                 *logstore.MCPToolLog
 	lastLLMFilters         logstore.SearchFilters
@@ -871,17 +1259,27 @@ type dashboardLogManager struct {
 	deleteMCPError         error
 	// rankings, when set, supplies the rows GetDimensionRankings returns per dimension.
 	rankings map[logstore.RankingDimension][]logstore.DimensionRankingWithTrend
+	// logs, when set, are the rows GetLog serves by id; searchLogs are what
+	// Search returns.
+	logs       map[string]*logstore.Log
+	searchLogs []logstore.Log
 }
 
 // GetLog implements the test double used by logging handler tests.
 func (m *dashboardLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
+	if m.logs != nil {
+		if row, ok := m.logs[id]; ok {
+			return row, nil
+		}
+		return nil, logstore.ErrNotFound
+	}
 	return nil, nil
 }
 
 // Search implements the test double used by logging handler tests.
 func (m *dashboardLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
 	m.lastLLMFilters = *filters
-	return &logstore.SearchResult{}, nil
+	return &logstore.SearchResult{Logs: m.searchLogs, Pagination: logstore.PaginationOptions{TotalCount: int64(len(m.searchLogs))}}, nil
 }
 
 // GetSessionLogs implements the test double used by logging handler tests.
@@ -1104,7 +1502,11 @@ func (m *dashboardLogManager) SearchMCPToolLogs(ctx context.Context, filters *lo
 
 // GetMCPToolLogStats implements the test double used by logging handler tests.
 func (m *dashboardLogManager) GetMCPToolLogStats(ctx context.Context, filters *logstore.MCPToolLogSearchFilters) (*logstore.MCPToolLogStats, error) {
-	return nil, nil
+	m.mcpStatsCalls = append(m.mcpStatsCalls, *filters)
+	if m.mcpStatsFunc != nil {
+		return m.mcpStatsFunc(filters)
+	}
+	return &logstore.MCPToolLogStats{}, nil
 }
 
 // GetAvailableToolNames implements the test double used by logging handler tests.
@@ -1122,10 +1524,45 @@ func (m *dashboardLogManager) GetAvailableMCPVirtualKeys(ctx context.Context, li
 	return nil, nil
 }
 
+// GetAvailableMCPUsers implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetAvailableMCPUsers(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+
+// GetAvailableMCPTeams implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetAvailableMCPTeams(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+
+// GetAvailableMCPCustomers implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetAvailableMCPCustomers(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+
+// GetAvailableMCPBusinessUnits implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetAvailableMCPBusinessUnits(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+
+// GetAvailableMCPProjects implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetAvailableMCPProjects(ctx context.Context, limit int, query string) ([]loggingplugin.KeyPair, error) {
+	return nil, nil
+}
+
 // GetMCPHistogram implements the test double used by logging handler tests.
 func (m *dashboardLogManager) GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error) {
 	m.lastMCPFilters = filters
 	return &logstore.MCPHistogramResult{}, nil
+}
+
+// GetMCPLatencyHistogram implements the test double used by logging handler tests.
+func (m *dashboardLogManager) GetMCPLatencyHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	m.lastMCPFilters = filters
+	m.mcpLatencyBucketSize = bucketSizeSeconds
+	return &logstore.LatencyHistogramResult{
+		Buckets:           []logstore.LatencyHistogramBucket{{AvgLatency: 20, P95Latency: 29, TotalRequests: 3}},
+		BucketSizeSeconds: bucketSizeSeconds,
+	}, nil
 }
 
 // GetMCPCostHistogram implements the test double used by logging handler tests.
@@ -1718,5 +2155,279 @@ func TestFindRedactedKeyDeletedSuffix(t *testing.T) {
 				t.Fatalf("findRedactedKey() = {%q, %q}, want {%q, %q}", got.ID, got.Name, tt.id, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseBucketSizeOverride(t *testing.T) {
+	end := time.Date(2026, 10, 19, 14, 5, 0, 0, time.UTC)
+	week := end.Add(-7 * 24 * time.Hour)
+	after := end.Add(time.Hour)
+	// An aligned start and 5000 ten-minute buckets, with the end halfway into the last one.
+	capStart := end.Add(-(4999*600 + 300) * time.Second)
+	overCapStart := capStart.Add(-600 * time.Second)
+	cases := []struct {
+		name    string
+		raw     string
+		start   *time.Time
+		want    int64
+		wantErr bool
+	}{
+		{name: "empty value", raw: "", start: &week, wantErr: true},
+		{name: "reversed window", raw: "600", start: &after, wantErr: true},
+		{name: "exactly the bucket cap", raw: "600", start: &capStart, want: 600},
+		{name: "one bucket over the cap", raw: "600", start: &overCapStart, wantErr: true},
+		{name: "ten minutes", raw: "600", start: &week, want: 600},
+		{name: "three hours", raw: "10800", start: &week, want: 10800},
+		{name: "not a number", raw: "abc", start: &week, wantErr: true},
+		{name: "below a minute", raw: "30", start: &week, wantErr: true},
+		{name: "does not divide an hour", raw: "420", start: &week, wantErr: true},
+		{name: "not whole hours", raw: "5400", start: &week, wantErr: true},
+		{name: "too many buckets", raw: "60", start: &week, wantErr: true},
+		{name: "no window", raw: "3600", start: nil, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var endPtr *time.Time
+			if tc.start != nil {
+				endPtr = &end
+			}
+			got, err := parseBucketSizeOverride(tc.raw, tc.start, endPtr)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %d", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("got %d, %v; want %d", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// GET /api/logs/{id}/trace returns the chain behind any hop of a request, and
+// 404 for a row the caller cannot load.
+func TestGetLogTrace(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ts := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
+	hop := logstore.Log{ID: "hop", Timestamp: ts, Provider: "anthropic", Status: "success", FallbackIndex: 1, ParentRequestID: new("root")}
+	mgr := &dashboardLogManager{
+		logs: map[string]*logstore.Log{
+			"root": {ID: "root", Timestamp: ts, Provider: "openai", Status: "error"},
+			"hop":  &hop,
+		},
+		searchLogs: []logstore.Log{hop},
+	}
+	h := &LoggingHandler{logManager: mgr}
+	r := router.New()
+	h.RegisterRoutes(r)
+
+	get := func(path string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.SetRequestURI(path)
+		ctx := initCtx(&req)
+		r.Handler(ctx)
+		return ctx
+	}
+
+	ctx := get("/api/logs/hop/trace")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var trace logstore.RequestTrace
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &trace))
+	require.Equal(t, "root", trace.RootID)
+	require.Equal(t, 2, trace.ChainLength)
+	require.Equal(t, "success", trace.FinalStatus)
+	require.Equal(t, "root", mgr.lastLLMFilters.ParentRequestID)
+
+	ctx = get("/api/logs/missing/trace")
+	require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	// The plain log route is still the log, not its trace.
+	ctx = get("/api/logs/root")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.NotContains(t, string(ctx.Response.Body()), "chain_length")
+}
+
+// recordingLogSearch is a LogSearcher that records what the route asked for
+// and answers with a fixed result or error.
+type recordingLogSearch struct {
+	queries []string
+	filters *logstore.SearchFilters
+	limit   int
+	hidden  any
+	result  warp.SemanticSearchResult
+	err     error
+}
+
+func (s *recordingLogSearch) SearchLogs(ctx context.Context, queries []string, filters *logstore.SearchFilters, limit int) (warp.SemanticSearchResult, error) {
+	s.queries, s.filters, s.limit = queries, filters, limit
+	s.hidden = ctx.Value(logstore.HiddenRequestTypesContextKey)
+	return s.result, s.err
+}
+
+// GET /api/logs/search passes every phrasing, the standard log filters, the
+// limit and the hidden request types to the search, and maps its refusals.
+func TestSearchLogs(t *testing.T) {
+	SetLogger(&mockLogger{})
+	search := &recordingLogSearch{result: warp.SemanticSearchResult{Rows: []warp.SemanticSearchRow{{Score: 0.71}}, Returned: 1, Threshold: 0.3}}
+	h := &LoggingHandler{
+		logManager: &dashboardLogManager{},
+		config:     &lib.Config{ClientConfig: &configstore.ClientConfig{HiddenRequestTypes: []string{"embedding"}}},
+	}
+	r := router.New()
+	h.RegisterRoutes(r)
+	get := func(path string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.SetRequestURI(path)
+		ctx := initCtx(&req)
+		r.Handler(ctx)
+		return ctx
+	}
+
+	ctx := get("/api/logs/search?query=refunds")
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), "no search wired")
+
+	h.SetLogSearch(search)
+	ctx = get("/api/logs/search?query=refund+requests&query=money+back&providers=openai,anthropic&team_ids=team-1&limit=7")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Equal(t, []string{"refund requests", "money back"}, search.queries)
+	require.Equal(t, []string{"openai", "anthropic"}, search.filters.Providers)
+	require.Equal(t, []string{"team-1"}, search.filters.TeamIDs)
+	require.Equal(t, 7, search.limit)
+	require.Equal(t, []string{"embedding"}, search.hidden, "hidden request types apply as on every log read")
+	var result warp.SemanticSearchResult
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &result))
+	require.Equal(t, 1, result.Returned)
+	require.InDelta(t, 0.3, result.Threshold, 1e-9)
+
+	for _, bad := range []string{"limit=0", "limit=26", "limit=many"} {
+		ctx = get("/api/logs/search?query=refunds&" + bad)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), bad)
+	}
+
+	search.err = fmt.Errorf("checked: %w", warp.ErrInvalidSearchQuery)
+	ctx = get("/api/logs/search")
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+
+	search.err = warp.ErrUnavailable
+	ctx = get("/api/logs/search?query=refunds")
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), "Warp enabled")
+
+	// Any other failure is a 500 that names no internals: the cause is logged, not sent.
+	search.err = errors.New("dial tcp 10.0.0.7:8080: weaviate refused")
+	ctx = get("/api/logs/search?query=refunds")
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	require.NotContains(t, string(ctx.Response.Body()), "10.0.0.7")
+	require.Contains(t, string(ctx.Response.Body()), "semantic log search failed")
+}
+
+// GET /api/logs/search refuses a malformed or unsupported request with 400
+// before any search runs, and before checking whether search is available, so
+// a bad request reads the same whether or not Warp is on.
+func TestSearchLogsRefusesBadRequestsBeforeSearching(t *testing.T) {
+	SetLogger(&mockLogger{})
+	h := &LoggingHandler{logManager: &dashboardLogManager{}, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	r := router.New()
+	h.RegisterRoutes(r)
+	get := func(path string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.SetRequestURI(path)
+		ctx := initCtx(&req)
+		r.Handler(ctx)
+		return ctx
+	}
+	bad := []string{
+		"",
+		"query=a&query=b&query=c&query=d&query=e&query=f",
+		"query=a&query=a&query=a&query=a&query=a&query=a",
+		"query=refunds&roots_only=true",
+		"query=refunds&group_sessions=true",
+		"query=refunds&roots_only=maybe",
+		"query=refunds&fallback_hops_only=true",
+		"query=refunds&fallback_hops_only=maybe",
+		"query=refunds&topic_ids=,,",
+		"query=refunds&providers=,",
+		"query=refunds&virtual_key_ids=%20,%20",
+		"query=refunds&cache_hit_types=,,",
+		"query=refunds&user_agents=%5B%5D",
+		"query=refunds&apps=,",
+		"query=refunds&metadata_=prod",
+		"query=refunds&metadata_env=",
+		"query=refunds&metadata_env=%5B%5D",
+		"query=refunds&metadata_env=%5B%22%22%5D",
+		"query=refunds&max_cost=100&max_cost=1",
+		"query=refunds&providers=openai&providers=anthropic",
+		"query=refunds&start_time=2026-10-01T00:00:00Z&start_time=2026-11-01T00:00:00Z",
+		"query=refunds&max_cost=abc",
+		"query=refunds&min_cost=abc",
+		"query=refunds&min_latency=fast",
+		"query=refunds&max_latency=slow",
+		"query=refunds&start_time=yesterday",
+		"query=refunds&end_time=2026-13-01",
+		"query=refunds&min_tokens=many",
+		"query=refunds&max_tokens=1.5",
+		"query=refunds&missing_cost_only=maybe",
+		"query=refunds&period=last_quarter",
+		"query=refunds&min_latency=NaN",
+		"query=refunds&max_latency=nan",
+		"query=refunds&min_cost=NaN",
+		"query=refunds&max_cost=NaN",
+		"query=refunds&error_types=timeout",
+		"query=refunds&error_codes=429",
+		"query=refunds&status_codes=500",
+		"query=refunds&realtime_input_item_id=item-1",
+	}
+	for _, query := range bad {
+		ctx := get("/api/logs/search?" + query)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "no search wired, %q: %s", query, ctx.Response.Body())
+	}
+	search := &recordingLogSearch{}
+	h.SetLogSearch(search)
+	for _, query := range bad {
+		search.queries = nil
+		ctx := get("/api/logs/search?" + query)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%q: %s", query, ctx.Response.Body())
+		require.Nil(t, search.queries, "%q reached the search", query)
+	}
+	// Infinity is a bound, not a malformed value: an open-ended range stays accepted.
+	for _, query := range []string{"query=refunds&max_latency=Inf", "query=refunds&min_cost=-Inf", "query=refunds&max_cost=%2BInf", "query=refunds&min_latency=-inf"} {
+		ctx := get("/api/logs/search?" + query)
+		require.NotEqual(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%q: %s", query, ctx.Response.Body())
+	}
+	// A metadata_<key> filter is one the route reads, so it reaches the search
+	// validator and its specific refusal, not the unknown-parameter one.
+	ctx := get("/api/logs/search?query=refunds&metadata_env=prod")
+	require.Contains(t, string(ctx.Response.Body()), "cannot filter on metadata_filters")
+	// query is repeatable by design, one phrasing each.
+	ctx = get("/api/logs/search?query=refunds&query=money+back")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	ctx = get("/api/logs/search?query=refunds&error_types=timeout")
+	require.Contains(t, string(ctx.Response.Body()), "error_types is not a filter semantic log search can apply")
+	ctx = get("/api/logs/search?query=refunds&max_cost=0.5&start_time=2026-10-01T00:00:00Z&roots_only=false")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	// A recognised period still searches; the strict checks only refuse what would be dropped.
+	ctx = get("/api/logs/search?query=refunds&period=7d&timezone=Not/AZone")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.NotNil(t, search.filters.StartTime)
+	ctx = get("/api/logs/search?query=refunds&max_cost=0.5&start_time=2026-10-01T00:00:00Z&roots_only=false")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.InDelta(t, 0.5, *search.filters.MaxCost, 1e-9)
+	require.NotNil(t, search.filters.StartTime)
+}
+
+// BenchmarkSearchLogs measures the route's own cost around a search: parsing
+// and checking the request, the call, and writing the result. The search is a
+// fake, so embedding and vector latency are left out.
+func BenchmarkSearchLogs(b *testing.B) {
+	SetLogger(&mockLogger{})
+	h := &LoggingHandler{logManager: &dashboardLogManager{}, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	h.SetLogSearch(&recordingLogSearch{result: warp.SemanticSearchResult{Rows: []warp.SemanticSearchRow{{Score: 0.71}}, Returned: 1, Threshold: 0.3}})
+	var req fasthttp.Request
+	req.SetRequestURI("/api/logs/search?query=refund+requests&query=money+back&providers=openai&max_cost=0.5&start_time=2026-10-01T00:00:00Z&limit=7")
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := initCtx(&req)
+		h.searchLogs(ctx)
 	}
 }

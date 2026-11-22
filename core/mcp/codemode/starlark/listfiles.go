@@ -63,7 +63,7 @@ func (s *StarlarkCodeMode) createListToolFilesTool() schemas.ChatTool {
 // handleListToolFiles handles the listToolFiles tool call.
 // It builds a tree structure listing all virtual .pyi files available for code mode clients.
 func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
-	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
+	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	if len(availableToolsPerClient) == 0 {
 		responseText := "No servers are currently connected. There are no virtual .pyi files available. " +
@@ -85,11 +85,11 @@ func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall sch
 			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
 			continue
 		}
-		if !client.ExecutionConfig.IsCodeModeClient {
+		if !client.ExecutionConfig.CodeModeFor(ctx) {
 			continue
 		}
 		codeModeServerCount++
-		if client.ServerInstructions != "" {
+		if s.clientManager.GetInstructionsForClient(ctx, client.ExecutionConfig.ID) != "" {
 			serversWithInstructions = append(serversWithInstructions, clientName)
 		}
 

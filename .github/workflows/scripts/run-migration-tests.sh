@@ -857,6 +857,10 @@ append_dynamic_mcp_clients_insert() {
     append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future"
     append_v210_fixtures "$db_type" "$faker_sql" "$now"
     append_v220_fixtures "$db_type" "$faker_sql"
+    append_v230_fixtures "$db_type" "$faker_sql" "$now"
+    append_v231_fixtures "$db_type" "$faker_sql" "$now"
+    append_v240_fixtures "$db_type" "$faker_sql" "$now"
+    append_v250_fixtures "$db_type" "$faker_sql" "$now"
   else
     now="datetime('now')"
     future="datetime('now', '+1 hour')"
@@ -882,6 +886,10 @@ append_dynamic_mcp_clients_insert() {
     append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future" "$config_db" "$logs_db"
     append_v210_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
     append_v220_fixtures "$db_type" "$faker_sql" "$config_db" "$logs_db"
+    append_v230_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
+    append_v231_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
+    append_v240_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
+    append_v250_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
   fi
 }
 
@@ -894,15 +902,17 @@ v200_column_exists() {
     column_exists_postgres "$table" "$column"
   else
     local db="$fixture_config_db"
-    case "$table" in logs|mcp_tool_logs|user_agent_mappings) db="$fixture_logs_db" ;; esac
+    case "$table" in logs|mcp_tool_logs|user_agent_mappings|agent_logs|warp_conversations|warp_messages|matview_refresh_state|relay_logs|warp_topics|warp_topic_assignments|warp_topic_unmatched|warp_vector_deletes) db="$fixture_logs_db" ;; esac
     column_exists_sqlite "$db" "$table" "$column"
   fi
 }
 
 # Read column|SQL-value pairs from stdin, retaining only columns in this schema.
+# The optional second argument names the column that gates the insert, for tables
+# keyed by something other than id (composite or natural primary keys).
 v200_insert() {
-  local table="$1" column value cols="" vals=""
-  if ! v200_column_exists "$table" "id"; then
+  local table="$1" gate_column="${2:-id}" column value cols="" vals=""
+  if ! v200_column_exists "$table" "$gate_column"; then
     return
   fi
   while IFS='|' read -r column value; do
@@ -1173,6 +1183,576 @@ mcp_tool_logs|business_unit_names|'["Migration Test BU"]'|id = 'mcp-log-migratio
 mcp_tool_logs|budget_ids|'["budget-migration-test-1"]'|id = 'mcp-log-migration-001'
 mcp_tool_logs|rate_limit_ids|'["ratelimit-migration-test-1"]'|id = 'mcp-log-migration-001'
 V220_COLUMNS
+}
+
+# v2.3.0 introduced these columns plus the Agent Gateway, provider object
+# ownership and Warp tables. Same probing scheme as append_v200_fixtures so the
+# fixture set still runs against older releases; reuses the v200_* helpers,
+# which read these locals dynamically.
+# - config_keys columns stay NULL (config sync rewrites config_keys on startup)
+# - governance_model_pricing columns stay NULL (datasheet-sync-managed)
+# - business_unit_id stays NULL: both test VKs already belong to a team or a
+#   customer, and a VK may belong to only one of team, customer or business unit
+# - the agent registration is disabled so startup never dials its agent card URL,
+#   and the push delivery is terminal so the outbox relay never claims it
+# - warp_config.id pins the singleton row id the store upserts
+append_v230_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2" now="$3"
+  local fixture_config_db="${4:-}" fixture_logs_db="${5:-}"
+  local table column value predicate
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V230_COLUMNS'
+config_client|mcp_max_instructions_per_client|0|id = 1
+config_client|mcp_max_instructions_total|0|id = 1
+config_client|delete_expired_virtual_keys|false|id = 1
+config_client|enforce_vk_object_ownership|true|id = 1
+config_client|a2a_store_raw_request_response|false|id = 1
+config_client|a2_a_external_client_url|NULL|id = 1
+config_client|compat_force_reasoning_only_models_to_responses|false|id = 1
+config_client|compat_convert_decision_to_responses|false|id = 1
+config_client|mcp_code_mode_limits_json|NULL|id = 1
+config_client|mcp_oauth_private_allowlist_json|NULL|id = 1
+config_keys|vertex_aws_workload_identity_json|NULL|name = 'migration-test-key-anthropic'
+config_keys|oauth_token_url|NULL|name = 'migration-test-key-anthropic'
+config_keys|oauth_client_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|oauth_client_secret|NULL|name = 'migration-test-key-anthropic'
+config_keys|oauth_private_key|NULL|name = 'migration-test-key-anthropic'
+config_keys|oauth_settings_json|NULL|name = 'migration-test-key-anthropic'
+config_mcp_clients|require_public_target|false|client_id = 'mcp-migration-test-001'
+config_mcp_clients|max_instructions_length|0|client_id = 'mcp-migration-test-001'
+config_mcp_clients|discovered_instructions|'Use tool1 for lookups and tool2 for writes.'|client_id = 'mcp-migration-test-001'
+config_providers|injected_tools_json|NULL|name = 'anthropic'
+config_providers|ignore_provider_cost|false|name = 'anthropic'
+governance_model_pricing|input_cost_per_token_decisions|NULL|id = 1
+governance_model_pricing|output_cost_per_token_decisions|NULL|id = 1
+governance_model_pricing|input_cost_per_token_above_100k_tokens|NULL|id = 1
+governance_model_pricing|output_cost_per_token_above_100k_tokens|NULL|id = 1
+governance_model_pricing|cache_creation_input_token_cost_above_100k_tokens|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_above_100k_tokens|NULL|id = 1
+governance_model_pricing|cache_creation_input_token_cost_above_1hr_above_100k_tokens|NULL|id = 1
+governance_model_pricing|web_search_cost_per_request|NULL|id = 1
+governance_virtual_keys|delete_after_expire|false|id = 'vk-migration-test-1'
+governance_virtual_keys|business_unit_id|NULL|id = 'vk-migration-test-1'
+governance_virtual_keys|disable_content_logging|true|id = 'vk-migration-test-1'
+logs|agent_correlation_id|'agent-corr-migration-001'|id = 'log-migration-test-001'
+logs|embedding_input|''|id = 'log-migration-test-001'
+logs|live_session|''|id = 'log-migration-test-001'
+mcp_tool_logs|session_id|'migration-session'|id = 'mcp-log-migration-001'
+mcp_tool_logs|agent_correlation_id|'agent-corr-migration-001'|id = 'mcp-log-migration-001'
+routing_targets|ttft_timeout_ms|5000|rule_id = 'rule-migration-test-1'
+V230_COLUMNS
+
+  # Agent Gateway: the registration first, then the rows that reference it
+  # (push configs, push deliveries and VK grants all cascade from it).
+  v200_insert config_agent_registrations name <<V230_ROW
+name|'migration-test-agent'
+agent_card_url|'https://agent.example.com/.well-known/agent-card.json'
+tenant|'migration-tenant'
+enabled|false
+allow_by_default|false
+forward_accepted_credential|false
+forward_accepted_credential_overrides_auth|false
+discovery_auth|'{"type":"none"}'
+extension_uris|'["https://a2a.example.com/extensions/migration-test"]'
+runtime_auth|'{"type":"headers","headers":{"X-Agent-Key":"migration-agent-key"}}'
+encryption_status|'plain_text'
+config_hash|NULL
+created_at|$now
+updated_at|$now
+V230_ROW
+
+  v200_insert config_agent_push_configs config_id <<V230_ROW
+agent_name|'migration-test-agent'
+task_id|'task-migration-001'
+config_id|'push-config-migration-001'
+url|'https://client.example.com/a2a/push'
+tenant|'migration-tenant'
+token|'migration-push-token'
+auth_scheme|'Bearer'
+auth_credentials|'migration-push-credentials'
+ingress_token_hash|'aa11c3c9f893104feafdbe13ccb62017195ad3f8ee27d983d1b2f7318054c616'
+encryption_status|'plain_text'
+created_at|$now
+updated_at|$now
+V230_ROW
+
+  v200_insert config_agent_push_deliveries <<V230_ROW
+id|'e5f9fe90f95ce1eacd85b39c5eefcf410100d18e228d9ac7d8bdf905b0a951fe'
+agent_name|'migration-test-agent'
+task_id|'task-migration-001'
+config_id|'push-config-migration-001'
+payload|'{"id":"task-migration-001","status":{"state":"completed"}}'
+status|'delivered'
+attempts|1
+next_attempt_at|$now
+last_error|''
+claimed_by|NULL
+claimed_until|NULL
+created_at|$now
+updated_at|$now
+V230_ROW
+
+  v200_insert governance_virtual_key_agent_grants agent_name <<V230_ROW
+virtual_key_id|'vk-migration-test-1'
+agent_name|'migration-test-agent'
+created_at|$now
+V230_ROW
+
+  v200_insert agent_logs <<V230_ROW
+id|'agent-log-migration-001'
+timestamp|$now
+created_at|$now
+record_kind|'request'
+operation|'message/send'
+status|'success'
+agent_name|'migration-test-agent'
+user_id|NULL
+user_name|NULL
+virtual_key_id|'vk-migration-test-1'
+virtual_key_name|'Migration Test Virtual Key 1'
+team_id|'team-migration-test-1'
+team_name|'Migration Test Team'
+customer_id|NULL
+customer_name|NULL
+business_unit_id|NULL
+business_unit_name|NULL
+project_id|'project-migration-001'
+project_name|'Migration Project'
+team_ids|'["team-migration-test-1"]'
+team_names|'["Migration Test Team"]'
+customer_ids|'[]'
+customer_names|'[]'
+business_unit_ids|'[]'
+business_unit_names|'[]'
+budget_ids|'[]'
+rate_limit_ids|'["ratelimit-migration-test-1"]'
+request_id|'agent-req-migration-001'
+trace_id|'trace-migration-001'
+task_id|'task-migration-001'
+context_id|'context-migration-001'
+message_id|'msg-migration-001'
+request_message_id|'msg-migration-001'
+response_message_id|'msg-migration-002'
+artifact_id|NULL
+push_config_id|'push-config-migration-001'
+delivery_id|NULL
+attempt_id|NULL
+event_sequence|1
+event_type|NULL
+task_state|'completed'
+downstream_transport|'jsonrpc'
+upstream_transport|'jsonrpc'
+latency|120.5
+upstream_latency|110
+overhead_latency|10.5
+overhead_breakdown|'[]'
+content_type|'application/json'
+raw_request|NULL
+raw_response|NULL
+request_body|'{"jsonrpc":"2.0","method":"message/send","id":"1"}'
+response_body|'{"jsonrpc":"2.0","id":"1","result":{"kind":"task"}}'
+event_body|NULL
+error_details|NULL
+plugin_logs|'[]'
+payload_reference|NULL
+has_object|false
+content_hidden|false
+V230_ROW
+
+  v200_insert provider_objects <<V230_ROW
+id|'file:openai:file-migration-001'
+kind|'file'
+provider|'openai'
+object_id|'file-migration-001'
+virtual_key_id|'vk-migration-test-1'
+created_at|$now
+V230_ROW
+
+  v200_insert warp_config <<V230_ROW
+id|1
+enabled|false
+provider|'openai'
+model|'gpt-4'
+api_key_id|'migration-test-key-openai'
+additional_models|NULL
+max_iterations|8
+request_timeout_seconds|120
+history_retention_days|30
+system_prompt_suffix|'Answer from the migration test logs only.'
+temperature|0.2
+reasoning_effort|'low'
+embedding_provider|''
+embedding_model|''
+embedding_api_key_id|''
+embedding_dimension|0
+log_vector_store_namespace|''
+semantic_search_threshold|0
+semantic_search_limit|0
+retired_log_vector_store_namespaces|NULL
+created_at|$now
+updated_at|$now
+V230_ROW
+
+  v200_insert warp_conversations <<V230_ROW
+id|'5f0c2a7e-1d3b-4c8a-9e21-6b7f4a0d9c11'
+owner_id|'migration-owner'
+title|'Migration test conversation'
+created_at|$now
+updated_at|$now
+V230_ROW
+
+  v200_insert warp_messages <<V230_ROW
+id|'8a4e6c1f-2b7d-4f30-a5c9-3d1e0b7f6a21'
+conversation_id|'5f0c2a7e-1d3b-4c8a-9e21-6b7f4a0d9c11'
+created_at|$now
+position|0
+role|'user'
+content|'Which provider failed most yesterday?'
+tool_calls_json|NULL
+question_json|NULL
+error|NULL
+finish_reason|NULL
+total_tokens|0
+cost|0
+V230_ROW
+
+  v200_insert warp_messages <<V230_ROW
+id|'c2d9f0b3-7e15-4a6c-8b42-9f0e1d3a5b77'
+conversation_id|'5f0c2a7e-1d3b-4c8a-9e21-6b7f4a0d9c11'
+created_at|$now
+position|1
+role|'assistant'
+content|'No provider failed in the migration test window.'
+tool_calls_json|'[]'
+question_json|NULL
+error|NULL
+finish_reason|'stop'
+total_tokens|42
+cost|0.00042
+V230_ROW
+}
+
+# v2.3.1 introduced these columns plus the rss_feeds and matview_refresh_state
+# tables. Same probing scheme as append_v230_fixtures.
+# - config_keys columns stay NULL (config sync rewrites config_keys on startup)
+# - the MCP client is not an openapi connection, so its spec stays empty
+# - the rss_feeds row omits id so the sequence never collides with the builtin
+#   feeds add_rss_feeds_table seeds, and stays disabled so startup never fetches it
+# - the matview_refresh_state row names no real view, so the refresh loop never
+#   updates or forgets it
+append_v231_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2" now="$3"
+  local fixture_config_db="${4:-}" fixture_logs_db="${5:-}"
+  local table column value predicate
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V231_COLUMNS'
+config_agent_registrations|credential_origins|'["https://client.example.com"]'|name = 'migration-test-agent'
+config_agent_registrations|require_public_target|false|name = 'migration-test-agent'
+config_client|skills_external_client_url|''|id = 1
+config_client|a2a_private_allowlist_json|'[]'|id = 1
+config_keys|vertex_use_session_routing|NULL|name = 'migration-test-key-anthropic'
+config_keys|anthropic_workload_identity_json|NULL|name = 'migration-test-key-anthropic'
+config_mcp_clients|openapi_spec|''|client_id = 'mcp-migration-test-001'
+config_mcp_clients|openapi_config_json|NULL|client_id = 'mcp-migration-test-001'
+governance_virtual_keys|metadata|'{"cost_center":"migration-test","owner":"platform"}'|id = 'vk-migration-test-1'
+logs|is_passthrough|false|id = 'log-migration-test-001'
+V231_COLUMNS
+
+  v200_insert rss_feeds slug <<V231_ROW
+slug|'migration-test-feed'
+name|'Migration Test Feed'
+url|'https://feeds.example.com/migration-test.xml'
+icon|''
+icon_url|'https://feeds.example.com/logo.png'
+source|'custom'
+enabled|false
+created_at|$now
+updated_at|$now
+V231_ROW
+
+  v200_insert matview_refresh_state view_name <<V231_ROW
+view_name|'migration_test_view'
+last_started_at|$now
+last_success_at|$now
+last_status|'success'
+last_error|NULL
+last_duration_ms|1500
+last_node|'migration-test-node'
+V231_ROW
+}
+
+# v2.4.0 introduced these columns plus the Relay and Warp topic tables. Same
+# probing scheme as append_v231_fixtures.
+# - config_keys columns stay NULL (config sync rewrites config_keys on startup)
+# - governance_model_pricing columns stay NULL (datasheet-sync-managed)
+# - the MCP client's discovered_* columns stay empty: they mirror what the
+#   server reported, and the test MCP client never connects
+# - the relay uses auth none and no secrets, and config.json declares no relays
+#   section, so loadRelaysConfig neither rewrites nor prunes it
+# - centroid / vector are blobs, so their literal is dialect-specific
+# - warp topic upkeep runs hourly and the test has no vector store, so the
+#   topic rows and the pending vector delete survive the upgrade untouched
+append_v240_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2" now="$3"
+  local fixture_config_db="${4:-}" fixture_logs_db="${5:-}"
+  local table column value predicate blob
+  if [ "$fixture_db_type" = "postgres" ]; then
+    blob="'\\x0000803f0000003f'"
+  else
+    blob="X'0000803F0000003F'"
+  fi
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V240_COLUMNS'
+config_client|mcp_max_protocol_version|'2025-06-18'|id = 1
+config_client|skip_access_profile_user_virtual_key_creation|true|id = 1
+config_client|skip_access_profile_user_virtual_key_deletion|true|id = 1
+config_keys|azure_use_speech_endpoints|NULL|name = 'migration-test-key-anthropic'
+config_keys|azure_use_voice_live_endpoints|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_access_key|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_secret_key|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_session_token|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_region|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_role_arn|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_external_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_role_session_name|NULL|name = 'migration-test-key-anthropic'
+config_keys|sagemaker_endpoints_json|NULL|name = 'migration-test-key-anthropic'
+config_mcp_clients|prompts_to_expose_json|'["prompt1"]'|client_id = 'mcp-migration-test-001'
+config_mcp_clients|resources_to_expose_json|'["resource1"]'|client_id = 'mcp-migration-test-001'
+config_mcp_clients|max_protocol_version|'2025-06-18'|client_id = 'mcp-migration-test-001'
+config_mcp_clients|discovered_tool_details_json|''|client_id = 'mcp-migration-test-001'
+config_mcp_clients|discovered_resources_json|''|client_id = 'mcp-migration-test-001'
+config_mcp_clients|discovered_resource_templates_json|''|client_id = 'mcp-migration-test-001'
+config_mcp_clients|discovered_prompts_json|''|client_id = 'mcp-migration-test-001'
+config_providers|passthrough_json|''|name = 'anthropic'
+governance_model_pricing|input_cost_per_token_voice_live|NULL|id = 1
+governance_model_pricing|output_cost_per_token_voice_live|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_voice_live|NULL|id = 1
+governance_model_pricing|input_cost_per_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|output_cost_per_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|input_cost_per_standard_speech_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|output_cost_per_standard_speech_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|input_cost_per_custom_speech_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|output_cost_per_custom_speech_audio_token_voice_live|NULL|id = 1
+governance_model_pricing|output_cost_per_video_token|NULL|id = 1
+mcp_oauth_flows|issuer|'https://auth.example.com'|id = 'mcp-flow-migration-001'
+mcp_oauth_flows|iss_parameter_supported|true|id = 'mcp-flow-migration-001'
+mcp_tool_logs|method|'tools/call'|id = 'mcp-log-migration-001'
+oauth2_refresh_tokens|client_display_name|'Migration Test Client'|id LIKE 'oauth2-%'
+oauth_configs|issuer|'https://auth.example.com'|id = 'oauth-config-migration-test-001'
+oauth_configs|iss_parameter_supported|true|id = 'oauth-config-migration-test-001'
+oauth_configs|dynamically_registered|false|id = 'oauth-config-migration-test-001'
+warp_config|topic_discovery_min_requests|25|id = 1
+V240_COLUMNS
+
+  v200_insert config_relays name <<V240_ROW
+name|'migration-test-relay'
+description|'Migration test relay'
+config_json|'{"name":"migration-test-relay","base_url":"https://relay.example.com/v1","auth":{"type":"none"}}'
+credential_value|NULL
+aws_access_key|NULL
+aws_secret_key|NULL
+aws_session_token|NULL
+aws_region|NULL
+aws_role_arn|NULL
+aws_external_id|NULL
+aws_session_name|NULL
+has_aws_credential|false
+extra_headers_json|'{}'
+proxy_type|''
+proxy_url|NULL
+proxy_username|NULL
+proxy_password|NULL
+proxy_ca_cert_pem|NULL
+encryption_status|'plain_text'
+config_hash|'migration-test-relay-hash'
+created_at|$now
+updated_at|$now
+V240_ROW
+
+  v200_insert governance_virtual_key_relay_grants virtual_key_id <<V240_ROW
+virtual_key_id|'vk-migration-test-1'
+relay_name|'migration-test-relay'
+created_at|$now
+V240_ROW
+
+  v200_insert relay_logs <<V240_ROW
+id|'relay-log-migration-001'
+timestamp|$now
+created_at|$now
+relay_name|'migration-test-relay'
+kind|'call'
+method|'POST'
+path|'/v1/chat/completions'
+route_path|''
+status|'success'
+status_code|200
+streamed|false
+billable|true
+model|'gpt-4'
+latency|120
+upstream_latency|100
+overhead_latency|20
+overhead_breakdown|'[]'
+bytes_out|512
+cost|0.001
+cost_per_request|0.001
+cost_per_unit|NULL
+extracted_cost|NULL
+units|NULL
+billed_units|NULL
+input_tokens|10
+output_tokens|20
+total_tokens|30
+job_id|NULL
+job_status|NULL
+parent_log_id|NULL
+user_id|NULL
+user_name|NULL
+virtual_key_id|'vk-migration-test-1'
+virtual_key_name|'Migration Test Virtual Key 1'
+team_id|NULL
+team_name|NULL
+customer_id|NULL
+customer_name|NULL
+business_unit_id|NULL
+business_unit_name|NULL
+project_id|NULL
+project_name|NULL
+user_agent|'migration-test/2.4'
+app|'migration-test'
+team_ids|NULL
+team_names|NULL
+customer_ids|NULL
+customer_names|NULL
+business_unit_ids|NULL
+business_unit_names|NULL
+budget_ids|NULL
+rate_limit_ids|NULL
+request_id|'req-relay-migration-001'
+metadata|NULL
+request_headers|NULL
+response_headers|NULL
+request_body|NULL
+response_body|NULL
+error_details|''
+content_hidden|false
+payload_reference|NULL
+has_object|false
+plugin_logs|''
+V240_ROW
+
+  v200_insert warp_topics <<V240_ROW
+id|'3b8f1d2c-6a4e-4f7b-9c10-2e5d8a7f4b61'
+kind|'topic'
+parent_id|''
+label|'Migration test topic'
+centroid|$blob
+assign_floor|0.8
+cohesion|0.9
+example_log_ids|'["log-migration-test-001"]'
+embedding_signature|'openai/text-embedding-3-small/2'
+status|'active'
+merged_into|''
+created_at|$now
+updated_at|$now
+V240_ROW
+
+  v200_insert warp_topic_assignments log_id <<V240_ROW
+log_id|'log-migration-test-001'
+timestamp|$now
+topic_id|'3b8f1d2c-6a4e-4f7b-9c10-2e5d8a7f4b61'
+similarity|0.91
+session_id|''
+user_id|''
+team_id|''
+virtual_key_id|'vk-migration-test-1'
+customer_id|''
+business_unit_id|''
+team_ids|NULL
+customer_ids|NULL
+business_unit_ids|NULL
+provider|'openai'
+model|'gpt-4'
+app|''
+status|'success'
+cost|0.001
+latency|120
+total_tokens|30
+created_at|$now
+assigned_at|$now
+V240_ROW
+
+  v200_insert warp_topic_unmatched log_id <<V240_ROW
+log_id|'log-migration-unmatched-001'
+timestamp|$now
+vector|$blob
+embedding_signature|'openai/text-embedding-3-small/2'
+created_at|$now
+V240_ROW
+
+  v200_insert warp_vector_deletes log_id <<V240_ROW
+log_id|'log-migration-deleted-001'
+namespace|''
+created_at|$now
+V240_ROW
+}
+
+# v2.5.0 introduced these columns (caller identity on every log table, the MCP
+# input-round correlation id, relay large-payload flag) and the per-caller MCP
+# discovery table. Same probing scheme as append_v240_fixtures.
+append_v250_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2" now="$3"
+  local fixture_config_db="${4:-}" fixture_logs_db="${5:-}"
+  local table column value predicate
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V250_COLUMNS'
+config_mcp_clients|per_user_discovery|true|client_id = 'mcp-migration-test-001'
+config_mcp_clients|pending_verification|false|client_id = 'mcp-migration-test-001'
+logs|user_email|'migration-test@example.com'|id = 'log-migration-test-001'
+logs|client_ip|'203.0.113.10'|id = 'log-migration-test-001'
+mcp_tool_logs|user_email|'migration-test@example.com'|id = 'mcp-log-migration-001'
+mcp_tool_logs|round_trip_id|'round-trip-migration-001'|id = 'mcp-log-migration-001'
+mcp_tool_logs|client_ip|'203.0.113.10'|id = 'mcp-log-migration-001'
+relay_logs|is_large_payload_response|false|id = 'relay-log-migration-001'
+relay_logs|user_email|'migration-test@example.com'|id = 'relay-log-migration-001'
+relay_logs|session_id|'session-migration-001'|id = 'relay-log-migration-001'
+relay_logs|parent_request_id|'log-migration-test-001'|id = 'relay-log-migration-001'
+relay_logs|agent_correlation_id|'agent-corr-migration-001'|id = 'relay-log-migration-001'
+relay_logs|client_ip|'203.0.113.10'|id = 'relay-log-migration-001'
+V250_COLUMNS
+
+  v200_insert mcp_per_user_discoveries <<V250_ROW
+id|'mcp-per-user-discovery-migration-001'
+virtual_key_id|'vk-migration-test-1'
+user_id|NULL
+mcp_client_id|'mcp-migration-test-001'
+auth_mode|'vk'
+tools_json|'{}'
+instructions|''
+tool_details_json|''
+resources_json|''
+resource_templates_json|''
+prompts_json|''
+discovery_hash|'migration-test-discovery-hash'
+tool_count|0
+prompt_count|0
+resource_count|0
+discovered_at|$now
+created_at|$now
+updated_at|$now
+V250_ROW
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (PostgreSQL)
@@ -2466,7 +3046,16 @@ append_dynamic_columns_postgres() {
     cache_read_input_token_cost_flex_above_272k_tokens cache_creation_input_token_cost_above_272k_tokens \
     cache_creation_input_token_cost_flex cache_creation_input_token_cost_flex_above_272k_tokens \
     cache_creation_input_token_cost_priority cache_creation_input_token_cost_fast \
-    cache_creation_input_token_cost_above_1hr_fast cache_read_input_token_cost_fast inference_geo_us_multiplier; do
+    cache_creation_input_token_cost_above_1hr_fast \
+    cache_creation_input_token_cost_above_12hr \
+    cache_creation_input_token_cost_above_12hr_above_272k_tokens \
+    cache_creation_input_token_cost_above_12hr_priority \
+    cache_creation_input_token_cost_above_12hr_above_272k_priority \
+    cache_creation_input_token_cost_above_12hr_flex \
+    cache_creation_input_token_cost_above_12hr_above_272k_flex \
+    cache_creation_input_token_cost_above_12hr_ultrafast \
+    cache_creation_input_token_cost_above_12hr_above_272k_ultrafast \
+    cache_read_input_token_cost_fast inference_geo_us_multiplier; do
     if column_exists_postgres "governance_model_pricing" "$col"; then
       echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
       echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
@@ -2660,6 +3249,14 @@ append_dynamic_columns_postgres() {
     cache_creation_input_token_cost_above_272k_tokens_priority \
     cache_creation_input_token_cost_fast \
     cache_creation_input_token_cost_above_1hr_fast \
+    cache_creation_input_token_cost_above_12hr \
+    cache_creation_input_token_cost_above_12hr_above_272k_tokens \
+    cache_creation_input_token_cost_above_12hr_priority \
+    cache_creation_input_token_cost_above_12hr_above_272k_priority \
+    cache_creation_input_token_cost_above_12hr_flex \
+    cache_creation_input_token_cost_above_12hr_above_272k_flex \
+    cache_creation_input_token_cost_above_12hr_ultrafast \
+    cache_creation_input_token_cost_above_12hr_above_272k_ultrafast \
     cache_read_input_token_cost_fast \
     inference_geo_us_multiplier; do
     if column_exists_postgres "governance_model_pricing" "$pricing_col"; then
@@ -2709,6 +3306,14 @@ append_dynamic_columns_postgres() {
     cache_creation_input_token_cost_above_272k_tokens_priority \
     cache_creation_input_token_cost_fast \
     cache_creation_input_token_cost_above_1hr_fast \
+    cache_creation_input_token_cost_above_12hr \
+    cache_creation_input_token_cost_above_12hr_above_272k_tokens \
+    cache_creation_input_token_cost_above_12hr_priority \
+    cache_creation_input_token_cost_above_12hr_above_272k_priority \
+    cache_creation_input_token_cost_above_12hr_flex \
+    cache_creation_input_token_cost_above_12hr_above_272k_flex \
+    cache_creation_input_token_cost_above_12hr_ultrafast \
+    cache_creation_input_token_cost_above_12hr_above_272k_ultrafast \
     cache_read_input_token_cost_fast \
     inference_geo_us_multiplier; do
     if column_exists_postgres "governance_model_pricing" "$pricing_col"; then
@@ -3995,6 +4600,14 @@ append_dynamic_columns_sqlite() {
       cache_creation_input_token_cost_above_272k_tokens_priority \
       cache_creation_input_token_cost_fast \
       cache_creation_input_token_cost_above_1hr_fast \
+      cache_creation_input_token_cost_above_12hr \
+      cache_creation_input_token_cost_above_12hr_above_272k_tokens \
+      cache_creation_input_token_cost_above_12hr_priority \
+      cache_creation_input_token_cost_above_12hr_above_272k_priority \
+      cache_creation_input_token_cost_above_12hr_flex \
+      cache_creation_input_token_cost_above_12hr_above_272k_flex \
+      cache_creation_input_token_cost_above_12hr_ultrafast \
+      cache_creation_input_token_cost_above_12hr_above_272k_ultrafast \
       cache_read_input_token_cost_fast \
       inference_geo_us_multiplier; do
       if column_exists_sqlite "$config_db" "governance_model_pricing" "$pricing_col"; then
@@ -4053,7 +4666,16 @@ append_dynamic_columns_sqlite() {
       cache_read_input_token_cost_flex_above_272k_tokens cache_creation_input_token_cost_above_272k_tokens \
       cache_creation_input_token_cost_flex cache_creation_input_token_cost_flex_above_272k_tokens \
       cache_creation_input_token_cost_priority cache_creation_input_token_cost_fast \
-      cache_creation_input_token_cost_above_1hr_fast cache_read_input_token_cost_fast inference_geo_us_multiplier; do
+      cache_creation_input_token_cost_above_1hr_fast \
+      cache_creation_input_token_cost_above_12hr \
+      cache_creation_input_token_cost_above_12hr_above_272k_tokens \
+      cache_creation_input_token_cost_above_12hr_priority \
+      cache_creation_input_token_cost_above_12hr_above_272k_priority \
+      cache_creation_input_token_cost_above_12hr_flex \
+      cache_creation_input_token_cost_above_12hr_above_272k_flex \
+      cache_creation_input_token_cost_above_12hr_ultrafast \
+      cache_creation_input_token_cost_above_12hr_above_272k_ultrafast \
+      cache_read_input_token_cost_fast inference_geo_us_multiplier; do
       if column_exists_sqlite "$config_db" "governance_model_pricing" "$col"; then
         echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
         echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
@@ -5677,7 +6299,7 @@ compare_postgres_snapshots() {
   # Tables to skip entirely (system/tracking tables that change during migration)
   # governance_model_pricing, governance_model_parameters: synced from remote model catalog URL
   # during startup (see framework/modelcatalog/sync.go) - row count grows from seed-only to full catalog
-  local skip_tables="gorp_migrations schema_migrations migrations governance_config governance_model_pricing governance_model_parameters"
+  local skip_tables="gorp_migrations schema_migrations migrations governance_config governance_model_pricing governance_model_parameters matview_refresh_state"
 
   # Tables whose row count is allowed to GROW during migration (rows added by design) but
   # whose pre-existing seeded rows must still be value-compared. Unlike skip_tables (which
@@ -5824,6 +6446,11 @@ compare_postgres_snapshots() {
     # OAuth authorization server, so the .well-known / WWW-Authenticate advertise URL is dead)
     if [ "$table" = "config_client" ]; then
       dropped_columns="$dropped_columns enable_litellm_fallbacks allow_direct_keys mcp_external_server_url"
+    fi
+    # tenant, extension_uris (dropped from config_agent_registrations by
+    # migrationDropAgentRegistrationOptions - unused tenant and manual extension configuration)
+    if [ "$table" = "config_agent_registrations" ]; then
+      dropped_columns="$dropped_columns tenant extension_uris"
     fi
 
     local before_col_array

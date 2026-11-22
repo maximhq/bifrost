@@ -193,6 +193,159 @@ warp-backfill-cancel:
           Cancelling needs both: the runner to stop the work, the store to record
           it.
 
+warp-topics:
+  post:
+    operationId: startWarpTopicClustering
+    summary: Compute Warp topic clusters
+    description: |
+      Groups the indexed requests of a time window by meaning, names each
+      group with Warp's model, and stores the result for Warp's `list_topics`
+      tool.
+
+      This is the one-time seed for an embedding model. Once it has written
+      topics, they are kept up to date without another run: each newly indexed
+      request is filed under its topic, requests that match none are pooled
+      and clustered into new topics once `topic_discovery_min_requests` of
+      them are waiting, and an hourly pass retires topics that went quiet and
+      merges ones that came to mean the same thing. A second run for the same
+      model is refused with 409. Changing the embedding model starts over with
+      no topics, and so does upkeep retiring every topic. A run that finds no
+      indexed requests in the window completes without writing any, so the
+      model can still be seeded with another window.
+
+      One run reads every indexed request in the window. Up to 20,000 of
+      them, drawn from across the window, are clustered into topics, and the
+      rest are filed under their nearest topic as they are read (`assigned`
+      in the status).
+
+      Administrators only: the local admin in OSS, `Warp` Update in enterprise.
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/warp.yaml#/WarpTopicsRequest'
+    responses:
+      '202':
+        description: Topic clustering accepted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpTopicsStatus'
+      '400':
+        description: |
+          The request body is malformed JSON, `start_time` or `end_time` is
+          missing or not an RFC3339 timestamp, or the time range is invalid -
+          `end_time` must be after `start_time`.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '403':
+        description: Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)
+      '409':
+        description: |
+          A topic clustering run, or a discovery of new topics, is already
+          active, and the body is that job, so a client can show its progress
+          instead of reporting a bare conflict. Or the configured embedding model already has topics, which
+          keep themselves up to date, and the body is an error saying so.
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '../../schemas/management/warp.yaml#/WarpTopicsStatus'
+                - $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: |
+          The background job runner or the job store is unavailable, or Warp
+          itself cannot prepare the job - no usable configuration (including no
+          embedding provider or model; topics are computed in the embedding
+          space the logs were indexed with, so a run cannot start without one),
+          or no vector store to read from.
+
+warp-topics-status:
+  get:
+    operationId: getWarpTopicClusteringStatus
+    summary: Read Warp topic clustering progress
+    description: |
+      Returns the job named by `id`, else the one in flight, else the latest
+      of any status, so a reloaded page still shows how the last run ended.
+      A latest run under an embedding model other than the configured one is
+      not returned: its topics are not the ones Warp reads, so the status is
+      idle.
+
+      Administrators only: the local admin in OSS, `Warp` Update in enterprise.
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    parameters:
+      - in: query
+        name: id
+        schema: { type: string }
+    responses:
+      '200':
+        description: Current job, or an idle status when no run has been started under the configured embedding model
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpTopicsStatus'
+      '403':
+        description: Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: |
+          The job store is unavailable. This route does not need the job
+          runner: it only reads job state.
+
+warp-topics-cancel:
+  post:
+    operationId: cancelWarpTopicClustering
+    summary: Cancel Warp topic clustering
+    description: |
+      Stops the job named by `id`, else the one in flight. A cancelled run
+      leaves the previous topics in place.
+
+      Administrators only: the local admin in OSS, `Warp` Update in enterprise.
+    tags: [Warp]
+    security:
+      - ManagementBearerAuth: []
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              id: { type: string }
+    responses:
+      '200':
+        description: Cancelled or already-terminal job
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/warp.yaml#/WarpTopicsStatus'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: |
+          The background job runner or the job store is unavailable.
+          Cancelling needs both: the runner to stop the work, the store to record
+          it.
+
 warp-session:
   post:
     operationId: warpSession

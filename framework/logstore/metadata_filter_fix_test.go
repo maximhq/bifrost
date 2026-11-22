@@ -40,24 +40,24 @@ func runMetadataStringMatchingSuite(t *testing.T, store *RDBLogStore) {
 
 	tests := []struct {
 		name     string
-		filters  map[string]string
+		filters  map[string][]string
 		wantIDs  []string
 		wantMiss []string
 	}{
 		{
 			name:     "numeric_string_value_matches",
-			filters:  map[string]string{"chat-id": "4000126002"},
+			filters:  map[string][]string{"chat-id": {"4000126002"}},
 			wantIDs:  []string{"meta-num"},
 			wantMiss: []string{"meta-other"},
 		},
 		{
 			name:    "float_string_matches",
-			filters: map[string]string{"score": "3.14"},
+			filters: map[string][]string{"score": {"3.14"}},
 			wantIDs: []string{"meta-float"},
 		},
 		{
 			name:    "plain_string_matches",
-			filters: map[string]string{"env": "production"},
+			filters: map[string][]string{"env": {"production"}},
 			wantIDs: []string{"meta-str"},
 		},
 	}
@@ -82,6 +82,92 @@ func runMetadataStringMatchingSuite(t *testing.T, store *RDBLogStore) {
 	}
 }
 
+// runMetadataMultiValueSuite verifies that several values for one metadata key match a row holding
+// any of them, while separate keys must all match.
+func runMetadataMultiValueSuite(t *testing.T, store *RDBLogStore) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertLogWithMetadata(t, store, "multi-us-gold", `{"region": "us", "tier": "gold"}`, now.Add(-1*time.Second))
+	insertLogWithMetadata(t, store, "multi-eu-gold", `{"region": "eu", "tier": "gold"}`, now.Add(-2*time.Second))
+	insertLogWithMetadata(t, store, "multi-eu-free", `{"region": "eu", "tier": "free"}`, now.Add(-3*time.Second))
+	insertLogWithMetadata(t, store, "multi-ap-gold", `{"region": "ap", "tier": "gold"}`, now.Add(-4*time.Second))
+
+	tests := []struct {
+		name    string
+		filters map[string][]string
+		wantIDs []string
+	}{
+		{
+			name:    "values_for_one_key_are_alternatives",
+			filters: map[string][]string{"region": {"us", "eu"}},
+			wantIDs: []string{"multi-us-gold", "multi-eu-gold", "multi-eu-free"},
+		},
+		{
+			name:    "separate_keys_must_all_match",
+			filters: map[string][]string{"region": {"us", "eu"}, "tier": {"gold"}},
+			wantIDs: []string{"multi-us-gold", "multi-eu-gold"},
+		},
+		{
+			name:    "unheld_value_adds_nothing",
+			filters: map[string][]string{"region": {"ap", "sa"}},
+			wantIDs: []string{"multi-ap-gold"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := store.SearchLogs(ctx, SearchFilters{MetadataFilters: tc.filters}, PaginationOptions{Limit: 100})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			gotIDs := make([]string, 0, len(result.Logs))
+			for _, l := range result.Logs {
+				gotIDs = append(gotIDs, l.ID)
+			}
+			assert.ElementsMatch(t, tc.wantIDs, gotIDs, "filter %v", tc.filters)
+		})
+	}
+}
+
+// runMetadataFilterBoundsSuite verifies that a filter the builder discards leaves rows without
+// metadata alone, and that a key carrying more values than the cap still runs.
+func runMetadataFilterBoundsSuite(t *testing.T, store *RDBLogStore) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	insertLogWithMetadata(t, store, "bounds-match", `{"bounds": "v0"}`, now.Add(-1*time.Second))
+	require.NoError(t, store.db.Exec(`
+		INSERT INTO logs (id, timestamp, object_type, provider, model, status, created_at)
+		VALUES ('bounds-no-meta', ?, 'chat.completion', 'openai', 'gpt-4o', 'success', ?)
+	`, now.Add(-2*time.Second), now).Error)
+
+	t.Run("invalid_key_is_ignored_entirely", func(t *testing.T) {
+		result, err := store.SearchLogs(ctx, SearchFilters{MetadataFilters: map[string][]string{"bad[key": {"x"}}}, PaginationOptions{Limit: 100})
+		require.NoError(t, err)
+		gotIDs := make([]string, 0, len(result.Logs))
+		for _, l := range result.Logs {
+			gotIDs = append(gotIDs, l.ID)
+		}
+		assert.Contains(t, gotIDs, "bounds-no-meta", "a discarded metadata filter must not drop rows without metadata")
+	})
+
+	t.Run("values_beyond_cap_are_dropped", func(t *testing.T) {
+		values := make([]string, 0, 2000)
+		for i := 0; i < 2000; i++ {
+			values = append(values, fmt.Sprintf("v%d", i))
+		}
+		result, err := store.SearchLogs(ctx, SearchFilters{MetadataFilters: map[string][]string{"bounds": values}}, PaginationOptions{Limit: 100})
+		require.NoError(t, err)
+		gotIDs := make([]string, 0, len(result.Logs))
+		for _, l := range result.Logs {
+			gotIDs = append(gotIDs, l.ID)
+		}
+		assert.Equal(t, []string{"bounds-match"}, gotIDs)
+	})
+}
+
 // runPostgresMetadataBooleanStringMatchingSuite verifies that values like "true" and "false"
 // that come from HTTP headers are stored as JSON strings and match as strings via JSONB @>
 // containment. The old code emitted a JSON boolean fragment {"active": true} which never
@@ -95,7 +181,7 @@ func runPostgresMetadataBooleanStringMatchingSuite(t *testing.T, store *RDBLogSt
 	insertLogWithMetadata(t, store, "pg-bool-false", `{"active": "false"}`, now.Add(-2*time.Second))
 
 	t.Run("boolean_true_string_matches", func(t *testing.T) {
-		result, err := store.SearchLogs(ctx, SearchFilters{MetadataFilters: map[string]string{"active": "true"}}, PaginationOptions{Limit: 100})
+		result, err := store.SearchLogs(ctx, SearchFilters{MetadataFilters: map[string][]string{"active": {"true"}}}, PaginationOptions{Limit: 100})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		gotIDs := make(map[string]bool)
@@ -107,7 +193,7 @@ func runPostgresMetadataBooleanStringMatchingSuite(t *testing.T, store *RDBLogSt
 	})
 
 	t.Run("boolean_false_string_matches", func(t *testing.T) {
-		result, err := store.SearchLogs(ctx, SearchFilters{MetadataFilters: map[string]string{"active": "false"}}, PaginationOptions{Limit: 100})
+		result, err := store.SearchLogs(ctx, SearchFilters{MetadataFilters: map[string][]string{"active": {"false"}}}, PaginationOptions{Limit: 100})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		gotIDs := make(map[string]bool)
@@ -171,6 +257,8 @@ func TestSearchLogs_MetadataFilter_StringMatching_SQLite(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	defer store.Close(context.Background())
 	runMetadataStringMatchingSuite(t, store)
+	runMetadataMultiValueSuite(t, store)
+	runMetadataFilterBoundsSuite(t, store)
 }
 
 // TestSearchLogs_MetadataFilter_StringMatching_Postgres exercises the metadata string matching fix on Postgres,
@@ -179,6 +267,8 @@ func TestSearchLogs_MetadataFilter_StringMatching_Postgres(t *testing.T) {
 	store, _ := setupPerfTestDB(t)
 	runMetadataStringMatchingSuite(t, store)
 	runPostgresMetadataBooleanStringMatchingSuite(t, store)
+	runMetadataMultiValueSuite(t, store)
+	runMetadataFilterBoundsSuite(t, store)
 }
 
 // TestSearchLogs_PaginationTotalCount_SQLite verifies pagination.TotalCount on SQLite.

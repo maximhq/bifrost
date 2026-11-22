@@ -5,7 +5,7 @@ import test from 'node:test';
 const collection = JSON.parse(fs.readFileSync(new URL('../../collections/provider-harness.json', import.meta.url), 'utf8'));
 function find(items) {
   for (const item of items) {
-    if (item.name === '47.6.2.G /bedrock converse -> openai/o3-mini') return item;
+    if (item.name === '47.6.2.G /bedrock converse -> openai/gpt-5.4-mini') return item;
     if (item.item) { const match = find(item.item); if (match) return match; }
   }
 }
@@ -36,7 +36,7 @@ function run(stream, code = 200) {
   } });
   return { failures, skipped };
 }
-test('hidden reasoning does not fail a completed o3-mini answer', () => {
+test('hidden reasoning does not fail a completed gpt-5.4-mini answer', () => {
   const result = run(Buffer.concat([answer, stop, usage]));
   assert.deepEqual(result.failures, []);
   assert.equal(result.skipped.length, 1, 'reasoning visibility must be explicitly unobservable');

@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/base64"
+	"maps"
 	"strings"
 	"testing"
 )
@@ -261,6 +262,31 @@ func TestTraceDimensionsAccessor(t *testing.T) {
 	if got := TraceDimensions(map[string]any{TraceAttrDimensions: "nope"}); got != nil {
 		t.Errorf("TraceDimensions(string) = %v, want nil", got)
 	}
+}
+
+// MergeDimensions adds names and overwrites existing ones in a new map, leaving the map an
+// exporter may already hold unchanged.
+func TestTraceMergeDimensions(t *testing.T) {
+	headers := map[string]string{"team": "header", "region": "eu"}
+	trace := &Trace{Attributes: map[string]any{TraceAttrDimensions: headers}}
+	trace.MergeDimensions(map[string]string{"team": "vk", "cost_center": "cc-42"})
+
+	got := TraceDimensions(trace.Attributes)
+	want := map[string]string{"team": "vk", "region": "eu", "cost_center": "cc-42"}
+	if !maps.Equal(got, want) {
+		t.Errorf("dimensions = %v, want %v", got, want)
+	}
+	if headers["team"] != "header" || len(headers) != 2 {
+		t.Errorf("the previous map was changed in place: %v", headers)
+	}
+
+	empty := &Trace{}
+	empty.MergeDimensions(map[string]string{"team": "vk"})
+	if got := TraceDimensions(empty.Attributes); got["team"] != "vk" {
+		t.Errorf("trace without dimensions = %v, want team=vk", got)
+	}
+	var none *Trace
+	none.MergeDimensions(map[string]string{"team": "vk"})
 }
 
 func TestTraceTraceStateAccessor(t *testing.T) {

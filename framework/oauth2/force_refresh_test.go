@@ -89,6 +89,19 @@ func TestForceRefreshAccessToken_SharedOAuth_RefreshesResolvedToken(t *testing.T
 	assert.Equal(t, "forced-new-access-token", token.AccessToken, "ForceRefreshAccessToken must resolve the shared token and refresh it via the real RefreshAccessToken path")
 }
 
+// After an upstream 401, a forced refresh of an expired shared credential with no refresh token
+// marks it needs_reauth instead of failing with a plain error the registry reads as transient.
+func TestForceRefreshAccessToken_SharedOAuth_ExpiredWithoutRefreshTokenNeedsReauth(t *testing.T) {
+	store, oauthConfigID := newAccessTokenTestStore("http://127.0.0.1:0/token")
+	seedAccessToken(store, oauthConfigID, "shared", "tok-norefresh", "old-access-token", "", bifrost.Ptr(time.Now().Add(-time.Minute)))
+	config := &schemas.MCPClientConfig{ID: oauthConfigID, Name: "No Refresh", AuthType: schemas.MCPAuthTypeOauth, OauthConfigID: &oauthConfigID}
+
+	err := newForceRefreshTestProvider(store).ForceRefreshAccessToken(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), config)
+	require.ErrorIs(t, err, schemas.ErrOAuth2TokenExpired)
+	assert.Equal(t, "needs_reauth", store.oauthTokens["tok-norefresh"].Status)
+	assert.Equal(t, unrenewableTokenReason, store.oauthTokens["tok-norefresh"].StatusReason)
+}
+
 // (b) MCPAuthTypeOauth with OauthConfigID nil/missing returns a sensible
 // error instead of panicking.
 func TestForceRefreshAccessToken_SharedOAuth_MissingOauthConfigID_ReturnsError(t *testing.T) {

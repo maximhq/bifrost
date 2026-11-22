@@ -1203,6 +1203,10 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 					rawBuilder.WriteString("\n\n")
 				}
 				rawBuilder.WriteString(*chunk.RawResponse)
+				// Every frame comes from one provider stream, so the first declared format describes them all.
+				if data.RawResponseFormat == "" {
+					data.RawResponseFormat = chunk.RawResponseFormat
+				}
 			}
 		}
 		if rawBuilder.Len() > 0 {
@@ -1246,6 +1250,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 	} else if result != nil && result.ResponsesStreamResponse != nil {
 		if result.ResponsesStreamResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ResponsesStreamResponse.ExtraFields.RawResponse))
+			chunk.RawResponseFormat = result.ResponsesStreamResponse.ExtraFields.RawResponseFormat
 		}
 		// Store a deep copy of the stream response to prevent shared data mutation between plugins
 		chunk.StreamResponse = deepCopyResponsesStreamResponse(result.ResponsesStreamResponse)

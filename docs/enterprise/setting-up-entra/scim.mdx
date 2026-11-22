@@ -138,36 +138,38 @@ This maps to the `claimsSyncMode` config key (`both` or `scim`) and is inert whe
 
 In the [Azure Portal](https://portal.azure.com), go to **Microsoft Entra ID → Enterprise applications → Bifrost Enterprise**.
 
-Open the **Provisioning** tab and click **Get started**.
+Open **Provisioning**. On the **Get started** tab, click **Connect your application** under **Create configuration**.
 
-<Frame caption="Enterprise Application Provisioning tab - click Get started to configure the SCIM connection.">
-  <img src="/media/user-provisioning/entra/entra-provisioning-get-started.png" alt="Microsoft Entra Enterprise Application Provisioning tab with Get started button" />
+<Note>
+These steps follow Entra's new provisioning experience. If your tenant still shows the legacy layout, select **Get started**, set **Provisioning Mode** to **Automatic**, and then use the same settings on that one Provisioning page: **Admin Credentials** for the Tenant URL and Secret Token, **Mappings** for attribute mappings, and **Settings** for the scope.
+</Note>
+
+<Frame caption="Provisioning Get started tab - Connect your application opens the SCIM connection settings.">
+  <img src="/media/user-provisioning/entra/entra-provisioning-get-started.png" alt="Microsoft Entra provisioning Get started tab with the Create configuration card highlighted" />
 </Frame>
 
 </Step>
 
 <Step title="Set the provisioning mode and credentials">
 
-Set **Provisioning Mode** to **Automatic**.
-
-Under **Admin Credentials**, enter:
+On the **Connectivity** page, keep **Bearer authentication** as the authentication method and enter:
 
 | Field | Value |
 | --- | --- |
 | **Tenant URL** | The SCIM Endpoint URL from [Step 1](#step-1-enable-scim-in-bifrost) |
 | **Secret Token** | The Provisioning Token from [Step 1](#step-1-enable-scim-in-bifrost) |
 
-Click **Test Connection** to verify, then **Save**.
+Click **Test connection** to verify, then **Save**. Entra only enables **Save** after a successful test.
 
-<Frame caption="Admin Credentials - enter the SCIM Endpoint URL as Tenant URL and the Provisioning Token as Secret Token, then test the connection.">
-  <img src="/media/user-provisioning/entra/entra-scim-admin-credentials.png" alt="Entra Provisioning admin credentials form with Tenant URL and Secret Token fields filled in and Test Connection button highlighted" />
+<Frame caption="Connectivity - enter the SCIM Endpoint URL as Tenant URL and the Provisioning Token as Secret token, then test the connection.">
+  <img src="/media/user-provisioning/entra/entra-scim-admin-credentials.png" alt="Entra Connectivity page with Tenant URL and Secret token filled in and the Test connection button highlighted" />
 </Frame>
 
 </Step>
 
 <Step title="Configure attribute mappings (optional)">
 
-Expand **Mappings** to review or adjust how Entra user and group attributes are mapped to SCIM fields that Bifrost receives.
+Open **Attribute mapping** to review or adjust how Entra user and group attributes are mapped to SCIM fields that Bifrost receives.
 
 The default mappings cover standard fields (name, email, active status, groups). Skip this step unless you need to sync custom attributes.
 
@@ -175,14 +177,14 @@ The default mappings cover standard fields (name, email, active status, groups).
 
 To include a custom attribute in the SCIM payload Entra sends to Bifrost:
 
-1. Under **Mappings**, click **Provision Microsoft Entra ID Users**
-2. Click **Add New Mapping**
+1. Open **Attribute mapping** and stay on the **Users** tab
+2. Click **Add attribute mapping**
 3. Set the **Source attribute** to the Entra user property (e.g. `employeeId`, `department`)
 4. Set the **Target attribute** to the corresponding SCIM attribute name (e.g. `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:employeeNumber`)
-5. Click **Ok** and **Save**
+5. Click **Add**, then **Save**
 
-<Frame caption="Add New Mapping - map an Entra user attribute to the SCIM attribute Bifrost will receive.">
-  <img src="/media/user-provisioning/entra/entra-scim-attribute-mapping.png" alt="Entra provisioning attribute mapping dialog showing Source attribute and Target attribute dropdowns" />
+<Frame caption="Attribute mapping - map an Entra user attribute to the SCIM attribute Bifrost will receive.">
+  <img src="/media/user-provisioning/entra/entra-scim-attribute-mapping.png" alt="Entra attribute mapping panel mapping employeeId to the SCIM enterprise employeeNumber attribute" />
 </Frame>
 
 Back in Bifrost, go to **Attribute Mapping** in the provider setup and add a **SCIM Attribute** entry using the same attribute name. The name must match exactly - including case.
@@ -193,7 +195,7 @@ Back in Bifrost, go to **Attribute Mapping** in the provider setup and add a **S
 
 <Step title="Enable provisioning">
 
-Back on the main Provisioning settings page, set **Provisioning Status** to **On** and click **Save**.
+Open **Manage → Provisioning**, confirm **Provisioning Mode** is **Automatic**, set **Provisioning Status** to **On** and click **Save**.
 
 <Frame caption="Set Provisioning Status to On to start the SCIM sync cycle.">
   <img src="/media/user-provisioning/entra/entra-scim-provisioning-on.png" alt="Entra Provisioning settings page with Provisioning Status toggle set to On" />
