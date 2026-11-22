@@ -1557,7 +1557,7 @@ func (h *CompletionHandler) fetch(ctx *fasthttp.RequestCtx) {
 //
 // Only what holds for every provider is checked here: a query, and dates a provider can parse.
 // Each provider refuses the bounds and filters it cannot honour, because those differ (DeepSeek
-// caps a query at 128 characters and has no date filter; Exa takes up to 100 results).
+// caps a query at 128 characters and has no date filter).
 // Fields outside the neutral shape, such as DeepSeek's ori_question, arrive in ExtraParams.
 func prepareSearchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostSearchRequest, error) {
 	req, base, err := prepareRequest[SearchHandlerRequest](ctx, config, searchParamsKnownFields)
@@ -1631,7 +1631,7 @@ func prepareFetchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas
 }
 
 // parseToolsFallbacks reads Search and Fetch fallbacks. These operations carry no model, so a
-// fallback may name a provider alone ("exa"), which parseFallbacks would drop for having no
+// fallback may name a provider alone, which parseFallbacks would drop for having no
 // model. A provider/model entry still names a routing model, as on the primary. An entry that
 // names no known provider is refused rather than dropped, so a typo never quietly removes the
 // fallback a caller relied on.

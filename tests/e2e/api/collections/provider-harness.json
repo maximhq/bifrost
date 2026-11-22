@@ -346914,8 +346914,8 @@
     }
 ,
     {
-      "name": "375. Search and Fetch tools (#8710)",
-      "description": "DeepSeek ships two standalone web-access endpoints beside its model API: POST /v1/tools/search (query, max_results, include_content, plus DeepSeek's ori_question and localization as extra fields) and POST /v1/tools/fetch (url). Neither is OpenAI-shaped and neither takes a model, so Bifrost exposes them as their own operations at DeepSeek's paths, routes a supplied model as a gateway-only handle, and defaults to DeepSeek when no model is present. Exa is the second tools provider: a bare model \"exa\" routes there, with Search against Exa's /search and Fetch against /contents. DeepSeek bills Search and Fetch flat at $0.75 per 1,000 successful requests on usage.cost; Exa reports its own costDollars. Rows: (1) a DeepSeek search with an explicit model returns results and a per-request cost; (2) a search with no model at all still routes to deepseek; (3) a DeepSeek fetch returns page markdown and a per-request cost; (4) a blank query is rejected by the gateway before any upstream call; (5) an explicit Exa search returns results; (6) an explicit Exa fetch returns page markdown. Run with FEATURE=\"deepseek tools\" for rows 1-4 or FEATURE=\"exa tools\" for rows 5-6.",
+      "name": "375. DeepSeek Search and Fetch tools (#8710)",
+      "description": "DeepSeek ships two standalone web-access endpoints beside its model API: POST /v1/tools/search (query, max_results, include_content, plus DeepSeek's ori_question and localization as extra fields) and POST /v1/tools/fetch (url). Neither is OpenAI-shaped and neither takes a model, so Bifrost exposes them as their own operations at DeepSeek's paths, routes a supplied model as a gateway-only handle, and defaults to DeepSeek when no model is present. Search and Fetch are billed flat at $0.75 per 1,000 successful requests, which the provider reports on usage.cost. Rows: (1) a search with an explicit model returns results and a per-request cost; (2) a search with no model at all still routes to deepseek; (3) fetch returns page markdown and a per-request cost; (4) a blank query is rejected by the gateway before any upstream call. Run with FEATURE=\"deepseek tools\".",
       "item": [
         {
           "name": "375.1 deepseek/deepseek-v4-flash search returns ranked results (deepseek tools)",
@@ -347112,100 +347112,6 @@
                 "v1",
                 "tools",
                 "search"
-              ]
-            }
-          }
-        },
-        {
-          "name": "375.5 exa search returns ranked results (exa tools) - #8710",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('exa search succeeds', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
-                  "});",
-                  "pm.test('returns exa results', function () {",
-                  "  var j = pm.response.json();",
-                  "  pm.expect(j.extra_fields && j.extra_fields.provider, 'resolved provider missing: ' + pm.response.text()).to.eql('exa');",
-                  "  pm.expect(j.results, 'no results array: ' + pm.response.text()).to.be.an('array');",
-                  "  j.results.forEach(function (r) {",
-                  "    pm.expect(r.url, 'result without url: ' + JSON.stringify(r)).to.be.a('string');",
-                  "  });",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"exa\",\n  \"query\": \"bifrost llm gateway\",\n  \"max_results\": 1\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/tools/search",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "tools",
-                "search"
-              ]
-            }
-          }
-        },
-        {
-          "name": "375.6 exa fetch returns page markdown (exa tools) - #8710",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('exa fetch succeeds', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
-                  "});",
-                  "pm.test('returns exa page markdown', function () {",
-                  "  var j = pm.response.json();",
-                  "  pm.expect(j.extra_fields && j.extra_fields.provider, 'resolved provider missing: ' + pm.response.text()).to.eql('exa');",
-                  "  pm.expect(j.content, 'no content: ' + pm.response.text()).to.be.a('string');",
-                  "  pm.expect(j.content.length, 'empty content').to.be.above(0);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"exa\",\n  \"url\": \"https://example.com/\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/tools/fetch",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "tools",
-                "fetch"
               ]
             }
           }

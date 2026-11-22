@@ -65,8 +65,8 @@ func (r *BifrostSearchRequest) GetRawRequestBody() []byte {
 
 // BifrostSearchResult is one ranked page. Content is set only when the request asked for
 // it. Score is the provider's own relevance score and is not comparable across providers.
-// ProviderFields carries what only one vendor returns (DeepSeek's authority, Exa's
-// favicon, ...).
+// ProviderFields carries what only DeepSeek returns (its authority, summary, site name
+// and icon).
 type BifrostSearchResult struct {
 	URL            string                 `json:"url"`
 	Title          string                 `json:"title,omitempty"`

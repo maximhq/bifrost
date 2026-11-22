@@ -16,7 +16,7 @@ SearchRequest:
     model:
       type: string
       description: |
-        Optional routing handle, either a provider name alone (`exa`) or provider/model
+        Optional routing handle, either a provider name alone (`deepseek`) or provider/model
         (`deepseek/deepseek-chat`). Search carries no model upstream; omit this and the
         gateway routes to DeepSeek.
       example: deepseek/deepseek-chat

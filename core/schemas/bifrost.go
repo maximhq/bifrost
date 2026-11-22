@@ -89,7 +89,6 @@ const (
 	Databricks    ModelProvider = "databricks"
 	Cloudflare    ModelProvider = "cloudflare"
 	Typesafe      ModelProvider = "typesafe"
-	Exa           ModelProvider = "exa"
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
 	MachGen       ModelProvider = "machgen"
@@ -147,7 +146,6 @@ var StandardProviders = []ModelProvider{
 	Databricks,
 	Cloudflare,
 	Typesafe,
-	Exa,
 	MiniMax,
 	BytePlus,
 	MachGen,

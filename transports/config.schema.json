@@ -941,9 +941,6 @@
         "wafer": {
           "$ref": "#/$defs/provider"
         },
-        "exa": {
-          "$ref": "#/$defs/provider"
-        },
         "minimax": {
           "$ref": "#/$defs/provider"
         },
