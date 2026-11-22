@@ -144,7 +144,7 @@ curl -X POST http://localhost:8080/v1/decisions \
 
 ## Images
 
-The known image-capable models are `drex-max`, `drex-max-v1.1`, and `drex-max-finance`. On `/v1/decisions` and `/openai/v1/decisions`, the pinned text-only IDs `drex-v2.0` and `drex-v1.5` reject `input_image` parts before an upstream request. Mutable aliases are sent unchanged to Nace, which resolves the current target and validates its image capability. The live catalog's `alias_for` determines the capabilities advertised for an alias.
+The active image-capable models are `drex-max-v1.1` and `drex-max-finance`. Retired IDs, including `drex-v1.5` and `drex-max`, forward to `drex-max-v1.1` and accept images. On `/v1/decisions` and `/openai/v1/decisions`, the pinned text-only ID `drex-v2.0` rejects `input_image` parts before an upstream request. Mutable aliases and retired IDs are sent unchanged to Nace, which resolves the current target and validates its image capability. The live catalog's `alias_for` determines the capabilities advertised for an alias.
 
 On these two routes, send ordered inline `input_image` parts without an `id` in message `content` or tool-result `output`. Bifrost removes them from the message state and sends a top-level `images` array to Nace in encounter order, preserving tool results and their `call_id`. Images must be base64 data or PNG, JPEG, or WebP base64 data URLs. Bifrost rejects any other value that is not base64 or a supported data URL, such as an HTTP URL, and rejects image asset references. Bifrost accepts at most eight images, with a 16 MiB decoded limit per image.
 
@@ -164,7 +164,7 @@ Nace uses the [TypeSafe question and state conversion](/providers/supported-prov
 
 Upstream HTTP status codes are preserved. Nace's `error.message` maps to the Bifrost error message, and `error.type` maps to its type when present. Shared provider error handling retains `Retry-After` for retry scheduling.
 
-Invalid converted requests, including `input_image` parts on pinned text-only IDs and `box` questions, return HTTP 400 with `caller_invalid_request` before an upstream call. When raw responses are enabled, non-JSON upstream errors are retained as strings so the gateway error remains valid JSON.
+Invalid converted requests, including `input_image` parts on `drex-v2.0` and `box` questions, return HTTP 400 with `caller_invalid_request` before an upstream call. When raw responses are enabled, non-JSON upstream errors are retained as strings so the gateway error remains valid JSON.
 
 ## Model Naming
 
@@ -173,17 +173,17 @@ The provider recognizes these model IDs for metadata and image support. Other ID
 | Model | Input |
 |-------|-------|
 | `drex-v2.0` | Text |
-| `drex-v1.5` | Text |
-| `drex-max` | Text and images |
 | `drex-max-v1.1` | Text and images |
 | `drex-max-finance` | Text and images |
 
 | Alias or retired ID | Resolves to |
 |---------------------|-------------|
-| `drex-latest` | `drex-v2.0` |
-| `nacedm-latest` | `drex-v2.0` |
-| `drex-v1.0` | `drex-max` |
-| `drex-v1.1` | `drex-v1.5` |
+| `drex-latest` | `drex-max-v1.1` |
+| `nacedm-latest` | `drex-max-v1.1` |
+| `drex-v1.0` | `drex-max-v1.1` |
+| `drex-v1.1` | `drex-max-v1.1` |
+| `drex-v1.5` | `drex-max-v1.1` |
+| `drex-max` | `drex-max-v1.1` |
 
 These are fallback metadata mappings when the catalog does not supply `alias_for`; the live mapping takes precedence. The requested ID is sent upstream unchanged after stripping the `nace/` routing prefix, so moving an alias does not require restarting Bifrost.
 
