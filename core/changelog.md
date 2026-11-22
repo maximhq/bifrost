@@ -1,3 +1,4 @@
+- [fix]: the SDK Fetch path trims the URL before validating and dispatching it [@jimaldon](https://github.com/jimaldon)
 - [fix]: a Fetch that returns no page content is not billed, matching Search's empty-result rule [@jimaldon](https://github.com/jimaldon)
 - [fix]: Fetch URLs are validated on the core SDK path too, and a null DeepSeek tools option counts as absent [@jimaldon](https://github.com/jimaldon)
 - [fix]: DeepSeek Search keeps `rerank_score` 0 as a real score and passes `authority` -1 through as DeepSeek's unknown tier, with the mapping comments stating what the upstream contract means [@jimaldon](https://github.com/jimaldon)

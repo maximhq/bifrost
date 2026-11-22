@@ -1748,6 +1748,9 @@ func (bifrost *Bifrost) FetchRequest(ctx *schemas.BifrostContext, req *schemas.B
 			},
 		}
 	}
+	// Normalize before validating so the URL that was checked is the URL that is dispatched:
+	// the HTTP route trims first, and the SDK path must not send whitespace the route drops.
+	req.URL = strings.TrimSpace(req.URL)
 	// The same checks the HTTP route applies: this entry point is reachable from the SDK, so a
 	// URL the route would refuse must not reach a provider just because it skipped the handler.
 	if err := schemas.ValidateFetchURL(req.URL); err != nil {
