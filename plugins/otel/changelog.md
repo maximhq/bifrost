@@ -1,3 +1,3 @@
 - feat: optional `apply_trace_dimensions_to_child_spans` profile flag merges `x-bf-dim-*` dimensions onto every exported span; span attributes win on conflict, reserved keys are skipped (thanks [@devin-williams](https://github.com/devin-williams)!)
 - chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0
-- fix: OTLP HTTP trace and metrics export fail on any redirect instead of resending the batch to the redirect target; the error no longer carries the redirect Location
+- fix: OTLP HTTP trace and metrics export fail on any redirect instead of resending the batch to the redirect target; the error no longer carries the redirect Location. The metrics exporter now uses its own client with a 10s timeout, so the `OTEL_EXPORTER_OTLP_*TIMEOUT` and `OTEL_EXPORTER_OTLP_*CERTIFICATE` environment variables no longer apply to it
