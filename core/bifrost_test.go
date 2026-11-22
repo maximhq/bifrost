@@ -11199,10 +11199,19 @@ func TestNilContextStreamForwardingStopsOnShutdown(t *testing.T) {
 
 	// Shutting down the client must unblock forwarding and close the output stream promptly.
 	client.Shutdown()
+	shutdownDeadline := time.After(2 * time.Second)
 	select {
 	case _, ok := <-streamCh:
+		if ok {
+			// Forwarder may select wrapped <- chunk once concurrently before observing ctx.Done().
+			select {
+			case _, ok = <-streamCh:
+			case <-shutdownDeadline:
+				t.Fatal("nil-context stream forwarding blocked after client.Shutdown()")
+			}
+		}
 		assert.False(t, ok, "expected nil-context output stream to close on shutdown with stopped consumer")
-	case <-time.After(2 * time.Second):
+	case <-shutdownDeadline:
 		t.Fatal("nil-context stream forwarding blocked after client.Shutdown()")
 	}
 
