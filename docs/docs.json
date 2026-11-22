@@ -166,6 +166,7 @@
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
                   "providers/supported-providers/kimchi",
+                  "providers/supported-providers/machgen",
                   "providers/supported-providers/minimax",
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
@@ -181,6 +182,7 @@
                   "providers/supported-providers/sagemaker",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
+                  "providers/supported-providers/soniox",
                   "providers/supported-providers/typesafe",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
@@ -230,6 +232,8 @@
               "mcp/sessions",
               "mcp/tool-execution",
               "mcp/resources-and-prompts",
+              "mcp/apps",
+              "mcp/multi-round-trip-requests",
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway-auth",
@@ -290,8 +294,10 @@
             "pages": [
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
+              "features/routers",
               "features/complexity-router",
               "features/warp",
+              "features/bifrost-mcp-server",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
@@ -383,16 +389,8 @@
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
-              {
-                "group": "Workload Identity",
-                "icon": "fingerprint",
-                "pages": [
-                  "enterprise/workload-identity/overview",
-                  "enterprise/workload-identity/entra",
-                  "enterprise/workload-identity/aws",
-                  "enterprise/workload-identity/oidc"
-                ]
-              },
+              "enterprise/view-as-user",
+              "enterprise/workload-identity/overview",
               "enterprise/virtual-mcps",
               "enterprise/projects",
               "enterprise/prompt-deployments",
@@ -592,6 +590,13 @@
                 "icon": "c",
                 "pages": [
                   "integrations/cohere-sdk/overview"
+                ]
+              },
+              {
+                "group": "ElevenLabs SDK",
+                "icon": "microphone",
+                "pages": [
+                  "integrations/elevenlabs-sdk/overview"
                 ]
               },
               "integrations/litellm-sdk",
@@ -1457,7 +1462,9 @@
                 "pages": [
                   "GET /api/logs",
                   "DELETE /api/logs",
+                  "GET /api/logs/search",
                   "GET /api/logs/{id}",
+                  "GET /api/logs/{id}/trace",
                   "GET /api/logs/sessions/{session_id}",
                   "GET /api/logs/sessions/{session_id}/summary",
                   "GET /api/logs/stats",
@@ -1565,6 +1572,8 @@
                   "GET /ws",
                   "GET /mcp",
                   "POST /mcp",
+                  "GET /v1/mcp",
+                  "POST /v1/mcp",
                   "GET /metrics",
                   "POST /inspect"
                 ]
@@ -1705,10 +1714,7 @@
                   "GET /api/governance/users/email/{email}",
                   "GET /api/governance/users/me/permissions",
                   "GET /api/governance/users/me/vk-creation-policy",
-                  "PUT /api/governance/users/{user_id}/role",
-                  "POST /api/governance/users/{user_id}/governance",
-                  "PUT /api/governance/users/{user_id}/governance",
-                  "DELETE /api/governance/users/{user_id}/governance"
+                  "PUT /api/governance/users/{user_id}/role"
                 ]
               },
               {
@@ -1858,7 +1864,25 @@
                 ]
               },
               {
-                "group": "Complexity Analyzer",
+                "group": "Routers",
+                "expanded": false,
+                "pages": [
+                  "GET /api/routing/model-routers",
+                  "POST /api/routing/model-routers",
+                  "GET /api/routing/model-routers/defaults",
+                  "GET /api/routing/model-routers/{router_id}",
+                  "PUT /api/routing/model-routers/{router_id}",
+                  "DELETE /api/routing/model-routers/{router_id}",
+                  "POST /api/routing/model-routers/{router_id}/reset",
+                  "PUT /api/routing/model-routers/{router_id}/targets",
+                  "PUT /api/routing/model-routers/{router_id}/routing",
+                  "GET /api/routing/model-routers/{router_id}/status",
+                  "POST /api/routing/model-routers/{router_id}/status/retry",
+                  "POST /api/routing/model-routers/{router_id}/classify"
+                ]
+              },
+              {
+                "group": "Complexity Analyzer (deprecated)",
                 "expanded": false,
                 "pages": [
                   "GET /api/routing/complexity-analyzer-config",
@@ -2074,6 +2098,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.5.1",
               "changelogs/v2.5.0",
               {
                 "group": "October 2026",
@@ -2315,6 +2340,8 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.5.2",
+              "changelogs/ent-v2.5.1",
               "changelogs/ent-v2.5.0",
               {
                 "group": "October 2026",
@@ -2430,6 +2457,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v1.0.2",
               "changelogs/edge-v1.0.1",
               {
                 "group": "October 2026",
@@ -2763,6 +2791,26 @@
     {
       "source": "/enterprise/setting-up-entra",
       "destination": "/enterprise/setting-up-entra/oidc"
+    },
+    {
+      "source": "/enterprise/workload-identity/entra",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/azure",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/aws",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/oidc",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/trusted-issuers",
+      "destination": "/enterprise/workload-identity/overview"
     },
     {
       "source": "/enterprise/setting-up-zitadel",

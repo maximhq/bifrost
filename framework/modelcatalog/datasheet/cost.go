@@ -254,6 +254,9 @@ func (s *Store) CalculateGuardrailCost(metadata *schemas.BifrostGuardrailMetadat
 
 // computeGuardrailJudgeCost computes one internal judge chat-completion cost.
 func (s *Store) computeGuardrailJudgeCost(call schemas.BifrostGuardrailJudgeCall, scopes *LookupScopes) float64 {
+	// External guardrail service calls have no judge model. Their EstimatedCost
+	// is display-only, so they price to zero here and stay out of request cost
+	// and budgets.
 	if call.JudgeProvider == "" || call.JudgeModel == "" {
 		return 0
 	}
@@ -1702,16 +1705,14 @@ func newInputOutputCostWithDetails(inputCost, outputCost float64, inputDetails *
 func computeSpeechCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, audioSeconds *float64, audioTextInputChars int, tier serviceTier) *schemas.BifrostCost {
 	tierTokens := inputTierTokens(usage)
 
-	// Input: per-character rate takes precedence for TTS/audio models
+	// Input: per-character rate first, then the tokens the provider reported, then the character count.
 	inputCost := 0.0
-	if audioTextInputChars > 0 {
-		if pricing.InputCostPerCharacter != nil {
-			inputCost = float64(audioTextInputChars) * *pricing.InputCostPerCharacter
-		} else {
-			inputCost = float64(audioTextInputChars) * tieredInputRate(pricing, tierTokens, tier)
-		}
+	if audioTextInputChars > 0 && pricing.InputCostPerCharacter != nil {
+		inputCost = float64(audioTextInputChars) * *pricing.InputCostPerCharacter
 	} else if usage != nil && usage.PromptTokens > 0 {
 		inputCost = float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
+	} else if audioTextInputChars > 0 {
+		inputCost = float64(audioTextInputChars) * tieredInputRate(pricing, tierTokens, tier)
 	}
 
 	// Output: audio tokens first, then per-second fallback

@@ -99,6 +99,9 @@ import {
 	decisionQuestions,
 	extractProviderErrorMessage,
 	findLastPendingClientCallIndex,
+	formatGuardrailUsageUnits,
+	getExternalGuardrailCost,
+	isExternalGuardrailCall,
 	nextSessionLookupStart,
 	isShownMetadataKey,
 	parseRoutingDecisionLine,
@@ -774,6 +777,8 @@ export function LogDetailView({
 	// A downstream build can draw its own routing record at the top of the Routing tab.
 	const RoutingPanel = getLogRoutingPanel();
 	const isPassthrough = isPassthroughLog(log);
+	const judgeGuardrailCost = log.cost_breakdown?.additional_cost_details?.guardrail_cost ?? 0;
+	const externalGuardrailCost = getExternalGuardrailCost(log.guardrail_debug?.judge_calls);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isRealtimeTranscription =
 		isRealtimeTurn && log.metadata?.realtime_event_type === "conversation.item.input_audio_transcription.completed";
@@ -1791,6 +1796,22 @@ export function LogDetailView({
 										}
 									/>
 								)}
+								{log.model_router_id && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={t("labels.modelRouter")}
+										value={
+											<Link
+												to="/workspace/logs"
+												search={(prev) => ({ ...prev, offset: 0, selected_log: "", model_router_ids: [log.model_router_id!] })}
+												className="text-blue-600 hover:underline dark:text-blue-400"
+												data-testid="logdetails-model-router-link"
+											>
+												{log.model_router_name || log.model_router_id}
+											</Link>
+										}
+									/>
+								)}
 								{complexityRouting.tier && (
 									<LogEntryDetailsView
 										className="w-full"
@@ -1987,11 +2008,16 @@ export function LogDetailView({
 												value={formatCostPrecise(log.cost_breakdown?.additional_cost)}
 											/>
 										)}
-										{(log.cost_breakdown?.additional_cost_details?.guardrail_cost ?? 0) > 0 && (
+										{judgeGuardrailCost + externalGuardrailCost > 0 && (
 											<LogEntryDetailsView
 												className="w-full"
 												label={t("logs.detail.guardrailCost")}
-												value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.guardrail_cost)}
+												value={formatCostPrecise(judgeGuardrailCost + externalGuardrailCost)}
+												tooltip={
+													externalGuardrailCost > 0
+														? t("logs.detail.externalGuardrailCostNote", { cost: formatCostPrecise(externalGuardrailCost) })
+														: undefined
+												}
 											/>
 										)}
 										{(log.cost_breakdown?.additional_cost_details?.semantic_cache_cost ?? 0) > 0 && (
@@ -2475,9 +2501,33 @@ export function LogDetailView({
 												{call.judge_model && (
 													<LogEntryDetailsView className="w-full" label={t("logs.detail.judgeModel")} value={call.judge_model} />
 												)}
-												<LogEntryDetailsView className="w-full" label={t("logs.detail.promptTokens")} value={call.prompt_tokens ?? 0} />
-												<LogEntryDetailsView className="w-full" label={t("labels.completionTokens")} value={call.completion_tokens ?? 0} />
-												<LogEntryDetailsView className="w-full" label={t("logs.stats.totalTokens")} value={call.total_tokens ?? 0} />
+												{/* External guardrail services bill in usage units, not tokens. */}
+												{(!isExternalGuardrailCall(call) || (call.total_tokens ?? 0) > 0) && (
+													<>
+														<LogEntryDetailsView className="w-full" label={t("logs.detail.promptTokens")} value={call.prompt_tokens ?? 0} />
+														<LogEntryDetailsView
+															className="w-full"
+															label={t("labels.completionTokens")}
+															value={call.completion_tokens ?? 0}
+														/>
+														<LogEntryDetailsView className="w-full" label={t("logs.stats.totalTokens")} value={call.total_tokens ?? 0} />
+													</>
+												)}
+												{isExternalGuardrailCall(call) && (
+													<>
+														<LogEntryDetailsView
+															className="w-full"
+															label={t("logs.detail.estimatedCost")}
+															value={formatCostPrecise(call.estimated_cost)}
+															tooltip={t("logs.detail.estimatedCostTooltip")}
+														/>
+														<LogEntryDetailsView
+															className="w-full md:col-span-3"
+															label={t("logs.detail.usageUnits")}
+															value={formatGuardrailUsageUnits(call.usage_units)}
+														/>
+													</>
+												)}
 												{call.reason && (
 													<LogEntryDetailsView className="w-full md:col-span-3" label={t("logs.detail.reason")} value={call.reason} />
 												)}
@@ -2850,7 +2900,7 @@ export function LogDetailView({
 							<SpeechView
 								speechInput={applyRedactionMappingToValue(log.speech_input, activeInputRevealMapping)}
 								speechOutput={log.speech_output}
-								isStreaming={log.stream}
+								isStreaming={log.stream && log.status === "processing"}
 							/>
 						)}
 						{(log.transcription_input || log.transcription_output) && (

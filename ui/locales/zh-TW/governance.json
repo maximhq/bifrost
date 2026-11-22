@@ -409,6 +409,24 @@
 		"unlockTitle": "解鎖專案以限定存取與支出",
 		"unlockDescription": "此功能屬於 Bifrost 企業版許可證。專案由請求主動選擇：它在呼叫方已有許可權之外再授予存取，並決定花費記入誰的帳本。"
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "在一處查看所有供應商的 AI 支出",
+			"unlockDescription": "此功能屬於 Bifrost 企業版許可證。FinOps 從你的供應商帳戶讀取已開立帳單的成本，並顯示其中有多少支出經過了 Bifrost。"
+		},
+		"connections": {
+			"unlockTitle": "連接供應商帳單帳戶",
+			"unlockDescription": "此功能屬於 Bifrost 企業版許可證。以唯讀權限連接 OpenAI、Anthropic、AWS Bedrock、Vertex AI 和 Azure OpenAI 的帳單。"
+		},
+		"explorer": {
+			"unlockTitle": "按模型和帳戶拆分 AI 支出",
+			"unlockDescription": "此功能屬於 Bifrost 企業版許可證。逐一模型比對已開立帳單的支出與 Bifrost 記錄的資料。"
+		},
+		"forecast": {
+			"unlockTitle": "預測 AI 支出並發現異常",
+			"unlockDescription": "此功能屬於 Bifrost 企業版許可證。對照預算預測本月支出，並在支出激增時收到告警。"
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "解鎖使用者排行以獲得更好可見性"
 	},

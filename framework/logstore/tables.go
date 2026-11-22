@@ -101,6 +101,8 @@ const (
 	SortByLatency   SortBy = "latency"
 	SortByTokens    SortBy = "tokens"
 	SortByCost      SortBy = "cost"
+	// SortByFallbackIndex orders a chain's hops; the request trace uses it.
+	SortByFallbackIndex SortBy = "fallback_index"
 )
 
 type SortOrder string
@@ -122,12 +124,14 @@ type SearchFilters struct {
 	ToolCallNames        []string   `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
 	Objects              []string   `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID      string     `json:"parent_request_id,omitempty"`
+	FallbackHopsOnly     bool       `json:"-"`                        // With ParentRequestID: only the fallback hops under it (fallback_index > 0), not session units or async cost rows that share the parent.
 	RequestID            string     `json:"request_id,omitempty"`     // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
 	RootsOnly            bool       `json:"roots_only,omitempty"`     // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
 	GroupSessions        bool       `json:"group_sessions,omitempty"` // Collapse every row sharing a session_id into that session's earliest chain-root row. Layered on top of RootsOnly; see SessionGroupingActive for when it applies.
 	SelectedKeyIDs       []string   `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs        []string   `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs       []string   `json:"routing_rule_ids,omitempty"`
+	ModelRouterIDs       []string   `json:"model_router_ids,omitempty"`
 	ComplexityTiers      []string   `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
 	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
 	AgentNames           []string   `json:"agent_names,omitempty"`           // Registered Agents whose context IDs correlate the matching LLM logs
@@ -247,7 +251,7 @@ func (f SearchFilters) EffectiveRankingLimit(defaultLimit int) int {
 type PaginationOptions struct {
 	Limit          int    `json:"limit"`
 	Offset         int    `json:"offset"`
-	SortBy         string `json:"sort_by"`     // "timestamp", "latency", "tokens", "cost"
+	SortBy         string `json:"sort_by"`     // "timestamp", "latency", "tokens", "cost", "fallback_index"
 	Order          string `json:"order"`       // "asc", "desc"
 	TotalCount     int64  `json:"total_count"` // Total number of items matching the query
 	SelectedOffset *int64 `json:"selected_offset,omitempty"`
@@ -375,8 +379,10 @@ type Log struct {
 	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`                                          // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_ts,priority:1" json:"routing_rule_id"` // (routing_rule_id, timestamp) composite; replaces idx_logs_routing_rule_id
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
-	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
-	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ModelRouterID           *string   `gorm:"type:varchar(64);index:idx_logs_model_router_id,where:model_router_id IS NOT NULL" json:"model_router_id,omitempty"`
+	ModelRouterName         *string   `gorm:"type:varchar(255)" json:"model_router_name,omitempty"`
+	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule or model router demanded complexity. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"). NULL means no routing rule or model router asked for a tier, so classification never ran. Partial index, matching its performanceIndexes entry
 	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                                                                        // Raw complexity score behind the tier; unindexed (detail-view only)
 	SessionID               *string   `gorm:"type:varchar(255);index:idx_logs_session_id,where:session_id IS NOT NULL;index:idx_logs_session_id_timestamp,priority:1,where:session_id IS NOT NULL" json:"session_id,omitempty"` // Raw opaque session identity resolved at ingress for key stickiness and log correlation
 	AgentCorrelationID      *string   `gorm:"type:varchar(255);index:idx_logs_agent_correlation_id,where:agent_correlation_id IS NOT NULL" json:"agent_correlation_id,omitempty"`                                               // Caller-supplied correlation identity from x-bf-agent-correlation-id
@@ -3117,6 +3123,7 @@ const (
 	RankingDimensionAlias               RankingDimension = "alias"
 	RankingDimensionComplexityTier      RankingDimension = "complexity_tier"
 	RankingDimensionComplexityMechanism RankingDimension = "complexity_mechanism"
+	RankingDimensionModelRouter         RankingDimension = "model_router"
 	// Stored as a comma-separated list on the row, so one request can count
 	// under several values (see commalistdimensions.go).
 	RankingDimensionRoutingEngine RankingDimension = "routing_engine"
@@ -3136,6 +3143,10 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionVirtualKey:   true,
 	RankingDimensionApp:          true,
 	RankingDimensionUserAgent:    true,
+	// The Model Routers page counts each router's requests with it.
+	RankingDimensionModelRouter: true,
+	// A router's page splits its requests by tier, filtered to that router.
+	RankingDimensionComplexityTier: true,
 }
 
 type dimensionColumnDef struct {
@@ -3160,6 +3171,7 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	// Not carried by mv_logs_hourly, so always read from the raw table.
 	RankingDimensionComplexityTier:      {IDCol: "complexity_tier", NameCol: "complexity_tier", RawOnly: true},
 	RankingDimensionComplexityMechanism: {IDCol: "complexity_mechanism", NameCol: "complexity_mechanism", RawOnly: true},
+	RankingDimensionModelRouter:         {IDCol: "model_router_id", NameCol: "model_router_name", RawOnly: true},
 }
 
 // DimensionColumnDef returns the column pair for a supported ranking dimension.

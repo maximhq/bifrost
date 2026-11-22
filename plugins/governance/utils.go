@@ -50,6 +50,11 @@ func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
 	if speechAPIKey != "" && strings.HasPrefix(strings.ToLower(speechAPIKey), VirtualKeyPrefix) {
 		return bifrost.Ptr(speechAPIKey)
 	}
+	// ElevenLabs clients send their key as xi-api-key.
+	elevenLabsAPIKey := string(req.Request.Header.Peek("xi-api-key"))
+	if elevenLabsAPIKey != "" && strings.HasPrefix(strings.ToLower(elevenLabsAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(elevenLabsAPIKey)
+	}
 	return nil
 }
 
@@ -147,6 +152,31 @@ func (p *GovernancePlugin) filterModelsForAccess(access schemas.Access, models [
 		}
 	}
 	return filtered
+}
+
+// filterPassthroughModelList trims a raw passthrough model list to the models access allows, using the filter the transport registered for the route.
+func (p *GovernancePlugin) filterPassthroughModelList(ctx *schemas.BifrostContext, access schemas.Access, provider string, resp *schemas.BifrostPassthroughResponse) {
+	filter, ok := ctx.Value(schemas.BifrostContextKeyPassthroughModelListFilter).(schemas.PassthroughModelListFilter)
+	if !ok || filter == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return
+	}
+	body, err := filter(resp.Body, func(model string) bool {
+		return access != nil && access.IsModelAllowed(provider, model)
+	})
+	if err != nil {
+		// Fail open: every turn is still checked against the allowlist.
+		p.logger.Warn("governance: passthrough model list left unfiltered: %v", err)
+		return
+	}
+	resp.Body = body
+	// The upstream ETag names the unfiltered list.
+	for _, headers := range []map[string]string{resp.Headers, resp.ExtraFields.ProviderResponseHeaders} {
+		for k := range headers {
+			if strings.EqualFold(k, "etag") {
+				delete(headers, k)
+			}
+		}
+	}
 }
 
 // validateRequiredHeaders checks that all configured required headers are present in the request.
@@ -316,6 +346,37 @@ func PresentedCredentialResolved(ctx *schemas.BifrostContext) bool {
 	}
 	access := g.Access()
 	return access != nil && unusablePermit(access) == nil
+}
+
+// ResolvedVirtualKeyID returns the id of the virtual key the request resolved to, or "" when it
+// presented none, presented one that matched no row, or matched a row whose access may not be used
+// (inactive or expired). Like PresentedCredentialResolved it reads what the per-request pipeline
+// recorded on the grant, so callers run PreRequestHook first, and it settles no limits.
+//
+// A transport that keys per-caller state on the virtual key uses this rather than the header or
+// PresentedCredentialResolved: a direct key admits a request on its own, so the virtual key sent
+// beside it is not checked by that answer, and a dead key's row names no caller entitled to a share.
+func ResolvedVirtualKeyID(ctx *schemas.BifrostContext) string {
+	if ctx == nil {
+		return ""
+	}
+	g := ctx.Grant()
+	if g == nil {
+		return ""
+	}
+	identity := g.Identity()
+	if identity == nil {
+		return ""
+	}
+	vk := identity.VirtualKey()
+	if vk == nil || vk.ID == "" {
+		return ""
+	}
+	access := g.Access()
+	if access == nil || unusablePermit(access) != nil {
+		return ""
+	}
+	return vk.ID
 }
 
 // AppendAllProviderPermits completes a permit that grants every provider. Such a permit names none,

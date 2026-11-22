@@ -21,6 +21,7 @@ const configuredWarp = {
   semantic_search_threshold: 0.5,
   semantic_search_limit: 10,
   vector_store_connected: true,
+  bifrost_mcp_available: true,
 }
 
 const lineChart = {

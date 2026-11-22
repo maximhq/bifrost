@@ -77,7 +77,8 @@
 		"modelLimits": "límites de modelos",
 		"agent": "agente",
 		"relay": "relé",
-		"relays": "relés"
+		"relays": "relés",
+		"modelRouters": "enrutadores"
 	},
 	"aboutField": "Acerca de {{field}}",
 	"thisField": "este campo",
@@ -262,7 +263,8 @@
 	"budgetDisplay": {
 		"usageAria": "Uso del presupuesto",
 		"override": "sobrescritura",
-		"baseTooltip": "Base {{base}} + {{override}} de sobrescritura"
+		"baseTooltip": "Base {{base}} + {{override}} de sobrescritura",
+		"sharedTag": "compartido"
 	},
 	"rateLimit": {
 		"tokens": "tokens",
@@ -301,6 +303,11 @@
 	},
 	"configSyncAlert": {
 		"message": "Esta configuración se sincroniza desde <code0>config.json</code0>. Cualquier actualización futura de config.json sobrescribirá los cambios hechos en la interfaz. Si usas config.json para inicializar la configuración, puedes ignorar esta alerta."
+	},
+	"configIssuesAlert": {
+		"title": "Parte de la declaración de config.json no se aplicó",
+		"badge": "Problemas de configuración",
+		"hint": "El resto de la declaración está aplicado. Cada elemento de arriba desaparece solo cuando existe lo que nombra, por ejemplo al registrar el cliente MCP que falta."
 	},
 	"breadcrumb": {
 		"label": "ruta de navegación",
@@ -508,6 +515,9 @@
 		"maxNumber": "Debe ser como máximo {{maximum}}",
 		"maxChars": "Debe tener como máximo {{maximum}} caracteres",
 		"validUrl": "Debe ser una URL válida",
+		"publicUrlNoUserinfoQueryOrFragment": "No debe contener información de usuario, una consulta ni un fragmento",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "Debe ser una URL http(s) o una ruta relativa al directorio de la aplicación",
+		"openapiUrlMustStayInAppDir": "Debe ser una ruta relativa al directorio de la aplicación que permanezca dentro de él",
 		"validEmail": "Debe ser un correo electrónico válido",
 		"grpcHostPortFormat": "Debe tener el formato <host>:<port> para gRPC (p. ej., {{example}})",
 		"invalidInput": "Entrada no válida",

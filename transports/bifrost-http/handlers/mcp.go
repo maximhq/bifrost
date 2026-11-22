@@ -198,7 +198,7 @@ func (h *MCPHandler) runOAuthBootstrap(ctx *fasthttp.RequestCtx, oauthCfg *OAuth
 		Resource:        oauthCfg.Resource,
 
 		RequirePublicTarget:       requirePublicTarget,
-		ClientMetadataURL:         base + oauthClientMetadataPath,
+		ClientMetadataURL:         h.oauthHandler.oauthProvider.ClientMetadataDocumentURL(redirectURI),
 		UseClientMetadataDocument: oauthCfg.UseClientMetadataDocument,
 	})
 }
@@ -840,6 +840,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		ClientID:               clientConfig.ID,
 		Name:                   clientConfig.Name,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
 		ConnectionType:         string(clientConfig.ConnectionType),
 		ConnectionString:       clientConfig.ConnectionString,
 		StdioConfig:            clientConfig.StdioConfig,
@@ -1049,6 +1050,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		ClientID:               clientConfig.ID,
 		Name:                   clientConfig.Name,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
 		ConnectionType:         string(clientConfig.ConnectionType),
 		ConnectionString:       clientConfig.ConnectionString,
 		StdioConfig:            clientConfig.StdioConfig,
@@ -1949,6 +1951,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			Name:                   dbClient.Name,
 			EndpointSlug:           dbClient.EndpointSlug,
 			IsCodeModeClient:       dbClient.IsCodeModeClient,
+			ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
 			ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:       dbClient.ConnectionString,
 			StdioConfig:            dbClient.StdioConfig,
@@ -2324,6 +2327,7 @@ type MCPClientUpdateRequest struct {
 	Disabled               *bool                           `json:"disabled,omitempty"`
 	AllowByDefault         *bool                           `json:"allow_by_default,omitempty"`
 	IsCodeModeClient       *bool                           `json:"is_code_mode_client,omitempty"`
+	ServerTypeOnSlug       *string                         `json:"server_type_on_slug,omitempty"` // "inherit", "enabled" or "disabled"
 	IsPingAvailable        *bool                           `json:"is_ping_available,omitempty"`
 	NeedsSessionStickiness *bool                           `json:"needs_session_stickiness,omitempty"`
 	ToolSyncInterval       *MCPSyncInterval                `json:"tool_sync_interval,omitempty"`
@@ -2358,6 +2362,15 @@ func (req *MCPClientUpdateRequest) resolvedAllowByDefault(existing bool) bool {
 		return existing
 	}
 	return schemas.ResolveAllowByDefault(req.AllowByDefault, req.AllowOnAllVirtualKeys)
+}
+
+// resolvedServerTypeOnSlug applies PATCH semantics to server_type_on_slug: existing when the request
+// omits it, otherwise the sent value ("inherit" clears the override).
+func (req *MCPClientUpdateRequest) resolvedServerTypeOnSlug(existing schemas.MCPServerTypeOnSlug) (schemas.MCPServerTypeOnSlug, error) {
+	if req.ServerTypeOnSlug == nil {
+		return existing, nil
+	}
+	return schemas.ParseMCPServerTypeOnSlug(*req.ServerTypeOnSlug)
 }
 
 // rejectPrivateMCPTargetIfAuthBypassed refuses to register an HTTP/SSE MCP
@@ -2687,7 +2700,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, msg)
 			return
 		}
-		prepared, status, msg := prepareOpenAPIConfig(ctx, req.Name, req.OpenAPIConfig)
+		prepared, status, msg := prepareOpenAPIConfig(ctx, req.Name, req.OpenAPIConfig, h.store.MCPOpenAPIMaxSpecBytes())
 		if status != 0 {
 			SendError(ctx, status, msg)
 			return
@@ -2811,6 +2824,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Name:                   req.Name,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ServerTypeOnSlug:       req.ServerTypeOnSlug,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       resolvedToolSyncInterval,
@@ -2893,6 +2907,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 			return
 		}
+		h.relinkConfigVirtualMCPs(ctx, schemasConfig.Name)
 
 		message := fmt.Sprintf("MCP client registered. %d tools discovered. Each user will submit their own headers on first tool use.", len(discovery.Tools))
 		if perUserDiscoveryOn(schemasConfig) {
@@ -2969,6 +2984,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Name:                   req.Name,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ServerTypeOnSlug:       req.ServerTypeOnSlug,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       resolvedToolSyncInterval,
@@ -3055,6 +3071,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 			return
 		}
+		h.relinkConfigVirtualMCPs(ctx, schemasConfig.Name)
 
 		// Retain the admin credential for the periodic tool syncer and the
 		// refresh worker, mirroring the per-user OAuth promotion and the
@@ -3116,6 +3133,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Name:                   req.Name,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ServerTypeOnSlug:       req.ServerTypeOnSlug,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       resolvedToolSyncInterval,
@@ -3206,6 +3224,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Name:                   req.Name,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ServerTypeOnSlug:       req.ServerTypeOnSlug,
 			IsPingAvailable:        req.IsPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       resolvedToolSyncInterval,
@@ -3263,6 +3282,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		Name:                   req.Name,
 		EndpointSlug:           req.EndpointSlug,
 		IsCodeModeClient:       req.IsCodeModeClient,
+		ServerTypeOnSlug:       req.ServerTypeOnSlug,
 		ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
 		ConnectionString:       req.ConnectionString,
 		RequirePublicTarget:    req.RequirePublicTarget,
@@ -3320,6 +3340,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
 		return
 	}
+	h.relinkConfigVirtualMCPs(ctx, schemasConfig.Name)
 
 	lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", schemasConfig.ID, schemasConfig.Name, nil, auditMCPClient(h.store, schemasConfig))
 	SendJSON(ctx, map[string]any{
@@ -3419,6 +3440,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	isCodeMode := existingConfig.IsCodeModeClient
 	if req.IsCodeModeClient != nil {
 		isCodeMode = *req.IsCodeModeClient
+	}
+	serverTypeOnSlug, err := req.resolvedServerTypeOnSlug(existingConfig.ServerTypeOnSlug)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
 	}
 	isPingAvailable := existingConfig.IsPingAvailable
 	if req.IsPingAvailable != nil {
@@ -3601,7 +3627,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// later connects from the document fresh.
 		rebuildOpenAPIServer = !disabled && req.OpenAPIConfig == nil && existingConfig.OpenAPIConfig != nil &&
 			strings.TrimSpace(existingConfig.OpenAPIConfig.Spec) == "" && existingConfig.OpenAPIConfig.SpecURL != nil
-		prepared, status, msg := prepareOpenAPIConfig(ctx, name, candidate)
+		prepared, status, msg := prepareOpenAPIConfig(ctx, name, candidate, h.store.MCPOpenAPIMaxSpecBytes())
 		if status != 0 {
 			SendError(ctx, status, msg)
 			return
@@ -3943,6 +3969,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ClientID:               id,
 		Name:                   name,
 		IsCodeModeClient:       isCodeMode,
+		ServerTypeOnSlug:       serverTypeOnSlug,
 		ConnectionType:         string(existingConfig.ConnectionType),
 		ConnectionString:       existingConfig.ConnectionString,
 		RequirePublicTarget:    requirePublicTarget,
@@ -4044,6 +4071,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ID:                     id,
 		Name:                   name,
 		IsCodeModeClient:       isCodeMode,
+		ServerTypeOnSlug:       serverTypeOnSlug,
 		ConnectionType:         existingConfig.ConnectionType,
 		ConnectionString:       existingConfig.ConnectionString,
 		RequirePublicTarget:    requirePublicTarget,
@@ -4743,6 +4771,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		ClientID:               clientConfig.ID,
 		Name:                   clientConfig.Name,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
 		ConnectionType:         string(clientConfig.ConnectionType),
 		ConnectionString:       clientConfig.ConnectionString,
 		StdioConfig:            clientConfig.StdioConfig,
@@ -5045,6 +5074,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				ClientID:               mcpClientConfig.ID,
 				Name:                   mcpClientConfig.Name,
 				IsCodeModeClient:       mcpClientConfig.IsCodeModeClient,
+				ServerTypeOnSlug:       mcpClientConfig.ServerTypeOnSlug,
 				ConnectionType:         string(mcpClientConfig.ConnectionType),
 				ConnectionString:       mcpClientConfig.ConnectionString,
 				StdioConfig:            mcpClientConfig.StdioConfig,
@@ -5114,6 +5144,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 				return
 			}
+			h.relinkConfigVirtualMCPs(ctx, mcpClientConfig.Name)
 		}
 
 		// Set discovered tools on the client
@@ -5185,6 +5216,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			ClientID:               mcpClientConfig.ID,
 			Name:                   mcpClientConfig.Name,
 			IsCodeModeClient:       mcpClientConfig.IsCodeModeClient,
+			ServerTypeOnSlug:       mcpClientConfig.ServerTypeOnSlug,
 			ConnectionType:         string(mcpClientConfig.ConnectionType),
 			ConnectionString:       mcpClientConfig.ConnectionString,
 			StdioConfig:            mcpClientConfig.StdioConfig,
@@ -5263,6 +5295,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
 			return
 		}
+		h.relinkConfigVirtualMCPs(ctx, mcpClientConfig.Name)
 	}
 
 	// Clear pending MCP client config from oauth_config (cleanup)
@@ -5585,4 +5618,59 @@ func (h *MCPHandler) recordMCPClientOAuthCompletion(ctx *fasthttp.RequestCtx, cf
 	if !isUpdateFlow {
 		lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", cfg.ID, cfg.Name, nil, auditMCPClient(h.store, cfg))
 	}
+}
+
+// relinkConfigVirtualMCPs links a newly registered MCP client into the config.json Virtual MCP
+// declarations that name it, so a Virtual MCP loaded while the client was missing, or while it
+// was registered under a since-deleted id, picks the client up without a restart. Each rewritten
+// Virtual MCP is reloaded through the governance manager, like any other Virtual MCP write. Best effort:
+// a failure is logged and never fails the client registration. A failed reload is retried here,
+// since the row is already rewritten and no later reconcile would report it again.
+func (h *MCPHandler) relinkConfigVirtualMCPs(ctx context.Context, clientName string) {
+	if h.store == nil {
+		return
+	}
+	ids, err := h.store.ReconcileFileVirtualMCPsForClient(ctx, clientName)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("failed to link MCP client %q into config.json virtual MCPs: %v", clientName, err))
+		return
+	}
+	if h.governanceManager == nil {
+		return
+	}
+	for _, id := range ids {
+		if err := h.reloadVirtualMCPWithRetry(ctx, id); err != nil {
+			logger.Error(fmt.Sprintf("failed to reload virtual MCP %d after linking MCP client %q; its cache keeps the previous tools until it is next saved or Bifrost restarts: %v", id, clientName, err))
+		}
+	}
+}
+
+// relinkReloadAttempts and relinkReloadBackoff bound the retries of a Virtual MCP cache reload
+// after a registration re-links it: a few attempts, doubling from the backoff.
+const (
+	relinkReloadAttempts = 3
+	relinkReloadBackoff  = 100 * time.Millisecond
+)
+
+// reloadVirtualMCPWithRetry reloads one Virtual MCP into the cache, retrying a failure with a
+// doubling backoff, and returns the last error once the attempts run out or ctx ends.
+func (h *MCPHandler) reloadVirtualMCPWithRetry(ctx context.Context, id uint) error {
+	backoff := relinkReloadBackoff
+	var err error
+	for attempt := 1; attempt <= relinkReloadAttempts; attempt++ {
+		if _, err = h.governanceManager.ReloadVirtualMCP(ctx, id); err == nil {
+			return nil
+		}
+		if attempt == relinkReloadAttempts {
+			break
+		}
+		logger.Warn(fmt.Sprintf("failed to reload virtual MCP %d (attempt %d of %d), retrying: %v", id, attempt, relinkReloadAttempts, err))
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+	return err
 }

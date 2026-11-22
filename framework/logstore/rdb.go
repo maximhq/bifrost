@@ -439,6 +439,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.ComplexityMechanisms) > 0 {
 		baseQuery = baseQuery.Where("complexity_mechanism IN ?", filters.ComplexityMechanisms)
 	}
+	if len(filters.ModelRouterIDs) > 0 {
+		baseQuery = baseQuery.Where("model_router_id IN ?", filters.ModelRouterIDs)
+	}
 	if len(filters.AgentNames) > 0 {
 		baseQuery = s.applyAgentContextFilter(baseQuery, filters.AgentNames, filters.StartTime, filters.EndTime)
 	}
@@ -456,6 +459,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// a self-referencing row already lists as a root (see applyRootsOnlyFilter),
 		// so without this it would also appear inside its own expansion.
 		baseQuery = baseQuery.Where("parent_request_id = ? AND id <> parent_request_id", filters.ParentRequestID)
+		if filters.FallbackHopsOnly {
+			baseQuery = baseQuery.Where("fallback_index > 0")
+		}
 	} else if filters.RootsOnly && filters.RequestID == "" {
 		// An explicit ID lookup targets exactly one row; collapsing it as a
 		// non-root would hide the very row that was pasted.
@@ -1304,6 +1310,8 @@ func logsOrderClause(sortBy, order string) string {
 		return "total_tokens " + direction + ", id " + direction
 	case "cost":
 		return "cost " + direction + " NULLS LAST, id " + direction
+	case "fallback_index":
+		return "fallback_index " + direction + ", id " + direction
 	default:
 		return "timestamp " + direction + ", id " + direction
 	}
@@ -1731,6 +1739,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
 		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
+		"model_router_id", "model_router_name",
 		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
@@ -1742,7 +1751,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
 		// Only guardrail blocks, whose errors are bounded, are listed (see below).
-		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
+		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream", "stop_reason",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", MaxContentSummaryBytes),
 		"metadata", "cache_debug",
 		"batch_debug",
@@ -5364,6 +5373,9 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 		if !acquired {
 			return ErrRetentionBusy
 		}
+		if err := raiseRetentionStatementTimeout(tx); err != nil {
+			return err
+		}
 		result := tx.Exec(stmt, cutoff, batchSize)
 		if result.Error != nil {
 			return result.Error
@@ -5375,6 +5387,16 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 		return 0, err
 	}
 	return deleted, nil
+}
+
+// retentionStatementTimeout is the statement_timeout floor for one retention batch: wide rows carry megabytes of TOAST each.
+const retentionStatementTimeout = "10min"
+
+// raiseRetentionStatementTimeout lifts a shorter statement_timeout for the rest of tx and leaves 0 (no limit) or a longer one alone.
+func raiseRetentionStatementTimeout(tx *gorm.DB) error {
+	return tx.Exec(`SELECT set_config('statement_timeout', ?, true)
+		WHERE current_setting('statement_timeout')::interval > interval '0'
+		AND current_setting('statement_timeout')::interval < ?::interval`, retentionStatementTimeout, retentionStatementTimeout).Error
 }
 
 // RetentionInterval is hourly on Postgres, where the advisory lock makes idle replicas' ticks one cheap probe.
@@ -5464,6 +5486,9 @@ func (s *RDBLogStore) DeleteLog(ctx context.Context, id string) error {
 	})
 }
 
+// deleteLogsChunkSize bounds one DELETE in DeleteLogs so a large id list of wide rows stays inside statement_timeout.
+const deleteLogsChunkSize = 100
+
 // DeleteLogs deletes multiple log entries from the database by their IDs, and
 // with them what Warp's topic tables hold about them, in one transaction.
 func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
@@ -5471,8 +5496,10 @@ func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 		return nil
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
-			return err
+		for chunk := range slices.Chunk(ids, deleteLogsChunkSize) {
+			if err := tx.Where("id IN ?", chunk).Delete(&Log{}).Error; err != nil {
+				return err
+			}
 		}
 		return deleteWarpTopicRowsForLogs(tx, ids)
 	})

@@ -1,3 +1,7 @@
 - [fix]: charge Search and Fetch calls that report a cost, which name no model and were never billed [@Radiergummi](https://github.com/Radiergummi)
 - [feat]: hold Search and Fetch to the model allowlist when they carry a routing model, and skip the model requirement when they do not [@jimaldon](https://github.com/jimaldon)
-- chore: upgraded core to v1.15.2 and framework to v1.12.2
+- feat: the Codex passthrough model list is filtered to the caller's allowed models
+- feat: virtual keys are read from the `xi-api-key` header for ElevenLabs clients
+- fix: updating the budget of a config.json virtual key no longer fails with `invalid reset duration format` (thanks [@High-PO](https://github.com/High-PO)!)
+- fix: a team's cached virtual keys follow its new customer
+- chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0

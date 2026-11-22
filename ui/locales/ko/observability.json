@@ -70,7 +70,8 @@
 			"decision": "결정 모델",
 			"llm": "LLM",
 			"skipped": "건너뜀"
-		}
+		},
+		"modelRouter": "라우터"
 	},
 	"dashboard": {
 		"tabs": {
@@ -365,6 +366,7 @@
 			"outputCost": "출력 비용",
 			"additionalCost": "추가비용",
 			"guardrailCost": "난간 비용",
+			"externalGuardrailCostNote": "외부 가드레일 예상 비용 {{cost}}이 포함되며, 총비용과 예산에는 포함되지 않습니다.",
 			"semanticCacheCost": "의미론적 캐시 비용",
 			"routingCost": "라우팅 비용",
 			"inputTextTokens": "입력 텍스트 토큰",
@@ -398,6 +400,9 @@
 			"judgeProvider": "판사 공급자",
 			"judgeModel": "판사 모델",
 			"promptTokens": "프롬프트 토큰",
+			"usageUnits": "사용 단위",
+			"estimatedCost": "예상 비용",
+			"estimatedCostTooltip": "가드레일 공급업체의 정가 기준 추정치입니다. 총비용과 예산에는 포함되지 않습니다.",
 			"reason": "이유",
 			"routingClassificationDetails": "라우팅 분류 세부정보",
 			"mechanism": "메커니즘",
@@ -1115,6 +1120,8 @@
 			"groupTracesBySessionHelp": "활성화되면 동일한 x-bf-session-id 헤더를 공유하는 요청이 단일 추적으로 그룹화되고, 각 요청은 최상위 형제 범위로 나타납니다. 인바운드 W3C 추적 상위를 전달하는 요청은 자체 분산 추적에 유지되며 영향을 받지 않어요.",
 			"disableRootSpanContent": "루트 스팬 콘텐츠 비활성화",
 			"disableRootSpanContentHelp": "활성화되면 입력/출력 메시지 콘텐츠가 루트 범위에서만 삭제돼요. 기본 세대(llm.call) 범위는 전체 콘텐츠를 유지해요.",
+			"applyTraceDimensionsToChildSpans": "하위 스팬에 디멘션 적용",
+			"applyTraceDimensionsToChildSpansHelp": "활성화하면 요청 디멘션(x-bf-dim-* 헤더)이 루트 스팬뿐 아니라 내보내는 모든 스팬에 병합되어 하위 스팬을 디멘션별로 필터링하거나 그룹화할 수 있습니다. path, method 및 gen_ai.* 같은 예약된 네임스페이스는 건너뜁니다. 각 디멘션이 모든 스팬에 추가되므로 카디널리티가 높은 값은 컬렉터 수집 비용을 높입니다.",
 			"enableMetricsExport": "측정항목 내보내기 활성화",
 			"enableMetricsExportHelp": "클러스터 배포 시 적절한 집계를 위해 측정항목을 OTEL 수집기로 푸시",
 			"overheadBreakdown": "간접비 분석",
@@ -1228,7 +1235,10 @@
 		"exactRoundTripID": "정확한 라운드 트립 ID",
 		"nothingRecorded": "이 기간에는 기록된 내용이 없습니다.",
 		"topics": "주제",
-		"searchTopics": "주제 검색"
+		"searchTopics": "주제 검색",
+		"modelRouters": "라우터",
+		"searchModelRouters": "라우터 검색",
+		"loadFailed": "이 목록을 불러오지 못했어요."
 	},
 	"requestTypes": {
 		"chat_completion": "채팅",
@@ -1259,6 +1269,7 @@
 		"decisions": "결정",
 		"speech": "연설",
 		"speech_stream": "음성 스트림",
+		"speech_session": "음성 세션",
 		"transcription": "전사",
 		"transcription_stream": "전사 스트림",
 		"image_generation": "이미지 생성",

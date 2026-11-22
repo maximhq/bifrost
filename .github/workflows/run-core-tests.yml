@@ -64,6 +64,7 @@ jobs:
       SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
       CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+      SONIOX_API_KEY: ${{ secrets.SONIOX_API_KEY }}
       BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
@@ -106,6 +107,8 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.minimax.io:443
+            api.soniox.com:443
+            tts-rt.soniox.com:443
             ark.ap-southeast.bytepluses.com:443
             inference.baseten.co:443
             llm.kimchi.dev:443
@@ -141,6 +144,7 @@ jobs:
             generativelanguage.googleapis.com:443
             files.pythonhosted.org:443
             pypi.org:443
+            raw.githubusercontent.com:443
             getbifrost.ai:443
             github.com:443
             huggingface.co:443
@@ -193,7 +197,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

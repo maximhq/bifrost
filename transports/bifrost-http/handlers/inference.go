@@ -133,6 +133,7 @@ var chatParamsKnownFields = map[string]bool{
 	"parallel_tool_calls":    true,
 	"presence_penalty":       true,
 	"prompt_cache_key":       true,
+	"prompt_cache_options":   true,
 	"prompt_cache_retention": true,
 	"reasoning":              true,
 	"reasoning_effort":       true,
@@ -167,6 +168,7 @@ var responsesParamsKnownFields = map[string]bool{
 	"parallel_tool_calls":    true,
 	"previous_response_id":   true,
 	"prompt_cache_key":       true,
+	"prompt_cache_options":   true,
 	"prompt_cache_retention": true,
 	"reasoning":              true,
 	"safety_identifier":      true,
@@ -2021,32 +2023,6 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Speech
 	}, nil
 }
 
-// speechAttachmentFilename derives the download filename from the requested
-// audio format so non-MP3 responses aren't mislabeled as "speech.mp3". The
-// format may be OpenAI-style ("opus", "wav", "flac", ...) or ElevenLabs-style
-// with a codec/rate prefix ("mp3_22050_32", "pcm_16000", "ulaw_8000"). Unknown
-// or empty formats fall back to mp3 (the API default).
-func speechAttachmentFilename(responseFormat string) string {
-	ext := "mp3"
-	switch {
-	case strings.HasPrefix(responseFormat, "opus"):
-		ext = "opus"
-	case strings.HasPrefix(responseFormat, "aac"):
-		ext = "aac"
-	case strings.HasPrefix(responseFormat, "flac"):
-		ext = "flac"
-	case strings.HasPrefix(responseFormat, "wav"):
-		ext = "wav"
-	case strings.HasPrefix(responseFormat, "pcm"):
-		ext = "pcm"
-	case strings.HasPrefix(responseFormat, "ulaw"):
-		ext = "ulaw"
-	case strings.HasPrefix(responseFormat, "alaw"):
-		ext = "alaw"
-	}
-	return "speech." + ext
-}
-
 // speech handles POST /v1/audio/speech - Process speech completion requests.
 // ElevenLabs sound-effect models (e.g. "eleven_text_to_sound_v2") also flow
 // through here; the provider routes them to /v1/sound-generation by model id,
@@ -2059,7 +2035,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	}
 	// Filename tracks the requested audio format (prepareSpeechRequest guarantees
 	// req.SpeechParameters is non-nil, so ResponseFormat is safe to read here).
-	attachmentFilename := speechAttachmentFilename(req.ResponseFormat)
+	attachmentFilename := lib.SpeechAttachmentFilename(req.ResponseFormat)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	if bifrostCtx == nil {
@@ -2110,7 +2086,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	ctx.Response.Header.Set("Content-Type", "audio/mpeg")
+	ctx.Response.Header.Set("Content-Type", lib.SpeechContentType(req.ResponseFormat, resp.Audio))
 	ctx.Response.Header.Set("Content-Disposition", "attachment; filename="+attachmentFilename)
 	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Audio)))
 	ctx.Response.SetBody(resp.Audio)
@@ -4383,13 +4359,13 @@ func decodeStorageFileID(id string) string {
 	return id
 }
 
-// fileUpload handles POST /v1/files - Upload a file
-func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
+// prepareFileUploadRequest parses a POST /v1/files multipart form into a BifrostFileUploadRequest.
+// On failure it returns the HTTP status and the message to send.
+func prepareFileUploadRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostFileUploadRequest, int, error) {
 	// Parse multipart form
 	form, err := ctx.MultipartForm()
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to parse multipart form: %v", err))
-		return
+		return nil, fasthttp.StatusBadRequest, fmt.Errorf("Failed to parse multipart form: %v", err)
 	}
 
 	// Get provider from query parameters or header
@@ -4404,15 +4380,13 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	}
 
 	if provider == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter or x-model-provider header is required")
-		return
+		return nil, fasthttp.StatusBadRequest, errors.New("provider query parameter or x-model-provider header is required")
 	}
 
 	// Extract purpose (required)
 	purposeValues := form.Value["purpose"]
 	if len(purposeValues) == 0 || purposeValues[0] == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "purpose is required")
-		return
+		return nil, fasthttp.StatusBadRequest, errors.New("purpose is required")
 	}
 	purpose := purposeValues[0]
 
@@ -4431,8 +4405,7 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 		file, err := fileHeader.Open()
 		if err != nil {
 			logger.Warn("Failed to open uploaded file: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
-			return
+			return nil, fasthttp.StatusInternalServerError, errors.New("Internal Server Error")
 		}
 		defer file.Close()
 
@@ -4440,8 +4413,7 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 		fileData, err = io.ReadAll(file)
 		if err != nil {
 			logger.Warn("Failed to read uploaded file: %v", err)
-			SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
-			return
+			return nil, fasthttp.StatusInternalServerError, errors.New("Internal Server Error")
 		}
 	} else if len(form.Value["filename"]) > 0 {
 		filename = form.Value["filename"][0]
@@ -4466,9 +4438,25 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 		storageConfig = &schemas.FileStorageConfig{GCS: gcs}
 	}
 
+	// Expiration config in bracket notation, read the same way as the /openai route.
+	var expiresAfter *schemas.FileExpiresAfter
+	if anchorValues := form.Value["expires_after[anchor]"]; len(anchorValues) > 0 && anchorValues[0] != "" {
+		expiresAfter = &schemas.FileExpiresAfter{Anchor: anchorValues[0]}
+	}
+	if secondsValues := form.Value["expires_after[seconds]"]; len(secondsValues) > 0 && secondsValues[0] != "" {
+		seconds, err := strconv.Atoi(secondsValues[0])
+		if err != nil {
+			return nil, fasthttp.StatusBadRequest, errors.New("invalid expires_after[seconds] value: " + secondsValues[0])
+		}
+		if expiresAfter == nil {
+			expiresAfter = &schemas.FileExpiresAfter{}
+		}
+		expiresAfter.Seconds = seconds
+	}
+
 	// Collect unknown form fields as extra params (multipart — cannot use extractExtraParams which expects JSON).
 	// gcs_bucket/gcs_prefix are consumed into StorageConfig above; other providers (e.g. Bedrock s3_bucket) still flow through here.
-	fileUploadKnownFields := map[string]bool{"file": true, "purpose": true, "provider": true, "filename": true, "content_type": true, "gcs_bucket": true, "gcs_prefix": true}
+	fileUploadKnownFields := map[string]bool{"file": true, "purpose": true, "provider": true, "filename": true, "content_type": true, "gcs_bucket": true, "gcs_prefix": true, "expires_after[anchor]": true, "expires_after[seconds]": true}
 	extraParams := map[string]interface{}{}
 	for k, vals := range form.Value {
 		if !fileUploadKnownFields[k] && len(vals) > 0 && vals[0] != "" {
@@ -4477,14 +4465,24 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Build Bifrost file upload request
-	bifrostFileReq := &schemas.BifrostFileUploadRequest{
+	return &schemas.BifrostFileUploadRequest{
 		Provider:      schemas.ModelProvider(provider),
 		File:          fileData,
 		Filename:      filename,
 		Purpose:       schemas.FilePurpose(purpose),
 		ContentType:   contentType,
 		StorageConfig: storageConfig,
+		ExpiresAfter:  expiresAfter,
 		ExtraParams:   extraParams,
+	}, 0, nil
+}
+
+// fileUpload handles POST /v1/files - Upload a file
+func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
+	bifrostFileReq, status, err := prepareFileUploadRequest(ctx)
+	if err != nil {
+		SendError(ctx, status, err.Error())
+		return
 	}
 
 	// Convert context
