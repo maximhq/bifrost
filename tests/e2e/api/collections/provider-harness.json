@@ -344288,7 +344288,7 @@
                   "  pm.expect(body.answers[0].name).to.eql('has_image');",
                   "  pm.expect(body.answers[0].type).to.eql('predicate');",
                   "  pm.expect(body.answers[0].probability).to.be.within(0, 1);",
-                  "  pm.expect(body.usage.prompt_tokens).to.be.above(0);",
+                  "  pm.expect(body.usage.input_tokens).to.be.above(0);",
                   "  var sent = body.extra_fields.raw_request;",
                   "  if (typeof sent === 'string') sent = JSON.parse(sent);",
                   "  pm.expect(sent.images, 'image missing from native request').to.have.lengthOf(1);",

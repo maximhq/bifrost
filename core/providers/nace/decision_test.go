@@ -484,6 +484,43 @@ func TestNaceImagesInToolOutput(t *testing.T) {
 	require.JSONEq(t, string(before), string(after))
 }
 
+func TestNaceImageCountLimit(t *testing.T) {
+	valid := schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("aGVsbG8=")}
+	requestWith := func(count int, extra ...schemas.DecisionInputPart) *schemas.BifrostDecisionRequest {
+		parts := make([]schemas.DecisionInputPart, 0, count+len(extra))
+		for i := 0; i < count; i++ {
+			parts = append(parts, valid)
+		}
+		parts = append(parts, extra...)
+		req := routerShapedDecisionRequest()
+		req.Model = "drex-max"
+		req.Input = schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: parts}}}}
+		return req
+	}
+
+	t.Run("eight", func(t *testing.T) {
+		native, err := nace.ToNaceDecisionRequest(requestWith(8))
+		require.NoError(t, err)
+		require.Len(t, native.Images, 8)
+	})
+	t.Run("nine", func(t *testing.T) {
+		_, err := nace.ToNaceDecisionRequest(requestWith(9))
+		require.ErrorContains(t, err, "nace accepts at most 8 images")
+	})
+	// A payload that would fail validation on its own must still surface the count error.
+	t.Run("ninth invalid", func(t *testing.T) {
+		for _, ninth := range []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("https://example.com/image.png")},
+			{Type: schemas.DecisionInputPartTypeImage, Data: schemas.DecisionData{File: []byte{}}},
+		} {
+			_, err := nace.ToNaceDecisionRequest(requestWith(8, ninth))
+			require.ErrorContains(t, err, "nace accepts at most 8 images")
+			require.NotContains(t, err.Error(), "16 MiB")
+			require.NotContains(t, err.Error(), "URLs and paths")
+		}
+	})
+}
+
 func TestNaceImageSizeLimit(t *testing.T) {
 	for _, size := range []int{16*1024*1024 - 1, 16 * 1024 * 1024, 16*1024*1024 + 1, 16*1024*1024 + 2} {
 		for _, raw := range []bool{false, true} {
