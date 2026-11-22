@@ -1,8 +1,10 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"mime"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -387,4 +390,86 @@ func defaultInlineFilename(fileData string, fileType *string) string {
 		return "document." + subtype
 	}
 	return "document.pdf"
+}
+
+// fileContentText joins custom document content (file_content: a string or an array of text
+// blocks, the Anthropic/Bedrock citation-document shape) into plain text, one chunk per line.
+// It reports false for anything else, so the caller drops the field instead of guessing.
+func fileContentText(raw json.RawMessage) (string, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return "", false
+	}
+	if raw[0] == '"' {
+		var text string
+		if err := sonic.Unmarshal(raw, &text); err != nil {
+			return "", false
+		}
+		return text, true
+	}
+	var blocks []struct {
+		Type string  `json:"type"`
+		Text *string `json:"text"`
+	}
+	if err := sonic.Unmarshal(raw, &blocks); err != nil || len(blocks) == 0 {
+		return "", false
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type != "text" || block.Text == nil {
+			return "", false
+		}
+		parts = append(parts, *block.Text)
+	}
+	return strings.Join(parts, "\n"), true
+}
+
+// openAIChatFileContentBlock rewrites a chat file block carrying file_content, which no
+// OpenAI-shaped wire accepts: a block with no other source becomes a text block holding the
+// document, otherwise file_content is dropped beside the source that remains. The caller's
+// block is not modified, since fallbacks reuse the request.
+func openAIChatFileContentBlock(block schemas.ChatContentBlock) schemas.ChatContentBlock {
+	file := block.File
+	if file == nil || len(file.FileContent) == 0 {
+		return block
+	}
+	hasOtherSource := (file.FileData != nil && *file.FileData != "") || (file.FileURL != nil && *file.FileURL != "") || (file.FileID != nil && *file.FileID != "")
+	if !hasOtherSource {
+		if text, ok := fileContentText(file.FileContent); ok {
+			return schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: &text, CacheControl: block.CacheControl}
+		}
+	}
+	fileCopy := *file
+	fileCopy.FileContent = nil
+	block.File = &fileCopy
+	return block
+}
+
+// openAIResponsesFileContentBlock is openAIChatFileContentBlock for Responses input_file blocks.
+// It reports whether the block changed.
+func openAIResponsesFileContentBlock(block schemas.ResponsesMessageContentBlock) (schemas.ResponsesMessageContentBlock, bool) {
+	file := block.ResponsesInputMessageContentBlockFile
+	if file == nil || len(file.FileContent) == 0 {
+		return block, false
+	}
+	hasOtherSource := (file.FileData != nil && *file.FileData != "") || (file.FileURL != nil && *file.FileURL != "") || (block.FileID != nil && *block.FileID != "")
+	if !hasOtherSource {
+		if text, ok := fileContentText(file.FileContent); ok {
+			return schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: &text, CacheControl: block.CacheControl}, true
+		}
+	}
+	fileCopy := *file
+	fileCopy.FileContent = nil
+	block.ResponsesInputMessageContentBlockFile = &fileCopy
+	return block, true
+}
+
+// chatBlockHasFileContent reports whether a block carries file_content for the OpenAI wire to rewrite.
+func chatBlockHasFileContent(block *schemas.ChatContentBlock) bool {
+	return block.File != nil && len(block.File.FileContent) > 0
+}
+
+// responsesBlockHasFileContent is chatBlockHasFileContent for Responses blocks.
+func responsesBlockHasFileContent(block *schemas.ResponsesMessageContentBlock) bool {
+	return block.ResponsesInputMessageContentBlockFile != nil && len(block.ResponsesInputMessageContentBlockFile.FileContent) > 0
 }

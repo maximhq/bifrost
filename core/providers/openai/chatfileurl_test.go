@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -523,5 +524,65 @@ func TestMarshalEmptyTextDocumentShapes(t *testing.T) {
 		content := gjson.GetBytes(body, "0.content").Array()
 		require.Len(t, content, 1, "the message must not go out empty: %s", body)
 		assert.Equal(t, "input_file", content[0].Get("type").String())
+	})
+}
+
+// file_content (custom document chunks for Anthropic/Bedrock citations) is not part of any
+// OpenAI-shaped wire. A block whose only source it is goes out as text, so a request routed or
+// falling back to an OpenAI-compatible provider keeps the document; beside another source it is
+// dropped. Either way the key never reaches the wire, and the caller's request is not changed.
+func TestMarshalCustomDocumentContentShapes(t *testing.T) {
+	chunks := json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."},{"type":"text","text":"Audit: March."}]`)
+	const joined = "Budget: $4.2M.\nAudit: March."
+
+	t.Run("chat", func(t *testing.T) {
+		only := &schemas.ChatInputFile{FileContent: chunks, Filename: schemas.Ptr("pack")}
+		withData := &schemas.ChatInputFile{FileContent: json.RawMessage(`"Budget."`), FileData: schemas.Ptr("data:text/plain;base64,QnVkZ2V0Lg=="), Filename: schemas.Ptr("pack.txt")}
+		req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeFile, File: only, Citations: &schemas.Citations{Enabled: schemas.Ptr(true)}},
+				{Type: schemas.ChatContentBlockTypeFile, File: withData},
+			}},
+		}}}
+		body, err := req.MarshalJSON()
+		require.NoError(t, err)
+		assert.NotContains(t, string(body), "file_content")
+		assert.Equal(t, "text", gjson.GetBytes(body, "messages.0.content.0.type").String(), "%s", body)
+		assert.Equal(t, joined, gjson.GetBytes(body, "messages.0.content.0.text").String())
+		assert.Equal(t, "data:text/plain;base64,QnVkZ2V0Lg==", gjson.GetBytes(body, "messages.0.content.1.file.file_data").String())
+		assert.Equal(t, string(chunks), string(only.FileContent), "the caller's request is reused by fallbacks and must not change")
+		assert.Equal(t, schemas.ChatContentBlockTypeFile, req.Messages[0].Content.ContentBlocks[0].Type)
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		fileBlock := func(content json.RawMessage, data *string) schemas.ResponsesMessageContentBlock {
+			return schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileContent: content, FileData: data, Filename: schemas.Ptr("pack")}}
+		}
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					fileBlock(chunks, nil), fileBlock(chunks, schemas.Ptr("data:text/plain;base64,QnVkZ2V0Lg==")),
+				}},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{fileBlock(chunks, nil), fileBlock(chunks, schemas.Ptr("data:text/plain;base64,QnVkZ2V0Lg=="))},
+				}},
+			},
+		}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		assert.NotContains(t, string(body), "file_content", "%s", body)
+		assert.Equal(t, "input_text", gjson.GetBytes(body, "0.content.0.type").String(), "%s", body)
+		assert.Equal(t, joined, gjson.GetBytes(body, "0.content.0.text").String())
+		assert.Equal(t, "input_file", gjson.GetBytes(body, "0.content.1.type").String())
+		assert.Equal(t, "input_text", gjson.GetBytes(body, "1.output.0.type").String(), "%s", body)
+		assert.Equal(t, joined, gjson.GetBytes(body, "1.output.0.text").String())
+		assert.Equal(t, "input_file", gjson.GetBytes(body, "1.output.1.type").String())
+		assert.Equal(t, string(chunks), string(input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks[0].FileContent), "the caller's request must not change")
 	})
 }
