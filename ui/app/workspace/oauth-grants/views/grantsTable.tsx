@@ -24,6 +24,8 @@ interface GrantsTableProps {
 	revoking: boolean;
 	pendingActionRowId: string | null;
 	onRevoke: (row: OAuth2GrantRow) => void;
+	// accessTokenTTLSeconds is the configured access token lifetime.
+	accessTokenTTLSeconds: number;
 }
 
 export default function GrantsTable({
@@ -37,6 +39,7 @@ export default function GrantsTable({
 	revoking,
 	pendingActionRowId,
 	onRevoke,
+	accessTokenTTLSeconds,
 }: GrantsTableProps) {
 	const { t } = useTranslation("mcp");
 	return (
@@ -81,7 +84,7 @@ export default function GrantsTable({
 										<BindingCell row={row} />
 									</TableCell>
 									<TableCell className="text-muted-foreground text-sm">
-										<AccessTokenExpiry row={row} />
+										<AccessTokenExpiry row={row} ttlSeconds={accessTokenTTLSeconds} />
 									</TableCell>
 									<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.created_at)}</TableCell>
 									<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.last_used_at || row.created_at)}</TableCell>
@@ -174,17 +177,17 @@ function BindingCell({ row }: { row: OAuth2GrantRow }) {
 	);
 }
 
-function AccessTokenExpiry({ row }: { row: OAuth2GrantRow }) {
+function AccessTokenExpiry({ row, ttlSeconds }: { row: OAuth2GrantRow; ttlSeconds: number }) {
 	const { t } = useTranslation("mcp");
-	// Access token TTL is 10 min (600s default). Access tokens are stateless JWTs
-	// not stored server-side, so we approximate expiry from the grant's last
-	// activity (last_used_at, falling back to created_at). Anchoring to created_at
-	// alone would read as expired for any grant that has silently refreshed.
+	// Access tokens are stateless JWTs not stored server-side, so we approximate
+	// expiry from the grant's last activity (last_used_at, falling back to
+	// created_at) plus the configured TTL. Anchoring to created_at alone would
+	// read as expired for any grant that has silently refreshed.
 	const baseMs = new Date(row.last_used_at ?? row.created_at).getTime();
 	if (!Number.isFinite(baseMs)) {
 		return <span className="text-muted-foreground">{t("oauthGrants.unknown")}</span>;
 	}
-	const expiryMs = baseMs + 600_000; // 10 min default
+	const expiryMs = baseMs + ttlSeconds * 1000;
 	const diffMs = expiryMs - Date.now();
 	if (diffMs < 0) {
 		return <span className="text-muted-foreground">{t("oauthGrants.refreshesOnNextUse")}</span>;

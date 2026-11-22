@@ -1,2 +1,2 @@
-- fix: relay metrics match passthrough for headers and streams
-- chore: upgraded core to v1.15.0 and framework to v1.12.0
+- feat: optional `apply_trace_dimensions_to_child_spans` profile flag merges `x-bf-dim-*` dimensions onto every exported span; span attributes win on conflict, reserved keys are skipped (thanks [@devin-williams](https://github.com/devin-williams)!)
+- chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0

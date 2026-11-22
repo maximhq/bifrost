@@ -1,2 +1,2 @@
-- fix: drop-params resolves key aliases when looking up supported params
-- chore: upgraded core to v1.15.0 and framework to v1.12.0
+- fix: Baseten decision models are served natively instead of through Responses emulation
+- chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0

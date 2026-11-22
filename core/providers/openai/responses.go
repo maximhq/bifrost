@@ -629,13 +629,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
 	// Tools lifted out of codex additional_tools items for providers that reject them.
 	var hoistedTools []schemas.ResponsesTool
-	// Models older than GPT-5 reject custom tools with "Invalid value: 'custom'", so
-	// each one is sent as a function tool and its replayed calls follow suit. Their
-	// additional_tools items are lifted to the top level so the tools inside them get
-	// the same rewrite; the item's tools live in raw bytes that are not rewritten in place.
-	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
 	developerAsSystem := !caps.SupportsDeveloperRole(true)
-	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
+	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
 	keepsReasoningItemIDs := baseProvider == schemas.BedrockMantle || baseProvider == schemas.Bedrock
 	joinsReasoningBlocks := baseProvider == schemas.VLLM
 	keepConfigurationUpdate := supportsConfigurationUpdateItem(ctx, bifrostReq.Provider)
@@ -785,6 +780,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// message is a value copy, so the caller's input is untouched.
 		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCall &&
 			message.ID != nil && *message.ID != "" && !strings.HasPrefix(*message.ID, "fc") {
+			message.ID = nil
+		}
+		// A custom_tool_call id must begin with "ctc".
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeCustomToolCall &&
+			message.ID != nil && *message.ID != "" && !strings.HasPrefix(*message.ID, "ctc") {
 			message.ID = nil
 		}
 
@@ -1051,9 +1051,6 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	params := bifrostReq.Params
 	asyncToolsSupported := caps.SupportsAsyncTools(defaultSupportsAsyncTools(capModel))
 	messages = normalizeAsyncCallItems(messages, asyncToolsSupported)
-	if customToolsAsFunctions {
-		messages = responsesCustomCallItemsAsFunctions(messages)
-	}
 	// Create the responses request with properly mapped parameters
 	req := &OpenAIResponsesRequest{
 		Model:    bifrostReq.Model,
@@ -1065,12 +1062,28 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		// prompt_cache_options is a gpt-5.6+ model field, valid on any host serving one.
+		if !caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(capModel)) ||
+			caps.FieldUnsupported(schemas.FieldPromptCacheOptions, false) {
+			req.PromptCacheOptions = nil
+		}
 		// Bedrock Mantle accepts only "30m" for prompt_cache_options.ttl
 		if opts := req.PromptCacheOptions; opts != nil && opts.TTL != nil && *opts.TTL != "30m" &&
 			(cachePromptProvider == schemas.BedrockMantle || cachePromptProvider == schemas.Bedrock) {
 			optsCopy := *opts
 			optsCopy.TTL = nil
 			req.PromptCacheOptions = &optsCopy
+		}
+		// OpenRouter Responses accepts only mode "explicit"; "implicit" is the default, so omit it.
+		if opts := req.PromptCacheOptions; opts != nil && opts.Mode != nil && *opts.Mode == "implicit" &&
+			cachePromptProvider == schemas.OpenRouter {
+			if opts.TTL == nil {
+				req.PromptCacheOptions = nil
+			} else {
+				optsCopy := *opts
+				optsCopy.Mode = nil
+				req.PromptCacheOptions = &optsCopy
+			}
 		}
 		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
 		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
@@ -1173,6 +1186,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
 
+			// Baseten's /v1/responses takes reasoning.effort minimal through high only,
+			// though its chat route takes none through max.
+			if bifrostReq.Provider == schemas.Baseten {
+				req.ResponsesParameters.Reasoning.Effort = clampBasetenResponsesEffort(req.ResponsesParameters.Reasoning.Effort)
+			}
+
 			// Handle OpenAI-specific parameter filtering
 			// Only o1/o3 series models support reasoning.effort
 			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
@@ -1191,7 +1210,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			req.ResponsesParameters.TopP = nil
 		}
 		// Only OpenAI hosts gate these; third-party gpt-oss hosts accept them.
-		if base := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider); base == schemas.OpenAI || base == schemas.Azure {
+		base := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+		if base == schemas.OpenAI || base == schemas.Azure || ((base == schemas.BedrockMantle || base == schemas.Bedrock) && !isGPTOSS(capModel)) {
 			if samplingParamUnsupported(caps, schemas.FieldTemperature, capModel, effort) {
 				req.ResponsesParameters.Temperature = nil
 			}
@@ -1199,12 +1219,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.TopLogProbs = nil
 			}
 			if samplingParamUnsupported(caps, schemas.FieldLogprobs, capModel, effort) &&
-				slices.Contains(req.ResponsesParameters.Include, "message.output_text.logprobs") {
+				slices.Contains(req.ResponsesParameters.Include, schemas.ResponsesIncludeOutputTextLogProbs) {
 				// Clone: Include shares its backing array with bifrostReq.Params.
 				req.ResponsesParameters.Include = slices.DeleteFunc(slices.Clone(req.ResponsesParameters.Include), func(s string) bool {
-					return s == "message.output_text.logprobs"
+					return s == schemas.ResponsesIncludeOutputTextLogProbs
 				})
 			}
+		}
+		if base == schemas.OpenAI || base == schemas.Azure {
 			// Codex asks for encrypted reasoning on every request; models that do not
 			// reason reject it ("Encrypted content is not supported with this model").
 			if !caps.SupportsReasoning(IsOpenAIReasoningModel(capModel)) &&
@@ -1233,12 +1255,6 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	if reserved := resolveReservedToolNamespaces(toolProvider, capModel); len(reserved) > 0 && len(req.Tools) > 0 {
 		substitute := toolProvider == schemas.BedrockMantle && caps.SupportsWebSearch(true)
 		req.Tools = dropReservedNamespaceTools(req.Tools, reserved, substitute)
-	}
-
-	// Runs before the normalization below so the rewritten tools are normalized too.
-	if customToolsAsFunctions {
-		req.Tools = responsesCustomToolsAsFunctions(req.Tools)
-		req.ToolChoice = responsesCustomToolChoiceAsFunction(req.ToolChoice)
 	}
 
 	// Normalize function tool parameters for deterministic JSON serialization, and

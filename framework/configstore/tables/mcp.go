@@ -156,6 +156,9 @@ type TableMCPClient struct {
 	DiscoveredResources         []mcp.Resource         `gorm:"-" json:"-"` // Runtime mirror of DiscoveredResourcesJSON
 	DiscoveredResourceTemplates []mcp.ResourceTemplate `gorm:"-" json:"-"` // Runtime mirror of DiscoveredResourceTemplatesJSON
 	DiscoveredPrompts           []mcp.Prompt           `gorm:"-" json:"-"` // Runtime mirror of DiscoveredPromptsJSON
+
+	// ServerTypeOnSlug is code mode on the client's own /mcp/<slug>; empty inherits is_code_mode_client.
+	ServerTypeOnSlug schemas.MCPServerTypeOnSlug `gorm:"column:server_type_on_slug;type:varchar(16);default:''" json:"server_type_on_slug,omitempty"`
 }
 
 // SplitOpenAPIConfigForStorage separates an openapi_config into its two

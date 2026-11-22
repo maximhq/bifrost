@@ -42,7 +42,7 @@ func ToReplicateResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*
 		if len(bifrostReq.Input) > 0 {
 			// if model is from openai family, use messages
 			if strings.HasPrefix(bifrostReq.Model, string(schemas.OpenAI)) {
-				input.Messages = schemas.ToChatMessages(bifrostReq.Input)
+				input.Messages = schemas.ToChatMessages(bifrostReq.Input, nil)
 			} else {
 				// convert input to prompt and system prompt
 				var systemPrompt string

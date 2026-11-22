@@ -23,6 +23,8 @@ type BifrostChatRequest struct {
 	Params         *ChatParameters `json:"params,omitempty"`
 	Fallbacks      []Fallback      `json:"fallbacks,omitempty"`
 	RawRequestBody []byte          `json:"-"` // set bifrost-use-raw-request-body to true in ctx to use the raw request body. Bifrost will directly send this to the downstream provider.
+
+	CustomToolNames map[string]struct{} `json:"-"` // custom tools sent as function tools, for restoring their calls
 }
 
 // GetRawRequestBody returns the raw request body
@@ -43,7 +45,7 @@ type BifrostChatResponse struct {
 	Choices             []BifrostResponseChoice    `json:"choices"`
 	Created             int                        `json:"created"` // The Unix timestamp (in seconds).
 	Model               string                     `json:"model"`
-	Object              string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	Object              string                     `json:"object"` // "chat.completion", "chat.completion.chunk", or Perplexity's passthrough terminal "chat.completion.done"
 	ServiceTier         *BifrostServiceTier        `json:"service_tier,omitempty"`
 	Speed               *string                    `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 	InferenceGeo        *string                    `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
@@ -902,7 +904,9 @@ func (a *AdditionalPropertiesStruct) UnmarshalJSON(data []byte) error {
 }
 
 type ChatToolCustom struct {
-	Format *ChatToolCustomFormat `json:"format,omitempty"` // The input format
+	Name        string                `json:"name,omitempty"`        // OpenAI Chat wire nests the custom tool name here
+	Description *string               `json:"description,omitempty"` // Description of the custom tool
+	Format      *ChatToolCustomFormat `json:"format,omitempty"`      // The input format
 }
 
 type ChatToolCustomFormat struct {
@@ -1115,8 +1119,39 @@ type ChatToolChoiceAllowedTools struct {
 
 // ChatToolChoiceAllowedToolsTool represents a allowed tools tool.
 type ChatToolChoiceAllowedToolsTool struct {
-	Type     string                 `json:"type"` // "function"
+	Type     string                 `json:"type"` // "function" | "custom"
 	Function ChatToolChoiceFunction `json:"function,omitempty"`
+	Custom   *ChatToolChoiceCustom  `json:"custom,omitempty"`
+}
+
+// MarshalJSON emits type plus custom for a custom entry, and type plus function otherwise.
+func (t ChatToolChoiceAllowedToolsTool) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	typeBytes, err := MarshalSorted(t.Type)
+	if err != nil {
+		return nil, err
+	}
+	buf.WriteString(`{"type":`)
+	buf.Write(typeBytes)
+	if t.Type == string(ChatToolChoiceTypeCustom) {
+		if t.Custom != nil {
+			customBytes, err := MarshalSorted(t.Custom)
+			if err != nil {
+				return nil, err
+			}
+			buf.WriteString(`,"custom":`)
+			buf.Write(customBytes)
+		}
+	} else {
+		funcBytes, err := MarshalSorted(t.Function)
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteString(`,"function":`)
+		buf.Write(funcBytes)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
 }
 
 // ChatMessageRole represents the role of a chat message
@@ -1686,6 +1721,13 @@ type ChatAssistantMessage struct {
 // ChatMessage.UnmarshalJSON exists. Do not remove one without the other.
 func (cm ChatAssistantMessage) MarshalJSON() ([]byte, error) {
 	type Alias ChatAssistantMessage
+	if wire := customToolCallsWire(cm.ToolCalls); wire != nil {
+		return Marshal(struct {
+			Alias
+			ToolCalls        []customToolCallWire `json:"tool_calls,omitempty"`
+			ReasoningContent *string              `json:"reasoning_content,omitempty"`
+		}{Alias: Alias(cm), ToolCalls: wire, ReasoningContent: cm.Reasoning})
+	}
 	if cm.Reasoning == nil {
 		return Marshal(Alias(cm))
 	}
@@ -1822,8 +1864,42 @@ type ChatAssistantMessageToolCall struct {
 	Type         *string                              `json:"type,omitempty"`
 	ID           *string                              `json:"id,omitempty"`
 	Function     ChatAssistantMessageToolCallFunction `json:"function"`
+	Custom       *ChatAssistantMessageToolCallCustom  `json:"custom,omitempty"` // set for type "custom"; Function is then omitted on the wire
 	ExtraContent json.RawMessage                      `json:"extra_content,omitempty"`
 	CacheControl *CacheControl                        `json:"cache_control,omitempty"` // Anthropic-family cache breakpoint on the tool_use block
+}
+
+// customToolCallWire encodes a tool call without its function object when it is a custom call.
+// Only messages that carry a custom call pay for it; see customToolCallsWire.
+type customToolCallWire ChatAssistantMessageToolCall
+
+func (tc customToolCallWire) MarshalJSON() ([]byte, error) {
+	type Alias customToolCallWire
+	if tc.Custom == nil {
+		return Marshal(Alias(tc))
+	}
+	return Marshal(struct {
+		Alias
+		Function *ChatAssistantMessageToolCallFunction `json:"function,omitempty"`
+	}{Alias: Alias(tc)})
+}
+
+// customToolCallsWire returns calls as wire values when any is a custom call, else nil.
+func customToolCallsWire(calls []ChatAssistantMessageToolCall) []customToolCallWire {
+	if !slices.ContainsFunc(calls, func(tc ChatAssistantMessageToolCall) bool { return tc.Custom != nil }) {
+		return nil
+	}
+	wire := make([]customToolCallWire, len(calls))
+	for i, tc := range calls {
+		wire[i] = customToolCallWire(tc)
+	}
+	return wire
+}
+
+// ChatAssistantMessageToolCallCustom is a call to a custom (freeform) tool.
+type ChatAssistantMessageToolCallCustom struct {
+	Name  *string `json:"name,omitempty"` // omitted on streaming continuation deltas
+	Input string  `json:"input"`
 }
 
 // ChatAssistantMessageToolCallFunction represents a call to a function.
@@ -1950,6 +2026,13 @@ type ChatStreamResponseChoiceDelta struct {
 // no companion marshaller is required.
 func (d ChatStreamResponseChoiceDelta) MarshalJSON() ([]byte, error) {
 	type Alias ChatStreamResponseChoiceDelta
+	if wire := customToolCallsWire(d.ToolCalls); wire != nil {
+		return Marshal(struct {
+			Alias
+			ToolCalls        []customToolCallWire `json:"tool_calls,omitempty"`
+			ReasoningContent *string              `json:"reasoning_content,omitempty"`
+		}{Alias: Alias(d), ToolCalls: wire, ReasoningContent: d.Reasoning})
+	}
 	if d.Reasoning == nil {
 		return Marshal(Alias(d))
 	}
@@ -2033,7 +2116,16 @@ type ContentLogProb struct {
 }
 
 // BifrostLLMUsage represents token usage information
+// TokenUsageEstimation identifies locally estimated fields of interrupted usage.
+// Provider-reported fields and successfully completed responses are unchanged.
+type TokenUsageEstimation struct {
+	Prompt     bool   `json:"prompt,omitempty"`
+	Completion bool   `json:"completion,omitempty"`
+	Tokenizer  string `json:"tokenizer"`
+}
+
 type BifrostLLMUsage struct {
+	Estimation              *TokenUsageEstimation        `json:"estimation,omitempty"`
 	PromptTokens            int                          `json:"prompt_tokens,omitempty"`
 	PromptTokensDetails     *ChatPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
@@ -2370,10 +2462,37 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 
 	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
 	merged.Cost = base.Cost.Add(add.Cost)
+	merged.Estimation = mergeTokenUsageEstimation(base.Estimation, add.Estimation)
 	if len(base.Iterations)+len(add.Iterations) > 0 {
 		merged.Iterations = append(slices.Clone(base.Iterations), add.Iterations...)
 	}
 
+	return merged
+}
+
+// mixedTokenizerEstimation names the tokenizer of a sum whose estimated turns used different ones.
+const mixedTokenizerEstimation = "mixed"
+
+// mergeTokenUsageEstimation carries the estimation marker into a sum of usages. A count is
+// estimated when either turn's count was. It returns nil when neither turn was estimated.
+func mergeTokenUsageEstimation(base, add *TokenUsageEstimation) *TokenUsageEstimation {
+	if base == nil && add == nil {
+		return nil
+	}
+	if base == nil {
+		return new(*add)
+	}
+	if add == nil {
+		return new(*base)
+	}
+	merged := &TokenUsageEstimation{
+		Prompt:     base.Prompt || add.Prompt,
+		Completion: base.Completion || add.Completion,
+		Tokenizer:  base.Tokenizer,
+	}
+	if base.Tokenizer != add.Tokenizer {
+		merged.Tokenizer = mixedTokenizerEstimation
+	}
 	return merged
 }
 
@@ -2944,6 +3063,10 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		return nil
 	}
 	c := *u
+	if u.Estimation != nil {
+		e := *u.Estimation
+		c.Estimation = &e
+	}
 	if u.PromptTokensDetails != nil {
 		pd := *u.PromptTokensDetails
 		if u.PromptTokensDetails.CachedWriteTokenDetails != nil {

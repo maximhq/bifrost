@@ -14,6 +14,8 @@ interface BudgetDisplayProps {
 	calendarAligned?: boolean;
 	/** Draw at most this many lines; the rest collapse into a "+x more" line whose tooltip names them. */
 	maxVisible?: number;
+	/** Set when the lines are an access profile's shared by other keys: tags them "shared" and says who shares them. */
+	sharedNote?: string;
 }
 
 const formatResetDuration = (t: TFunction<"common">, duration?: string | null, calendarAligned?: boolean) => {
@@ -27,7 +29,7 @@ const formatResetDuration = (t: TFunction<"common">, duration?: string | null, c
  * color-coded progress bar (emerald < 80% < amber < exhausted = red), and a tooltip with
  * the exact current/max spend. Mirrors RateLimitDisplay for visual consistency across tables.
  */
-export function BudgetDisplay({ budgets, calendarAligned, maxVisible }: BudgetDisplayProps) {
+export function BudgetDisplay({ budgets, calendarAligned, maxVisible, sharedNote }: BudgetDisplayProps) {
 	const { t } = useTranslation("common");
 	if (!budgets || budgets.length === 0) {
 		return <span className="text-muted-foreground text-sm">-</span>;
@@ -48,12 +50,17 @@ export function BudgetDisplay({ budgets, calendarAligned, maxVisible }: BudgetDi
 				return (
 					<Tooltip key={b.id ?? idx}>
 						<TooltipTrigger asChild>
-							<div className="space-y-1.5">
+							<div tabIndex={0} className="focus-visible:ring-ring/50 space-y-1.5 rounded-sm outline-none focus-visible:ring-1">
 								<div className="flex items-center justify-between gap-4">
 									<span className="text-xs font-medium">
 										{formatCurrency(effectiveMaxLimit)}
 										{b.label ? <span className="text-muted-foreground ml-1 text-xs font-normal">{b.label}</span> : null}
 										{hasOverride ? <span className="text-muted-foreground ml-1 text-[10px]">{t("budgetDisplay.override")}</span> : null}
+										{sharedNote ? (
+											<span className="text-muted-foreground ml-1 text-[10px]" data-testid="budget-shared-tag">
+												{t("budgetDisplay.sharedTag")}
+											</span>
+										) : null}
 									</span>
 									<span className="text-muted-foreground text-xs">
 										{formatResetDuration(t, b.reset_duration, calendarAligned)}
@@ -83,6 +90,7 @@ export function BudgetDisplay({ budgets, calendarAligned, maxVisible }: BudgetDi
 									})}
 								</p>
 							) : null}
+							{sharedNote ? <p className="text-muted-foreground mt-1 max-w-64 text-xs">{sharedNote}</p> : null}
 						</TooltipContent>
 					</Tooltip>
 				);
@@ -102,6 +110,7 @@ export function BudgetDisplay({ budgets, calendarAligned, maxVisible }: BudgetDi
 								{b.reset_duration ? ` · ${formatResetDuration(t, b.reset_duration, calendarAligned)}` : ""}
 							</p>
 						))}
+						{sharedNote ? <p className="text-muted-foreground mt-1 max-w-64 text-xs">{sharedNote}</p> : null}
 					</TooltipContent>
 				</Tooltip>
 			) : null}

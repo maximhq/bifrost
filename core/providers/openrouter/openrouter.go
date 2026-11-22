@@ -497,7 +497,7 @@ func (provider *OpenRouterProvider) Decision(ctx *schemas.BifrostContext, key sc
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*OpenRouterDecisionRequest, error) {
 			return ToOpenRouterDecisionRequest(request)
 		})
 	if bifrostErr != nil {

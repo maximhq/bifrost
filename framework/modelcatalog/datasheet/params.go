@@ -31,6 +31,8 @@ func (s *Store) LoadModelParamsFromDB(ctx context.Context) (int, error) {
 	if s.configStore == nil {
 		return 0, nil
 	}
+	s.modelParamsSyncMu.Lock()
+	defer s.modelParamsSyncMu.Unlock()
 	rows, err := s.configStore.GetModelParameters(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to load model parameters from database: %w", err)
@@ -82,22 +84,60 @@ func (s *Store) SyncModelParamsFromURL(ctx context.Context) error {
 		return fmt.Errorf("failed to load model parameters from URL and no existing data in database: %w", err)
 	}
 
+	// Reject unusable rows before either persistence or publication. A valid
+	// sibling must not let a malformed or empty feed row erase stored data.
+	usableParams := make(map[string]json.RawMessage, len(paramsData))
+	for model, data := range paramsData {
+		var caps schemas.ModelCapabilities
+		if json.Unmarshal(data, &caps) == nil && !IsEmptyModelCapabilities(&caps) {
+			usableParams[model] = data
+		}
+	}
+	if len(usableParams) == 0 {
+		if s.logger != nil {
+			s.logger.Warn("model-parameters-sync: no usable records in URL feed, keeping existing model parameters and capabilities")
+		}
+		return nil
+	}
+
+	s.modelParamsSyncMu.Lock()
+	defer s.modelParamsSyncMu.Unlock()
+	synced := len(usableParams)
 	if s.configStore != nil {
-		records := make([]configstoreTables.TableModelParameters, 0, len(paramsData))
-		for model, data := range paramsData {
+		rows, err := s.configStore.GetModelParameters(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to load model parameters before sync: %w", err)
+		}
+		merged := make(map[string]json.RawMessage, len(rows)+len(usableParams))
+		for _, row := range rows {
+			merged[row.Model] = json.RawMessage(row.Data)
+		}
+		records := make([]configstoreTables.TableModelParameters, 0, len(usableParams))
+		for model, data := range usableParams {
+			// Capabilities do not include provider metadata. Keep an existing
+			// provider row if this replacement would make its runtime lookup fail.
+			storedProvider := gjson.GetBytes(merged[model], "provider")
+			incomingProvider := gjson.GetBytes(data, "provider")
+			if storedProvider.Type == gjson.String && strings.TrimSpace(storedProvider.Str) != "" &&
+				(incomingProvider.Type != gjson.String || strings.TrimSpace(incomingProvider.Str) == "") {
+				continue
+			}
 			records = append(records, configstoreTables.TableModelParameters{
 				Model: model,
 				Data:  string(data),
 			})
+			merged[model] = data
 		}
 		if err := s.configStore.UpsertModelParametersBatch(ctx, records); err != nil {
 			return fmt.Errorf("failed to sync model parameters to database: %w", err)
 		}
+		synced = len(records)
+		s.applyModelParameters(merged)
+	} else {
+		s.applyModelParameters(usableParams)
 	}
-
-	s.applyModelParameters(paramsData)
 	if s.logger != nil {
-		s.logger.Info("successfully synced %d model parameters records", len(paramsData))
+		s.logger.Info("successfully synced %d model parameters records", synced)
 	}
 	return nil
 }
@@ -111,6 +151,8 @@ func (s *Store) LoadModelParamsFromURLIntoMemory(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load model parameters from URL: %w", err)
 	}
+	s.modelParamsSyncMu.Lock()
+	defer s.modelParamsSyncMu.Unlock()
 	s.applyModelParameters(paramsData)
 	return nil
 }
@@ -169,6 +211,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 // applyModelParameters parses the raw model-parameters JSON and updates:
 //   - supportedResponseTypes (per-model normalized output types)
 //   - supportedParams (per-model accepted request parameter names)
+//   - modelParameterKeys (usable row keys, independent of the parameter allowlist)
 //   - the provider-utils model capability cache
 //
 // Models with no useful info contribute nothing — the indexes are wholly
@@ -187,6 +230,7 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 	paramsData, overrideOnly := s.withParamsEntryOverrides(paramsData)
 	newResponseTypes := make(map[string][]string, len(paramsData))
 	newParamsIndex := make(map[string][]string, len(paramsData))
+	newModelKeys := make([]string, 0, len(paramsData))
 	applied := 0
 
 	for model, rawData := range paramsData {
@@ -205,6 +249,7 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 		// feed of empty rows clear the capability cache with nothing to refill it.
 		if !IsEmptyModelCapabilities(&caps) {
 			applied++
+			newModelKeys = append(newModelKeys, model)
 		}
 
 		outputs := make([]string, 0, len(caps.SupportedEndpoints))
@@ -246,9 +291,8 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 	// A feed with nothing usable changes nothing: the derived indexes and the
 	// capability cache move together, or neither moves. Swapping the indexes
 	// while the guard below keeps the cache would leave the two describing
-	// different sheets — supportedParams feeds the compat parameter allowlist
-	// and the qualified-key suffix index, so an empty swap silently strips both
-	// while capability records still answer from the previous sheet.
+	// different sheets while capability records still answer from the previous
+	// sheet.
 	//
 	// Every pod reloads from here on the gossip hook.
 	if applied == 0 {
@@ -262,6 +306,7 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 	s.supportedResponseTypes = newResponseTypes
 	s.supportedParams = newParamsIndex
 	s.paramsOverrideOnly = overrideOnly
+	s.modelParameterKeys = newModelKeys
 	s.mu.Unlock()
 
 	// Anything cached against the previous sheet — records and "no such model"
@@ -444,7 +489,9 @@ func (s *Store) modelParameterCandidates(model string) []string {
 	suffix := "/" + bare
 	var qualified []string
 	s.mu.RLock()
-	for key := range s.supportedParams {
+	// A usable capability record can have no accepted request parameters.
+	// Discover it by row identity rather than membership in the allowlist.
+	for _, key := range s.modelParameterKeys {
 		if strings.HasSuffix(key, suffix) {
 			qualified = append(qualified, key)
 		}

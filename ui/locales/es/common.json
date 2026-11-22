@@ -77,7 +77,8 @@
 		"modelLimits": "límites de modelos",
 		"agent": "agente",
 		"relay": "relé",
-		"relays": "relés"
+		"relays": "relés",
+		"modelRouters": "enrutadores"
 	},
 	"aboutField": "Acerca de {{field}}",
 	"thisField": "este campo",
@@ -121,7 +122,8 @@
 		"searching": "Buscando…",
 		"loadingMore": "Cargando más…",
 		"useModel": "Usar <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqueados"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqueados",
+		"templateUnknownGroup": "Hace referencia al grupo de captura {{group}}, que el patrón no define"
 	},
 	"providerSelect": {
 		"select": "Seleccionar proveedor",
@@ -261,7 +263,8 @@
 	"budgetDisplay": {
 		"usageAria": "Uso del presupuesto",
 		"override": "sobrescritura",
-		"baseTooltip": "Base {{base}} + {{override}} de sobrescritura"
+		"baseTooltip": "Base {{base}} + {{override}} de sobrescritura",
+		"sharedTag": "compartido"
 	},
 	"rateLimit": {
 		"tokens": "tokens",
@@ -300,6 +303,11 @@
 	},
 	"configSyncAlert": {
 		"message": "Esta configuración se sincroniza desde <code0>config.json</code0>. Cualquier actualización futura de config.json sobrescribirá los cambios hechos en la interfaz. Si usas config.json para inicializar la configuración, puedes ignorar esta alerta."
+	},
+	"configIssuesAlert": {
+		"title": "Parte de la declaración de config.json no se aplicó",
+		"badge": "Problemas de configuración",
+		"hint": "El resto de la declaración está aplicado. Cada elemento de arriba desaparece solo cuando existe lo que nombra, por ejemplo al registrar el cliente MCP que falta."
 	},
 	"breadcrumb": {
 		"label": "ruta de navegación",
@@ -507,10 +515,14 @@
 		"maxNumber": "Debe ser como máximo {{maximum}}",
 		"maxChars": "Debe tener como máximo {{maximum}} caracteres",
 		"validUrl": "Debe ser una URL válida",
+		"publicUrlNoUserinfoQueryOrFragment": "No debe contener información de usuario, una consulta ni un fragmento",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "Debe ser una URL http(s) o una ruta relativa al directorio de la aplicación",
+		"openapiUrlMustStayInAppDir": "Debe ser una ruta relativa al directorio de la aplicación que permanezca dentro de él",
 		"validEmail": "Debe ser un correo electrónico válido",
 		"grpcHostPortFormat": "Debe tener el formato <host>:<port> para gRPC (p. ej., {{example}})",
 		"invalidInput": "Entrada no válida",
 		"vertexEndpointId": "Introduce un ID de endpoint de Vertex o pega una URL de endpoint compatible",
+		"basetenDeploymentUrl": "La URL de implementación debe ser una URL https absoluta sin credenciales, consulta ni fragmento",
 		"mcp": {
 			"privateKeyRequired": "Se requiere una clave privada para private_key_jwt",
 			"secretRequiredForMethod": "Se requiere un secreto de cliente para elegir cómo se envía",
@@ -580,7 +592,8 @@
 		"baseUrlIsRequiredForThisProvider": "La URL base es obligatoria para este proveedor",
 		"baseUrlMustStartWithHttpOrHttps": "La URL base debe comenzar con http:// o https://",
 		"atLeastOneApiKeyIsRequired": "Se requiere al menos una clave de API",
-		"apiKeyValueCannotBeEmpty": "El valor de la clave de API no puede estar vacío"
+		"apiKeyValueCannotBeEmpty": "El valor de la clave de API no puede estar vacío",
+		"deploymentPatternInvalid": "Un patrón de despliegue no es válido o su ID de modelo usa un grupo de captura que el patrón no define"
 	},
 	"permissionDenied": {
 		"create": "No tienes permiso para crear {{entity}}.",
