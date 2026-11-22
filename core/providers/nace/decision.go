@@ -21,9 +21,9 @@ func ToNaceDecisionRequest(request *schemas.BifrostDecisionRequest) (*NaceDecisi
 	if err != nil {
 		return nil, err
 	}
-	// Mutable aliases are resolved by Nace at execution time. Reject only pinned
-	// text-only IDs locally: a catalog's alias_for can change without a gateway rebuild.
-	if len(images) > 0 && (request.Model == "drex-v2.0" || request.Model == "drex-v1.5") {
+	// Mutable aliases and retired IDs are resolved by Nace at execution time.
+	// Only the active, pinned text-only model is rejected locally.
+	if len(images) > 0 && request.Model == "drex-v2.0" {
 		return nil, providerUtils.InvalidRequestErrorf("images require a drex-max model; %q is text-only", request.Model)
 	}
 	textOnly := *request

@@ -344228,6 +344228,94 @@
               "raw": "{\n  \"model\": \"nace/drex-max-v1.1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Inspect the attached synthetic image.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"lookup_1\",\n      \"name\": \"lookup_image\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"lookup_1\",\n      \"output\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"A second synthetic image from the tool.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"has_image\",\n      \"instructions\": \"Is an image attached to this request?\"\n    }\n  ]\n}"
             }
           }
+        },
+        {
+          "name": "/v1/decisions - retired nace/drex-v1.5 accepts inline image - #9740",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Retired Drex v1.5 forwards images to Drex Max v1.1', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.answers).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(body.answers[0].name).to.eql('has_image');",
+                  "  pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "  pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "  pm.expect(body.usage.prompt_tokens).to.be.above(0);",
+                  "  var sent = body.extra_fields.raw_request;",
+                  "  if (typeof sent === 'string') sent = JSON.parse(sent);",
+                  "  pm.expect(sent.images, 'image missing from native request').to.have.lengthOf(1);",
+                  "  pm.expect(sent.images[0]).to.eql(JSON.parse(pm.request.body.raw).input[0].content[1].image_url);",
+                  "  pm.expect(sent.model, 'requested retired ID must reach Nace unchanged').to.eql('drex-v1.5');",
+                  "  var received = body.extra_fields.raw_response;",
+                  "  if (typeof received === 'string') received = JSON.parse(received);",
+                  "  pm.expect(received.model, 'serving model must match the retired ID target').to.eql('drex-max-v1.1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/decisions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"nace/drex-v1.5\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Inspect the attached synthetic image.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"has_image\",\n      \"instructions\": \"Is an image attached to this request?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/decisions - retired nace/drex-v1.5 accepts inline image - #9740",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Retired Drex v1.5 forwards images to Drex Max v1.1', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.answers).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(body.answers[0].name).to.eql('has_image');",
+                  "  pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "  pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "  pm.expect(body.usage.prompt_tokens).to.be.above(0);",
+                  "  var sent = body.extra_fields.raw_request;",
+                  "  if (typeof sent === 'string') sent = JSON.parse(sent);",
+                  "  pm.expect(sent.images, 'image missing from native request').to.have.lengthOf(1);",
+                  "  pm.expect(sent.images[0]).to.eql(JSON.parse(pm.request.body.raw).input[0].content[1].image_url);",
+                  "  pm.expect(sent.model, 'requested retired ID must reach Nace unchanged').to.eql('drex-v1.5');",
+                  "  var received = body.extra_fields.raw_response;",
+                  "  if (typeof received === 'string') received = JSON.parse(received);",
+                  "  pm.expect(received.model, 'serving model must match the retired ID target').to.eql('drex-max-v1.1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/openai/v1/decisions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"nace/drex-v1.5\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Inspect the attached synthetic image.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"has_image\",\n      \"instructions\": \"Is an image attached to this request?\"\n    }\n  ]\n}"
+            }
+          }
         }
       ]
     },

@@ -10,15 +10,12 @@ import (
 
 const defaultBaseURL = "https://console.nace.ai"
 
-// resolveModelAlias follows the public aliases and retired IDs served by Drex.
+// resolveModelAlias supplies fallback metadata for aliases and retired IDs.
+// The live catalog's alias_for takes precedence; inference forwards IDs unchanged.
 func resolveModelAlias(model string) string {
 	switch model {
-	case "drex-latest", "nacedm-latest":
-		return "drex-v2.0"
-	case "drex-v1.0":
-		return "drex-max"
-	case "drex-v1.1":
-		return "drex-v1.5"
+	case "drex-latest", "nacedm-latest", "drex-v1.0", "drex-v1.1", "drex-v1.5", "drex-max":
+		return "drex-max-v1.1"
 	default:
 		return model
 	}

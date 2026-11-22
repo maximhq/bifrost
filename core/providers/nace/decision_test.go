@@ -251,7 +251,7 @@ func TestNaceImages(t *testing.T) {
 		{"drex-v1.1", []string{"aGVsbG8="}, false},
 		{"nacedm-latest", []string{"aGVsbG8="}, false},
 		{"drex-v2.0", []string{"aGVsbG8="}, true},
-		{"drex-v1.5", []string{"aGVsbG8="}, true},
+		{"drex-v1.5", []string{"aGVsbG8="}, false},
 		{"drex-latest", []string{"aGVsbG8="}, false},
 		{"drex-max", []string{"https://example.com/image.png"}, true},
 		{"drex-max", []string{"bad base64"}, true},
@@ -331,9 +331,9 @@ func TestNaceListModels(t *testing.T) {
 		limit     int
 		image     bool
 	}{
-		{"drex-v2.0", "0.00000006", 131072, false}, {"drex-v1.5", "0.00000005", 131072, false}, {"drex-latest", "0.00000006", 131072, false},
+		{"drex-v2.0", "0.00000003", 262144, false}, {"drex-v1.5", "0.00000003", 262144, true}, {"drex-latest", "0.00000003", 262144, true},
 		{"drex-max", "0.00000003", 262144, true}, {"drex-max-v1.1", "0.00000003", 262144, true}, {"drex-max-finance", "0.00000003", 262144, true},
-		{"drex-v1.0", "0.00000003", 262144, true}, {"drex-v1.1", "0.00000005", 131072, false}, {"nacedm-latest", "0.00000006", 131072, false},
+		{"drex-v1.0", "0.00000003", 262144, true}, {"drex-v1.1", "0.00000003", 262144, true}, {"nacedm-latest", "0.00000003", 262144, true},
 	} {
 		t.Run(test.id, func(t *testing.T) {
 			model := nace.ToBifrostModel(nace.NaceModel{Name: test.id}, schemas.Nace)
@@ -512,7 +512,7 @@ func TestNaceCatalogAliasRetargeting(t *testing.T) {
 	observed := make(chan string, 1)
 	provider := fixture(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
-			_, _ = fmt.Fprint(w, `{"models":[{"name":"drex-latest","alias_for":"drex-max-v1.1"}]}`)
+			_, _ = fmt.Fprint(w, `{"models":[{"name":"drex-next","alias_for":"drex-max-v1.1"}]}`)
 			return
 		}
 		var sent struct {
@@ -537,7 +537,7 @@ func TestNaceCatalogAliasRetargeting(t *testing.T) {
 	require.Nil(t, bErr)
 	select {
 	case model := <-observed:
-		require.Equal(t, "drex-latest", model, "upstream resolves the current alias")
+		require.Equal(t, "drex-next", model, "upstream resolves the current alias")
 	default:
 		t.Fatal("advertised image-capable alias never reached upstream")
 	}
@@ -548,11 +548,11 @@ func TestNaceBackfilledModels(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"models":[{"name":"drex-max"}]}`)
 	})
 	credential := key()
-	credential.Models = []string{"drex-max", "drex-max-v1.1", "custom-max", "future-model"}
+	credential.Models = []string{"drex-max", "drex-max-v1.1", "drex-v1.5", "custom-max", "future-model"}
 	credential.Aliases = schemas.KeyAliases{"custom-max": {ModelID: "drex-max-v1.1"}}
 	catalog, err := provider.ListModels(ctx(), []schemas.Key{credential}, &schemas.BifrostListModelsRequest{})
 	require.Nil(t, err)
-	require.Len(t, catalog.Data, 4)
+	require.Len(t, catalog.Data, 5)
 	for _, model := range catalog.Data {
 		if model.ID == "nace/future-model" {
 			require.Nil(t, model.Pricing)
@@ -600,7 +600,13 @@ func TestNacePinnedImageCapability(t *testing.T) {
 			req.Model = model
 			req.Input = schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("aGVsbG8=")}}}}}}
 			_, err := nace.ToNaceDecisionRequest(req)
-			require.Equal(t, len(entry.Architecture.InputModalities) == 2, err == nil)
+			if model == "drex-v2.0" {
+				require.ErrorContains(t, err, "text-only")
+				require.NotContains(t, entry.Architecture.InputModalities, "image")
+			} else {
+				require.NoError(t, err)
+				require.Contains(t, entry.Architecture.InputModalities, "image")
+			}
 		})
 	}
 }
