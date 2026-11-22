@@ -10892,3 +10892,204 @@ func TestChatToolImages(t *testing.T) {
 		}
 	}
 }
+
+type uniqueTraceTracer struct {
+	schemas.NoOpTracer
+	seq atomic.Int64
+}
+
+func (t *uniqueTraceTracer) CreateTrace(_ string, _ ...string) string {
+	return fmt.Sprintf("trace-%d", t.seq.Add(1))
+}
+
+type observedContextIdentity struct {
+	requestID string
+	traceID   string
+	customVal any
+}
+
+type identityRecordingPlugin struct {
+	mu           sync.Mutex
+	observed     []observedContextIdentity
+	capturedCtx  *schemas.BifrostContext
+	shortCircuit bool
+	customKey    any
+}
+
+func (p *identityRecordingPlugin) GetName() string { return "identity-recording" }
+func (p *identityRecordingPlugin) Cleanup() error  { return nil }
+func (p *identityRecordingPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (p *identityRecordingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	reqID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	var customVal any
+	if p.customKey != nil {
+		customVal = ctx.Value(p.customKey)
+	}
+
+	p.mu.Lock()
+	p.observed = append(p.observed, observedContextIdentity{
+		requestID: reqID,
+		traceID:   traceID,
+		customVal: customVal,
+	})
+	p.capturedCtx = ctx.Root()
+	p.mu.Unlock()
+
+	if p.shortCircuit {
+		switch req.RequestType {
+		case schemas.ChatCompletionStreamRequest:
+			ch := make(chan *schemas.BifrostStreamChunk, 1)
+			ch <- &schemas.BifrostStreamChunk{
+				BifrostChatResponse: &schemas.BifrostChatResponse{Model: "gpt-4o-mini"},
+			}
+			close(ch)
+			return req, &schemas.LLMPluginShortCircuit{Stream: ch}, nil
+		case schemas.ChatCompletionRequest:
+			return req, &schemas.LLMPluginShortCircuit{
+				Response: &schemas.BifrostResponse{
+					ChatResponse: &schemas.BifrostChatResponse{Model: "gpt-4o-mini"},
+				},
+			}, nil
+		}
+	}
+	return req, nil, nil
+}
+
+func (p *identityRecordingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
+	type customCtxKey struct{}
+
+	// Seed Init parent context with stale identity keys to verify nil-context
+	// requests isolate both from sibling requests and from the instance context.
+	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	initCtx.SetValue(schemas.BifrostContextKeyRequestID, "init-req-id")
+	initCtx.SetValue(schemas.BifrostContextKeyTraceID, "init-trace-id")
+	defer initCtx.Cancel()
+
+	tracer := &uniqueTraceTracer{}
+	plugin := &identityRecordingPlugin{shortCircuit: true, customKey: customCtxKey{}}
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 10)
+	client, err := Init(initCtx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		Tracer:     tracer,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	// 1. Realtime turn with nil context, followed by cleanup.
+	rtHooks, rtErr := client.RunRealtimeTurnPreHooks(nil, &schemas.BifrostRequest{
+		RequestType:      schemas.RealtimeRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o-realtime"},
+	})
+	require.Nil(t, rtErr)
+	require.NotNil(t, rtHooks)
+	rtHooks.Cleanup()
+
+	// 2. Chat stream with nil context.
+	streamCh, streamErr := client.ChatCompletionStreamRequest(nil, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	})
+	require.Nil(t, streamErr)
+	for range streamCh {
+	}
+
+	// 3. Non-stream chat request with nil context.
+	_, chatErr := client.ChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	})
+	require.Nil(t, chatErr)
+
+	// 4. WebSocket stream pre-hooks with nil context.
+	wsHooks, wsErr := client.RunStreamPreHooks(nil, &schemas.BifrostRequest{
+		RequestType: schemas.WebSocketResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+		},
+	})
+	require.Nil(t, wsErr)
+	require.NotNil(t, wsHooks)
+	wsHooks.Cleanup()
+
+	plugin.mu.Lock()
+	observed := append([]observedContextIdentity(nil), plugin.observed...)
+	lastNilRootCtx := plugin.capturedCtx
+	plugin.mu.Unlock()
+
+	require.Len(t, observed, 4)
+	seenReqIDs := make(map[string]struct{}, len(observed))
+	seenTraceIDs := make(map[string]struct{}, 3)
+	for i, item := range observed {
+		assert.NotEmpty(t, item.requestID, "call %d requestID should be populated", i)
+		assert.NotEqual(t, "init-req-id", item.requestID, "call %d must not inherit init request ID", i)
+		assert.NotContains(t, seenReqIDs, item.requestID, "call %d reused a request ID", i)
+		seenReqIDs[item.requestID] = struct{}{}
+
+		// Non-stream ChatCompletionRequest does not allocate a stream trace in core,
+		// so it must observe an empty trace ID rather than inheriting one.
+		if i == 2 {
+			assert.Empty(t, item.traceID, "non-stream call must not inherit a stale trace ID")
+			continue
+		}
+		assert.NotEmpty(t, item.traceID, "call %d traceID should be populated", i)
+		assert.NotEqual(t, "init-trace-id", item.traceID, "call %d must not inherit init trace ID", i)
+		assert.NotContains(t, seenTraceIDs, item.traceID, "call %d reused a trace ID", i)
+		seenTraceIDs[item.traceID] = struct{}{}
+	}
+
+	// Explicit caller context keeps its caller-supplied values.
+	callerCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	callerCtx.SetValue(schemas.BifrostContextKeyRequestID, "caller-req-123")
+	callerCtx.SetValue(schemas.BifrostContextKeyTraceID, "caller-trace-456")
+	callerCtx.SetValue(customCtxKey{}, "caller-custom")
+	defer callerCtx.Cancel()
+
+	explicitCh, explicitErr := client.ChatCompletionStreamRequest(callerCtx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	})
+	require.Nil(t, explicitErr)
+	for range explicitCh {
+	}
+
+	plugin.mu.Lock()
+	explicitObs := plugin.observed[len(plugin.observed)-1]
+	plugin.mu.Unlock()
+	assert.Equal(t, "caller-req-123", explicitObs.requestID)
+	assert.Equal(t, "caller-trace-456", explicitObs.traceID)
+	assert.Equal(t, "caller-custom", explicitObs.customVal)
+
+	// Instance shutdown still cancels nil-context request contexts.
+	require.NoError(t, lastNilRootCtx.Err())
+	client.Shutdown()
+	select {
+	case <-lastNilRootCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected nil-context request context to cancel on client.Shutdown()")
+	}
+	assert.Error(t, lastNilRootCtx.Err())
+}
