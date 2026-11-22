@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -52,6 +53,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1095,6 +1097,299 @@ func newReloadProviderServer(catalog *modelcatalog.ModelCatalog, provider schema
 			},
 		},
 	}
+}
+
+var providerRegistrationSequence atomic.Uint64
+
+type providerRegistrationFixture struct {
+	router                  *router.Router
+	server                  *BifrostHTTPServer
+	provider                schemas.ModelProvider
+	createBody              string
+	targetCalls, otherCalls *atomic.Int64
+}
+
+// Discovery is disabled so it cannot warm the target. The virtual key gives
+// all load-balancing weight to a competitor; the explicit target prefix must win.
+func newProviderRegistrationFixture(t *testing.T) *providerRegistrationFixture {
+	t.Helper()
+	previousLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = previousLogger })
+	handlers.SetLogger(noopTestLogger{})
+	lib.SetLogger(noopTestLogger{})
+	target := schemas.ModelProvider(fmt.Sprintf("registration-%d", providerRegistrationSequence.Add(1)))
+	other := schemas.ModelProvider(string(target) + "-other")
+	var targetCalls, otherCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetCalls.Add(1)
+		var request struct {
+			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Model != "registration-model" {
+			http.Error(w, "unexpected model or discovery request", http.StatusBadRequest)
+			return
+		}
+		const response = `{"id":"resp_registration","object":"response","status":"completed","model":"registration-model","output":[{"id":"msg_registration","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"registration-ok","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+		if request.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			if r.URL.Path == "/v1/responses" {
+				fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":%s}\n\n", response)
+			} else {
+				fmt.Fprint(w, "data: {\"id\":\"chat_registration\",\"object\":\"chat.completion.chunk\",\"model\":\"registration-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"registration-ok\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chat_registration\",\"object\":\"chat.completion.chunk\",\"model\":\"registration-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/responses" {
+			fmt.Fprint(w, response)
+		} else {
+			fmt.Fprint(w, `{"id":"chat_registration","object":"chat.completion","model":"registration-model","choices":[{"index":0,"message":{"role":"assistant","content":"registration-ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	competitor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		otherCalls.Add(1)
+		http.Error(w, "explicit provider was load balanced", http.StatusBadGateway)
+	}))
+	t.Cleanup(competitor.Close)
+	cs, err := configstore.NewConfigStore(context.Background(), &configstore.Config{Enabled: true, Type: configstore.ConfigStoreTypeSQLite, Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")}}, noopTestLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, cs.Close(context.Background())) })
+	pc := configstore.ProviderConfig{
+		NetworkConfig:            &schemas.NetworkConfig{BaseURL: competitor.URL, AllowPrivateNetwork: true, MaxRetries: 0},
+		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 2},
+		CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+	}
+	cc := lib.DefaultClientConfig
+	cfg := &lib.Config{ConfigStore: cs, ClientConfig: &cc, ModelCatalog: modelcatalog.NewTestCatalog(nil), Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig)}
+	gov, err := governance.Init(context.Background(), nil, noopTestLogger{}, nil, &configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{{
+		ID: "registration-vk", Name: "registration-vk", Value: *schemas.NewSecretVar("sk-bf-registration"), IsActive: schemas.Ptr(true),
+		ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+			{Provider: string(target), AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true, Weight: schemas.Ptr(0.0)},
+			{Provider: string(other), AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true, Weight: schemas.Ptr(1.0)},
+		},
+	}}}, nil, nil, &GovernanceInMemoryStore{Config: cfg})
+	require.NoError(t, err)
+	routingPlugin, err := routing.Init(context.Background(), nil, noopTestLogger{}, nil, gov)
+	require.NoError(t, err)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: lib.NewBaseAccount(cfg), Logger: noopTestLogger{}, LLMPlugins: []schemas.LLMPlugin{gov, routingPlugin}})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		client.Shutdown()
+		for _, provider := range []schemas.ModelProvider{target, other} {
+			schemas.UnregisterKnownProvider(provider)
+		}
+	})
+	cfg.SetBifrostClient(client)
+	require.NoError(t, cfg.AddProvider(context.Background(), other, pc))
+	cfg.BasePlugins.Store(&[]schemas.BasePlugin{gov, routingPlugin})
+	s := &BifrostHTTPServer{Config: cfg, Client: client, Ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)}
+	r := router.New()
+	handlers.NewProviderHandler(s, cfg, client).RegisterRoutes(r)
+	handlers.NewInferenceHandler(s, client, cfg).RegisterRoutes(r)
+	integrations.NewOpenAIRouter(client, cfg, s, noopTestLogger{}).RegisterRoutes(r)
+	createBody := fmt.Sprintf(`{"provider":%q,"network_config":{"base_url":%q,"allow_private_network":true,"max_retries":0},"concurrency_and_buffer_size":{"concurrency":1,"buffer_size":2},"custom_provider_config":{"base_provider_type":"openai","is_key_less":true,"allowed_requests":{"chat_completion":true,"chat_completion_stream":true,"responses":true,"responses_stream":true}}}`, target, upstream.URL)
+	return &providerRegistrationFixture{router: r, server: s, provider: target, createBody: createBody, targetCalls: &targetCalls, otherCalls: &otherCalls}
+}
+
+func (f *providerRegistrationFixture) startGateway(t *testing.T) (string, *http.Client) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	gateway := &fasthttp.Server{Handler: f.router.Handler}
+	served := make(chan error, 1)
+	go func() { served <- gateway.Serve(listener) }()
+	t.Cleanup(func() {
+		// This is a one-shot listener with non-keepalive requests. Shutdown
+		// resets fasthttp's Done channel while SQL cancellation watchers can
+		// still retire; closing the listener keeps that channel stable.
+		require.NoError(t, listener.Close())
+		if err := <-served; err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Errorf("test gateway failed: %v", err)
+		}
+	})
+	return "http://" + listener.Addr().String(), &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+}
+
+func providerRegistrationHTTPRequest(t *testing.T, client *http.Client, method, url, body, virtualKey string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	if virtualKey != "" {
+		req.Header.Set("x-bf-vk", virtualKey)
+	}
+	response, err := client.Do(req)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	return response.StatusCode, string(data)
+}
+
+func TestProviderRegistration_FirstHTTPRequestHonorsPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, body string
+		noKeys           bool
+	}{
+		{"chat", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, false},
+		{"chat_stream", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}],"stream":true}`, false},
+		{"responses", "/v1/responses", `{"model":%q,"input":"Hi"}`, false},
+		{"responses_stream", "/v1/responses", `{"model":%q,"input":"Hi","stream":true}`, false},
+		{"openai_chat", "/openai/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, false},
+		{"openai_chat_stream", "/openai/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}],"stream":true}`, false},
+		{"openai_responses", "/openai/v1/responses", `{"model":%q,"input":"Hi"}`, false},
+		{"openai_responses_stream", "/openai/v1/responses", `{"model":%q,"input":"Hi","stream":true}`, false},
+		{"chat_without_keys", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newProviderRegistrationFixture(t)
+			if tc.noKeys {
+				fixture.createBody = strings.Replace(fixture.createBody, `"is_key_less":true`, `"is_key_less":false`, 1)
+			}
+			baseURL, httpClient := fixture.startGateway(t)
+			status, body := providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/api/providers", fixture.createBody, "")
+			require.Equal(t, 200, status, body)
+			require.Zero(t, fixture.targetCalls.Load(), "discovery must not warm the provider")
+
+			status, body = providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+tc.path, fmt.Sprintf(tc.body, string(fixture.provider)+"/registration-model"), "sk-bf-registration")
+			if tc.noKeys {
+				require.Equal(t, 400, status, body)
+				var response schemas.BifrostError
+				require.NoError(t, json.Unmarshal([]byte(body), &response))
+				assert.Equal(t, fixture.provider, response.ExtraFields.Provider)
+				assert.Contains(t, body, "no keys found")
+				assert.Zero(t, fixture.targetCalls.Load(), "registration must not bypass credential requirements")
+			} else {
+				require.Equal(t, 200, status, body)
+				assert.Contains(t, body, "registration-ok")
+				assert.EqualValues(t, 1, fixture.targetCalls.Load())
+			}
+			assert.Zero(t, fixture.otherCalls.Load(), "explicit prefix must bypass provider load balancing")
+		})
+	}
+}
+
+// reloadWithRequest sends a first inference request to the new provider while its first post-create
+// reload is in flight, runs during (if set), then fails that reload when fail is set so the create is
+// rolled back. Later reloads pass straight through.
+type reloadWithRequest struct {
+	*BifrostHTTPServer
+	t              *testing.T
+	client         *http.Client
+	baseURL, model string
+	fail           bool
+	during         func()
+	calls          atomic.Int32
+	status         int
+	body           string
+}
+
+func (r *reloadWithRequest) ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*configstoreTables.TableProvider, error) {
+	table, err := r.BifrostHTTPServer.ReloadProvider(ctx, provider, isNew)
+	if err != nil || r.calls.Add(1) > 1 {
+		return table, err
+	}
+	r.status, r.body = providerRegistrationHTTPRequest(r.t, r.client, "POST", r.baseURL+"/v1/chat/completions", fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, r.model), "sk-bf-registration")
+	if r.during != nil {
+		r.during()
+	}
+	if r.fail {
+		return nil, errors.New("reload failed")
+	}
+	return table, nil
+}
+
+func startReloadWithRequest(t *testing.T, fixture *providerRegistrationFixture, fail bool) (*reloadWithRequest, string, *http.Client) {
+	t.Helper()
+	manager := &reloadWithRequest{BifrostHTTPServer: fixture.server, t: t, model: string(fixture.provider) + "/registration-model", fail: fail}
+	r := router.New()
+	handlers.NewProviderHandler(manager, fixture.server.Config, fixture.server.Client).RegisterRoutes(r)
+	handlers.NewInferenceHandler(fixture.server, fixture.server.Client, fixture.server.Config).RegisterRoutes(r)
+	fixture.router = r
+	baseURL, httpClient := fixture.startGateway(t)
+	manager.baseURL, manager.client = baseURL, httpClient
+	return manager, baseURL, httpClient
+}
+
+// Create persists the configuration before the post-create reload (model discovery, up to 15s), so
+// the prefix must already route during that reload, not only once the create response is sent.
+func TestProviderRegistration_PrefixRoutesDuringPostCreateReload(t *testing.T) {
+	fixture := newProviderRegistrationFixture(t)
+	manager, baseURL, httpClient := startReloadWithRequest(t, fixture, false)
+
+	status, body := providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/api/providers", fixture.createBody, "")
+	require.Equal(t, 200, status, body)
+	require.Equal(t, 200, manager.status, manager.body)
+	assert.Contains(t, manager.body, "registration-ok")
+	assert.EqualValues(t, 1, fixture.targetCalls.Load())
+	assert.Zero(t, fixture.otherCalls.Load(), "a request during the reload lost its prefix and was load balanced")
+}
+
+// deleteObserver reports each provider deletion to onDelete before passing it to the store.
+type deleteObserver struct {
+	configstore.ConfigStore
+	onDelete func(schemas.ModelProvider)
+}
+
+func (d *deleteObserver) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
+	d.onDelete(provider)
+	return d.ConfigStore.DeleteProvider(ctx, provider, tx...)
+}
+
+// A request during the post-create reload prepares the provider in core. A failed create must stop
+// that runtime provider, not only drop the configuration and the prefix. The configuration goes
+// first: while it is still stored, a request can lazily prepare a provider that was just stopped.
+func TestProviderRegistration_FailedCreateStopsRuntimeProvider(t *testing.T) {
+	fixture := newProviderRegistrationFixture(t)
+	runningAtConfigDelete := false
+	fixture.server.Config.ConfigStore = &deleteObserver{ConfigStore: fixture.server.Config.ConfigStore, onDelete: func(provider schemas.ModelProvider) {
+		if provider == fixture.provider {
+			// GetConfiguredProviders reads only live providers; GetProviderByKey would lazily prepare one.
+			running, _ := fixture.server.Client.GetConfiguredProviders()
+			runningAtConfigDelete = slices.Contains(running, provider)
+		}
+	}}
+	manager, baseURL, httpClient := startReloadWithRequest(t, fixture, true)
+
+	status, body := providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/api/providers", fixture.createBody, "")
+	require.Equal(t, 500, status, body)
+	require.Equal(t, 200, manager.status, manager.body)
+	require.EqualValues(t, 1, fixture.targetCalls.Load(), "the in-window request should have reached the new provider")
+	assert.True(t, runningAtConfigDelete, "runtime provider was stopped while its configuration was still stored, so a request could prepare it again")
+	assert.Nil(t, fixture.server.Client.GetProviderByKey(fixture.provider), "rolled-back provider is still running in core")
+	assert.False(t, schemas.IsKnownProvider(string(fixture.provider)), "rolled-back provider prefix is still registered")
+	_, err := fixture.server.Config.GetProviderConfigRaw(fixture.provider)
+	assert.ErrorIs(t, err, lib.ErrNotFound)
+}
+
+// A rolled-back create removes the configuration and then stops the runtime provider. A second
+// create for the same name must not run in between: its configuration would pass the absence
+// check and the rollback would then stop its runtime and unregister its prefix. Creates for one
+// name are serialized, so the second create waits for the rollback and then keeps its provider.
+func TestProviderRegistration_ConcurrentCreateWaitsForRollback(t *testing.T) {
+	fixture := newProviderRegistrationFixture(t)
+	manager, baseURL, httpClient := startReloadWithRequest(t, fixture, true)
+	second := make(chan [2]any, 1)
+	manager.during = func() {
+		go func() {
+			status, body := providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/api/providers", fixture.createBody, "")
+			second <- [2]any{status, body}
+		}()
+		time.Sleep(200 * time.Millisecond) // let the second create reach the handler while this one is in flight
+	}
+
+	status, body := providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/api/providers", fixture.createBody, "")
+	require.Equal(t, 500, status, body)
+	result := <-second
+	require.Equal(t, 200, result[0], result[1])
+	assert.True(t, schemas.IsKnownProvider(string(fixture.provider)), "the rollback unregistered the second create's prefix")
+
+	status, body = providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/v1/chat/completions", fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, string(fixture.provider)+"/registration-model"), "sk-bf-registration")
+	require.Equal(t, 200, status, body)
+	assert.Zero(t, fixture.otherCalls.Load(), "the second create's provider lost its prefix")
 }
 
 // TestReloadProvider_FailedRefetchKeepsPreviousCatalog is the regression guard
