@@ -3,9 +3,7 @@ package crowllm
 
 import (
 	"context"
-	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -130,15 +128,6 @@ func (provider *CrowLLMProvider) TextCompletionStream(ctx *schemas.BifrostContex
 // ChatCompletion performs a chat completion request to the CrowLLM API.
 func (provider *CrowLLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	path := providerUtils.GetPathFromContext(ctx, "/v1/chat/completions")
-
-	// Append query parameter if present
-	if rawID, ok := request.Params.ExtraParams["ai_project_id"]; ok && rawID != nil {
-		if strings.Contains(path, "?") {
-			path = path + "&ai_project_id=" + fmt.Sprint(rawID)
-		} else {
-			path = path + "?ai_project_id=" + fmt.Sprint(rawID)
-		}
-	}
 
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
@@ -283,17 +272,6 @@ func (provider *CrowLLMProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Append query parameter if present
-	if request.Params != nil && request.Params.ExtraParams != nil {
-		if rawID, ok := request.Params.ExtraParams["ai_project_id"]; ok && rawID != nil {
-			escapedID := url.QueryEscape(fmt.Sprint(rawID))
-			if strings.Contains(path, "?") {
-				path = path + "&ai_project_id=" + escapedID
-			} else {
-				path = path + "?ai_project_id=" + escapedID
-			}
-		}
-	}
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 

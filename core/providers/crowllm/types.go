@@ -42,7 +42,15 @@ type CrowLLMImageGenerationResponse struct {
 
 // CrowLLMError represents the error response format from CrowLLM API
 type CrowLLMError struct {
-	Detail *CrowLLMErrorDetail `json:"detail,omitempty"`
+	Error  *CrowLLMErrorEnvelope `json:"error,omitempty"`
+	Detail *CrowLLMErrorDetail   `json:"detail,omitempty"`
+}
+
+// CrowLLMErrorEnvelope is the OpenAI-style error object the gateway returns on most failures
+type CrowLLMErrorEnvelope struct {
+	Message *string `json:"message,omitempty"`
+	Type    *string `json:"type,omitempty"`
+	Code    *string `json:"code,omitempty"`
 }
 
 // CrowLLMErrorDetail handles both string (simple errors) and array (validation errors) formats

@@ -19,6 +19,9 @@ func parseCrowLLMImageError(resp *fasthttp.Response) *schemas.BifrostError {
 
 	// Extract error message
 	var message string
+	if crowllmErr.Error != nil && crowllmErr.Error.Message != nil {
+		message = *crowllmErr.Error.Message
+	}
 	if crowllmErr.Detail != nil {
 		if crowllmErr.Detail.Message != nil {
 			message = *crowllmErr.Detail.Message
