@@ -1791,6 +1791,53 @@ func TestConverseSyntheticStructuredOutput_StreamCallerToolAfterSyntheticTool(t 
 	})
 }
 
+// A citation on the prose block beside the synthetic tool is prose too: it is held and dropped
+// with that block's text, so no annotation or extra message item reaches the structured output.
+func TestConverseSyntheticStructuredOutput_StreamDropsCitedProse(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}, "required": []string{"city"}}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+		writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"citation":{"title":"pack","sourceContent":[{"text":"Canberra."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}},"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"text":"Per the pack, "},"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t0","name":"bf_so_capital"}},"contentBlockIndex":1}`))
+		writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"city\":\"Canberra\"}"}},"contentBlockIndex":1}`))
+		writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":1}`))
+		writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"tool_use"}`))
+		writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":1}}`))
+	}))
+	defer ts.Close()
+	req := testResponsesRequest()
+	req.Model = testConverseStreamModel
+	req.Params = &schemas.ResponsesParameters{Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{
+		Type: "json_schema", Name: schemas.Ptr("capital"), JSONSchema: schemas.JSONSchemaFromMap(schema),
+	}}}
+	stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bifrostErr)
+	var text strings.Builder
+	annotations, messages := 0, 0
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError)
+		resp := chunk.BifrostResponsesStreamResponse
+		if resp == nil {
+			continue
+		}
+		switch resp.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+			text.WriteString(*resp.Delta)
+		case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+			annotations++
+		case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+			if resp.Item != nil && resp.Item.Type != nil && *resp.Item.Type == schemas.ResponsesMessageTypeMessage {
+				messages++
+			}
+		}
+	}
+	assert.Equal(t, `{"city":"Canberra"}`, text.String())
+	assert.Zero(t, annotations, "a citation on dropped prose leaked into the structured output")
+	assert.Equal(t, 1, messages, "only the structured-output text item may open")
+}
 
 // TestGrammarLimitRejectionMarksContext pins the trigger for the one tool-path retry: a 400 naming a
 // grammar limit on a request sent with outputConfig marks the context, and nothing else does.
