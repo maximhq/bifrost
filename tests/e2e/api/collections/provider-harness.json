@@ -348171,6 +348171,63 @@
               ]
             }
           }
+        },
+        {
+          "name": "377.05 /v1/chat/completions -> openai/gpt-5.4-mini custom document beside the empty text data URL is kept (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty data URL document: answer uses the document', function () { var j = pm.response.json(); pm.expect(((j.choices || [])[0] || {}).message.content || '', pm.response.text().slice(0, 500)).to.match(/4\\.2/); });",
+                  "pm.test('empty data URL document: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('empty data URL document: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream; the log row is written asynchronously, so poll (ten reads a second apart).",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 1200);",
+                  "      pm.test('empty data URL document: file_content never reaches the OpenAI wire', function () { pm.expect(JSON.stringify(rr), dump).to.not.include('file_content'); });",
+                  "      pm.test('empty data URL document: document text was not dropped as an empty file', function () { var c = (rr.messages || [])[0].content || []; var hit = c.filter(function (b) { return b.type === 'text' && /4\\.2M/.test(b.text || ''); }); pm.expect(hit.length, dump).to.eql(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('empty data URL document: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_completion_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"pack.txt\",\n            \"file_data\": \"data:text/plain;base64,\",\n            \"file_content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Answer in one short sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
         }
       ]
     }
