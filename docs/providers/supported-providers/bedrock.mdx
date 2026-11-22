@@ -943,6 +943,8 @@ For custom-content documents, use `file_content` instead of `file_data` or `file
 
 On Chat Completions, put `file_content` and `filename` inside a `type: "file"` block's `file` object; keep `citations` on the block. A string is also accepted as `file_content`. Array boundaries are preserved for chunk citations.
 
+`file_content` cannot be combined with `file_data` or `file_url` on Bedrock; such a block returns HTTP 400. When the same request reaches Anthropic directly, `file_content` takes precedence and the other sources are ignored. On OpenAI-compatible providers (for example after a fallback), a block whose only source is `file_content` is sent as a text block holding the document, and `file_content` is dropped beside any other source.
+
 Bifrost also accepts native Converse `document.source.content` and Anthropic `source.type: "content"` documents routed to Bedrock. The Converse conversion requires `citations.enabled: true`; missing or disabled citations and non-text content return HTTP 400 before dispatch.
 
 Unary and streaming Responses replies include generated text and document-location annotations. Native Converse and Anthropic replies render those annotations in their respective citation formats. Chat Completions returns the generated text, without document-location annotations.

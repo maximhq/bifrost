@@ -347818,6 +347818,167 @@
               ]
             }
           }
+        },
+        {
+          "name": "376.13 bedrock/claude-haiku-5-5 responses structured output streaming keeps citations out of the JSON (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('structured output with cited document: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var events=[]; pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data: ') === 0 && line.slice(6) !== '[DONE]') { events.push(JSON.parse(line.slice(6))); } });",
+                  "var text='', annotations=0, messages=0;",
+                  "events.forEach(function (e) { if (e.type === 'response.output_text.delta') { text += e.delta || ''; } if (e.type === 'response.output_text.annotation.added') { annotations++; } if (e.type === 'response.output_item.added' && e.item && e.item.type === 'message') { messages++; } });",
+                  "pm.test('no citation from dropped prose reaches the structured output', function () { pm.expect(annotations, pm.response.text().slice(0, 1500)).to.eql(0); });",
+                  "pm.test('only the structured-output message item opens', function () { pm.expect(messages, pm.response.text().slice(0, 1500)).to.eql(1); });",
+                  "pm.test('streamed text is the schema JSON', function () { var parsed; try { parsed = JSON.parse(text); } catch (e) { pm.expect.fail('output_text is not JSON: ' + text); } pm.expect(parsed.budget, text).to.be.a('string').and.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"The audit committee met on 3 March.\"\n            }\n          ],\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Cite the document for the approved budget, then give the answer.\"\n        }\n      ]\n    }\n  ],\n  \"text\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"name\": \"budget_answer\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"budget\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"budget\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  },\n  \"stream\": true,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "377. Custom document content on OpenAI-shaped wires (document citation fidelity)",
+      "item": [
+        {
+          "name": "377.01 /v1/chat/completions -> openai/gpt-5.4-mini custom document content goes out as text (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('custom content chat: answer uses the document', function () { var j = pm.response.json(); pm.expect(((j.choices || [])[0] || {}).message.content || '', pm.response.text().slice(0, 500)).to.match(/4\\.2/); });",
+                  "pm.test('custom content chat: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('custom content chat: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream; the log row is written asynchronously, so poll (ten reads a second apart).",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 1200);",
+                  "      pm.test('custom content chat: file_content never reaches the OpenAI wire', function () { pm.expect(JSON.stringify(rr), dump).to.not.include('file_content'); });",
+                  "      pm.test('custom content chat: document text is a text block', function () { var c = (rr.messages || [])[0].content || []; var hit = c.filter(function (b) { return b.type === 'text' && /4\\.2M/.test(b.text || '') && /3 March/.test(b.text || ''); }); pm.expect(hit.length, dump).to.eql(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('custom content chat: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_completion_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"pack\",\n            \"file_content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Answer in one short sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "377.02 /v1/responses -> openai/gpt-5.4-mini custom document content goes out as input_text (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('custom content responses: answer uses the document', function () { var j = pm.response.json(), t = ''; (j.output || []).forEach(function (o) { (o.content || []).forEach(function (b) { t += b.text || ''; }); }); pm.expect(t, pm.response.text().slice(0, 500)).to.match(/4\\.2/); });",
+                  "pm.test('custom content responses: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('custom content responses: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream; the log row is written asynchronously, so poll (ten reads a second apart).",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 1200);",
+                  "      pm.test('custom content responses: file_content never reaches the OpenAI wire', function () { pm.expect(JSON.stringify(rr), dump).to.not.include('file_content'); });",
+                  "      pm.test('custom content responses: document text is an input_text block', function () { var c = ((rr.input || [])[0] || {}).content || []; var hit = c.filter(function (b) { return b.type === 'input_text' && /4\\.2M/.test(b.text || '') && /3 March/.test(b.text || ''); }); pm.expect(hit.length, dump).to.eql(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('custom content responses: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"The audit committee met on 3 March.\"\n            }\n          ],\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Answer in one short sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
         }
       ]
     }
