@@ -166,6 +166,21 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 			Reason:   denialReason(fmt.Sprintf("Passthrough on provider '%s' requires a model: this access restricts models, and the request names none that can be checked", provider), access.DeniedPermitsForModel(string(provider), "")),
 		}
 	}
+	// Search and Fetch carry no model upstream, and the handler defaults a model-less call
+	// to DeepSeek. A key that restricts models would otherwise spend on those routes while
+	// omitting the model the allowlist is built around, so a model-less call is refused
+	// unless the access allows every model of the provider. A supplied model is checked by
+	// the allowlist below (IsModelCheckedWhenPresent).
+	if (requestType == schemas.SearchRequest || requestType == schemas.FetchRequest) && model == "" && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
+		operation := "Search"
+		if requestType == schemas.FetchRequest {
+			operation = "Fetch"
+		}
+		return &EvaluationResult{
+			Decision: DecisionModelBlocked,
+			Reason:   denialReason(fmt.Sprintf("%s on provider '%s' requires a model: this access restricts models, and the request names none that can be checked", operation, provider), access.DeniedPermitsForModel(string(provider), "")),
+		}
+	}
 	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) {
 		// A batch item's model, and any request whose credential bypasses key selection (a direct
 		// key, or a bearer that is the credential itself), reaches the provider as written: no key

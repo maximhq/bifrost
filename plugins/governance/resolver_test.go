@@ -615,6 +615,51 @@ func TestBudgetResolver_EvaluateRequest_PassthroughModelFiltering(t *testing.T) 
 	}
 }
 
+// A Search or Fetch carries no model upstream and defaults to DeepSeek. A key that restricts
+// models must not spend on those routes by omitting the model the allowlist is built around;
+// a supplied model is still checked, and a key that allows every model needs no model here.
+func TestBudgetResolver_EvaluateRequest_ToolsModelFiltering(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		requestType schemas.RequestType
+		allModels   bool
+		want        Decision
+	}{
+		{"search with an allowed model passes", "gpt-4", schemas.SearchRequest, false, DecisionAllow},
+		{"search with a disallowed model is blocked", "gpt-4o-mini", schemas.SearchRequest, false, DecisionModelBlocked},
+		{"search without a model on a restricted key is blocked", "", schemas.SearchRequest, false, DecisionModelBlocked},
+		{"fetch without a model on a restricted key is blocked", "", schemas.FetchRequest, false, DecisionModelBlocked},
+		{"search without a model on an unrestricted key passes", "", schemas.SearchRequest, true, DecisionAllow},
+		{"fetch without a model on an unrestricted key passes", "", schemas.FetchRequest, true, DecisionAllow},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := NewMockLogger()
+			models := []string{"gpt-4", "gpt-4-turbo"}
+			if tt.allModels {
+				models = []string{"*"}
+			}
+			providerConfigs := []configstoreTables.TableVirtualKeyProviderConfig{
+				buildProviderConfig("openai", models),
+			}
+			vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
+
+			store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			}, nil, nil)
+			require.NoError(t, err)
+
+			resolver := NewBudgetResolver(store, nil, logger, nil)
+			ctx := resolverCtx(store, "sk-bf-test")
+
+			result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, tt.model, tt.requestType, false, false)
+			assertDecision(t, tt.want, result)
+		})
+	}
+}
+
 // TestBudgetResolver_EvaluateRequest_FileBatchWithoutModel: a file- or blob-based batch is held to
 // what the provider binds. A key allowing every model (and blacklisting none) has nothing to apply
 // and lets it through. A key that restricts models is refused on a provider whose batch API runs the
