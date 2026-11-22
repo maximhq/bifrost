@@ -1285,3 +1285,44 @@ func TestWrapConvertedStreamPostHookRunner_ToolCallIndexes(t *testing.T) {
 		assert.Equal(t, []uint16{0, 0, 1, 1}, got)
 	})
 }
+
+func TestValidateKeyRapidMLXURL(t *testing.T) {
+	t.Setenv("RAPID_MLX_USERINFO_URL", "http://user:password@localhost:8000/v1")
+	for _, tc := range []struct {
+		raw      string
+		rejected bool
+	}{
+		{"http://user:password@localhost:8000/v1", true},
+		{"http://user@localhost:8000/v1", true},
+		{"http://@localhost:8000/v1", true},
+		{"env.RAPID_MLX_USERINFO_URL", true},
+		{"http://localhost:8000/v1", false},
+		{"http://localhost:8000/v1/user@example", false},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			key := schemas.Key{RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(tc.raw)}}
+			err := validateKey(schemas.RapidMLX, &key)
+			if tc.rejected {
+				require.ErrorContains(t, err, "userinfo")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// Key validation also runs during request-time key selection.
+func BenchmarkValidateKeyRapidMLXURL(b *testing.B) {
+	for _, provider := range []schemas.ModelProvider{schemas.RapidMLX, schemas.OpenAI} {
+		b.Run(string(provider), func(b *testing.B) {
+			key := schemas.Key{Value: *schemas.NewSecretVar("api-key"), RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar("http://localhost:8000/v1")}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := validateKey(provider, &key); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

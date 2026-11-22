@@ -936,6 +936,13 @@ func validateProviderKeyServerURLs(key schemas.Key) error {
 		urls = append(urls, serverURL{"ollama_key_config.url", &c.URL})
 	}
 	if c := key.RapidMLXKeyConfig; c != nil {
+		parsedURL, err := url.Parse(c.URL.GetValue())
+		if err != nil {
+			return fmt.Errorf("invalid rapidmlx_key_config.url")
+		}
+		if parsedURL.User != nil {
+			return fmt.Errorf("rapidmlx_key_config.url must not contain userinfo; put credentials in the key value")
+		}
 		urls = append(urls, serverURL{"rapidmlx_key_config.url", &c.URL})
 	}
 	if c := key.SGLKeyConfig; c != nil {

@@ -204,8 +204,27 @@ func TestRapidMLXKeyHashIncludesURL(t *testing.T) {
 	key := schemas.Key{RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar("http://localhost:8000/v1")}}
 	first, err := generateKeyHash(key, nil)
 	require.NoError(t, err)
+	require.Equal(t, "0418969df57a0e8d1b77d96d4837017417422b24dd1d2621ba852d1cbb33f85b", first, "literal URL hash must stay compatible")
 	key.RapidMLXKeyConfig.URL = *schemas.NewSecretVar("http://localhost:8001/v1")
 	second, err := generateKeyHash(key, nil)
 	require.NoError(t, err)
 	require.NotEqual(t, first, second)
+}
+
+func TestRapidMLXKeyHashUsesURLSource(t *testing.T) {
+	hash := func(v schemas.SecretVar) string {
+		t.Helper()
+		h, err := generateKeyHash(schemas.Key{RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: v}}, nil)
+		require.NoError(t, err)
+		return h
+	}
+	t.Setenv("RAPID_MLX_HASH_URL", "http://localhost:8000/v1")
+	original := *schemas.NewSecretVar("env.RAPID_MLX_HASH_URL")
+	first := hash(original)
+	t.Setenv("RAPID_MLX_HASH_URL", "http://localhost:8001/v1")
+	require.Equal(t, first, hash(*schemas.NewSecretVar("env.RAPID_MLX_HASH_URL")), "rotating a secret must not change the config hash")
+	t.Setenv("RAPID_MLX_HASH_OTHER_URL", "http://localhost:8000/v1")
+	require.NotEqual(t, first, hash(*schemas.NewSecretVar("env.RAPID_MLX_HASH_OTHER_URL")), "different references must hash differently even with the same value")
+	require.NotEqual(t, first, hash(*schemas.NewSecretVar("http://localhost:8000/v1")), "a reference and a literal must hash differently")
+	require.Equal(t, "http://localhost:8000/v1", original.GetValue(), "hashing must not mutate the key")
 }

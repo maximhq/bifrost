@@ -347090,6 +347090,37 @@
               ]
             }
           }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-400] rapidmlx management rejects URL userinfo before mlx-community/Qwen3.5-4B-MLX-4bit inference - #10033",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX refuses URL userinfo', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('userinfo');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"rapidmlx-userinfo-rejected\",\"value\":\"\",\"weight\":1,\"rapidmlx_key_config\":{\"url\":\"http://user:password@localhost:8000/v1\"}}"
+            },
+            "url": "{{baseUrl}}/api/providers/rapidmlx/keys"
+          }
         }
       ]
     }

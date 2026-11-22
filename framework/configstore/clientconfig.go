@@ -1545,11 +1545,17 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	}
 	// Hash RapidMLXKeyConfig
 	if key.RapidMLXKeyConfig != nil {
-		data, err := sonic.Marshal(key.RapidMLXKeyConfig)
-		if err != nil {
-			return "", err
+		if key.RapidMLXKeyConfig.URL.IsFromSecret() {
+			// Secret rotation is not a config edit. Keep the source, not its resolved URL.
+			hash.Write([]byte("ref:" + key.RapidMLXKeyConfig.URL.GetRawRef()))
+		} else {
+			// Preserve the existing hash input for literal URLs.
+			data, err := providerUtils.MarshalSorted(key.RapidMLXKeyConfig)
+			if err != nil {
+				return "", err
+			}
+			hash.Write(data)
 		}
-		hash.Write(data)
 	}
 	// Hash SGLKeyConfig
 	if key.SGLKeyConfig != nil {

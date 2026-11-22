@@ -186,6 +186,16 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		if key.RapidMLXKeyConfig.URL.GetValue() == "" {
 			return fmt.Errorf("rapidmlx_key_config.url is required")
 		}
+		// Userinfo needs an @ delimiter. Avoid URL parsing and allocations on ordinary keys.
+		if raw := key.RapidMLXKeyConfig.URL.GetValue(); strings.Contains(raw, "@") {
+			parsedURL, err := url.Parse(raw)
+			if err != nil {
+				return fmt.Errorf("invalid rapidmlx_key_config.url")
+			}
+			if parsedURL.User != nil {
+				return fmt.Errorf("rapidmlx_key_config.url must not contain userinfo; put credentials in the key value")
+			}
+		}
 	case schemas.SGL:
 		if key.SGLKeyConfig == nil {
 			return fmt.Errorf("sgl_key_config is required")
