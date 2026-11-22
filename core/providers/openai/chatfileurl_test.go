@@ -586,3 +586,36 @@ func TestMarshalCustomDocumentContentShapes(t *testing.T) {
 		assert.Equal(t, string(chunks), string(input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks[0].FileContent), "the caller's request must not change")
 	})
 }
+
+// Cost of the file_content probe on the common path: a file block with no file_content.
+func BenchmarkChatMarshalFileBlockWithoutFileContent(b *testing.B) {
+	req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Summarize.")},
+			{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileData: schemas.Ptr("data:text/plain;base64,QnVkZ2V0Lg=="), Filename: schemas.Ptr("pack.txt")}},
+		}},
+	}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := req.MarshalJSON(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Cost of rewriting a file_content-only block into text.
+func BenchmarkChatMarshalCustomDocumentContent(b *testing.B) {
+	req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileContent: json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."},{"type":"text","text":"Audit: March."}]`), Filename: schemas.Ptr("pack")}},
+		}},
+	}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := req.MarshalJSON(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
