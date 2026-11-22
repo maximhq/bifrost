@@ -228,10 +228,13 @@ var (
 
 	// Maps Bifrost finish reasons to provider-specific format
 	bifrostToAnthropicFinishReason = map[string]AnthropicStopReason{
-		"stop":       AnthropicStopReasonEndTurn, // canonical default
-		"length":     AnthropicStopReasonMaxTokens,
-		"tool_calls": AnthropicStopReasonToolUse,
-		"compaction": AnthropicStopReasonCompaction,
+		"stop":           AnthropicStopReasonEndTurn, // canonical default
+		"length":         AnthropicStopReasonMaxTokens,
+		"tool_calls":     AnthropicStopReasonToolUse,
+		"compaction":     AnthropicStopReasonCompaction,
+		"content_filter": AnthropicStopReasonRefusal,
+		// Bedrock Converse guardrail block; Anthropic's value for a policy-blocked turn.
+		"guardrail_intervened": AnthropicStopReasonRefusal,
 	}
 )
 
@@ -4033,12 +4036,23 @@ func ConvertAnthropicFinishReasonToBifrost(providerReason AnthropicStopReason) s
 	return string(providerReason)
 }
 
-// ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format
+// ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format.
+// The result is always a stop_reason Anthropic defines (or empty for an unset reason).
+// A policy block (content_filter, Bedrock's guardrail_intervened) is refusal, so a client
+// on /anthropic/v1/messages, which has no guardrail header, can still tell it apart from a
+// finished turn. Any other reason with no Anthropic equivalent, such as Bedrock's
+// malformed_model_output, becomes end_turn instead of leaking to the client.
 func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopReason {
 	if providerReason, ok := bifrostToAnthropicFinishReason[bifrostReason]; ok {
 		return providerReason
 	}
-	return AnthropicStopReason(bifrostReason)
+	switch reason := AnthropicStopReason(bifrostReason); reason {
+	case "", AnthropicStopReasonEndTurn, AnthropicStopReasonMaxTokens, AnthropicStopReasonStopSequence,
+		AnthropicStopReasonToolUse, AnthropicStopReasonPauseTurn, AnthropicStopReasonRefusal,
+		AnthropicStopReasonModelContextWindowExceeded, AnthropicStopReasonCompaction:
+		return reason
+	}
+	return AnthropicStopReasonEndTurn
 }
 
 // anthropicStopReasonWithSequence restores Anthropic's stop_sequence stop reason, which
@@ -4073,9 +4087,9 @@ func anthropicResponsesStatus(stopReason *string) (*string, *schemas.ResponsesRe
 	return &status, details
 }
 
-// anthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
+// AnthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
 // Anthropic stop_reason, for terminal events that carry no explicit stop reason.
-func anthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
+func AnthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
 	if details == nil {
 		return ""
 	}

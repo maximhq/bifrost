@@ -4511,7 +4511,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 					StopReason:   schemas.Ptr(reason),
 					StopSequence: stopSequence,
 				}
-			} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.Response.IncompleteDetails); reason != "" {
+			} else if reason := AnthropicStopReasonFromIncompleteDetails(bifrostResp.Response.IncompleteDetails); reason != "" {
 				// A truncated turn carrying only incomplete_details must not report end_turn.
 				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
 					StopReason:   schemas.Ptr(reason),
@@ -5931,7 +5931,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	// Stop reason precedence: StopReason > IncompleteDetails > tool_use inference > end_turn.
 	if bifrostResp.StopReason != nil {
 		anthropicResp.StopReason, anthropicResp.StopSequence = anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.StopReason), bifrostResp.StopSequence)
-	} else if reason := anthropicStopReasonFromIncompleteDetails(bifrostResp.IncompleteDetails); reason != "" {
+	} else if reason := AnthropicStopReasonFromIncompleteDetails(bifrostResp.IncompleteDetails); reason != "" {
 		// OpenAI-shaped providers never send stop_reason; a turn truncated by the
 		// output cap or a content filter carries only incomplete_details. Reporting
 		// end_turn there hides the truncation from the client (#6782).
