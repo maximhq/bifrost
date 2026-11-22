@@ -348344,7 +348344,7 @@
       ],
       "item": [
         {
-          "name": "[EXPECT-503] openai upstream-503 keyless /v1/chat/completions first custom prefix - provider-prefix-registration",
+          "name": "[EXPECT-503] openai upstream-503 keyless /v1/chat/completions first custom prefix - provider-prefix-registration - #8966",
           "request": {
             "auth": {
               "type": "noauth"
@@ -348364,7 +348364,7 @@
           }
         },
         {
-          "name": "[EXPECT-503] openai upstream-503 keyless /openai/v1/responses stream first custom prefix - provider-prefix-registration",
+          "name": "[EXPECT-503] openai upstream-503 keyless /openai/v1/responses stream first custom prefix - provider-prefix-registration - #8966",
           "request": {
             "auth": {
               "type": "noauth"
@@ -348384,7 +348384,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] openai upstream-503 keyed /v1/chat/completions first custom prefix without keys - provider-prefix-registration",
+          "name": "[EXPECT-400] openai upstream-503 keyed /v1/chat/completions first custom prefix without keys - provider-prefix-registration - #8966",
           "request": {
             "auth": {
               "type": "noauth"

@@ -531,6 +531,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 
 	if err := h.reloadProviderAfterCreate(ctx, payload.Provider); err != nil {
 		logger.Warn("Failed to reload provider %s after add: %v", payload.Provider, err)
+		h.stopRuntimeProvider(payload.Provider)
 		if rollbackErr := h.inMemoryStore.RemoveProvider(context.Background(), payload.Provider); rollbackErr != nil {
 			logger.Error("Failed to rollback provider %s after reload failure: %v", payload.Provider, rollbackErr)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initialize provider after add: %v (rollback failed: %v)", err, rollbackErr))
@@ -539,10 +540,6 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initialize provider after add: %v", err))
 		return
 	}
-	// The client prepares (and registers) a provider lazily, so a zero-key custom provider would
-	// not resolve by its "name/model" prefix until restart; startup registers every configured one.
-	schemas.RegisterKnownProvider(payload.Provider)
-
 	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(payload.Provider)
 	if err != nil {
@@ -854,8 +851,6 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
 		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
 	} else {
-		// The client unregisters only providers it prepared; one never used is unregistered here.
-		schemas.UnregisterKnownProvider(provider)
 		lib.RecordAuditChange(ctx, "provider.deleted", "provider", string(provider), string(provider), auditProviderConfig(existing), nil)
 	}
 
@@ -1729,6 +1724,18 @@ func (h *ProviderHandler) listBaseModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, ListBaseModelsResponse{Models: baseModels, Total: total})
+}
+
+// stopRuntimeProvider stops a provider the client may have prepared lazily, for a create that is
+// being rolled back. lib.Config registers the prefix before the reload, so an inference request in
+// that window can start workers that removing the configuration alone would leave running.
+func (h *ProviderHandler) stopRuntimeProvider(provider schemas.ModelProvider) {
+	if h.client == nil {
+		return
+	}
+	if err := h.client.RemoveProvider(provider); err != nil && !strings.Contains(err.Error(), "not found") {
+		logger.Error("Failed to stop runtime provider %s during rollback: %v", provider, err)
+	}
 }
 
 // reloadProviderAfterCreate performs a single bounded runtime reload after provider creation.

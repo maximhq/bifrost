@@ -1,7 +1,3 @@
-## 🐛 Bug Fixes
-
-- [fix]: Register management-created provider prefixes when configuration is added, so the first inference request honors the explicit provider even when model discovery is skipped. Remove the prefix when its configuration is removed.
-
 ## 🔒 Security
 
 - **Go 1.27.4** - Security release with fixes to `net/http` (a possible HTTP server crash, CVE-2026-97054), cgo, the go command, the compiler and the linker. Bifrost now builds with Go 1.27.4, and the Docker images (`Dockerfile`, `Dockerfile.local`, `Dockerfile.redhat`) move to `golang:1.27.4-alpine3.24`. Custom Go plugins must be rebuilt with Go 1.27.4 to load.
@@ -51,6 +47,7 @@
 
 ## 🐞 Fixed
 
+- **Custom Provider Prefixes on Create** - A provider created through the API resolves by its `name/model` prefix as soon as its configuration is stored, so requests sent during the post-create reload and model discovery are no longer load balanced to another provider. A create that is rolled back also stops any workers such a request started
 - **Mid-Conversation System Reminders** - Claude Code's trailing system reminder now keeps one form (native or `<system-reminder>`) across turns, decided from the messages actually sent. On Bedrock InvokeModel the changing form had invalidated the prompt cache every turn, cutting cached input and raising cost. The `<system-reminder>` envelope also drops its trailing newline, and the cache breakpoint stays on the marked block. Native placement is now controlled by the `supports_native_mid_conversation_system` datasheet field
 - **Vertex Prompt Cache Misses** - Vertex Claude request bodies always end with `tools`, `system`, `messages`, so turn-to-turn cache reads no longer miss when a client sends `messages` first
 - **Cached Tokens Counted Twice** - Anthropic streaming usage, on chat and Responses streams and on the passthrough route, counts each cached prompt token once, including upstreams such as kimi-code that report the cache split on `message_delta` (thanks [@is911](https://github.com/is911) and [@wangkanai](https://github.com/wangkanai)!)

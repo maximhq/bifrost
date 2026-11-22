@@ -45,6 +45,7 @@ type mockModelsManager struct {
 	narrowCalls  int
 	// reloadNew is, for each reload, whether it was told the provider was just added.
 	reloadNew []bool
+	remove    func(context.Context, schemas.ModelProvider) error // stands in for the server's config removal
 }
 
 func (m *mockModelsManager) ResolveAccess(_ *schemas.BifrostContext) (schemas.Access, error) {
@@ -78,7 +79,10 @@ func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.M
 	return nil, nil
 }
 
-func (m *mockModelsManager) RemoveProvider(_ context.Context, _ schemas.ModelProvider) error {
+func (m *mockModelsManager) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
+	if m.remove != nil {
+		return m.remove(ctx, provider)
+	}
 	return nil
 }
 
@@ -191,9 +195,11 @@ func TestAddProvider_ZeroKeyCustomProviderResolvesByPrefix(t *testing.T) {
 
 	const name = schemas.ModelProvider("harness-zero-key-direct")
 	t.Cleanup(func() { schemas.UnregisterKnownProvider(name) })
+	cfg := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}}
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
-		modelsManager: &mockModelsManager{},
+		inMemoryStore: cfg,
+		// The server removes the configuration, which is what unregisters the prefix.
+		modelsManager: &mockModelsManager{remove: cfg.RemoveProvider},
 	}
 	body, err := sonic.Marshal(providerCreatePayload{
 		Provider:             name,

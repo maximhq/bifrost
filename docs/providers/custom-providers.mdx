@@ -670,9 +670,10 @@ Test new features with limited user groups:
 
 Use your custom provider name in requests:
 
-After `POST /api/providers` succeeds, the configured name is registered without a
-warm-up request or successful model discovery. Credential checks and routing rules
-still apply.
+A provider created with `POST /api/providers` resolves by its `name/model` prefix as
+soon as its configuration is stored, including while model discovery for it is still
+running. No warm-up request or successful discovery is needed. Credential checks and
+routing rules still apply.
 
 Provider names containing `/` are accepted and registered, but `ParseModelString`
 splits only at the first `/`. With both `team` and `team/edge` registered,

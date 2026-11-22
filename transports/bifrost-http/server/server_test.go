@@ -1103,6 +1103,7 @@ var providerRegistrationSequence atomic.Uint64
 
 type providerRegistrationFixture struct {
 	router                  *router.Router
+	server                  *BifrostHTTPServer
 	provider                schemas.ModelProvider
 	createBody              string
 	targetCalls, otherCalls *atomic.Int64
@@ -1190,7 +1191,7 @@ func newProviderRegistrationFixture(t *testing.T) *providerRegistrationFixture {
 	handlers.NewInferenceHandler(s, client, cfg).RegisterRoutes(r)
 	integrations.NewOpenAIRouter(client, cfg, s, noopTestLogger{}).RegisterRoutes(r)
 	createBody := fmt.Sprintf(`{"provider":%q,"network_config":{"base_url":%q,"allow_private_network":true,"max_retries":0},"concurrency_and_buffer_size":{"concurrency":1,"buffer_size":2},"custom_provider_config":{"base_provider_type":"openai","is_key_less":true,"allowed_requests":{"chat_completion":true,"chat_completion_stream":true,"responses":true,"responses_stream":true}}}`, target, upstream.URL)
-	return &providerRegistrationFixture{router: r, provider: target, createBody: createBody, targetCalls: &targetCalls, otherCalls: &otherCalls}
+	return &providerRegistrationFixture{router: r, server: s, provider: target, createBody: createBody, targetCalls: &targetCalls, otherCalls: &otherCalls}
 }
 
 func (f *providerRegistrationFixture) startGateway(t *testing.T) (string, *http.Client) {
@@ -1212,9 +1213,9 @@ func (f *providerRegistrationFixture) startGateway(t *testing.T) (string, *http.
 	return "http://" + listener.Addr().String(), &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 }
 
-func providerRegistrationHTTPRequest(t *testing.T, client *http.Client, url, body, virtualKey string) (int, string) {
+func providerRegistrationHTTPRequest(t *testing.T, client *http.Client, method, url, body, virtualKey string) (int, string) {
 	t.Helper()
-	req, err := http.NewRequest("POST", url, strings.NewReader(body))
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	if virtualKey != "" {
@@ -1249,11 +1250,11 @@ func TestProviderRegistration_FirstHTTPRequestHonorsPrefix(t *testing.T) {
 				fixture.createBody = strings.Replace(fixture.createBody, `"is_key_less":true`, `"is_key_less":false`, 1)
 			}
 			baseURL, httpClient := fixture.startGateway(t)
-			status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers", fixture.createBody, "")
+			status, body := providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/api/providers", fixture.createBody, "")
 			require.Equal(t, 200, status, body)
 			require.Zero(t, fixture.targetCalls.Load(), "discovery must not warm the provider")
 
-			status, body = providerRegistrationHTTPRequest(t, httpClient, baseURL+tc.path, fmt.Sprintf(tc.body, string(fixture.provider)+"/registration-model"), "sk-bf-registration")
+			status, body = providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+tc.path, fmt.Sprintf(tc.body, string(fixture.provider)+"/registration-model"), "sk-bf-registration")
 			if tc.noKeys {
 				require.Equal(t, 400, status, body)
 				var response schemas.BifrostError
@@ -1269,6 +1270,72 @@ func TestProviderRegistration_FirstHTTPRequestHonorsPrefix(t *testing.T) {
 			assert.Zero(t, fixture.otherCalls.Load(), "explicit prefix must bypass provider load balancing")
 		})
 	}
+}
+
+// reloadWithRequest sends a first inference request to the new provider while its post-create
+// reload is in flight, then fails the reload when fail is set so the create is rolled back.
+type reloadWithRequest struct {
+	*BifrostHTTPServer
+	t              *testing.T
+	client         *http.Client
+	baseURL, model string
+	fail           bool
+	status         int
+	body           string
+}
+
+func (r *reloadWithRequest) ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*configstoreTables.TableProvider, error) {
+	table, err := r.BifrostHTTPServer.ReloadProvider(ctx, provider, isNew)
+	if err != nil {
+		return nil, err
+	}
+	r.status, r.body = providerRegistrationHTTPRequest(r.t, r.client, "POST", r.baseURL+"/v1/chat/completions", fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, r.model), "sk-bf-registration")
+	if r.fail {
+		return nil, errors.New("reload failed")
+	}
+	return table, nil
+}
+
+func startReloadWithRequest(t *testing.T, fixture *providerRegistrationFixture, fail bool) (*reloadWithRequest, string, *http.Client) {
+	t.Helper()
+	manager := &reloadWithRequest{BifrostHTTPServer: fixture.server, t: t, model: string(fixture.provider) + "/registration-model", fail: fail}
+	r := router.New()
+	handlers.NewProviderHandler(manager, fixture.server.Config, fixture.server.Client).RegisterRoutes(r)
+	handlers.NewInferenceHandler(fixture.server, fixture.server.Client, fixture.server.Config).RegisterRoutes(r)
+	fixture.router = r
+	baseURL, httpClient := fixture.startGateway(t)
+	manager.baseURL, manager.client = baseURL, httpClient
+	return manager, baseURL, httpClient
+}
+
+// Create persists the configuration before the post-create reload (model discovery, up to 15s), so
+// the prefix must already route during that reload, not only once the create response is sent.
+func TestProviderRegistration_PrefixRoutesDuringPostCreateReload(t *testing.T) {
+	fixture := newProviderRegistrationFixture(t)
+	manager, baseURL, httpClient := startReloadWithRequest(t, fixture, false)
+
+	status, body := providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/api/providers", fixture.createBody, "")
+	require.Equal(t, 200, status, body)
+	require.Equal(t, 200, manager.status, manager.body)
+	assert.Contains(t, manager.body, "registration-ok")
+	assert.EqualValues(t, 1, fixture.targetCalls.Load())
+	assert.Zero(t, fixture.otherCalls.Load(), "a request during the reload lost its prefix and was load balanced")
+}
+
+// A request during the post-create reload prepares the provider in core. A failed create must stop
+// that runtime provider, not only drop the configuration and the prefix.
+func TestProviderRegistration_FailedCreateStopsRuntimeProvider(t *testing.T) {
+	fixture := newProviderRegistrationFixture(t)
+	manager, baseURL, httpClient := startReloadWithRequest(t, fixture, true)
+
+	status, body := providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/api/providers", fixture.createBody, "")
+	require.Equal(t, 500, status, body)
+	require.Equal(t, 200, manager.status, manager.body)
+	require.EqualValues(t, 1, fixture.targetCalls.Load(), "the in-window request should have reached the new provider")
+	assert.Nil(t, fixture.server.Client.GetProviderByKey(fixture.provider), "rolled-back provider is still running in core")
+	assert.False(t, schemas.IsKnownProvider(string(fixture.provider)), "rolled-back provider prefix is still registered")
+	_, err := fixture.server.Config.GetProviderConfigRaw(fixture.provider)
+	assert.ErrorIs(t, err, lib.ErrNotFound)
 }
 
 // TestReloadProvider_FailedRefetchKeepsPreviousCatalog is the regression guard
