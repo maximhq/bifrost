@@ -4488,7 +4488,7 @@
           },
           "name": {
             "type": "string",
-            "description": "Name of the plugin (built-in: telemetry, prompts, logging, governance, maxim, semantic_cache, otel, or custom plugin name)"
+            "description": "Name of the plugin (built-in: telemetry, prompts, logging, governance, maxim, semantic_cache, otel, requestguard, or custom plugin name)"
           },
           "config": {
             "type": "object",
@@ -4940,6 +4940,112 @@
                     }
                   ],
                   "description": "Configuration for the OpenTelemetry plugin. Supports the legacy single-profile shape or the profiles wrapper for multiple collectors."
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "requestguard"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for capability and budget guardrails, model recommendations, coalescing, headers, and metrics",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Enable request-guard policy evaluation"
+                    },
+                    "capability_guard": {
+                      "type": "object",
+                      "properties": {
+                        "mode": { "type": "string", "enum": ["off", "audit", "warn", "block", "downgrade"], "default": "audit" },
+                        "unknown_policy": { "type": "string", "enum": ["allow", "warn", "block"], "default": "allow" },
+                        "check_tools": { "type": "boolean", "default": true },
+                        "check_parallel_tools": { "type": "boolean", "default": true },
+                        "check_tool_choice": { "type": "boolean", "default": true },
+                        "check_structured_output": { "type": "boolean", "default": true },
+                        "check_vision": { "type": "boolean", "default": true },
+                        "check_streaming": { "type": "boolean", "default": true },
+                        "check_context_limit": { "type": "boolean", "default": true },
+                        "check_max_output_tokens": { "type": "boolean", "default": true },
+                        "allow_fallbacks_on_block": { "type": "boolean", "default": false }
+                      },
+                      "additionalProperties": false
+                    },
+                    "budget_guard": {
+                      "type": "object",
+                      "properties": {
+                        "mode": { "type": "string", "enum": ["off", "audit", "warn", "block", "downgrade"], "default": "off" },
+                        "max_input_tokens": { "type": "integer", "minimum": 0, "default": 0 },
+                        "max_total_tokens": { "type": "integer", "minimum": 0, "default": 0 },
+                        "max_estimated_cost_usd": { "type": "number", "minimum": 0, "default": 0 },
+                        "default_output_tokens": { "type": "integer", "minimum": 0, "default": 1024 },
+                        "safety_margin_multiplier": { "type": "number", "minimum": 1, "default": 1.1 },
+                        "chars_per_token": { "type": "number", "minimum": 0, "default": 4 },
+                        "image_token_estimate": { "type": "integer", "minimum": 0, "default": 1024 },
+                        "allow_fallbacks_on_block": { "type": "boolean", "default": false }
+                      },
+                      "additionalProperties": false
+                    },
+                    "recommender": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": { "type": "boolean", "default": false },
+                        "max_recommendations": { "type": "integer", "minimum": 0, "maximum": 10, "default": 3 },
+                        "allowed_providers": { "type": "array", "items": { "type": "string" } },
+                        "allowed_models": { "type": "array", "items": { "type": "string" } },
+                        "excluded_models": { "type": "array", "items": { "type": "string" } },
+                        "same_provider_only": { "type": "boolean", "default": false },
+                        "min_savings_pct": { "type": "number", "minimum": 0, "maximum": 100, "default": 10 },
+                        "auto_downgrade_on_capability_failure": { "type": "boolean", "default": false },
+                        "auto_downgrade_on_budget_exceeded": { "type": "boolean", "default": false }
+                      },
+                      "additionalProperties": false
+                    },
+                    "coalescer": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": { "type": "boolean", "default": false },
+                        "enable_streaming": { "type": "boolean", "default": false },
+                        "max_in_flight": { "type": "integer", "minimum": 0, "default": 128 },
+                        "max_temperature": { "type": "number", "minimum": 0, "default": 0 },
+                        "wait_timeout": { "type": "integer", "minimum": 0, "default": 25, "description": "Unary follower wait limit in milliseconds" },
+                        "max_buffered_chunks": { "type": "integer", "minimum": 0, "default": 1024 },
+                        "max_buffered_bytes": { "type": "integer", "minimum": 0, "default": 1048576 },
+                        "include_virtual_key_scope": { "type": "boolean", "default": true },
+                        "include_customer_scope": { "type": "boolean", "default": true },
+                        "bypass_header": { "type": "string" }
+                      },
+                      "additionalProperties": false
+                    },
+                    "headers": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": { "type": "boolean", "default": false },
+                        "prefix": { "type": "string", "default": "X-Bifrost-RequestGuard" }
+                      },
+                      "additionalProperties": false
+                    },
+                    "metrics": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": { "type": "boolean", "default": true }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
                 }
               }
             }

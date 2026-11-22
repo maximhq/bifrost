@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/requestguard"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
@@ -203,6 +204,28 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 	case modelcatalogresolver.PluginName:
 		return modelcatalogresolver.Init(bifrostConfig.ModelCatalog, logger)
 
+	case requestguard.PluginName:
+		requestGuardConfig := requestguard.DefaultConfig()
+		if pluginConfig != nil {
+			var encoded []byte
+			var err error
+			if configJSON, ok := pluginConfig.(string); ok {
+				encoded = []byte(configJSON)
+			} else {
+				encoded, err = schemas.MarshalSorted(pluginConfig)
+				if err != nil {
+					return nil, fmt.Errorf("failed to encode requestguard plugin config: %w", err)
+				}
+			}
+			if err := schemas.Unmarshal(encoded, &requestGuardConfig); err != nil {
+				return nil, fmt.Errorf("failed to decode requestguard plugin config: %w", err)
+			}
+		}
+		if telemetryPlugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](bifrostConfig, telemetry.PluginName); err == nil && telemetryPlugin != nil {
+			requestGuardConfig.Metrics.Registerer = telemetryPlugin.GetRegistry()
+		}
+		return requestguard.Init(requestGuardConfig, logger, bifrostConfig.ModelCatalog)
+
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
 	}
@@ -370,6 +393,17 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// including post_builtin ones like the enterprise load balancer (which would otherwise run
 	// after this builtin and never get a chance to pick the provider first).
 	s.Config.SetPluginOrderInfo(modelcatalogresolver.PluginName, schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt))
+
+	// 11. Request Guard (opt-in). Runs after routing and the model-catalog
+	// resolver so capability, budget, and optional downgrade decisions see the
+	// final provider/model selected for the top-level request.
+	requestGuardConfig := s.getPluginConfig(requestguard.PluginName)
+	if requestGuardConfig != nil && requestGuardConfig.Enabled {
+		s.registerPluginWithStatus(ctx, requestguard.PluginName, nil, requestGuardConfig.Config, false)
+	} else {
+		s.markPluginDisabled(requestguard.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(requestguard.PluginName, schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt))
 
 	return nil
 }

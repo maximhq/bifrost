@@ -1927,6 +1927,13 @@ setup-workspace: ## Set up Go workspace with all local modules for development
 			go work use "$$plugin_dir"; \
 		fi; \
 	done
+	@for module_dir in core framework plugins/requestguard; do \
+		module_path=$$(awk '$$1 == "module" { print $$2; exit }' "$$module_dir/go.mod" | tr -d '\r'); \
+		module_version=$$(awk -v module="$$module_path" '$$1 == module { print $$2; exit }' transports/go.mod | tr -d '\r'); \
+		if [ -n "$$module_path" ] && [ -n "$$module_version" ]; then \
+			go work edit -replace="$$module_path@$$module_version=./$$module_dir"; \
+		fi; \
+	done
 	@$(ECHO) "$(YELLOW)Adding test command modules...$(NC)"
 	@for cmd_dir in ./tests/cmd/*/; do \
 		if [ -d "$$cmd_dir" ] && [ -f "$$cmd_dir/go.mod" ]; then \

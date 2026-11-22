@@ -1073,10 +1073,7 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 
 // ChatCompletionRequest sends a chat completion request to the specified provider.
 func (bifrost *Bifrost) ChatCompletionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	// If ctx is nil, use the bifrost context (defensive check for mcp agent mode)
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
+	ctx = bifrost.requestContext(ctx)
 
 	response, err := bifrost.makeChatCompletionRequest(ctx, req)
 	if err != nil {
@@ -1109,6 +1106,7 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx *schemas.BifrostContext,
 			},
 		}
 	}
+	ctx = bifrost.requestContext(ctx)
 	if len(req.Input) == 0 && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1175,10 +1173,7 @@ func (bifrost *Bifrost) makeResponsesRequest(ctx *schemas.BifrostContext, req *s
 
 // ResponsesRequest sends a responses request to the specified provider.
 func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	// If ctx is nil, use the bifrost context (defensive check for mcp agent mode)
-	if ctx == nil {
-		ctx = bifrost.ctx
-	}
+	ctx = bifrost.requestContext(ctx)
 
 	response, err := bifrost.makeResponsesRequest(ctx, req)
 	if err != nil {
@@ -1211,6 +1206,7 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req 
 			},
 		}
 	}
+	ctx = bifrost.requestContext(ctx)
 	// In large payload mode, Input is intentionally nil — body streams directly to upstream
 	if req.Input == nil {
 		isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
@@ -1235,6 +1231,19 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req 
 	bifrostReq.ResponsesRequest = req
 
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
+}
+
+// requestContext gives SDK calls that omit a context their own value scope.
+// Sharing bifrost.ctx directly would let request-local plugin decisions and
+// coalescer handles leak across concurrent calls.
+func (bifrost *Bifrost) requestContext(ctx *schemas.BifrostContext) *schemas.BifrostContext {
+	if ctx != nil {
+		return ctx
+	}
+	if bifrost != nil && bifrost.ctx != nil {
+		return schemas.NewBifrostContext(bifrost.ctx, schemas.NoDeadline)
+	}
+	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 }
 
 // CountTokensRequest sends a count tokens request to the specified provider.
