@@ -172,6 +172,38 @@ func TestDocumentCitationsChatRejectsConflictingSources(t *testing.T) {
 	require.Contains(t, bad.Error.Message, "cannot be combined")
 }
 
+// An empty file_data beside file_content is no second source: it is ignored, as on the Anthropic path.
+func TestDocumentCitationsEmptyFileDataIsNotAConflict(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostChatRequest{Model: "global.anthropic.claude-haiku-5-5", Input: []schemas.ChatMessage{{
+		Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+			Type:      schemas.ChatContentBlockTypeFile,
+			File:      &schemas.ChatInputFile{FileContent: json.RawMessage(`"Budget."`), FileData: schemas.Ptr(""), Filename: schemas.Ptr("pack")},
+			Citations: &schemas.Citations{Enabled: schemas.Ptr(true)},
+		}}},
+	}}}
+	out, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+	wire, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	assert.Equal(t, "Budget.", gjson.GetBytes(wire, "messages.0.content.#(document).document.source.content.0.text").Str, "%s", wire)
+}
+
+// A citationsContent block whose content carries no text adds no empty message: its citations
+// annotate the preceding text, like the content-less Nova web citations.
+func TestDocumentCitationsWithoutGeneratedTextAnnotatePrecedingText(t *testing.T) {
+	var in bedrock.BedrockConverseResponse
+	require.NoError(t, sonic.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"The budget is $4.2M."},`+
+		`{"citationsContent":{"content":[{}],"citations":[{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}]}}]}},"stopReason":"end_turn"}`), &in))
+	resp, err := in.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	require.Len(t, resp.Output, 1, "no empty text message may be added")
+	block := resp.Output[0].Content.ContentBlocks[0]
+	require.Equal(t, "The budget is $4.2M.", *block.Text)
+	require.Len(t, block.Annotations, 1)
+	assert.Equal(t, "content_block_location", block.Annotations[0].Type)
+}
+
 func TestDocumentCitationsPreserveLegacyWeb(t *testing.T) {
 	var in bedrock.BedrockConverseResponse
 	raw := `{"output":{"message":{"role":"assistant","content":[{"text":"Answer"},{"citationsContent":{"citations":[{"location":{"web":{"url":"https://example.com","domain":"example.com"}}}]}}]}},"stopReason":"end_turn"}`

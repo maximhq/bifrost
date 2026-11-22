@@ -444,7 +444,7 @@ func materializeBedrockDocument(
 	}
 
 	if len(fileContent) > 0 {
-		if fileData != nil || (fileURL != nil && *fileURL != "") {
+		if (fileData != nil && *fileData != "") || (fileURL != nil && *fileURL != "") {
 			return nil, providerUtils.InvalidRequestErrorf("document file_content cannot be combined with file_data or file_url")
 		}
 		if document.Citations == nil || !document.Citations.Enabled {

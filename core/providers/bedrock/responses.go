@@ -5028,15 +5028,15 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			outputMessages = append(outputMessages, bifrostMsg)
 
 		} else if block.CitationsContent != nil {
-			// Document citations carry their generated text inside this block. Legacy
-			// Nova web citations without content still annotate the preceding text.
-			if len(block.CitationsContent.Content) > 0 {
-				texts := make([]string, 0, len(block.CitationsContent.Content))
-				for _, part := range block.CitationsContent.Content {
-					if part.Text != nil {
-						texts = append(texts, *part.Text)
-					}
+			// Document citations carry their generated text inside this block. Citations with
+			// no generated text (legacy Nova web citations) still annotate the preceding text.
+			texts := make([]string, 0, len(block.CitationsContent.Content))
+			for _, part := range block.CitationsContent.Content {
+				if part.Text != nil {
+					texts = append(texts, *part.Text)
 				}
+			}
+			if len(texts) > 0 {
 				text := strings.Join(texts, "")
 				lastTextOutputIdx = len(outputMessages)
 				outputMessages = append(outputMessages, createTextMessage(&text, convertBedrockRoleToBifrostRole(msg.Role), schemas.ResponsesOutputMessageContentTypeText, isOutputMessage))
