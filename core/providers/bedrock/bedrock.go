@@ -2279,6 +2279,9 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					}
 				}
 
+				// The stop discriminator is in the event header, not the JSON payload. While the DSML
+				// filter holds text past the stop, the block stays open so the release lands in it.
+				streamEvent.ContentBlockStop = progress.lastEventType == "contentBlockStop" && !dsml.isHolding()
 				if streamEvent.Trace != nil {
 					streamTrace = streamEvent.Trace
 				}
@@ -5028,11 +5031,11 @@ func (r *invokeEventStreamReader) ReadEvent() (string, []byte, error) {
 	}
 }
 
-// isTextBlockEvent reports whether ev starts, extends, or ends a text content block: a text delta, a
+// isTextBlockEvent reports whether ev starts, extends, or ends a text content block: a text or citation delta, a
 // non-tool block start, or the stop of a block already in textBlocks.
 func isTextBlockEvent(ev *BedrockStreamEvent, textBlocks map[int]struct{}) bool {
 	if ev.Delta != nil {
-		return ev.Delta.Text != nil
+		return ev.Delta.Text != nil || ev.Delta.Citation != nil // a citation belongs to its prose block
 	}
 	if ev.Start != nil {
 		return ev.Start.ToolUse == nil
