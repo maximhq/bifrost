@@ -9782,6 +9782,140 @@ func TestPatternKeyAliasTemplateFollowsSelectedKey(t *testing.T) {
 	}
 }
 
+// TestKeyAliasResolvesAdvisorToolModel pins that advisor tool models follow the attempt key's alias.
+func TestKeyAliasResolvesAdvisorToolModel(t *testing.T) {
+	var mu sync.Mutex
+	var calls [][3]string // key, request model, advisor model
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		model := gjson.GetBytes(body, "model").String()
+		mu.Lock()
+		calls = append(calls, [3]string{r.Header.Get("x-api-key"), model, gjson.GetBytes(body, "tools.0.model").String()})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(model, "fail.") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"m",`+
+			`"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	t.Cleanup(server.Close)
+	lastCall := func() [3]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls[len(calls)-1]
+	}
+
+	const requested = "anthropic.claude-opus-5"
+	newRequest := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    requested,
+			Input: []schemas.ResponsesMessage{{
+				Role:    new(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")},
+			}},
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type:                 schemas.ResponsesToolTypeAdvisor,
+				ResponsesToolAdvisor: &schemas.ResponsesToolAdvisor{Model: requested},
+			}}},
+			RawRequestBody: []byte(`{"model":"` + requested + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}],` +
+				`"tools":[{"type":"advisor_20260301","name":"advisor","model":"` + requested + `"}]}`),
+		}
+	}
+	send := func(client *Bifrost, request *schemas.BifrostResponsesRequest, raw bool) *schemas.BifrostError {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+		defer ctx.Cancel()
+		if raw {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		}
+		_, bifrostErr := client.ResponsesRequest(ctx, request)
+		return bifrostErr
+	}
+
+	t.Run("single key", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, server.URL)
+		account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+		account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{
+			ID: "sk-alias", Value: *schemas.NewSecretVar("sk-alias"), Models: schemas.WhiteList{"*"}, Weight: 100,
+			Aliases: schemas.KeyAliases{requested: {ModelID: "claude-opus-5"}},
+		}})
+		client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(client.Shutdown)
+
+		for _, raw := range []bool{false, true} {
+			request := newRequest()
+			if bifrostErr := send(client, request, raw); bifrostErr != nil {
+				t.Fatalf("raw=%v: request failed: %s", raw, bifrostErr.Error.Message)
+			}
+			if got := lastCall(); got[1] != "claude-opus-5" || got[2] != "claude-opus-5" {
+				t.Errorf("raw=%v: upstream model=%q advisor model=%q, want both claude-opus-5", raw, got[1], got[2])
+			}
+			if got := request.Params.Tools[0].ResponsesToolAdvisor.Model; got != requested {
+				t.Errorf("raw=%v: caller's advisor model rewritten to %q", raw, got)
+			}
+			if got := gjson.GetBytes(request.RawRequestBody, "tools.0.model").String(); got != requested {
+				t.Errorf("raw=%v: caller's raw advisor model rewritten to %q", raw, got)
+			}
+		}
+
+		// An advisor declared in an additional_tools item is hoisted into the tools during prep.
+		declared := json.RawMessage(`[{"type":"advisor","model":"` + requested + `"}]`)
+		request := newRequest()
+		request.Params = nil
+		request.RawRequestBody = nil
+		request.Input = append(request.Input, schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: declared})
+		if bifrostErr := send(client, request, false); bifrostErr != nil {
+			t.Fatalf("additional_tools: request failed: %s", bifrostErr.Error.Message)
+		}
+		if got := lastCall(); got[2] != "claude-opus-5" {
+			t.Errorf("additional_tools: upstream advisor model=%q, want claude-opus-5", got[2])
+		}
+		if got := string(request.Input[1].AdditionalTools); got != string(declared) {
+			t.Errorf("additional_tools: caller's declaration rewritten to %s", got)
+		}
+	})
+
+	t.Run("each retry follows its key", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, server.URL)
+		account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 2
+		account.configs[schemas.Anthropic].NetworkConfig.RetryBackoffInitial = time.Millisecond
+		account.configs[schemas.Anthropic].NetworkConfig.RetryBackoffMax = 2 * time.Millisecond
+		account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+			{ID: "sk-fail", Value: *schemas.NewSecretVar("sk-fail"), Models: schemas.WhiteList{"*"}, Weight: 1,
+				Aliases: schemas.KeyAliases{requested: {ModelID: "fail.claude-opus-5"}}},
+			{ID: "sk-plain", Value: *schemas.NewSecretVar("sk-plain"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		})
+		client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(client.Shutdown)
+
+		for i := 0; i < 20; i++ {
+			for _, raw := range []bool{false, true} {
+				if bifrostErr := send(client, newRequest(), raw); bifrostErr != nil {
+					t.Fatalf("raw=%v: request %d failed: %s", raw, i, bifrostErr.Error.Message)
+				}
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, call := range calls {
+			if call[0] == "sk-fail" && call[2] != "fail.claude-opus-5" || call[0] == "sk-plain" && call[2] != requested {
+				t.Errorf("key %q sent advisor model %q with request model %q", call[0], call[2], call[1])
+			}
+		}
+	})
+}
+
 // customToolProvider answers with a function call to apply_patch, the way a wire that
 // took the rewritten custom tool does, and records what it was sent.
 type customToolProvider struct {
@@ -10611,5 +10745,214 @@ func TestPreparePassthroughBody(t *testing.T) {
 	req = &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"gpt-4o"}`)}
 	if err := preparePassthroughBody(plainFileProvider{}, req); err != nil || string(req.Body) != `{"model":"gpt-4o"}` {
 		t.Errorf("a JSON Body must be left as is, got %q", req.Body)
+	}
+}
+
+// Pin image delivery through real core dispatch, including custom/built-in
+// Responses fallback and both streaming modes, against a strict Chat wire.
+func TestChatToolImages(t *testing.T) {
+	const firstImage = "data:image/png;base64,aW1hZ2UtYQ=="
+	const secondImage = "data:image/png;base64,aW1hZ2UtYg=="
+	type capturedRequest struct {
+		path string
+		body []byte
+	}
+	captures := make(chan capturedRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// Never block the handler: a subtest that fails before reading its capture
+		// would otherwise stall every later request.
+		select {
+		case captures <- capturedRequest{r.URL.Path, body}:
+		default:
+		}
+		for _, message := range gjson.GetBytes(body, "messages").Array() {
+			if message.Get("role").String() != "tool" || !message.Get("content").IsArray() {
+				continue
+			}
+			for _, part := range message.Get("content").Array() {
+				if part.Get("type").String() != "text" {
+					w.WriteHeader(http.StatusBadRequest)
+					fmt.Fprint(w, `{"error":{"message":"tool content must contain text only"}}`)
+					return
+				}
+			}
+		}
+		streaming := gjson.GetBytes(body, "stream").Bool()
+		if r.URL.Path == "/v1/responses" {
+			response := `{"id":"resp_capture","object":"response","created_at":1,"model":"vision","status":"completed","output":[{"type":"message","id":"msg_capture","role":"assistant","status":"completed","content":[{"type":"output_text","text":"captured","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+			if streaming {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":%s}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":%s}\n\n", response, response)
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, response)
+			}
+			return
+		}
+		if streaming {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, `data: {"id":"chatcmpl_capture","object":"chat.completion.chunk","created":1,"model":"vision","choices":[{"index":0,"delta":{"role":"assistant","content":"captured"},"finish_reason":null}]}`+"\n\n")
+			fmt.Fprint(w, `data: {"id":"chatcmpl_capture","object":"chat.completion.chunk","created":1,"model":"vision","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\ndata: [DONE]\n\n")
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"id":"chatcmpl_capture","object":"chat.completion","created":1,"model":"vision","choices":[{"index":0,"message":{"role":"assistant","content":"captured"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	// Ollama and SGL serve text-only models too; with no datasheet record saying
+	// the model takes images they keep the placeholder and get no extra user turn.
+	cases := []struct {
+		name                           string
+		provider                       schemas.ModelProvider
+		responses, native, placeholder bool
+	}{
+		{"custom direct Chat", "custom_chat", false, false, false},
+		{"custom Responses fallback", "custom_chat", true, false, false},
+		{"strict OpenAI Chat", schemas.OpenAI, false, false, false},
+		{"Ollama Responses fallback", schemas.Ollama, true, false, true},
+		{"SGL Responses fallback", schemas.SGL, true, false, true},
+		{"custom native Responses", "custom_native", true, true, false},
+	}
+	account := NewMockAccount()
+	for _, tc := range cases {
+		account.AddProviderWithBaseURL(tc.provider, 1, 10, upstream.URL)
+		account.configs[tc.provider].NetworkConfig.MaxRetries = 0
+		account.configs[tc.provider].NetworkConfig.AllowPrivateNetwork = true
+		key := schemas.Key{ID: "key-" + string(tc.provider), Value: *schemas.NewSecretVar("dummy-test-key"), Models: schemas.WhiteList{"*"}, Weight: 1}
+		switch tc.provider {
+		case "custom_chat", "custom_native":
+			account.SetCustomProviderConfig(tc.provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, AllowedRequests: &schemas.AllowedRequests{ChatCompletion: true, ChatCompletionStream: true, Responses: tc.native, ResponsesStream: tc.native}})
+		case schemas.Ollama:
+			key.OllamaKeyConfig = &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar(upstream.URL)}
+		case schemas.SGL:
+			key.SGLKeyConfig = &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar(upstream.URL)}
+		}
+		account.SetKeysForProvider(tc.provider, []schemas.Key{key})
+	}
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	for _, tc := range cases {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, streaming), func(t *testing.T) {
+				select {
+				case <-captures: // a capture left by an earlier failed subtest
+				default:
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+				defer ctx.Cancel()
+				assistant := &schemas.ChatAssistantMessage{}
+				chat := &schemas.BifrostChatRequest{Provider: tc.provider, Model: "vision", Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Read both images")}},
+					{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: assistant},
+				}}
+				for _, image := range []struct{ id, url string }{{"call_a", firstImage}, {"call_b", secondImage}} {
+					assistant.ToolCalls = append(assistant.ToolCalls, schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr(image.id), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("read"), Arguments: `{}`}})
+					chat.Input = append(chat.Input, schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(image.id)}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: image.url}}}}})
+				}
+				before, err := schemas.MarshalSorted(chat.Input)
+				require.NoError(t, err)
+				if streaming {
+					var stream chan *schemas.BifrostStreamChunk
+					var bifrostErr *schemas.BifrostError
+					if tc.responses {
+						stream, bifrostErr = client.ResponsesStreamRequest(ctx, chat.ToResponsesRequest())
+					} else {
+						stream, bifrostErr = client.ChatCompletionStreamRequest(ctx, chat)
+					}
+					require.Nil(t, bifrostErr)
+					completed := false
+					for chunk := range stream {
+						require.Nil(t, chunk.BifrostError)
+						if response := chunk.BifrostResponsesStreamResponse; response != nil && response.Type == schemas.ResponsesStreamResponseTypeCompleted {
+							completed = true
+						}
+						if response := chunk.BifrostChatResponse; response != nil {
+							for _, choice := range response.Choices {
+								if choice.FinishReason != nil && *choice.FinishReason == "stop" {
+									completed = true
+								}
+							}
+						}
+					}
+					require.True(t, completed, "stream closed without completion")
+				} else {
+					var response any
+					var bifrostErr *schemas.BifrostError
+					if tc.responses {
+						response, bifrostErr = client.ResponsesRequest(ctx, chat.ToResponsesRequest())
+					} else {
+						response, bifrostErr = client.ChatCompletionRequest(ctx, chat)
+					}
+					require.Nil(t, bifrostErr)
+					wire, err := schemas.MarshalSorted(response)
+					require.NoError(t, err)
+					require.Contains(t, string(wire), "captured")
+				}
+				var captured capturedRequest
+				select {
+				case captured = <-captures:
+				case <-ctx.Done():
+					t.Fatal("no upstream request captured")
+				}
+				var images []string
+				if tc.native {
+					require.Equal(t, "/v1/responses", captured.path)
+					require.False(t, gjson.GetBytes(captured.body, "messages").Exists())
+					for _, item := range gjson.GetBytes(captured.body, "input").Array() {
+						if item.Get("type").String() != "function_call_output" {
+							continue
+						}
+						for _, part := range item.Get("output").Array() {
+							if part.Get("type").String() == "input_image" {
+								images = append(images, part.Get("image_url").String())
+							}
+						}
+					}
+				} else if tc.placeholder {
+					require.Equal(t, "/v1/chat/completions", captured.path)
+					messages := gjson.GetBytes(captured.body, "messages").Array()
+					require.Len(t, messages, 4, "no user turn may be added: %s", captured.body)
+					for i, id := range []string{"call_a", "call_b"} {
+						tool := messages[2+i]
+						require.Equal(t, id, tool.Get("tool_call_id").String())
+						require.Equal(t, "[image/png, 9 bytes returned by the tool, not shown]", tool.Get("content").String(), string(captured.body))
+					}
+					require.NotContains(t, string(captured.body), "image_url")
+					after, err := schemas.MarshalSorted(chat.Input)
+					require.NoError(t, err)
+					require.Equal(t, string(before), string(after), "dispatch mutated the caller's history")
+					return
+				} else {
+					require.Equal(t, "/v1/chat/completions", captured.path)
+					messages := gjson.GetBytes(captured.body, "messages").Array()
+					require.Len(t, messages, 5, string(captured.body))
+					require.Equal(t, "tool", messages[2].Get("role").String())
+					require.Equal(t, "call_a", messages[2].Get("tool_call_id").String())
+					require.Equal(t, "tool", messages[3].Get("role").String())
+					require.Equal(t, "call_b", messages[3].Get("tool_call_id").String())
+					require.Equal(t, "user", messages[4].Get("role").String())
+					parts := messages[4].Get("content").Array()
+					require.Len(t, parts, 4)
+					require.Equal(t, "Images returned by tool call call_a:", parts[0].Get("text").String())
+					require.Equal(t, "Images returned by tool call call_b:", parts[2].Get("text").String())
+					for _, part := range parts {
+						if part.Get("type").String() == "image_url" {
+							images = append(images, part.Get("image_url.url").String())
+						}
+					}
+				}
+				require.Equal(t, []string{firstImage, secondImage}, images, string(captured.body))
+				after, err := schemas.MarshalSorted(chat.Input)
+				require.NoError(t, err)
+				require.Equal(t, string(before), string(after), "dispatch mutated the caller's history")
+			})
+		}
 	}
 }

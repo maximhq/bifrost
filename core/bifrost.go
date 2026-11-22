@@ -67,6 +67,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/streamusage"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -8996,6 +8997,96 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 	return &cp
 }
 
+// resolveAdvisorToolAliases applies the attempt key's aliases to advisor tool models, copy-on-write.
+func resolveAdvisorToolAliases(ctx *schemas.BifrostContext, key schemas.Key, r *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if r == nil || len(key.Aliases) == 0 {
+		return r
+	}
+	var tools []schemas.ResponsesTool
+	if r.Params != nil {
+		for i := range r.Params.Tools {
+			advisor := r.Params.Tools[i].ResponsesToolAdvisor
+			if advisor == nil {
+				continue
+			}
+			resolved, ok := resolveToolModelAlias(key.Aliases, advisor.Model)
+			if !ok {
+				continue
+			}
+			if tools == nil {
+				tools = slices.Clone(r.Params.Tools)
+			}
+			aliased := *advisor
+			aliased.Model = resolved
+			tools[i].ResponsesToolAdvisor = &aliased
+		}
+	}
+	var raw []byte
+	if useRawBody, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); useRawBody && len(r.RawRequestBody) > 0 {
+		raw = resolveRawAdvisorToolAliases(key.Aliases, r.RawRequestBody)
+	}
+	if tools == nil && raw == nil {
+		return r
+	}
+	cp := *r
+	if tools != nil {
+		params := *r.Params
+		params.Tools = tools
+		cp.Params = &params
+	}
+	if raw != nil {
+		cp.RawRequestBody = raw
+	}
+	return &cp
+}
+
+// resolveRawAdvisorToolAliases returns body with advisor tool models aliased, or nil when none is.
+func resolveRawAdvisorToolAliases(aliases schemas.KeyAliases, body []byte) []byte {
+	tools := providerUtils.GetJSONField(body, "tools")
+	if !tools.IsArray() {
+		return nil
+	}
+	var paths, models []string
+	index := 0
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		if model := tool.Get("model"); model.Type == gjson.String && strings.HasPrefix(tool.Get("type").String(), "advisor") {
+			if resolved, ok := resolveToolModelAlias(aliases, model.Str); ok {
+				paths = append(paths, fmt.Sprintf("tools.%d.model", index))
+				models = append(models, resolved)
+			}
+		}
+		index++
+		return true
+	})
+	if len(paths) == 0 {
+		return nil
+	}
+	out := body
+	for i := range paths {
+		updated, err := providerUtils.SetJSONField(out, paths[i], models[i])
+		if err != nil {
+			return nil
+		}
+		out = updated
+	}
+	return out
+}
+
+// resolveToolModelAlias returns the alias model id for a tool's model, matched on its bare name.
+func resolveToolModelAlias(aliases schemas.KeyAliases, model string) (string, bool) {
+	if model == "" {
+		return "", false
+	}
+	if prefixProvider, bare := schemas.ParseModelString(model, ""); prefixProvider != "" {
+		model = bare
+	}
+	aliasConfig := aliases.ResolveConfig(model)
+	if aliasConfig == nil || aliasConfig.ModelID == "" {
+		return "", false
+	}
+	return aliasConfig.ModelID, true
+}
+
 // prepareResponsesRequest returns the Responses request to dispatch for one attempt:
 // billing metadata restored for Anthropic models, prompt-cache breakpoints
 // injected, then embedded client tools promoted and namespace
@@ -9116,7 +9207,8 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 			return nil, bifrostErr
 		}
 	}
-	// Last, so tools hoisted out of additional_tools items and namespaces are normalized too.
+	r = resolveAdvisorToolAliases(ctx, key, r)
+	// Last, so tools hoisted out of additional_tools items and namespaces are normalized and aliased too.
 	return normalizeResponsesToolSchemas(ctx, provider.GetProviderKey(), r), nil
 }
 
