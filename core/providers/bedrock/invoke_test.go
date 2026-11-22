@@ -3800,3 +3800,58 @@ func TestToBedrockInvokeAnthropicResponse_StopReason(t *testing.T) {
 		})
 	}
 }
+
+// A function_call output item upgrades end_turn to tool_use (Gemini reports a plain stop on
+// a tool turn), but never overrides a truncation, a refusal or a guardrail block.
+func TestToBedrockInvokeAnthropicResponse_StopReasonWithToolCall(t *testing.T) {
+	tests := []struct {
+		name       string
+		stopReason *string
+		expected   string
+	}{
+		{"stop with tool call is tool_use", schemas.Ptr("stop"), "tool_use"},
+		{"no stop reason with tool call is tool_use", nil, "tool_use"},
+		{"tool_calls is tool_use", schemas.Ptr("tool_calls"), "tool_use"},
+		{"length with tool call stays max_tokens", schemas.Ptr("length"), "max_tokens"},
+		{"content_filter with tool call stays refusal", schemas.Ptr("content_filter"), "refusal"},
+		{"guardrail_intervened with tool call stays end_turn", schemas.Ptr("guardrail_intervened"), "end_turn"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &schemas.BifrostResponsesResponse{
+				StopReason: tt.stopReason,
+				Output:     []schemas.ResponsesMessage{invokeStopReasonToolCallItem()},
+			}
+			result := toBedrockInvokeAnthropicResponse(resp, "claude-sonnet-4-6")
+			assert.Equal(t, tt.expected, result.StopReason)
+		})
+	}
+}
+
+func invokeStopReasonToolCallItem() schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:    schemas.Ptr("toolu_1"),
+			Name:      schemas.Ptr("get_weather"),
+			Arguments: schemas.Ptr(`{"city":"Paris"}`),
+		},
+	}
+}
+
+func BenchmarkToBedrockInvokeAnthropicResponse_StopReason(b *testing.B) {
+	resp := &schemas.BifrostResponsesResponse{
+		ID:                schemas.Ptr("msg_1"),
+		StopReason:        schemas.Ptr("length"),
+		IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens},
+		Output: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = toBedrockInvokeAnthropicResponse(resp, "claude-sonnet-4-6")
+	}
+}

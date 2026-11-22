@@ -1531,7 +1531,7 @@ func bedrockInvokeGuardrailFields(resp *schemas.BifrostResponsesResponse) (strin
 			rawTrace = raw
 		}
 	}
-	intervened := resp.StopReason != nil && *resp.StopReason == "guardrail_intervened"
+	intervened := invokeGuardrailIntervened(resp)
 	switch {
 	case intervened:
 		return "INTERVENED", rawTrace
@@ -1895,9 +1895,9 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 	}
 
 	// Stop reason. A tool_use block still wins over end_turn: some providers (e.g. Gemini)
-	// report a plain stop on a function-call turn.
+	// report a plain stop on a function-call turn. A guardrail block's end_turn is final.
 	stopReason := anthropicInvokeStopReason(resp)
-	if stopReason == "" || stopReason == string(anthropic.AnthropicStopReasonEndTurn) {
+	if (stopReason == "" || stopReason == string(anthropic.AnthropicStopReasonEndTurn)) && !invokeGuardrailIntervened(resp) {
 		stopReason = string(anthropic.AnthropicStopReasonEndTurn)
 		for _, block := range result.Content {
 			if block.Type == "tool_use" {
@@ -2150,23 +2150,25 @@ func bedrockInvokeStreamItemKey(resp *schemas.BifrostResponsesStreamResponse) st
 // and content_filtered into one content_filter incomplete reason, and only StopReason keeps
 // them apart (a guardrail block is end_turn on InvokeModel, a model filter is refusal).
 // IncompleteDetails covers providers that report no StopReason. Returns "" when neither
-// field is set, leaving the default to the caller.
+// field is set, leaving the default to the caller. The shared converter reports a guardrail
+// block as refusal; InvokeModel reports it as end_turn and carries the signal in
+// amazon-bedrock-guardrailAction instead (bedrockInvokeGuardrailFields).
 func anthropicInvokeStopReason(resp *schemas.BifrostResponsesResponse) string {
 	if resp == nil {
 		return ""
 	}
+	if invokeGuardrailIntervened(resp) {
+		return string(anthropic.AnthropicStopReasonEndTurn)
+	}
 	if resp.StopReason != nil && *resp.StopReason != "" {
 		return string(anthropic.ConvertBifrostFinishReasonToAnthropic(*resp.StopReason))
 	}
-	if resp.IncompleteDetails != nil {
-		switch resp.IncompleteDetails.Reason {
-		case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
-			return string(anthropic.AnthropicStopReasonMaxTokens)
-		case schemas.ResponsesResponseIncompleteReasonContentFilter:
-			return string(anthropic.AnthropicStopReasonRefusal)
-		}
-	}
-	return ""
+	return string(anthropic.AnthropicStopReasonFromIncompleteDetails(resp.IncompleteDetails))
+}
+
+// invokeGuardrailIntervened reports whether a Bedrock guardrail blocked the turn.
+func invokeGuardrailIntervened(resp *schemas.BifrostResponsesResponse) bool {
+	return resp != nil && resp.StopReason != nil && *resp.StopReason == bedrockStopReasonGuardrailIntervened
 }
 
 // toAnthropicInvokeStreamBytes converts a Bifrost stream event into raw bytes representing

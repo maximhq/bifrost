@@ -233,6 +233,8 @@ var (
 		"tool_calls":     AnthropicStopReasonToolUse,
 		"compaction":     AnthropicStopReasonCompaction,
 		"content_filter": AnthropicStopReasonRefusal,
+		// Bedrock Converse guardrail block; Anthropic's value for a policy-blocked turn.
+		"guardrail_intervened": AnthropicStopReasonRefusal,
 	}
 )
 
@@ -4035,9 +4037,11 @@ func ConvertAnthropicFinishReasonToBifrost(providerReason AnthropicStopReason) s
 }
 
 // ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format.
-// The result is always a stop_reason Anthropic defines (or empty for an unset reason):
-// reasons with no Anthropic equivalent, such as Bedrock's guardrail_intervened or
-// malformed_model_output, become end_turn instead of leaking to the client.
+// The result is always a stop_reason Anthropic defines (or empty for an unset reason).
+// A policy block (content_filter, Bedrock's guardrail_intervened) is refusal, so a client
+// on /anthropic/v1/messages, which has no guardrail header, can still tell it apart from a
+// finished turn. Any other reason with no Anthropic equivalent, such as Bedrock's
+// malformed_model_output, becomes end_turn instead of leaking to the client.
 func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopReason {
 	if providerReason, ok := bifrostToAnthropicFinishReason[bifrostReason]; ok {
 		return providerReason
@@ -4083,9 +4087,9 @@ func anthropicResponsesStatus(stopReason *string) (*string, *schemas.ResponsesRe
 	return &status, details
 }
 
-// anthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
+// AnthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
 // Anthropic stop_reason, for terminal events that carry no explicit stop reason.
-func anthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
+func AnthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
 	if details == nil {
 		return ""
 	}
