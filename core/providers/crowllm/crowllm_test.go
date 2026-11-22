@@ -3,6 +3,7 @@ package crowllm
 import (
 	"testing"
 
+	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -51,5 +52,59 @@ func TestParseCrowLLMImageErrorValidationList(t *testing.T) {
 	want := "must be between 64 and 2048 [body.width]"
 	if err.Error.Message != want {
 		t.Fatalf("expected %q, got %q", want, err.Error.Message)
+	}
+}
+
+func TestToCrowLLMImageGenerationRequestConvertsSizeAndFormat(t *testing.T) {
+	size := "1024x768"
+	format := "jpeg"
+	req := &schemas.BifrostImageGenerationRequest{
+		Model:  "black-forest-labs/flux-schnell",
+		Input:  &schemas.ImageGenerationInput{Prompt: "a crow on a wire"},
+		Params: &schemas.ImageGenerationParameters{Size: &size, OutputFormat: &format},
+	}
+
+	provider := &CrowLLMProvider{}
+	out, err := provider.ToCrowLLMImageGenerationRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Width == nil || *out.Width != 1024 || out.Height == nil || *out.Height != 768 {
+		t.Fatalf("expected 1024x768, got %v x %v", out.Width, out.Height)
+	}
+	if out.ResponseExtension == nil || *out.ResponseExtension != "jpg" {
+		t.Fatalf("expected jpeg to map to jpg, got %v", out.ResponseExtension)
+	}
+
+	// The conversion must not mutate the input request.
+	if *req.Params.Size != "1024x768" {
+		t.Fatalf("input size mutated: %q", *req.Params.Size)
+	}
+	if *req.Params.OutputFormat != "jpeg" {
+		t.Fatalf("input format mutated: %q", *req.Params.OutputFormat)
+	}
+	if req.Input.Prompt != "a crow on a wire" {
+		t.Fatalf("input prompt mutated: %q", req.Input.Prompt)
+	}
+}
+
+func TestToCrowLLMImageGenerationRequestRejectsBadSize(t *testing.T) {
+	size := "huge"
+	req := &schemas.BifrostImageGenerationRequest{
+		Model:  "black-forest-labs/flux-schnell",
+		Input:  &schemas.ImageGenerationInput{Prompt: "a crow"},
+		Params: &schemas.ImageGenerationParameters{Size: &size},
+	}
+
+	provider := &CrowLLMProvider{}
+	if _, err := provider.ToCrowLLMImageGenerationRequest(req); err == nil {
+		t.Fatal("expected an error for a size without WIDTHxHEIGHT")
+	}
+}
+
+func TestToCrowLLMImageGenerationRequestRejectsNilInput(t *testing.T) {
+	provider := &CrowLLMProvider{}
+	if _, err := provider.ToCrowLLMImageGenerationRequest(&schemas.BifrostImageGenerationRequest{Model: "x"}); err == nil {
+		t.Fatal("expected an error for a nil input")
 	}
 }
