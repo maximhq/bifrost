@@ -2000,6 +2000,85 @@ func deepCopyApplyPatchCall(original *ResponsesApplyPatchCall) *ResponsesApplyPa
 	return &copied
 }
 
+// DeepCopyResponsesOutputMessageContentTextAnnotation returns an annotation that shares no
+// pointer or slice with the original.
+func DeepCopyResponsesOutputMessageContentTextAnnotation(annotation ResponsesOutputMessageContentTextAnnotation) ResponsesOutputMessageContentTextAnnotation {
+	copyAnnotation := ResponsesOutputMessageContentTextAnnotation{
+		Type:          annotation.Type,
+		SourceContent: append([]string(nil), annotation.SourceContent...),
+	}
+	if annotation.Index != nil {
+		copyIndex := *annotation.Index
+		copyAnnotation.Index = &copyIndex
+	}
+	if annotation.FileID != nil {
+		copyFileID := *annotation.FileID
+		copyAnnotation.FileID = &copyFileID
+	}
+	if annotation.Text != nil {
+		copyText := *annotation.Text
+		copyAnnotation.Text = &copyText
+	}
+	if annotation.StartIndex != nil {
+		copyStartIndex := *annotation.StartIndex
+		copyAnnotation.StartIndex = &copyStartIndex
+	}
+	if annotation.EndIndex != nil {
+		copyEndIndex := *annotation.EndIndex
+		copyAnnotation.EndIndex = &copyEndIndex
+	}
+	if annotation.Filename != nil {
+		copyFilename := *annotation.Filename
+		copyAnnotation.Filename = &copyFilename
+	}
+	if annotation.Title != nil {
+		copyTitle := *annotation.Title
+		copyAnnotation.Title = &copyTitle
+	}
+	if annotation.URL != nil {
+		copyURL := *annotation.URL
+		copyAnnotation.URL = &copyURL
+	}
+	if annotation.ContainerID != nil {
+		copyContainerID := *annotation.ContainerID
+		copyAnnotation.ContainerID = &copyContainerID
+	}
+	// Deep copy Anthropic-specific annotation fields.
+	if annotation.StartCharIndex != nil {
+		copyStartCharIndex := *annotation.StartCharIndex
+		copyAnnotation.StartCharIndex = &copyStartCharIndex
+	}
+	if annotation.EndCharIndex != nil {
+		copyEndCharIndex := *annotation.EndCharIndex
+		copyAnnotation.EndCharIndex = &copyEndCharIndex
+	}
+	if annotation.StartPageNumber != nil {
+		copyStartPageNumber := *annotation.StartPageNumber
+		copyAnnotation.StartPageNumber = &copyStartPageNumber
+	}
+	if annotation.EndPageNumber != nil {
+		copyEndPageNumber := *annotation.EndPageNumber
+		copyAnnotation.EndPageNumber = &copyEndPageNumber
+	}
+	if annotation.StartBlockIndex != nil {
+		copyStartBlockIndex := *annotation.StartBlockIndex
+		copyAnnotation.StartBlockIndex = &copyStartBlockIndex
+	}
+	if annotation.EndBlockIndex != nil {
+		copyEndBlockIndex := *annotation.EndBlockIndex
+		copyAnnotation.EndBlockIndex = &copyEndBlockIndex
+	}
+	if annotation.Source != nil {
+		copySource := *annotation.Source
+		copyAnnotation.Source = &copySource
+	}
+	if annotation.EncryptedIndex != nil {
+		copyEncryptedIndex := *annotation.EncryptedIndex
+		copyAnnotation.EncryptedIndex = &copyEncryptedIndex
+	}
+	return copyAnnotation
+}
+
 // deepCopyResponsesMessageContentBlock creates a deep copy of a ResponsesMessageContentBlock
 func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock) ResponsesMessageContentBlock {
 	copy := ResponsesMessageContentBlock{
@@ -2143,80 +2222,7 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		if original.ResponsesOutputMessageContentText.Annotations != nil {
 			copyText.Annotations = make([]ResponsesOutputMessageContentTextAnnotation, len(original.ResponsesOutputMessageContentText.Annotations))
 			for i, annotation := range original.ResponsesOutputMessageContentText.Annotations {
-				copyAnnotation := ResponsesOutputMessageContentTextAnnotation{
-					Type:          annotation.Type,
-					SourceContent: append([]string(nil), annotation.SourceContent...),
-				}
-				if annotation.Index != nil {
-					copyIndex := *annotation.Index
-					copyAnnotation.Index = &copyIndex
-				}
-				if annotation.FileID != nil {
-					copyFileID := *annotation.FileID
-					copyAnnotation.FileID = &copyFileID
-				}
-				if annotation.Text != nil {
-					copyText := *annotation.Text
-					copyAnnotation.Text = &copyText
-				}
-				if annotation.StartIndex != nil {
-					copyStartIndex := *annotation.StartIndex
-					copyAnnotation.StartIndex = &copyStartIndex
-				}
-				if annotation.EndIndex != nil {
-					copyEndIndex := *annotation.EndIndex
-					copyAnnotation.EndIndex = &copyEndIndex
-				}
-				if annotation.Filename != nil {
-					copyFilename := *annotation.Filename
-					copyAnnotation.Filename = &copyFilename
-				}
-				if annotation.Title != nil {
-					copyTitle := *annotation.Title
-					copyAnnotation.Title = &copyTitle
-				}
-				if annotation.URL != nil {
-					copyURL := *annotation.URL
-					copyAnnotation.URL = &copyURL
-				}
-				if annotation.ContainerID != nil {
-					copyContainerID := *annotation.ContainerID
-					copyAnnotation.ContainerID = &copyContainerID
-				}
-				// Deep copy Anthropic-specific annotation fields.
-				if annotation.StartCharIndex != nil {
-					copyStartCharIndex := *annotation.StartCharIndex
-					copyAnnotation.StartCharIndex = &copyStartCharIndex
-				}
-				if annotation.EndCharIndex != nil {
-					copyEndCharIndex := *annotation.EndCharIndex
-					copyAnnotation.EndCharIndex = &copyEndCharIndex
-				}
-				if annotation.StartPageNumber != nil {
-					copyStartPageNumber := *annotation.StartPageNumber
-					copyAnnotation.StartPageNumber = &copyStartPageNumber
-				}
-				if annotation.EndPageNumber != nil {
-					copyEndPageNumber := *annotation.EndPageNumber
-					copyAnnotation.EndPageNumber = &copyEndPageNumber
-				}
-				if annotation.StartBlockIndex != nil {
-					copyStartBlockIndex := *annotation.StartBlockIndex
-					copyAnnotation.StartBlockIndex = &copyStartBlockIndex
-				}
-				if annotation.EndBlockIndex != nil {
-					copyEndBlockIndex := *annotation.EndBlockIndex
-					copyAnnotation.EndBlockIndex = &copyEndBlockIndex
-				}
-				if annotation.Source != nil {
-					copySource := *annotation.Source
-					copyAnnotation.Source = &copySource
-				}
-				if annotation.EncryptedIndex != nil {
-					copyEncryptedIndex := *annotation.EncryptedIndex
-					copyAnnotation.EncryptedIndex = &copyEncryptedIndex
-				}
-				copyText.Annotations[i] = copyAnnotation
+				copyText.Annotations[i] = DeepCopyResponsesOutputMessageContentTextAnnotation(annotation)
 			}
 		}
 

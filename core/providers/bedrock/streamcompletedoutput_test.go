@@ -82,6 +82,57 @@ func TestDocumentCitationsStreamOrdering(t *testing.T) {
 	}
 }
 
+// Each emitted event and the retained response.completed output own their citation data, so a
+// post-hook editing one annotation cannot change another event or the terminal response.
+func TestDocumentCitationsStreamEventsShareNoAnnotationData(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	var events []*schemas.BifrostResponsesStreamResponse
+	emit := func(event *bedrock.BedrockStreamEvent) {
+		out, err, _ := event.ToBifrostResponsesStream(len(events), state)
+		require.Nil(t, err)
+		events = append(events, out...)
+	}
+	var citation bedrock.BedrockContentBlockDelta
+	require.NoError(t, sonic.Unmarshal([]byte(`{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}`), &citation))
+	emit(&bedrock.BedrockStreamEvent{Role: schemas.Ptr("assistant")})
+	emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &citation})
+	emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &bedrock.BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}})
+	emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true})
+
+	var holders []*schemas.ResponsesOutputMessageContentTextAnnotation
+	for _, event := range events {
+		switch event.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+			holders = append(holders, event.Annotation)
+		case schemas.ResponsesStreamResponseTypeContentPartDone:
+			holders = append(holders, &event.Part.Annotations[0])
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			holders = append(holders, &event.Item.Content.ContentBlocks[0].Annotations[0])
+		}
+	}
+	require.Len(t, holders, 3, "annotation.added, content_part.done and output_item.done")
+	edit := func(a *schemas.ResponsesOutputMessageContentTextAnnotation) {
+		a.SourceContent[0] = "edited"
+		*a.Text = "edited"
+		*a.Filename = "edited"
+		*a.StartBlockIndex = 9
+	}
+	unchanged := func(name string, a schemas.ResponsesOutputMessageContentTextAnnotation) {
+		assert.Equal(t, []string{"Budget: $4.2M."}, a.SourceContent, name)
+		assert.Equal(t, "Budget: $4.2M.", *a.Text, name)
+		assert.Equal(t, "pack", *a.Filename, name)
+		assert.Equal(t, 0, *a.StartBlockIndex, name)
+	}
+	// A post-hook edits the citation on annotation.added and content_part.done...
+	edit(holders[0])
+	edit(holders[1])
+	unchanged("output_item.done", *holders[2])
+	// ...and then on output_item.done, before response.completed is built.
+	edit(holders[2])
+	final := bedrock.FinalizeBedrockStream(state, len(events), &schemas.ResponsesResponseUsage{}, nil)
+	unchanged("response.completed", final[len(final)-1].Response.Output[0].Content.ContentBlocks[0].Annotations[0])
+}
+
 func TestDocumentCitationsIgnoreUnknownLocations(t *testing.T) {
 	state := bedrock.NewBedrockResponsesStreamState()
 	state.Model = schemas.Ptr("global.anthropic.claude-haiku-5-5")

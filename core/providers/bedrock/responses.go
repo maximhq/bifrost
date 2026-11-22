@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -378,9 +379,28 @@ func recordBedrockOutputItems(state *BedrockResponsesStreamState, responses []*s
 		if response.Item == nil || response.OutputIndex == nil {
 			continue
 		}
+		if bedrockItemHasAnnotations(response.Item) {
+			item := schemas.DeepCopyResponsesMessage(*response.Item)
+			state.OutputItems[*response.OutputIndex] = &item
+			continue
+		}
 		item := *response.Item
 		state.OutputItems[*response.OutputIndex] = &item
 	}
+}
+
+// bedrockItemHasAnnotations reports whether a completed item carries citations, the only
+// part of a text item that later events and post-hooks could otherwise share.
+func bedrockItemHasAnnotations(item *schemas.ResponsesMessage) bool {
+	if item.Content == nil {
+		return false
+	}
+	for i := range item.Content.ContentBlocks {
+		if text := item.Content.ContentBlocks[i].ResponsesOutputMessageContentText; text != nil && len(text.Annotations) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ToBifrostResponsesStream converts one Bedrock Converse stream event into Responses
@@ -956,7 +976,8 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 				if state.TextAnnotations == nil {
 					state.TextAnnotations = make(map[int][]schemas.ResponsesOutputMessageContentTextAnnotation)
 				}
-				state.TextAnnotations[outputIndex] = append(state.TextAnnotations[outputIndex], *annotation)
+				// Retain a copy: the annotation.added event below owns the original.
+				state.TextAnnotations[outputIndex] = append(state.TextAnnotations[outputIndex], schemas.DeepCopyResponsesOutputMessageContentTextAnnotation(*annotation))
 			}
 			annotationIndex := state.AnnotationIndices[outputIndex]
 			state.AnnotationIndices[outputIndex]++
@@ -1247,6 +1268,16 @@ func emitNovaGroundingDoneEvents(outputIndex, contentIndex int, itemID string, c
 	}
 }
 
+// copyBedrockAnnotations gives each done event its own annotations, so a post-hook edit to
+// one event cannot reach another or the retained response.completed output.
+func copyBedrockAnnotations(annotations []schemas.ResponsesOutputMessageContentTextAnnotation) []schemas.ResponsesOutputMessageContentTextAnnotation {
+	out := make([]schemas.ResponsesOutputMessageContentTextAnnotation, len(annotations))
+	for i := range annotations {
+		out[i] = schemas.DeepCopyResponsesOutputMessageContentTextAnnotation(annotations[i])
+	}
+	return out
+}
+
 // appendBedrockTextDoneEvents closes text and citations at a block stop, tool start, or EOF.
 func appendBedrockTextDoneEvents(responses []*schemas.BifrostResponsesStreamResponse, state *BedrockResponsesStreamState, outputIndex, contentIndex, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
 	annotations := state.TextAnnotations[outputIndex]
@@ -1268,7 +1299,7 @@ func appendBedrockTextDoneEvents(responses []*schemas.BifrostResponsesStreamResp
 		Type: schemas.ResponsesOutputMessageContentTypeText,
 		Text: schemas.Ptr(text),
 		ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-			Annotations: append([]schemas.ResponsesOutputMessageContentTextAnnotation{}, annotations...),
+			Annotations: copyBedrockAnnotations(annotations),
 			LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 		},
 	}
@@ -1286,7 +1317,7 @@ func appendBedrockTextDoneEvents(responses []*schemas.BifrostResponsesStreamResp
 			Type: schemas.ResponsesOutputMessageContentTypeText,
 			Text: schemas.Ptr(text),
 			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-				Annotations: append([]schemas.ResponsesOutputMessageContentTextAnnotation{}, annotations...),
+				Annotations: copyBedrockAnnotations(annotations),
 				LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 			},
 		})
@@ -4680,6 +4711,47 @@ func createTextMessage(
 	return bifrostMsg
 }
 
+// bedrockDocumentContentJSON renders custom document content as the neutral file_content array,
+// [{"text":...,"type":"text"}] with sorted keys, without a fallible marshal step that could drop it.
+func bedrockDocumentContentJSON(parts []BedrockDocumentContentBlock) json.RawMessage {
+	out := append(make([]byte, 0, 32*len(parts)+2), '[')
+	for i, part := range parts {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, '{')
+		if part.Text != nil {
+			out = append(out, `"text":`...)
+			out = appendBedrockJSONString(out, *part.Text)
+			out = append(out, ',')
+		}
+		out = append(out, `"type":"text"}`...)
+	}
+	return append(out, ']')
+}
+
+// appendBedrockJSONString appends s as a JSON string; invalid UTF-8 becomes U+FFFD, as in encoding/json.
+func appendBedrockJSONString(dst []byte, s string) []byte {
+	dst = append(dst, '"')
+	for _, r := range s {
+		switch {
+		case r == '"' || r == '\\':
+			dst = append(dst, '\\', byte(r))
+		case r == '\n':
+			dst = append(dst, '\\', 'n')
+		case r == '\r':
+			dst = append(dst, '\\', 'r')
+		case r == '\t':
+			dst = append(dst, '\\', 't')
+		case r < 0x20:
+			dst = fmt.Appendf(dst, `\u%04x`, r)
+		default:
+			dst = utf8.AppendRune(dst, r)
+		}
+	}
+	return append(dst, '"')
+}
+
 func (citation BedrockCitation) toBifrostAnnotation() *schemas.ResponsesOutputMessageContentTextAnnotation {
 	annotation := &schemas.ResponsesOutputMessageContentTextAnnotation{}
 	var location *BedrockDocumentCitationLocation
@@ -5252,17 +5324,7 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				} else if block.Document.Source.S3Location != nil {
 					fileBlock.ResponsesInputMessageContentBlockFile.FileURL = &block.Document.Source.S3Location.URI
 				} else if block.Document.Source.Content != nil {
-					content := make([]struct {
-						Type string  `json:"type"`
-						Text *string `json:"text,omitempty"`
-					}, len(block.Document.Source.Content))
-					for i, part := range block.Document.Source.Content {
-						content[i].Type, content[i].Text = "text", part.Text
-					}
-					raw, err := providerUtils.MarshalSorted(content)
-					if err == nil {
-						fileBlock.ResponsesInputMessageContentBlockFile.FileContent = raw
-					}
+					fileBlock.ResponsesInputMessageContentBlockFile.FileContent = bedrockDocumentContentJSON(block.Document.Source.Content)
 				}
 			}
 			if block.Document.Citations != nil {

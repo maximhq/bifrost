@@ -190,6 +190,39 @@ func TestDocumentCitationsCustomContentForms(t *testing.T) {
 	}
 }
 
+// Custom document content is rendered without a marshal step that could fail and drop the
+// document; the bytes must decode to the same chunks MarshalSorted would produce.
+func TestBedrockDocumentContentJSON(t *testing.T) {
+	type chunk struct {
+		Text *string `json:"text,omitempty"`
+		Type string  `json:"type"`
+	}
+	texts := []string{"Budget: $4.2M.", "quote \" back\\slash", "line\nbreak\ttab\rcr", "ctrl \x00\x01\x1f", "日本語 <b>&</b> \u2028", "bad \xff utf8"}
+	parts := make([]BedrockDocumentContentBlock, 0, len(texts)+1)
+	want := make([]chunk, 0, len(texts)+1)
+	for i := range texts {
+		parts = append(parts, BedrockDocumentContentBlock{Text: &texts[i]})
+		want = append(want, chunk{Text: &texts[i], Type: "text"})
+	}
+	parts = append(parts, BedrockDocumentContentBlock{})
+	want = append(want, chunk{Type: "text"})
+
+	raw := bedrockDocumentContentJSON(parts)
+	require.True(t, json.Valid(raw), "invalid JSON: %s", raw)
+	var got []chunk
+	require.NoError(t, json.Unmarshal(raw, &got))
+	expected, err := providerUtils.MarshalSorted(want)
+	require.NoError(t, err)
+	var wantDecoded []chunk
+	require.NoError(t, json.Unmarshal(expected, &wantDecoded))
+	require.Equal(t, wantDecoded, got)
+
+	simple := bedrockDocumentContentJSON(parts[:1])
+	expectedSimple, err := providerUtils.MarshalSorted(want[:1])
+	require.NoError(t, err)
+	require.Equal(t, string(expectedSimple), string(simple), "key order must stay byte-stable")
+}
+
 func BenchmarkDocumentCitationsConversion(b *testing.B) {
 	req := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "global.anthropic.claude-haiku-5-5",
 		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
