@@ -229,6 +229,17 @@ func TestDocumentCitationsCitationOnlyItemRendersAsConverse(t *testing.T) {
 	require.True(t, citation.Exists(), "citation-only item lost its citations: %s", wire)
 	assert.Equal(t, int64(1), citation.Get("location.documentChunk.end").Int())
 	assert.Equal(t, "Budget: $4.2M.", citation.Get("sourceContent.0.text").Str)
+
+	// Converting the rendered Converse response back keeps the citation, though no text precedes it.
+	var back bedrock.BedrockConverseResponse
+	require.NoError(t, sonic.Unmarshal(wire, &back))
+	round, err := back.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	require.Len(t, round.Output, 1, "%s", wire)
+	block := round.Output[0].Content.ContentBlocks[0]
+	require.Len(t, block.Annotations, 1, "citation-only block lost its citation on the way back")
+	assert.Equal(t, "content_block_location", block.Annotations[0].Type)
+	assert.Equal(t, "", *block.Text)
 }
 
 func TestDocumentCitationsPreserveLegacyWeb(t *testing.T) {

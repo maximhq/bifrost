@@ -4761,6 +4761,17 @@ func appendBedrockJSONString(dst []byte, s string) []byte {
 	return append(dst, '"')
 }
 
+// hasBedrockDocumentCitation reports whether any citation points into a document.
+func hasBedrockDocumentCitation(citations []BedrockCitation) bool {
+	for i := range citations {
+		location := citations[i].Location
+		if location.DocumentChunk != nil || location.DocumentChar != nil || location.DocumentPage != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (citation BedrockCitation) toBifrostAnnotation() *schemas.ResponsesOutputMessageContentTextAnnotation {
 	annotation := &schemas.ResponsesOutputMessageContentTextAnnotation{}
 	var location *BedrockDocumentCitationLocation
@@ -5036,7 +5047,11 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 					texts = append(texts, *part.Text)
 				}
 			}
-			if text := strings.Join(texts, ""); text != "" {
+			text := strings.Join(texts, "")
+			// A citation-only block with no text before it (a rendered citation-only item) gets
+			// its own empty text item, so its document citations survive. Legacy Nova web
+			// citations without preceding text are still dropped.
+			if text != "" || (lastTextOutputIdx < 0 && hasBedrockDocumentCitation(block.CitationsContent.Citations)) {
 				lastTextOutputIdx = len(outputMessages)
 				outputMessages = append(outputMessages, createTextMessage(&text, convertBedrockRoleToBifrostRole(msg.Role), schemas.ResponsesOutputMessageContentTypeText, isOutputMessage))
 			}
