@@ -347237,7 +347237,7 @@
     },
     {
       "name": "375. Rapid-MLX local provider (rapidmlx local provider) (#10032 / PR #10033)",
-      "description": "Requires a configured rapidmlx key pointing at a running local Rapid-MLX server serving mlx-community/Qwen3.5-4B-MLX-4bit. Pins chat and native Responses routing, with and without SSE. No external API credentials are required. Opt in with INCLUDE_PREVIEW=1 (Newman environment variable include_preview=1) after configuring the server; all four requests are skipped by default.",
+      "description": "Requires a configured rapidmlx key pointing at a running local Rapid-MLX server serving mlx-community/Qwen3.5-4B-MLX-4bit. Pins chat and native Responses routing, with and without SSE. No external API credentials are required. Opt in with INCLUDE_PREVIEW=1 (Newman environment variable include_preview=1) after configuring the server; all five requests are skipped by default.",
       "item": [
         {
           "name": "[PREVIEW] Rapid-MLX rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit chat/completions unary - #10032",

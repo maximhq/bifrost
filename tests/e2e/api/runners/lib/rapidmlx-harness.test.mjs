@@ -61,8 +61,8 @@ const sse = (...events) =>
   events.map((event) => "data: " + JSON.stringify(event) + "\n\n").join("");
 const completed = { type: "response.completed" };
 
-test("all four Rapid-MLX requests skip unless include_preview is explicitly enabled", () => {
-  assert.equal(folder.item.length, 4);
+test("all five Rapid-MLX requests skip unless include_preview is explicitly enabled", () => {
+  assert.equal(folder.item.length, 5);
   for (const row of folder.item) {
     for (const flag of [undefined, "", "0", "true", "1"]) {
       let skipped = false;
