@@ -14,6 +14,24 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// file_content takes precedence over file_data / file_url / file_id when converting to Anthropic,
+// on both the Chat and the Responses converter.
+func TestCustomDocumentContentTakesPrecedence(t *testing.T) {
+	content := json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."}]`)
+	chatBlock := ConvertToAnthropicDocumentBlock(schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{
+		FileContent: content, FileData: schemas.Ptr("aGVsbG8="), FileURL: schemas.Ptr("https://example.com/a.pdf"), FileID: schemas.Ptr("file_1"),
+	}})
+	responsesBlock := ConvertResponsesFileBlockToAnthropic(&schemas.ResponsesInputMessageContentBlockFile{
+		FileContent: content, FileData: schemas.Ptr("aGVsbG8="), FileURL: schemas.Ptr("https://example.com/a.pdf"),
+	}, schemas.Ptr("file_1"), nil, nil)
+	for name, block := range map[string]AnthropicContentBlock{"chat": chatBlock, "responses": responsesBlock} {
+		src := block.Source.SourceObj
+		if src == nil || src.Type != "content" || string(src.Content) != string(content) || src.Data != nil || src.URL != nil || src.FileID != nil {
+			t.Fatalf("%s: file_content must be the only source, got %+v", name, src)
+		}
+	}
+}
+
 func TestCustomDocumentContentRoundTrip(t *testing.T) {
 	for _, sourceType := range []string{"content", "content_block"} {
 		for _, content := range []string{`"Budget: $4.2M."`, `[{"type":"text","text":"Budget: $4.2M."},{"type":"text","text":"Audit: March."}]`} {
