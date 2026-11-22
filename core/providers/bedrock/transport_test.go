@@ -1824,6 +1824,24 @@ func TestConverseSyntheticStructuredOutput_StreamCallerToolAfterSyntheticTool(t 
 	})
 }
 
+// Unary twin of the stream case: prose beside the synthetic tool, cited or not, must not replace
+// the tool's JSON in choices[].message.content.
+func TestConverseSyntheticStructuredOutput_UnaryChatKeepsJSONOverCitedProse(t *testing.T) {
+	var resp BedrockConverseResponse
+	require.NoError(t, json.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[`+
+		`{"text":"Per the pack, "},`+
+		`{"citationsContent":{"content":[{"text":"the budget is $4.2M."}],"citations":[{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}]}},`+
+		`{"toolUse":{"toolUseId":"t0","name":"bf_so_budget","input":{"budget":"$4.2M"}}}]}},"stopReason":"tool_use"}`), &resp))
+	ctx := testBedrockCtx()
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, "bf_so_budget")
+	chat, err := resp.ToBifrostChatResponse(ctx, testConverseStreamModel)
+	require.NoError(t, err)
+	content := chat.Choices[0].Message.Content
+	require.NotNil(t, content.ContentStr, "content blocks: %+v", content.ContentBlocks)
+	assert.JSONEq(t, `{"budget":"$4.2M"}`, *content.ContentStr)
+	assert.Empty(t, content.ContentBlocks)
+}
+
 // A citation on the prose block beside the synthetic tool is prose too: it is held and dropped
 // with that block's text, so no annotation or extra message item reaches the structured output.
 func TestConverseSyntheticStructuredOutput_StreamDropsCitedProse(t *testing.T) {

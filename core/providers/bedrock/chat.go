@@ -257,6 +257,22 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 		}
 	}
 
+	// When the synthetic structured-output tool answered, its JSON is the content.
+	// Prose beside it (plain or cited) would replace that JSON in the fold below,
+	// so it is dropped, as the streaming path drops it.
+	if usedStructuredOutputTool && len(contentBlocks) > 0 {
+		kept := contentBlocks[:0]
+		for _, block := range contentBlocks {
+			if block.Type != schemas.ChatContentBlockTypeText {
+				kept = append(kept, block)
+			}
+		}
+		contentBlocks = kept
+		if len(contentBlocks) == 0 {
+			contentBlocks = nil
+		}
+	}
+
 	// choices[].message.content is a string on the chat completions surface, so
 	// every text block has to fold into one. Converse splits assistant prose into
 	// sibling text blocks whenever a server-side tool interrupts the turn, and
