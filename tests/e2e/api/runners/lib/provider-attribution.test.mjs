@@ -2,6 +2,11 @@
 // No test framework needed (the tests/e2e/api dir has no test runner configured), same shape as
 // chained-vars.test.mjs next door.
 import assert from "node:assert";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { makeMatchProvider, providerOfFolder, providerOfItem, providerOfLogLine } from "./provider-attribution.mjs";
 
 let passed = 0;
@@ -134,6 +139,42 @@ test("prompt prose and test scripts do not claim Nace attribution", () => {
   });
   assert.strictEqual(providerOfItem(row("openai/gpt-4o"), ["Unified decision requests"], withNace), "openai");
   assert.strictEqual(providerOfItem(row("nace/drex-max-v1.1"), ["Unified decision requests"], withNace), "nace");
+});
+
+test("root and neutral-folder Nace rows agree with logged requests on OpenAI ingress", () => {
+  const withNace = makeMatchProvider((p) => ["nace", "openai"].includes(p));
+  const row = { name: "nace/drex-max-v1.1 image decision", request: { url: "{{baseUrl}}/openai/v1/decisions" } };
+  for (const folder of ["", "Decision requests"]) {
+    const denominator = providerOfItem(row, folder ? [folder] : [], withNace);
+    const numerator = providerOfLogLine("POST http://localhost:8080/openai/v1/decisions [200 OK]", folder, withNace, row.name);
+    assert.strictEqual(denominator, "nace");
+    assert.strictEqual(numerator, denominator);
+  }
+});
+
+test("the sequential monitor counts root Nace and OpenAI requests separately", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nace-attribution-"));
+  try {
+    const collection = join(dir, "collection.json");
+    const log = join(dir, "newman.log");
+    writeFileSync(collection, JSON.stringify({ item: [
+      { name: "nace/drex-max-v1.1 decision", request: { url: "{{baseUrl}}/openai/v1/decisions" } },
+      { name: "openai/gpt-4o chat", request: { url: "{{baseUrl}}/openai/v1/chat/completions" } },
+    ] }));
+    writeFileSync(log,
+      "↳ nace/drex-max-v1.1 decision\nPOST http://localhost:8080/openai/v1/decisions [200 OK, 1kB, 1ms]\n" +
+      "↳ openai/gpt-4o chat\nPOST http://localhost:8080/openai/v1/chat/completions [200 OK, 1kB, 1ms]\n");
+    const out = execFileSync(process.execPath, [
+      fileURLToPath(new URL("../harness-monitor.mjs", import.meta.url)),
+      "--ci", "--mode", "sequential", "--providers", "nace openai", "--tmp-dir", dir,
+      "--collection", collection, "--log", log,
+    ], { encoding: "utf8", timeout: 10000 });
+    for (const provider of ["nace", "openai"]) {
+      assert.match(out, new RegExp(`│\\s*[^│]*│\\s*${provider}\\s*│\\s*1\\s*│\\s*1\\s*│\\s*0\\s*│`));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 console.log(`\n${passed} passed`);

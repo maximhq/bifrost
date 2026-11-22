@@ -106,9 +106,9 @@ export function providerOfFolder(folderName, matchProvider) {
 // {{vertexModel}}, while the substituted URL newman logs matches gemini through
 // "/genai" instead.
 //
-// The request name is tried next: cross-cut rows route through a unified
-// /v1/chat/completions that names no provider, and the name
-// ("openai/gpt-4o-mini ...") is the only other thing the log prints.
+// Match URL and request name together: an SDK ingress URL can name OpenAI while
+// the request name identifies Nace as the backend. Both signals are printed in
+// the log, so the same specificity order must apply to totals and results.
 //
 // Item identity + ancestor folder names is the last resort - rows the log cannot
 // attribute at all. Those inflate a denominator the numerator can never reach,
@@ -120,8 +120,7 @@ export function providerOfItem(item, ancestors, matchProvider) {
   const leafFolder = ancestors.length ? ancestors[ancestors.length - 1] : "";
   return (
     providerOfFolder(leafFolder, matchProvider) ||
-    matchProvider(url.toLowerCase()) ||
-    matchProvider(String(item.name || "").toLowerCase()) ||
+    matchProvider((url + " " + (item.name || "")).toLowerCase()) ||
     matchProvider((
       buildHaystack({ ...item, request: { ...req, body: undefined } }, ancestors) +
       " " + (requestModelOf(item) || "") + " " + (declaredProviderOf(item) || "")
@@ -133,7 +132,8 @@ export function providerOfItem(item, ancestors, matchProvider) {
 //
 // currentFolder is the last "❏ <name>" heading seen. When it resolves it wins,
 // which is what keeps this in step with providerOfItem above; the line's own
-// text is the fallback for rows that sit under an unattributable heading.
-export function providerOfLogLine(line, currentFolder, matchProvider) {
-  return providerOfFolder(currentFolder, matchProvider) || matchProvider(line.toLowerCase());
+// text and pending request name are the fallback for rows that sit under an
+// unattributable heading or at the collection root.
+export function providerOfLogLine(line, currentFolder, matchProvider, requestName = "") {
+  return providerOfFolder(currentFolder, matchProvider) || matchProvider((line + " " + requestName).toLowerCase());
 }
