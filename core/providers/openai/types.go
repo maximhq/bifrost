@@ -1043,6 +1043,8 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				if msg.ResponsesToolMessage.Output != nil {
 					outputBlocks, hadToolReferences = withoutToolReferenceBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
 				}
+				// Custom documents become text before the flatten check below.
+				outputBlocks, rewroteFileContent := rewriteResponsesFileContentBlocks(outputBlocks)
 				if hadToolReferences && len(outputBlocks) == 0 {
 					empty := ""
 					outputCopy := *msg.ResponsesToolMessage.Output
@@ -1059,7 +1061,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					toolMsgModified = true
 				} else if outputBlocks != nil {
 					// Strip CacheControl and FileType from tool message output blocks if needed
-					hasToolModification := hadToolReferences
+					hasToolModification := hadToolReferences || rewroteFileContent
 					for _, block := range outputBlocks {
 						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || responsesBlockHasFileContent(&block) || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) {
 							hasToolModification = true
@@ -1071,7 +1073,6 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						outputCopy := *msg.ResponsesToolMessage.Output
 						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(outputBlocks))
 						for j, block := range outputBlocks {
-							block, _ = openAIResponsesFileContentBlock(block)
 							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType))
 							if needsBlockCopy {
 								blockCopy := block

@@ -587,6 +587,82 @@ func TestMarshalCustomDocumentContentShapes(t *testing.T) {
 	})
 }
 
+// The file_content rewrite runs ahead of the empty-text-document drop, keeps a prompt cache
+// breakpoint on the text block it creates, and leaves a tool output that is now text-only to the
+// string flattening OpenAI's function_call_output requires.
+func TestMarshalCustomDocumentContentEdgeShapes(t *testing.T) {
+	chunks := json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."}]`)
+	breakpoint := &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")}
+
+	t.Run("chat: empty text/plain file_data beside file_content is not an empty document", func(t *testing.T) {
+		req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileContent: chunks, FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}},
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Say ok.")},
+			}},
+		}}}
+		body, err := req.MarshalJSON()
+		require.NoError(t, err)
+		require.Len(t, gjson.GetBytes(body, "messages.0.content").Array(), 2, "the document was dropped: %s", body)
+		assert.Equal(t, "Budget: $4.2M.", gjson.GetBytes(body, "messages.0.content.0.text").String(), "%s", body)
+	})
+
+	t.Run("responses: empty text/plain file_data beside file_content is not an empty document", func(t *testing.T) {
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileContent: chunks, FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Say ok.")},
+			}},
+		}}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		require.Len(t, gjson.GetBytes(body, "0.content").Array(), 2, "the document was dropped: %s", body)
+		assert.Equal(t, "Budget: $4.2M.", gjson.GetBytes(body, "0.content.0.text").String(), "%s", body)
+	})
+
+	t.Run("prompt cache breakpoint survives the rewrite", func(t *testing.T) {
+		req := &OpenAIChatRequest{Model: "gpt-5.6", Messages: []OpenAIMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileContent: chunks}, PromptCacheBreakpoint: breakpoint},
+			}},
+		}}}
+		body, err := req.MarshalJSON()
+		require.NoError(t, err)
+		assert.Equal(t, "explicit", gjson.GetBytes(body, "messages.0.content.0.prompt_cache_breakpoint.mode").String(), "chat: %s", body)
+
+		fileBlock := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+			ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileContent: chunks}, PromptCacheBreakpoint: breakpoint}
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{fileBlock}}},
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{fileBlock}}}},
+		}}
+		body, err = input.MarshalJSON()
+		require.NoError(t, err)
+		assert.Equal(t, "explicit", gjson.GetBytes(body, "0.content.0.prompt_cache_breakpoint.mode").String(), "responses input: %s", body)
+		assert.True(t, gjson.GetBytes(body, "1.output").IsArray(), "a breakpoint keeps the array form: %s", body)
+		assert.Equal(t, "explicit", gjson.GetBytes(body, "1.output.0.prompt_cache_breakpoint.mode").String(), "tool output: %s", body)
+	})
+
+	t.Run("a tool output that becomes text-only is flattened to a string", func(t *testing.T) {
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileContent: chunks},
+				}}}},
+		}}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		output := gjson.GetBytes(body, "0.output")
+		require.Equal(t, gjson.String, output.Type, "output must be a string: %s", body)
+		assert.Equal(t, "Budget: $4.2M.", output.String())
+	})
+}
+
 // Cost of the file_content probe on the common path: a file block with no file_content.
 func BenchmarkChatMarshalFileBlockWithoutFileContent(b *testing.B) {
 	req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -282,7 +283,7 @@ func isEmptyInlineTextFile(fileData, fileType *string) bool {
 // file reference beside it.
 func isEmptyChatTextFile(f *schemas.ChatInputFile) bool {
 	return f != nil && (f.FileID == nil || *f.FileID == "") && (f.FileURL == nil || *f.FileURL == "") &&
-		isEmptyInlineTextFile(f.FileData, f.FileType)
+		!fileContentPresent(f.FileContent) && isEmptyInlineTextFile(f.FileData, f.FileType)
 }
 
 // isEmptyResponsesTextFile is isEmptyChatTextFile for Responses blocks, which carry file_id on
@@ -290,7 +291,7 @@ func isEmptyChatTextFile(f *schemas.ChatInputFile) bool {
 func isEmptyResponsesTextFile(block *schemas.ResponsesMessageContentBlock) bool {
 	f := block.ResponsesInputMessageContentBlockFile
 	return f != nil && (block.FileID == nil || *block.FileID == "") && (f.FileURL == nil || *f.FileURL == "") &&
-		isEmptyInlineTextFile(f.FileData, f.FileType)
+		!fileContentPresent(f.FileContent) && isEmptyInlineTextFile(f.FileData, f.FileType)
 }
 
 // chatEmptyTextFilesToDrop reports whether blocks hold an empty text document and something
@@ -436,7 +437,7 @@ func openAIChatFileContentBlock(block schemas.ChatContentBlock) schemas.ChatCont
 	hasOtherSource := (file.FileData != nil && *file.FileData != "") || (file.FileURL != nil && *file.FileURL != "") || (file.FileID != nil && *file.FileID != "")
 	if !hasOtherSource {
 		if text, ok := fileContentText(file.FileContent); ok {
-			return schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: &text, CacheControl: block.CacheControl}
+			return schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: &text, CacheControl: block.CacheControl, PromptCacheBreakpoint: block.PromptCacheBreakpoint}
 		}
 	}
 	fileCopy := *file
@@ -455,7 +456,7 @@ func openAIResponsesFileContentBlock(block schemas.ResponsesMessageContentBlock)
 	hasOtherSource := (file.FileData != nil && *file.FileData != "") || (file.FileURL != nil && *file.FileURL != "") || (block.FileID != nil && *block.FileID != "")
 	if !hasOtherSource {
 		if text, ok := fileContentText(file.FileContent); ok {
-			return schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: &text, CacheControl: block.CacheControl}, true
+			return schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: &text, CacheControl: block.CacheControl, PromptCacheBreakpoint: block.PromptCacheBreakpoint}, true
 		}
 	}
 	fileCopy := *file
@@ -472,4 +473,26 @@ func chatBlockHasFileContent(block *schemas.ChatContentBlock) bool {
 // responsesBlockHasFileContent is chatBlockHasFileContent for Responses blocks.
 func responsesBlockHasFileContent(block *schemas.ResponsesMessageContentBlock) bool {
 	return block.ResponsesInputMessageContentBlockFile != nil && len(block.ResponsesInputMessageContentBlockFile.FileContent) > 0
+}
+
+// fileContentPresent reports whether file_content carries a document, treating a JSON null as
+// absent. A present one keeps the block out of the empty-text-document drop, so the file_content
+// rewrite sees it.
+func fileContentPresent(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	return len(raw) > 0 && !bytes.Equal(raw, []byte("null"))
+}
+
+// rewriteResponsesFileContentBlocks applies openAIResponsesFileContentBlock to every block,
+// copying the slice only when one carries file_content. It runs before the function_call_output
+// flatten check, so an output that becomes text-only is still flattened to a string.
+func rewriteResponsesFileContentBlocks(blocks []schemas.ResponsesMessageContentBlock) ([]schemas.ResponsesMessageContentBlock, bool) {
+	if !slices.ContainsFunc(blocks, func(b schemas.ResponsesMessageContentBlock) bool { return responsesBlockHasFileContent(&b) }) {
+		return blocks, false
+	}
+	out := make([]schemas.ResponsesMessageContentBlock, len(blocks))
+	for i := range blocks {
+		out[i], _ = openAIResponsesFileContentBlock(blocks[i])
+	}
+	return out, true
 }
