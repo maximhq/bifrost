@@ -26,6 +26,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { withBasePath } from "@/lib/utils/basePath";
+import { AdditionalIssuersField } from "./additionalIssuersField";
+import { sameIssuer } from "./additionalIssuersField.utils";
 
 // Go duration string: one or more <number><unit> segments, e.g. "5m", "1h30m".
 const COOLDOWN_PATTERN = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
@@ -175,6 +177,10 @@ export default function SecurityView() {
 			localConfig.oauth2_server_config?.browser_base_url,
 			config.oauth2_server_config?.browser_base_url,
 		);
+		const localIssuers = localConfig.oauth2_server_config?.additional_issuer_urls ?? [];
+		const savedIssuers = config.oauth2_server_config?.additional_issuer_urls ?? [];
+		const additionalIssuersChanged =
+			localIssuers.length !== savedIssuers.length || localIssuers.some((issuer, i) => !sameIssuer(issuer, savedIssuers[i]));
 
 		return (
 			originsChanged ||
@@ -193,7 +199,8 @@ export default function SecurityView() {
 			dualCredentialConflictBehaviorChanged ||
 			vkRotationCooldownChanged ||
 			issuerURLChanged ||
-			browserBaseURLChanged
+			browserBaseURLChanged ||
+			additionalIssuersChanged
 		);
 	}, [config, localConfig, authConfig, bifrostConfig, showPasswordSection, credentialsChanged]);
 
@@ -336,9 +343,14 @@ export default function SecurityView() {
 			setPasswordError("");
 			setProofError("");
 
+			// Rows left blank are dropped rather than rejected by the server.
+			const additionalIssuers = localConfig.oauth2_server_config?.additional_issuer_urls?.filter(isSecretVarSet);
+			const clientConfig = localConfig.oauth2_server_config
+				? { ...localConfig, oauth2_server_config: { ...localConfig.oauth2_server_config, additional_issuer_urls: additionalIssuers } }
+				: localConfig;
 			await updateCoreConfig({
 				...bifrostConfig!,
-				client_config: localConfig,
+				client_config: clientConfig,
 				...(showPasswordSection
 					? {
 							auth_config: {
@@ -350,6 +362,9 @@ export default function SecurityView() {
 						}
 					: {}),
 			}).unwrap();
+			// A save that changes nothing stored leaves the query data as is, so the sync effect does not run;
+			// an edit made while the save was pending is kept.
+			setLocalConfig((prev) => (prev === localConfig ? clientConfig : prev));
 			setSetupToken("");
 			setCurrentPassword("");
 			setSetupTokenOpen(false);
@@ -816,6 +831,14 @@ export default function SecurityView() {
 							disabled={!hasSettingsUpdateAccess}
 						/>
 					</div>
+					<AdditionalIssuersField
+						value={localConfig.oauth2_server_config?.additional_issuer_urls ?? []}
+						saved={config?.oauth2_server_config?.additional_issuer_urls ?? []}
+						onChange={(value) =>
+							setLocalConfig((prev) => ({ ...prev, oauth2_server_config: { ...prev.oauth2_server_config, additional_issuer_urls: value } }))
+						}
+						disabled={!hasSettingsUpdateAccess}
+					/>
 				</div>
 				{/* Allowed Origins */}
 				{needsRestart && <RestartWarning />}
