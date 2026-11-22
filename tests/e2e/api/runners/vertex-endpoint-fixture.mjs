@@ -7,13 +7,14 @@ import { argValue, createInterceptProxy } from "./lib/tls-intercept-proxy.mjs";
 //
 // Vertex hardcodes https://<host>/... with no base-URL override, so the fixture works as the
 // gateway's HTTP proxy instead (see lib/tls-intercept-proxy.mjs): it terminates TLS for the
-// requested host, records the decrypted request, and replies with a canned Gemini or Claude body, or a finished Veo operation.
+// requested host, records the decrypted request, and replies with a canned Gemini, Claude or OpenAI body, or a finished Veo operation.
 //
 //   node vertex-endpoint-fixture.mjs --app-dir <dir> [--port 8792]
 //
 // It writes <dir>/config.json (one Vertex key per region, a service account whose token_uri points
 // back here, and the proxy plus the CA the gateway must trust), then starts listening. Point a
 // gateway at <dir> with -app-dir. GET /__connects reads what was recorded, POST /__reset clears it.
+// Pass ENV_FILE=<dir>/harness-environment.json to make run-provider-harness-test to enable the cases.
 
 const args = process.argv.slice(2);
 const appDir = argValue(args, "--app-dir", "");
@@ -28,6 +29,20 @@ const geminiBody = JSON.stringify({
 	usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
 	modelVersion: "gemini-2.5-flash",
 });
+// A prompt carrying NULL_PART_MARKER gets Gemini replies whose candidate parts hold a JSON
+// null beside the text, the shape that used to crash the gateway's response converters.
+// Every other request keeps the plain bodies.
+const NULL_PART_MARKER = "null-part-fixture";
+const geminiUsage = { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 };
+const geminiNullPartBody = JSON.stringify({
+	candidates: [{ content: { role: "model", parts: [null, { text: "hello" }] }, finishReason: "STOP", index: 0 }],
+	usageMetadata: geminiUsage,
+	modelVersion: "gemini-2.5-flash",
+});
+const geminiNullPartStream = [
+	{ data: `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [null, { text: "hello" }] }, index: 0 }], modelVersion: "gemini-2.5-flash" })}\r\n\r\n` },
+	{ data: `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [null] }, finishReason: "STOP", index: 0 }], usageMetadata: geminiUsage, modelVersion: "gemini-2.5-flash" })}\r\n\r\n` },
+];
 const claudeBody = JSON.stringify({
 	id: "msg_fixture",
 	type: "message",
@@ -51,6 +66,30 @@ const proxy = createInterceptProxy({
 	},
 	// The path decides the body shape.
 	respond: (req, body) => {
+		if (/\/endpoints\/(2222222222|3333333333)(:|\/)/.test(req.url)) {
+			const input = JSON.parse(body);
+			const model = req.url.includes("2222222222") ? "1234567890" : "claude-custom";
+			if (req.headers.authorization !== "Bearer fixture-access-token" || input.model !== model || !Array.isArray(input.messages) || input.contents || input.anthropic_version) {
+				return { status: 400, body: JSON.stringify({ error: { message: "custom endpoint requires OAuth and OpenAI messages with the served model name" } }) };
+			}
+			const base = { id: "chatcmpl-vertex-custom", created: 1, model };
+			const usage = { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 };
+			if (input.stream) {
+				return {
+					status: 200, headers: { "Content-Type": "text/event-stream" },
+					chunks: [
+						{ data: `data: ${JSON.stringify({ ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "hello" }, finish_reason: null }] })}\n\n` },
+						{ data: `data: ${JSON.stringify({ ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n` },
+						{ data: `data: ${JSON.stringify({ ...base, object: "chat.completion.chunk", choices: [], usage })}\n\ndata: [DONE]\n\n` },
+					],
+				};
+			}
+			return { status: 200, body: JSON.stringify({ ...base, object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }], usage }) };
+		}
+		if (body.includes(NULL_PART_MARKER)) {
+			if (/:streamGenerateContent/.test(req.url)) return { status: 200, headers: { "Content-Type": "text/event-stream" }, chunks: geminiNullPartStream };
+			if (/:generateContent/.test(req.url)) return { status: 200, body: geminiNullPartBody };
+		}
 		if (/:generateContent/.test(req.url)) return { status: 200, body: geminiBody };
 		if (/:rawPredict/.test(req.url)) return { status: 200, body: claudeBody };
 		// The video is inline so download needs no second fetch; the WebM magic marks it binary to the harness shape check.
@@ -99,6 +138,12 @@ const config = {
 				value: "fixture-api-key",
 				models: ["*"],
 				weight: 1,
+				...(name === "vertex-us-central1" ? {
+					aliases: {
+						"vertex-openai-raw": { model_id: "1234567890", model_family: "gemini", project_id: "custom-project", region: "us-west1", vertex_endpoint: { endpoint_id: "2222222222", format: "openai_chat", method: "raw_predict" } },
+						"vertex-openai-chat": { model_id: "claude-custom", model_family: "anthropic", project_id: "custom-project", region: "us-west1", vertex_endpoint: { endpoint_id: "3333333333", format: "openai_chat", method: "chat_completions" } },
+					},
+				} : {}),
 				vertex_key_config: { project_id: "fixture-project", region: r.region, auth_credentials: serviceAccount, ...(r.force_single_region ? { force_single_region: true } : {}) },
 			})),
 			network_config: { max_retries: 0, default_request_timeout_in_seconds: 15 },
@@ -108,6 +153,11 @@ const config = {
 };
 fs.mkdirSync(appDir, { recursive: true });
 fs.writeFileSync(path.join(appDir, "config.json"), JSON.stringify(config, null, 2));
+fs.writeFileSync(path.join(appDir, "harness-environment.json"), JSON.stringify({
+	name: "Vertex endpoint fixture",
+	values: [{ key: "vertexEndpointFixture", value: "1", enabled: true }],
+	_postman_variable_scope: "environment",
+}, null, 2));
 
 proxy.listen(() => {
 	console.log(`vertex-endpoint-fixture listening on http://127.0.0.1:${port} (config written to ${path.join(appDir, "config.json")})`);

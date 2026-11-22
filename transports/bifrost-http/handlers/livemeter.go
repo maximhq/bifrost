@@ -206,6 +206,19 @@ func (m *liveMeter) setProviderSessionID(id string) error {
 	return nil
 }
 
+// failStart ends a session the provider refused to create: its units close with the provider's
+// error. It reports false once the provider has created the session, whose errors are not fatal.
+func (m *liveMeter) failStart(bifrostErr *schemas.BifrostError) bool {
+	m.mu.Lock()
+	created := m.providerSessionID != ""
+	m.mu.Unlock()
+	if created {
+		return false
+	}
+	m.abort(bifrostErr)
+	return true
+}
+
 // onUsage records a cumulative session.usage.updated snapshot and bills a full window.
 // It returns the refusal that ends the session, if the next window was not admitted.
 func (m *liveMeter) onUsage(cumulativeSeconds float64) *schemas.BifrostError {

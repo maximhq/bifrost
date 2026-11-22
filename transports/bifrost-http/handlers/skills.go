@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -213,6 +214,13 @@ func (h *SkillsHandler) uploadFile(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
+		lib.RecordAuditChange(ctx, "skill_file.uploaded", "skill_file", uploadID, filePath, nil, map[string]any{
+			"upload_id":       uploadID,
+			"storage_key":     storageKey,
+			"path":            filePath,
+			"mime_type":       mimeType,
+			"file_size_bytes": int64(len(data)),
+		})
 		SendJSON(ctx, map[string]any{
 			"upload_id":       uploadID,
 			"storage_key":     storageKey,
@@ -236,6 +244,13 @@ func (h *SkillsHandler) uploadFile(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "skill_file.uploaded", "skill_file", uploadID, filePath, nil, map[string]any{
+		"upload_id":       uploadID,
+		"blob_id":         blobID,
+		"path":            filePath,
+		"mime_type":       mimeType,
+		"file_size_bytes": int64(len(data)),
+	})
 	SendJSON(ctx, map[string]any{
 		"upload_id":       uploadID,
 		"blob_id":         blobID,
@@ -255,6 +270,12 @@ func (h *SkillsHandler) cleanupOrphanFiles(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to cleanup orphan files")
 		return
 	}
+
+	lib.RecordAuditChange(ctx, "skill_file.orphans_deleted", "skill_file", "orphans", "orphan skill files", nil, map[string]any{
+		"force":                   force,
+		"deleted_db_blobs":        result.DeletedDBBlobs,
+		"deleted_storage_objects": result.DeletedStorageObjects,
+	})
 
 	SendJSON(ctx, map[string]any{
 		"deleted_db_blobs":          result.DeletedDBBlobs,
@@ -347,11 +368,18 @@ func (h *SkillsHandler) bumpAllSkillsVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	version, err := h.store.BumpAllSkillsVersion(ctx, strings.ToLower(strings.TrimSpace(req.Bump)))
+	previous, _ := h.store.GetAllSkillsVersion(ctx)
+	bump := strings.ToLower(strings.TrimSpace(req.Bump))
+	version, err := h.store.BumpAllSkillsVersion(ctx, bump)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	var before any
+	if previous != "" {
+		before = map[string]any{"version": previous}
+	}
+	lib.RecordAuditChange(ctx, "skills_version.bumped", "skills_version", "all", "all skills", before, map[string]any{"version": version, "bump": bump})
 	SendJSON(ctx, AllSkillsVersionResponse{Version: version})
 }
 
@@ -403,6 +431,8 @@ func (h *SkillsHandler) createSkill(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+
+	lib.RecordAuditChange(ctx, "skill.created", "skill", skill.ID, skill.Name, nil, auditSkill(skill))
 
 	SendJSON(ctx, map[string]any{
 		"skill": skill,
@@ -587,6 +617,7 @@ func (h *SkillsHandler) shiftVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	before, _ := h.store.GetSkillLean(ctx, id)
 	if err := h.store.ShiftSkillVersion(ctx, id, req.Version, h.objectStore); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "skill not found")
@@ -608,6 +639,8 @@ func (h *SkillsHandler) shiftVersion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "version shifted but failed to reload skill")
 		return
 	}
+
+	lib.RecordAuditChange(ctx, "skill.version_shifted", "skill", skill.ID, skill.Name, auditSkill(before), auditSkill(skill))
 
 	SendJSON(ctx, map[string]any{
 		"skill": skill,
@@ -647,6 +680,7 @@ func (h *SkillsHandler) updateSkill(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	before := auditSkill(skill)
 	// Apply updates (name is immutable after creation).
 	skill.Description = req.Description
 	skill.License = req.License
@@ -681,6 +715,8 @@ func (h *SkillsHandler) updateSkill(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "skill.updated", "skill", reloadedSkill.ID, reloadedSkill.Name, before, auditSkill(reloadedSkill))
+
 	SendJSON(ctx, map[string]any{
 		"skill": reloadedSkill,
 	})
@@ -693,6 +729,7 @@ func (h *SkillsHandler) deleteSkill(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	existing, _ := h.store.GetSkillLean(ctx, id)
 	if err := h.store.DeleteSkill(ctx, id, h.objectStore); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "skill not found")
@@ -703,6 +740,12 @@ func (h *SkillsHandler) deleteSkill(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	name := id
+	if existing != nil {
+		name = existing.Name
+	}
+	lib.RecordAuditChange(ctx, "skill.deleted", "skill", id, name, auditSkill(existing), nil)
+
 	SendJSON(ctx, map[string]any{
 		"message": "skill deleted successfully",
 	})
@@ -711,6 +754,49 @@ func (h *SkillsHandler) deleteSkill(ctx *fasthttp.RequestCtx) {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+// auditSkill snapshots skill metadata and file references; the SKILL.md body and file contents are reduced to sizes.
+func auditSkill(skill *tables.TableSkill) any {
+	if skill == nil {
+		return nil
+	}
+	files := make([]map[string]any, 0, len(skill.Files))
+	for _, f := range skill.Files {
+		entry := map[string]any{
+			"path":            f.Path,
+			"source_type":     f.SourceType,
+			"mime_type":       f.MimeType,
+			"file_size_bytes": f.FileSizeBytes,
+		}
+		if f.SourceURL != nil && *f.SourceURL != "" {
+			entry["source_url"] = lib.RedactURLCredentials(*f.SourceURL)
+		}
+		files = append(files, entry)
+	}
+	return map[string]any{
+		"id":                     skill.ID,
+		"name":                   skill.Name,
+		"description":            skill.Description,
+		"license":                skill.License,
+		"compatibility":          skill.Compatibility,
+		"metadata_keys":          skillMapKeys(skill.Metadata),
+		"extra_frontmatter_keys": skillMapKeys(skill.ExtraFrontmatter),
+		"allowed_tools":          skill.AllowedTools,
+		"latest_version":         skill.LatestVersion,
+		"skill_md_bytes":         len(skill.SkillMDBody),
+		"files":                  files,
+	}
+}
+
+// skillMapKeys lists a map's keys in order. Free-form skill maps are recorded by key only, since their values may hold secrets.
+func skillMapKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // extractStringParam extracts a path param and sends an error if missing.
 func extractStringParam(ctx *fasthttp.RequestCtx, name string) (string, bool) {

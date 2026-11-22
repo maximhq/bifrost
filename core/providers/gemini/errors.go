@@ -9,6 +9,7 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -94,6 +95,29 @@ func ToGeminiError(bifrostErr *schemas.BifrostError) *GeminiGenerationError {
 			Status:  status,
 		},
 	}
+}
+
+// parseGeminiDecisionError parses a decisions error. The decisions endpoint
+// answers with {"error": {"code": "invalid_request", "message": ...}}, whose code
+// is a string ("invalid_request", "not_found", or a safety reason such as
+// "safety") that parseGeminiError's numeric code cannot hold, so the string
+// becomes the error's code. An error with a numeric code, such as a rejected API
+// key, is Google's usual shape and goes through parseGeminiError unchanged.
+func parseGeminiDecisionError(resp *fasthttp.Response) *schemas.BifrostError {
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil || gjson.GetBytes(body, "error.code").Type != gjson.String {
+		return parseGeminiError(resp)
+	}
+	var errorResp GeminiDecisionError
+	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	if errorResp.Error != nil {
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = &schemas.ErrorField{}
+		}
+		bifrostErr.Error.Code = schemas.Ptr(errorResp.Error.Code)
+		bifrostErr.Error.Message = errorResp.Error.Message
+	}
+	return bifrostErr
 }
 
 // parseGeminiError parses Gemini error responses

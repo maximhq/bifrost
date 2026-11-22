@@ -4,12 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/require"
 )
@@ -39,6 +41,105 @@ func newSyncTestCatalog(t *testing.T, gateOpen bool) (*ModelCatalog, *int) {
 	mc.SetShouldSyncGate(func(context.Context) bool { return gateOpen })
 	mc.SetAfterSyncHook(func(context.Context) { hookCalls++ })
 	return mc, &hookCalls
+}
+
+type pausedModelParamsStore struct {
+	configstore.ConfigStore
+	paused  chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+type observedLockStore struct {
+	configstore.ConfigStore
+	tried chan bool
+	once  sync.Once
+}
+
+// TryAcquireLock records when the second gateway attempts to enter the shared critical section.
+func (s *observedLockStore) TryAcquireLock(ctx context.Context, lock *tables.TableDistributedLock) (bool, error) {
+	acquired, err := s.ConfigStore.TryAcquireLock(ctx, lock)
+	s.once.Do(func() { s.tried <- acquired })
+	return acquired, err
+}
+
+// GetModelParameters pauses after taking a database snapshot to expose overlapping syncs.
+func (s *pausedModelParamsStore) GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error) {
+	rows, err := s.ConfigStore.GetModelParameters(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.once.Do(func() { close(s.paused) })
+	select {
+	case <-s.release:
+		return rows, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TestRunParamsSyncSerializesSharedDatabaseSnapshot verifies gateways cannot publish overlapping snapshots.
+func TestRunParamsSyncSerializesSharedDatabaseSnapshot(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	logger := bifrost.NewNoOpLogger()
+	cfg := &configstore.Config{Enabled: true, Type: configstore.ConfigStoreTypeSQLite,
+		Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "shared.db")}}
+	openStore := func() configstore.ConfigStore {
+		cs, err := configstore.NewConfigStore(ctx, cfg, logger)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = cs.Close(context.Background()) })
+		return cs
+	}
+	csA, csB := openStore(), openStore()
+	paused := &pausedModelParamsStore{ConfigStore: csA, paused: make(chan struct{}), release: make(chan struct{})}
+
+	newCatalog := func(cs configstore.ConfigStore, model string) (*ModelCatalog, *datasheet.Store) {
+		path := filepath.Join(t.TempDir(), model+".json")
+		require.NoError(t, os.WriteFile(path, []byte(`{"custom-anthropic/`+model+`":{"provider":"custom-anthropic","max_output_tokens":32000}}`), 0o600))
+		ds := datasheet.New(cs, logger, datasheet.Config{ModelParametersURL: "file://" + path})
+		mc := NewTestCatalogWithDatasheet(ds)
+		mc.configStore = cs
+		mc.logger = logger
+		mc.distributedLockManager = configstore.NewDistributedLockManager(cs, logger)
+		return mc, ds
+	}
+	first, _ := newCatalog(paused, "first")
+	second, secondDatasheet := newCatalog(csB, "second")
+	secondLockStore := &observedLockStore{ConfigStore: csB, tried: make(chan bool, 1)}
+	second.distributedLockManager = configstore.NewDistributedLockManager(secondLockStore, logger)
+	firstDone, secondDone := make(chan error, 1), make(chan error, 1)
+	go func() { _, err := first.runParamsSync(ctx); firstDone <- err }()
+	select {
+	case <-paused.paused:
+	case <-ctx.Done():
+		t.Fatal("first gateway did not pause after reading its snapshot")
+	}
+	go func() { _, err := second.runParamsSync(ctx); secondDone <- err }()
+	select {
+	case acquired := <-secondLockStore.tried:
+		if acquired {
+			t.Fatal("second gateway acquired the shared lock while the first still held it")
+		}
+	case <-ctx.Done():
+		t.Fatal("second gateway did not try to acquire the shared lock")
+	}
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second gateway bypassed the shared lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(paused.release)
+	require.NoError(t, <-firstDone)
+	require.NoError(t, <-secondDone)
+
+	for _, model := range []string{"first", "second"} {
+		caps, err := secondDatasheet.LoadModelCapabilities(ctx, "custom-anthropic", model)
+		require.NoError(t, err)
+		if caps == nil || caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 32000 {
+			t.Fatalf("last published snapshot lost %s: %+v", model, caps)
+		}
+	}
 }
 
 // In cluster mode the gate is "am I the leader". A pod whose gate rejects the

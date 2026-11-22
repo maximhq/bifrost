@@ -8,7 +8,7 @@ description: "Configure Google Workspace as your identity provider for Bifrost E
 - A Google Workspace domain with **Super Admin** access to the Admin console
 - A Google Cloud project where you can create OAuth clients and service accounts
 - Bifrost Enterprise deployed and accessible
-- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login` (under a `server.base_path` prefix: `https://<your-bifrost-domain>/<prefix>/login`; the SSO wizard shows the exact value)
 - Bifrost [roles](../rbac) created for the roles you plan to map
 
 ---
@@ -70,7 +70,7 @@ Set the following values:
 | **Application type** | Web application |
 | **Name** | `Bifrost Enterprise` |
 | **Authorized JavaScript origins** | `https://<your-bifrost-domain>` |
-| **Authorized redirect URIs** | `https://<your-bifrost-domain>/login` |
+| **Authorized redirect URIs** | `https://<your-bifrost-domain>/login` (or `https://<your-bifrost-domain>/<prefix>/login` under a `server.base_path`) |
 
 Click **Create**.
 

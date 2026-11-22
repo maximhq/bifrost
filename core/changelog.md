@@ -1,9 +1,55 @@
-- [fix]: OpenAI-compatible chat streams forward deltas that carry only extra_content [@Javtor](https://github.com/Javtor)
-- [fix]: Bedrock chat tool messages whose content is a single text block now render like the equivalent string. The block form was always sent as a Converse text block while the string form became a json block for JSON output, so clients that send the last message as an array (to carry cache_control) and earlier messages as strings changed the bytes of every earlier tool result on the next turn and missed the prompt cache each turn. The block's cache_control still becomes the cachePoint after the toolResult (#8801)
-- [fix]: Anthropic web search on chat completions. The streamed server_tool_use query (input_json_delta) was emitted as an orphan tool_calls delta with no id or name, which OpenAI clients treat as a real tool call; it now stays server-side. Text-block web_search_result_location citations were dropped; they now map to annotations[].url_citation (message and stream delta), the same shape Gemini grounding uses (#7656) [@brianhadley2026](https://github.com/brianhadley2026)
-- [fix]: map chat completion n to Gemini candidateCount (#7388) [@axelray-dev](https://github.com/axelray-dev)
-- [fix]: Bedrock InvokeModel keeps cache_control when any message's content is a plain string. BedrockMessage.Content is typed as content blocks, so one bare string anywhere in messages[] failed the standard unmarshal and diverted the whole request into the AI21 string fallback, which rebuilt the messages without calling applyMessageContentCacheControl. Every cache_control in the request was dropped rather than only the one on the string message, so prompt caching went off silently with just the system cachePoint surviving. The fallback now makes the same translation the standard path does (#7336) [@basil-k-aji-dev](https://github.com/basil-k-aji-dev)
-- [fix]: record output items before closing open items on Gemini streaming Responses. When parts (thoughts, function calls, text) and finishReason share a single upstream frame, response.completed now correctly populates the Output array instead of emitting empty output (#7341) [@wofiporia](https://github.com/wofiporia)
-- [fix]: web search action sources round-trip their name and no longer fabricate an empty url. OpenAI Responses web search can return specialized API sources ({"type":"api","name":"oai-weather"}) that carry a name and no URL; the typed source schema only modeled type and a required url, so decode dropped name and re-encode emitted "url":"", and the OpenAI request-side source sanitization rebuilt sources without name. url is now omitempty and name survives both the schema round-trip and the sanitization path (#7356) [@g-yixuan](https://github.com/g-yixuan)
-- feat: MiniMax provider for chat, Responses, image generation, video generation, speech and transcription
-- feat: BytePlus ModelArk provider for Seed chat, native Responses, multimodal embeddings, Seedream image generation and editing, and Seedance video generation
+- feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
+- feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
+- feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)
+- feat: soniox - new provider for async speech-to-text, text-to-speech with streaming, speech sessions and real-time transcription
+- feat: sarvam - chat and model listing move to Token Factory v2, and Sarvam Prism serves decisions (thanks [@vikashmaddi-sarvam](https://github.com/vikashmaddi-sarvam)!)
+  <Warning>
+  `sarvam-30b` is no longer served. Use `sarvam-105b`.
+  </Warning>
+- feat: gemini - native decisions for `gemini-decision-*` models and an `input_file` part for PDFs, audio and video; empty or mistyped input is rejected before the call (thanks [@Xytronix](https://github.com/Xytronix)!)
+- feat: realtime - Gemini Live on the Gemini API and Vertex, Vertex Live through the GenAI native protocol, ElevenLabs Scribe and Soniox real-time transcription
+- feat: speech sessions - `SpeechSessionProvider` interface for incremental text-to-speech over a WebSocket, implemented by ElevenLabs and Soniox
+- feat: elevenlabs - passthrough and native WebSocket dialing for Scribe and text-to-dialogue, raw response kept for `with-timestamps`
+- feat: vertex - text-to-speech through Cloud Text-to-Speech (Chirp) and Gemini TTS models
+- feat: regex key aliases - `regex:` alias names over the requested model with `model_id` templates that reuse capture groups
+- feat: usage estimation - cancelled or timed-out chat, text and Responses streams get missing usage estimated with a tokenizer, marked in `usage.estimation`
+- feat: bedrock - native `outputConfig` structured output for supported models, with a one-time retry on the synthetic tool when Bedrock rejects the schema; `supports_native_structured_output` datasheet field
+- feat: custom tools - custom (freeform) tools are rewritten as function tools for every model without native support and restored as custom calls on chat and Responses, streaming included
+- feat: anthropic - forward `thinking.block_binding` with its beta header on the Claude API
+- feat: anthropic - fast mode for `claude-fable-5-2` on Vertex
+- feat: databricks - OAuth M2M secrets limited to specific scopes work through a scope fallback, and scope errors show the provider's message
+- feat: opencode - stable `x-opencode-session` header per virtual key, resolved from client headers (thanks [@sstreichan](https://github.com/sstreichan)!)
+- feat: files - Files API uploads stream from a `FileSource` instead of a byte slice on OpenAI and Azure
+- feat: websocket stream hooks return the pre-hook request, so raw relays can forward plugin edits
+- feat: `bifrost_provider_queue_wait_seconds` timing on the attempt window
+- fix: anthropic - mid-conversation system reminders keep one form across turns, decided from the emitted messages, with placement controlled by the `supports_native_mid_conversation_system` datasheet field; the `<system-reminder>` envelope drops its trailing newline and the cache breakpoint stays on the marked block
+- fix: vertex - Claude request bodies always end with `tools`, `system`, `messages` so prompt cache reads hit
+- fix: anthropic - streamed usage counts each cached prompt token once on chat, Responses and passthrough streams (thanks [@is911](https://github.com/is911) and [@wangkanai](https://github.com/wangkanai)!)
+- fix: prompt cache auto-injection checks an alias's canonical model (thanks [@bardrop](https://github.com/bardrop)!)
+- fix: `prompt_cache_options` reaches only models that accept it
+- fix: anthropic - a deferred web search is replayed without a made-up `web_search_tool_result`, and its late result stays in place on replay, Responses and streams
+- fix: anthropic - history with MCP or server-tool blocks no longer sends a roleless message to OpenAI-compatible providers; Responses items with no chat equivalent are dropped on the Responses-to-Chat fallback (thanks [@1AbdullahButt](https://github.com/1AbdullahButt)!)
+- fix: bedrock - `/anthropic/v1/messages` with `output_config.format` streams one well-formed text block, and plain-text answers are no longer lost
+- fix: bedrock - honour `network_config.base_url` and apply the dial-time address policy to the net/http client
+- fix: bedrock - a caller's `anthropic_beta` on Converse is merged with derived betas (thanks [@fus3r](https://github.com/fus3r)!)
+- fix: bedrock - InvokeModel keeps `tool_reference` blocks inside a client `tool_result` (thanks [@kunalgoesbyken](https://github.com/kunalgoesbyken)!)
+- fix: bedrock - Claude Responses requests with computer tools go through InvokeModel, and replayed `tool_use` blocks keep `toolset_name` (thanks [@davidelct](https://github.com/davidelct)!)
+- fix: vertex - Anthropic betas are sent in the `anthropic-beta` header, including on CountTokens
+- fix: bedrock mantle - unsupported effort-dependent sampling parameters are stripped for OpenAI models
+- fix: logprobs survive conversion between Chat Completions and Responses
+- fix: gemini - function calls without an ID get unique IDs and pair with responses in order
+- fix: chat custom tools keep the `name` and `description` nested under `custom`
+- fix: gemini - image `output_format` and `output_compression` map to Vertex image output options, and the Gemini API no longer receives options it rejects (thanks [@carlreid](https://github.com/carlreid)!)
+- fix: mistral - `reasoning_effort` follows the model's datasheet ladder
+- fix: elevenlabs - speech `with_timestamps` returns character times instead of null (thanks [@abmorrill4](https://github.com/abmorrill4)!)
+  <Warning>
+  Breaking for Go SDK users: `SpeechAlignment.CharStartTimesMs` / `CharEndTimesMs` are renamed to `CharacterStartTimesSeconds` / `CharacterEndTimesSeconds` (JSON `char_*_times_ms` → `character_*_times_seconds`).
+  </Warning>
+- fix: elevenlabs - non-streaming `wav` speech returns a real WAV file
+- fix: openai - empty `text`, `srt` and `vtt` transcriptions are valid responses
+- fix: openai - streaming speech on `tts-1` and `tts-1-hd` returns a 400
+- fix: gemini - audio `fileData` parts are no longer treated as transcription
+- fix: vertex - model listing on `us` and `eu` keys uses the regional endpoint host, and token errors show the underlying cause
+- fix: streams cancelled before the upstream's first byte run their terminal post-hooks
+- chore: brotli 1.2.8 and dependency updates
+- chore: upgraded Go to 1.27.4

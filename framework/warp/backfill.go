@@ -75,13 +75,16 @@ type BackfillJobMeta struct {
 	Clustered  int `json:"clustered,omitempty"`
 	Assigned   int `json:"assigned,omitempty"`
 	Unassigned int `json:"unassigned,omitempty"`
-	// Capped is set when the window held more requests than one run takes in.
+	// Capped is set when a run stopped at a read limit; default runs have none.
 	Capped bool `json:"capped,omitempty"`
 	// MergedByName counts clusters joined after naming because they were
 	// given the same name as another.
 	MergedByName   int            `json:"merged_by_name,omitempty"`
 	MergeThreshold *float64       `json:"merge_threshold,omitempty"`
 	Topics         []TopicSummary `json:"topics,omitempty"`
+	// Themes is how many themes the active topics were grouped into once
+	// the run had written its topics.
+	Themes int `json:"themes,omitempty"`
 }
 
 // embeddingConfigSignature identifies the embedding space a backfill was frozen
@@ -179,8 +182,9 @@ func (s *Service) BuildBackfillJobMeta(ctx context.Context, start, end time.Time
 	return marshalBackfillMeta(meta)
 }
 
-// BackfillMatchesConfig reports whether a backfill job's checkpoint was frozen
-// against the embedding space the deployment is configured with now.
+// BackfillMatchesConfig reports whether a backfill or topics job was frozen
+// against the embedding space the deployment is configured with now. Both
+// carry the same metadata, signature included.
 //
 // A finished job is only the current state of the index while the space it
 // ran under is still the configured one: after the embedding model, dimension

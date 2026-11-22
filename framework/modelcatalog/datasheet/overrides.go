@@ -222,6 +222,7 @@ func (c *customPricingData) resolve(model, mode string, scopes LookupScopes) *Op
 // so callers that need the override's identity (not just its patch) can
 // recover it without duplicating the precedence walk.
 func (c *customPricingData) resolveEntry(model, mode string, scopes LookupScopes) *customPricingEntry {
+	model = strings.ToLower(model) // patterns are stored lowercased by buildCustomPricingData
 	for _, scopeKind := range scopePriorityOrder(scopes) {
 		for i := range c.exact[model] {
 			e := &c.exact[model][i]
@@ -303,7 +304,8 @@ func buildCustomPricingData(overrides []Override) *customPricingData {
 		for _, rt := range o.RequestTypes {
 			entry.requestModes[normalizeRequestType(rt)] = struct{}{}
 		}
-		pattern := strings.TrimSpace(o.Pattern)
+		// Lowercased so a pattern matches the model name in any casing.
+		pattern := strings.ToLower(strings.TrimSpace(o.Pattern))
 		switch o.MatchType {
 		case MatchTypeExact:
 			entry.pattern = pattern
@@ -427,6 +429,7 @@ func (s *Store) CatalogPricingOverrides(model string, provider schemas.ModelProv
 		out.AppliedPatch = &patch
 	}
 
+	model = strings.ToLower(model)
 	matched := make(map[string]struct{})
 	collect := func(entries []customPricingEntry) {
 		for i := range entries {
@@ -494,10 +497,20 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.OutputCostPerVideoPerSecond1024p, src: override.OutputCostPerVideoPerSecond1024p},
 		{dst: &patched.OutputCostPerVideoPerSecond1080p, src: override.OutputCostPerVideoPerSecond1080p},
 		{dst: &patched.OutputCostPerVideoPerSecond4k, src: override.OutputCostPerVideoPerSecond4k},
+		{dst: &patched.OutputCostPerVideoToken, src: override.OutputCostPerVideoToken},
 		{dst: &patched.InputCostPerAudioPerSecond, src: override.InputCostPerAudioPerSecond},
 		{dst: &patched.InputCostPerSecond, src: override.InputCostPerSecond},
 		{dst: &patched.InputCostPerAudioToken, src: override.InputCostPerAudioToken},
 		{dst: &patched.OutputCostPerAudioToken, src: override.OutputCostPerAudioToken},
+		{dst: &patched.InputCostPerTokenVoiceLive, src: override.InputCostPerTokenVoiceLive},
+		{dst: &patched.OutputCostPerTokenVoiceLive, src: override.OutputCostPerTokenVoiceLive},
+		{dst: &patched.CacheReadInputTokenCostVoiceLive, src: override.CacheReadInputTokenCostVoiceLive},
+		{dst: &patched.InputCostPerAudioTokenVoiceLive, src: override.InputCostPerAudioTokenVoiceLive},
+		{dst: &patched.OutputCostPerAudioTokenVoiceLive, src: override.OutputCostPerAudioTokenVoiceLive},
+		{dst: &patched.InputCostPerStandardSpeechAudioTokenVoiceLive, src: override.InputCostPerStandardSpeechAudioTokenVoiceLive},
+		{dst: &patched.OutputCostPerStandardSpeechAudioTokenVoiceLive, src: override.OutputCostPerStandardSpeechAudioTokenVoiceLive},
+		{dst: &patched.InputCostPerCustomSpeechAudioTokenVoiceLive, src: override.InputCostPerCustomSpeechAudioTokenVoiceLive},
+		{dst: &patched.OutputCostPerCustomSpeechAudioTokenVoiceLive, src: override.OutputCostPerCustomSpeechAudioTokenVoiceLive},
 		{dst: &patched.InputCostPerCharacter, src: override.InputCostPerCharacter},
 		{dst: &patched.InputCostPerTokenAbove128kTokens, src: override.InputCostPerTokenAbove128kTokens},
 		{dst: &patched.InputCostPerImageAbove128kTokens, src: override.InputCostPerImageAbove128kTokens},
@@ -546,6 +559,14 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.CacheCreationInputTokenCostAbove272kTokensUltrafast, src: override.CacheCreationInputTokenCostAbove272kTokensUltrafast},
 		{dst: &patched.CacheCreationInputTokenCostFast, src: override.CacheCreationInputTokenCostFast},
 		{dst: &patched.CacheCreationInputTokenCostAbove1hrFast, src: override.CacheCreationInputTokenCostAbove1hrFast},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hr, src: override.CacheCreationInputTokenCostAbove12hr},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrAbove272kTokens, src: override.CacheCreationInputTokenCostAbove12hrAbove272kTokens},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrPriority, src: override.CacheCreationInputTokenCostAbove12hrPriority},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority, src: override.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrFlex, src: override.CacheCreationInputTokenCostAbove12hrFlex},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex, src: override.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrUltrafast, src: override.CacheCreationInputTokenCostAbove12hrUltrafast},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast, src: override.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast},
 		{dst: &patched.CacheReadInputTokenCostFast, src: override.CacheReadInputTokenCostFast},
 		{dst: &patched.InferenceGeoUSMultiplier, src: override.InferenceGeoUSMultiplier},
 

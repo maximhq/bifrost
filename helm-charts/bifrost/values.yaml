@@ -78,6 +78,73 @@ service:
   port: 8080
   annotations: {}
 
+# Prometheus Operator ServiceMonitor for scraping Bifrost's native /metrics endpoint.
+# Requires the Prometheus Operator CRDs (monitoring.coreos.com/v1), e.g. from
+# kube-prometheus-stack.
+serviceMonitor:
+  enabled: false
+  # Extra labels on the ServiceMonitor object. Match your Prometheus instance's
+  # serviceMonitorSelector, e.g. `release: kube-prometheus-stack`.
+  additionalLabels: {}
+  # Namespace to create the ServiceMonitor in. Defaults to the release namespace.
+  namespace: ""
+  # Path Bifrost exposes Prometheus metrics on.
+  path: /metrics
+  # Scrape interval. Empty string uses the Prometheus global default.
+  interval: 30s
+  # Per-scrape timeout. Must not exceed the interval. Empty string uses the Prometheus
+  # default.
+  scrapeTimeout: ""
+  # Scrape scheme: http (default) or https.
+  scheme: ""
+  # TLS settings for the scrape endpoint (https). See the ServiceMonitor spec.
+  tlsConfig: {}
+  # Authenticate the scrape with Bifrost's admin credentials.
+  #
+  # Bifrost's auth middleware is global: when auth is on (bifrost.authConfig.isEnabled
+  # or bifrost.governance.authConfig.isEnabled) /metrics requires credentials too, as
+  # it is not one of the routes that stay open without auth (such as /health). An
+  # unauthenticated scrape gets a 401 and the target silently sits at up=0: Prometheus
+  # looks healthy but stores no Bifrost metrics. Turn this on whenever auth is enabled.
+  #
+  # The scrape credentials are admin credentials (Bifrost has no metrics-only one), and
+  # the Prometheus Operator copies them into Prometheus's generated config. Restrict
+  # Secret access in both namespaces and prefer scheme: https. Do not whitelist /metrics
+  # in bifrost.client.whitelistedRoutes instead unless the ingress blocks it: the default
+  # ingress routes every path, and metric labels name customers, teams, users and keys.
+  basicAuth:
+    enabled: false
+    # Secret holding the admin credentials. In the Helm release namespace, defaults
+    # to the Secret configured under the active bifrost.governance.authConfig
+    # (preferred) or bifrost.authConfig, so rotating the admin password rotates the
+    # scrape credentials with it. Bifrost reads the Secret as env vars at pod start, so
+    # restart the pods after rotating it (kubectl rollout restart); until then scrapes
+    # get 401. If the ServiceMonitor `namespace` differs, set this
+    # field explicitly to a Secret in that namespace. Prometheus cannot use inline
+    # adminUsername/adminPassword values.
+    existingSecret: ""
+    # Keys within the Secret. When the Secret is inherited from an authConfig, these
+    # inherit that config's usernameKey/passwordKey. With an explicit existingSecret,
+    # they default to "username" / "password".
+    usernameKey: ""
+    passwordKey: ""
+  # Bearer-token auth for the scrape, as an alternative to basicAuth (mutually
+  # exclusive with it). Requires `credentials`: without them the scrape carries no
+  # token, so the render fails. Passed through to the endpoint's `authorization`
+  # field, e.g.
+  #   authorization:
+  #     type: Bearer
+  #     credentials:
+  #       name: bifrost-scrape-token
+  #       key: token
+  authorization: {}
+  # Keep target labels on collision instead of letting Prometheus prefix them.
+  honorLabels: false
+  # relabel_configs applied before scraping.
+  relabelings: []
+  # metric_relabel_configs applied to scraped samples (e.g. drop high-cardinality series).
+  metricRelabelings: []
+
 # Single ingress (legacy format):
 ingress:
   enabled: false
@@ -303,8 +370,8 @@ bifrost:
   # on every startup. Leave unset to manage the proxy from the dashboard.
   # proxyConfig:
   #   enabled: true
-  #   type: "http"                       # only http is supported
-  #   url: "http://proxy.example.com:8080"
+  #   type: "http"                       # http or socks5
+  #   url: "http://proxy.example.com:8080"  # http:// or https:// for type http; socks5:// or socks5h:// for type socks5. A bare host:port takes its scheme from type
   #   username: "env.PROXY_USERNAME"     # optional; env.VAR_NAME supported
   #   password: "env.PROXY_PASSWORD"     # optional; env.VAR_NAME supported
   #   noProxy: "localhost,.internal.example.com"
@@ -313,6 +380,36 @@ bifrost:
   #   enableForScim: true                # Enterprise: SCIM directory sync and identity-provider requests
   #   enableForInference: false
   #   enableForApi: false
+
+  # Warp, the dashboard's log-analysis agent (Settings > Warp): the models it runs on, its limits,
+  # log search and topics. Renders into config.json's top-level warp. Omit to manage Warp from the
+  # dashboard. Warp also needs the "warp" feature flag (bifrost.featureFlags.warp.enabled: true)
+  # and a vector store (vectorStore.*) for log search and topics. An omitted embedding, search or
+  # topic field keeps its stored value; any other omitted field takes its default, and
+  # additionalModels is replaced whole.
+  # warp:
+  #   enabled: true
+  #   provider: "openai"                  # Required when enabled
+  #   model: "gpt-4o-mini"                # Required when enabled
+  #   apiKeyId: ""                        # Pin to one of the provider's key IDs; omit to load-balance
+  #   additionalModels:                   # Other models the chat panel can switch to (max 20)
+  #     - provider: "anthropic"
+  #       model: "claude-3-5-haiku"
+  #       # apiKeyId: ""
+  #   maxIterations: 8                    # Tool-call rounds before it must answer; 0 = default, 1 is rejected
+  #   requestTimeoutSeconds: 120          # Per model call; 0 = default
+  #   historyRetentionDays: 30            # How long a saved chat is kept; 0 = default
+  #   systemPromptSuffix: ""              # Appended to Warp's built-in system prompt
+  #   temperature: 0.2                    # 0-2; omit for the provider's default
+  #   reasoningEffort: "medium"           # none, minimal, low, medium, high, xhigh, max; omit for non-reasoning models
+  #   embeddingProvider: "openai"         # Indexes and searches logs; required when enabled
+  #   embeddingModel: "text-embedding-3-small"
+  #   embeddingApiKeyId: ""
+  #   embeddingDimension: 1536            # Vector size the embedding model returns
+  #   logVectorStoreNamespace: "BifrostWarpLogs"  # Change whenever the embedding provider, model or dimension changes
+  #   semanticSearchThreshold: 0.5        # Minimum similarity for a log search match; 0 resets to the default
+  #   semanticSearchLimit: 10             # Most matches per search (max 25); 0 resets to the default
+  #   topicDiscoveryMinRequests: 100      # Unmatched requests that start a new-topic discovery (10-20000); 0 resets to the default
 
   # Client configuration
   client:
@@ -369,30 +466,53 @@ bifrost:
     # requiredHeaders: []                    # Headers that must be present on every request
     # loggingHeaders: []                     # Headers to capture in log metadata
     # allowedHeaders: []                     # Additional allowed headers for CORS and WebSocket
+    # usageEstimationTokenizers: ["anthropic", "llama3"] # Tokenizer families (anthropic, deepseek, llama2, llama3, all) used to estimate usage of a cancelled or timed-out stream the provider never reported; empty counts every model with o200k_base/cl100k_base. Each family preloads at startup and keeps 4-18 MB in memory
     # hideDeletedVirtualKeysInFilters: false # Omit deleted virtual keys from logs/MCP filter data
     # deleteExpiredVirtualKeys: false        # Daily job deletes virtual keys past expires_at (per-key delete_after_expire overrides)
+    # skipAccessProfileUserVirtualKeyCreation: false # Enterprise: when true, a user's first access profile does not create a virtual key for them
+    # skipAccessProfileUserVirtualKeyDeletion: false # Enterprise: when true, removing a user's last access profile does not delete their virtual keys (deleting the user still does)
+    # entityAccessProfileMode: "union"  # Enterprise: "union" (team/BU/customer access profiles add to a user's access) or "intersect" (each level with a profile caps it), like a project's access rule
     # whitelistedRoutes: []                  # Routes that bypass auth middleware
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
+    # mcpClientMetadataUrl: "https://public.example.com/bifrost/client.json" # Where you host Bifrost's Client ID Metadata Document for MCP servers that cannot reach Bifrost; unset serves it under mcpExternalClientUrl. Supports env.VAR_NAME and vault references
+    # bifrostUrl: "https://bifrost.example.com/bifrost" # Gateway's public base URL as clients reach it, including server.basePath. Required for /v1/mcp; unset, /v1/mcp answers 503. Supports env.VAR_NAME and vault references
+    # bifrostMcpAllowWrites: true            # Whether /v1/mcp serves non-GET /api operations (configuration changes) as tools; inference, batch and file routes are served either way
+    # mcpOpenapiMaxSpecMb: 32                # Size limit in MiB on an openapi MCP client's spec (inline, specFile or fetched from specUrl); 0 = built-in default (32), max 256. Parsing holds several times the spec's size in memory
     # skillsExternalClientUrl: "https://bifrost.example.com" # Public base URL for skills marketplaces; unset disables marketplace serving, not skill management or downloads. Supports env.VAR_NAME and vault references
     # a2aPrivateAllowlist: ["research.internal"] # Private hosts, IPs, or CIDRs permitted for Agent Gateway outbound requests
     # a2aExternalClientUrl: ""               # Public base URL for agent cards and push callbacks; unset disables all Agent Gateway protocol endpoints, not management. Supports env.VAR_NAME
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
     # mcpServerAuthMode: "headers"
-    # OAuth2 authorization server settings for /mcp (only used when mcpServerAuthMode is "both" or "oauth")
+    # OAuth2 authorization server settings for /mcp (when mcpServerAuthMode is "both" or "oauth") and client gateways (gateways.<client>.enabled)
     # oauth2ServerConfig:
-    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth" (helm fails without it). Supports env.VAR_NAME
+    #   issuerUrl: ""             # Stable public issuer URL; REQUIRED when mcpServerAuthMode is "both" or "oauth", or when any client gateway is enabled (whatever mcpServerAuthMode is); helm fails without it. Supports env.VAR_NAME
     #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
     #   allowedRedirectUris: []   # Exact remote OAuth client callback URIs to allow (loopback and Cursor callbacks need no entry); "*" allows any https callback
+    #   gateways:                 # Client gateways at <issuerUrl>/gateway/<client>; each needs issuerUrl, any mcpServerAuthMode
+    #     claudeCode:             # Claude Code /login (Cloud gateway) at <issuerUrl>/gateway/claude-code
+    #       enabled: false
+    #       managedSettings: {}   # Optional Claude Code managed-settings.json pushed to signed-in clients
+    #       telemetry:            # Forward Claude Code's OTLP telemetry, stamped with the Bifrost identity
+    #         enabled: false
+    #         destinations:       # OTLP/HTTP collectors; signals go to <endpoint>/v1/{metrics,logs,traces}
+    #           - endpoint: "https://otel-collector.example.com"
+    #             headers:
+    #               authorization: "env.OTEL_COLLECTOR_TOKEN"   # a plain value or an env./vault. reference
+    #         dropAttributes: []  # e.g. ["prompt"] to strip prompt text before forwarding
 
   # Server configuration
   server:
     readBufferSize: 65536 # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+    # URL path prefix Bifrost is served under behind an ingress/reverse proxy, e.g. https://abc.com/bifrost.
+    # Requests are accepted with or without the prefix, so the ingress may forward or strip it, and probes stay on /health.
+    # Point ingress.hosts[].paths[].path at the same prefix (e.g. path: /bifrost, pathType: Prefix).
+    # basePath: "/bifrost"
     # Largest request-body buffer a keep-alive connection keeps for reuse. Larger buffers are freed
     # after each request (the body is still served). Unset = 4 MiB default, 0 = unlimited (previous behaviour).
     # bodyBufferPoolLimitBytes: 4194304
@@ -420,6 +540,7 @@ bifrost:
       # mcpLibraryUrl: ""
       # mcpLibrarySyncInterval: 86400   # MCP catalog sync in seconds (default 24h, min 3600; 0 disables)
       # liveModelsSyncInterval: 3600    # Provider model-list refresh in seconds (default 1h, min 60; 0 disables)
+      # openapiUrl: ""                  # OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory for air-gapped installs (empty = the published spec)
 
   # Provider configurations (add your provider keys here). Passed through to config.json as-is.
   # Use direct values or env.VAR_NAME syntax (required when keys come from providerSecrets).
@@ -485,6 +606,18 @@ bifrost:
   #       value: "sk-ant-..."
   #       weight: 1
   #
+  # # Baseten example: Model APIs by default; an alias with deployment_url sends that model to a
+  # # dedicated deployment's OpenAI-compatible base URL instead (must be https)
+  # baseten:
+  #   keys:
+  #     - name: "baseten-key"
+  #       value: "env.BASETEN_API_KEY"
+  #       weight: 1
+  #       aliases:
+  #         my-llama:
+  #           model_id: "not-required"   # Engine-Builder and BEI deployments ignore it
+  #           deployment_url: "https://model-<id>.api.baseten.co/environments/production/sync/v1"
+  #
   # # Azure OpenAI example (requires azure_key_config)
   # azure:
   #   keys:
@@ -496,6 +629,8 @@ bifrost:
   #         gpt-4o: "my-gpt4o-deployment"
   #       azure_key_config:
   #         endpoint: "https://your-resource.openai.azure.com"
+  #         use_speech_endpoints: false  # true sends speech and transcription to Azure AI Speech; an alias can override it
+  #         use_voice_live_endpoints: false  # true sends realtime WebSocket sessions to Azure Voice Live; an alias can override it
   #
   # # Google Vertex AI example (requires vertex_key_config)
   # vertex:
@@ -530,6 +665,19 @@ bifrost:
   #         #   mantle: "vpce-0abc123-x1y2z3.bedrock-mantle.us-east-1.vpce.amazonaws.com"          # Mantle-routed models
   #         #   agent_runtime: "vpce-0abc123-x1y2z3.bedrock-agent-runtime.us-east-1.vpce.amazonaws.com"  # Rerank
   #         #   s3: "bucket.vpce-0abc123-x1y2z3.s3.us-east-1.vpce.amazonaws.com"                   # Batch file I/O; needs the bucket. prefix
+  #
+  # # AWS SageMaker real-time endpoints example (requires sagemaker_key_config)
+  # # Models are endpoint names: sagemaker/<endpoint>[/<inference-component>]
+  # sagemaker:
+  #   keys:
+  #     - name: "sagemaker-key"
+  #       models: ["my-qwen3-endpoint"]
+  #       weight: 1
+  #       sagemaker_key_config:
+  #         region: "us-east-1"
+  #         # Leave access_key/secret_key out to use the default AWS credential chain (IRSA, instance role)
+  #         access_key: "env.AWS_ACCESS_KEY_ID"
+  #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
   #
   # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)
   # bedrock_mantle:
@@ -609,6 +757,12 @@ bifrost:
       #   # or a bare integer treated as seconds. Overrides toolManagerConfig.toolExecutionTimeout
       #   # for this server only. Omit or set to 0 to use the global default.
       #   toolExecutionTimeout: "30s"
+      #   # Per-server cap on the MCP protocol version ("auto", "2026-07-28", "2025-11-25", "2025-06-18").
+      #   # Omit to use the global maxProtocolVersion.
+      #   maxProtocolVersion: "2025-11-25"
+      #   # Code mode on this server's own /mcp/<slug> only: "inherit" (follow isCodeModeClient),
+      #   # "enabled" or "disabled". /mcp, Virtual MCPs and LLM requests follow isCodeModeClient.
+      #   serverTypeOnSlug: "disabled"
       #   # Require every connection to resolve to a public address (set automatically for
       #   # clients registered without an admin credential check; once true it is never cleared).
       #   requirePublicTarget: false
@@ -639,9 +793,17 @@ bifrost:
       #     # tokenUrl: "https://idp.corp/oauth2/token"           # optional — discovered when omitted
       #     # registrationUrl: "https://idp.corp/oauth2/register" # optional — discovered when omitted
       #     # scopes: ["read", "write"]                           # optional — OAuth scopes to request
+      #     # resource: "https://mcp.example.com/mcp"             # optional — RFC 8707 resource indicator, discovered when omitted
+      #     # Sign in with Bifrost's client metadata document even when the authorization server does
+      #     # not advertise support. Needs Bifrost on a public HTTPS address; cannot be combined with clientId.
+      #     # useClientMetadataDocument: true
       #   # Only meaningful for connectionType "http": true keeps one persistent connection reused
       #   # across every caller; false (default for new clients) connects fresh per call.
       #   needsSessionStickiness: false
+      #   # Only with a per-user authType (per_user_oauth, per_user_headers, token_exchange), not
+      #   # openapi: discover each caller's tools, prompts and resources with their own credential
+      #   # instead of serving everyone the admin credential's discovery.
+      #   perUserDiscovery: false
       #   # When true, this MCP server is available to every caller that has not been assigned it
       #   # explicitly, with all tools allowed. An explicit assignment takes precedence for that caller.
       #   # Replaces the deprecated allowOnAllVirtualKeys, which is read only when this is absent.
@@ -661,8 +823,29 @@ bifrost:
       #     useIdpCredentials: false                     # true = exchange as the SSO login app (ignores clientId/secret)
       #     clientId: "env.MY_EXCHANGE_CLIENT_ID"        # required unless useIdpCredentials is true (env./vault. prefix)
       #     clientSecret: "env.MY_EXCHANGE_CLIENT_SECRET"  # omit for public clients
-      #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
+      #     authorizationServerUrl: ""                   # optional — override exchange endpoint: an issuer, or a full .../token URL used as is
       #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
+      #
+      # - name: "example-cross-app-access-mcp"
+      #   connectionType: "http"
+      #   httpConfig:
+      #     url: "https://mcp.linear.app/mcp"
+      #   # Cross App Access (Okta XAA, Enterprise builds only): Bifrost exchanges the user's SSO session for an
+      #   # ID-JAG addressed to the upstream authorization server, which redeems it for the user's own token.
+      #   authType: "token_exchange"
+      #   tokenExchange:
+      #     profile: "id_jag"
+      #     audience: "https://mcp.linear.app"            # upstream authorization server issuer
+      #     scopes: ["read"]
+      #     resourceClientId: "env.LINEAR_XAA_CLIENT_ID"  # required: Bifrost's client at the upstream authorization server
+      #     resourceClientSecret: "env.LINEAR_XAA_CLIENT_SECRET"  # omit for a public client or with resourcePrivateKey
+      #     # resourcePrivateKey: "env.LINEAR_XAA_PRIVATE_KEY"    # private_key_jwt instead of a secret (PEM RSA or EC)
+      #     # resourceKeyId: ""                                   # kid of the client assertion
+      #     # resourceSigningAlgorithm: "RS256"                   # ES256/384/512 for an EC key
+      #     # resourceAssertionAudience: ""                       # default the upstream token endpoint
+      #     # resourceClientAuthMethod: ""                        # client_secret_basic or client_secret_post; default follows discovery
+      #     resourceTokenEndpoint: ""                     # optional; discovered from the audience's metadata when empty
+      #     resource: ""                                  # optional; only if the IdP connection defines a resource indicator
       # - name: "example-per-user-headers-mcp"
       #   connectionType: "http"
       #   httpConfig:
@@ -672,7 +855,30 @@ bifrost:
       #   # names are required. Values are collected and stored per-identity by Bifrost, not here.
       #   authType: "per_user_headers"
       #   perUserHeaderKeys: ["Authorization"]
+      #
+      # - name: "web_search"
+      #   # connectionType "openapi": Bifrost builds an in-process MCP server from an OpenAPI/Swagger
+      #   # document (Swagger 2.0, OpenAPI 3.0/3.1/3.2); each operation becomes a tool that calls the API.
+      #   # authType may only be none, headers or per_user_headers.
+      #   connectionType: "openapi"
+      #   openapiConfig:
+      #     # One of spec / specFile / specUrl is required (precedence: spec > specFile > specUrl).
+      #     specUrl: "https://searxng.internal/openapi.json"   # fetched at every connect
+      #     # spec: |                                         # inline JSON or YAML document
+      #     #   openapi: 3.0.3
+      #     #   ...
+      #     # specFile: "specs/searxng.yaml"                  # relative to bifrost.appDir; mount it via volumes/volumeMounts
+      #     baseUrl: "https://searxng.internal"   # optional; defaults to the document's first server entry
+      #     # Credentials keyed by the document's securitySchemes name: apiKey / http-bearer take value,
+      #     # http-basic takes username + password. Supports env.VAR and vault.path references.
+      #     securityCredentials:
+      #       apiKeyAuth:
+      #         value: "env.SEARXNG_API_KEY"
+      #     includeDeprecated: false   # true also exposes operations the document marks deprecated (skipped by default)
+      #     maxResponseBytes: 0        # cap on the upstream body returned to the model (0 = 64 KiB default)
+      #   toolsToExecute: ["*"]
     # toolSyncInterval: "10m"   # Global tool sync interval (Go duration string, e.g. "10m", "1h", "0s")
+    # maxProtocolVersion: "auto"   # Newest MCP protocol version offered to MCP servers ("auto", "2026-07-28", "2025-11-25", "2025-06-18"); unset keeps the stored value
     # Virtual MCPs: bundle tools from one or more MCP clients into a single endpoint
     # served at /mcp/<endpointSlug> and attach it to virtual keys.
     # virtualMcps:
@@ -817,6 +1023,7 @@ bifrost:
         #     disable_content_logging: false
         #     group_traces_by_session: false # Group requests sharing x-bf-session-id into one trace (traceparent takes precedence)
         #     disable_root_span_content: false # Drop input/output from the root span only (keeps it on the llm.call span)
+        #     apply_trace_dimensions_to_child_spans: false # Merge x-bf-dim-* onto child spans as well as the root
         #     request_headers: []     # Header name patterns (exact or wildcard like "x-custom-*") captured as span attributes; "*" includes sensitive headers like Authorization
         #     excluded_attributes: []     # Span attribute names to drop before export, matched exactly (e.g. "gen_ai.request.tools")
         #     export_raw_payloads: false  # Raw provider request/response bodies on spans; needs raw storage on the provider
@@ -852,6 +1059,8 @@ bifrost:
         group_traces_by_session: false
         # Drop input/output content from the root span only (the llm.call generation span keeps it)
         disable_root_span_content: false
+        # Merge x-bf-dim-* request dimensions onto child spans as well as the root HTTP span
+        apply_trace_dimensions_to_child_spans: false
         # Request header name patterns (exact or wildcard like "x-custom-*") captured and emitted as span attributes.
         # Note: "*" captures all headers including sensitive ones like Authorization.
         # request_headers: []
@@ -1096,6 +1305,10 @@ bifrost:
       #   mcp_configs:
       #     - mcp_client_id: 1
       #       tools_to_execute: ["tool1", "tool2"]
+      #   # Relays this key may call (names from bifrost.relays). When the key syncs from this file the
+      #   # list replaces the stored one, so grants made in the dashboard need to be listed here too.
+      #   relay_grants:
+      #     - relay_name: "tavily"
     modelConfigs: []
       # - id: "model-config-1"
       #   model_name: "gpt-4o"       # model name, or "*" for all models
@@ -1125,6 +1338,7 @@ bifrost:
       #   split_policy: "none"             # none (shared caps) | equal (each member gets an equal share); open projects must use none
       #   calendar_aligned: false          # Snap budget and rate-limit windows to calendar boundaries
       #   allow_all_providers: false       # true grants access to every provider incl. ones added later; a provider with a provider_configs entry keeps its model/key/budget/rate-limit rules; false (default) is deny-by-default via provider_configs
+      #   # disable_content_logging: true  # Omit to inherit the virtual key's setting (or the client's); true/false override the virtual key for this project's traffic
       #   budgets:
       #     - max_limit: 5000
       #       reset_duration: "1M"
@@ -1149,6 +1363,8 @@ bifrost:
       #       tools_to_execute: ["*"]
       #   virtual_mcps:
       #     - virtual_mcp_name: "Platform Tools"
+      #   relay_grants:  # Relays requests scoped to this project may call; the file's list replaces the stored one
+      #     - relay_name: "textract"
     routingRules: []
       # - id: "route-1"
       #   name: "Route to Azure"
@@ -1184,6 +1400,7 @@ bifrost:
       #   model: "jev-latest"              # Set together with provider; omit both for typesafe/jev-latest
       #   previous_message_count: 1        # Earlier user messages sent with the current request (0-5)
       #   timeout: "1.5s"                  # Maximum wait for one decision-model call; usage counts toward request cost and budgets
+      #   min_confidence: 0.7              # Optional: an answer below this publishes no tier (0-1; 0 keeps every answer)
       #   criteria:                        # Optional: per-tier overrides; tiers are SIMPLE, MEDIUM, COMPLEX
       #     COMPLEX:
       #       definition: "..."            # Replaces the shipped definition of this tier (max 500 chars)
@@ -1300,6 +1517,7 @@ bifrost:
       # clientId: ""
       # clientSecret: ""
       # apiToken: ""  # optional — enables background user/group reconciliation (every bulkSyncInterval, 24h by default)
+      # syncAllUsers: true  # directory sync keeps every app-assigned user except suspended/deactivated; false = active users only
       # audience: ""
       # # Extra OAuth scopes on top of the base openid/profile/email/offline_access set
       # # (for Custom Authorization Servers where claims like "groups" are gated behind a scope).
@@ -1344,6 +1562,9 @@ bifrost:
       #   - attribute: "groups"
       #     value: "bifrost-power-users"
       #     accessProfile: "power-user"
+      # # Which attribute-profile rules apply when several match: "all" (default) grants every match;
+      # # "order" grants only the profiles of the first matching rule. Role-granted profiles are unaffected.
+      # accessProfileResolutionStrategy: "all"
       # # Attribute -> project memberships. Every matching rule adds the user to that project (by name;
       # # never auto-created). Memberships a rule added are removed when it stops matching; members
       # # added from the dashboard are kept.
@@ -1367,6 +1588,42 @@ bifrost:
       # # off and directory access granted (Okta apiToken, Auth0 management credentials, Entra/Google
       # # bulk sync).
       # bulkSyncInterval: "24h"
+      #
+      # # Token exchange hosts (Enterprise). Shared across every provider above: hosts besides the
+      # # issuer's own that an MCP client's token exchange may be sent to through its
+      # # tokenExchange.authorizationServerUrl. Bare host names, with a port only when needed.
+      # tokenExchangeHosts:
+      #   - "auth.example.com"
+      #
+      # # Cross App Access (XAA, ID-JAG) inbound (Enterprise). Shared across every provider above:
+      # # AI clients the IdP admits for a user exchange its ID-JAG at Bifrost's /oauth2/token for a
+      # # Bifrost token that acts as that user. Needs the governance plugin and
+      # # client.oauth2ServerConfig.issuerUrl; register the client IDs in the dashboard.
+      # crossAppAccess:
+      #   enabled: true
+      #   accessTokenTtl: 86400   # seconds, 60-86400; 0 or omitted = 86400
+      #   provisionUsers: false   # create a Bifrost user for an unknown assertion subject instead of refusing
+      #
+      # # Workload identity (Enterprise). Shared across every provider above: token issuers,
+      # # besides the provider itself, whose workload tokens can be mapped to service accounts.
+      # # Workloads are mapped in the dashboard (the service account's Workload identity tab) or
+      # # through the API, not in values. Mappings refer to an issuer by its name, unique without
+      # # case: renaming or removing it leaves them without an issuer, and changing its issuerUrl,
+      # # kind or identityClaim stops them working (Bifrost refuses that save while any exist).
+      # # Kinds: aws (named by IAM role ARN) or generic (any OIDC issuer; also set identityClaim and
+      # # machineCheck, e.g. Okta: identityClaim cid, machineCheck {kind: sub_equals_claim, claim: cid}).
+      # workloadIdentity:
+      #   additionalTrustedIssuers:
+      #     - name: "AWS prod"
+      #       kind: "aws"
+      #       issuerUrl: "https://<id>.tokens.sts.global.api.aws"  # exactly as tokens carry it in iss
+      #       audiences: ["https://bifrost.example.com"]
+      #     - name: "Okta workloads"
+      #       kind: "generic"
+      #       issuerUrl: "https://acme.okta.com/oauth2/default"
+      #       audiences: ["api://bifrost"]
+      #       identityClaim: "cid"            # matched exactly
+      #       machineCheck: { kind: "sub_equals_claim", claim: "cid" }  # or {kind: any} to take only mapped IDs
       #
       # # Auth proxy / identity-aware proxy (Enterprise). Shared across every provider above:
       # # when a Zero Trust / ZTNA proxy fronts the IdP, Bifrost reads the login credential from the
@@ -1604,6 +1861,8 @@ bifrost:
     #   mcp_configs:  # Per-client tool allowlists: ["*"] all tools, [] none, named list only those
     #     - mcp_client_id: "github"
     #       tools_to_execute: ["create_pull_request", "list_issues"]
+    #   relay_grants:  # Relays keys governed by this profile may call
+    #     - relay_name: "tavily"
     #   # DEPRECATED — folded into virtual_mcps / mcp_configs at load time:
     #   # mcp_tool_groups:
     #   #   - tool_group_id: 1
@@ -1702,6 +1961,104 @@ bifrost:
   #       headers:
   #         Authorization: "env.AGENT_RUNTIME_AUTH"
 
+  # Relays: raw HTTP relays to non-LLM APIs, served at /relay/{name}/{path}. Bifrost injects the
+  # relay's credential, prices each counted call and charges it to the caller's budgets. Rendered
+  # directly as top-level `relays` in config.json and reconciled by name. With sourceOfTruth
+  # "config.json", an explicit list (including []) prunes stored relays it does not name, and their
+  # grants with them; omit the key to leave stored relays alone. Callers need a relay_grants entry
+  # on their virtual key, project or access profile.
+  # relays:
+  #   - name: "tavily"                       # served at /relay/tavily; letters, digits, . _ - (max 64); immutable
+  #     description: "Web search"
+  #     base_url: "https://api.tavily.com"
+  #     auth:
+  #       type: "bearer"                     # bearer | header | query | basic | aws_sigv4 | none
+  #     credential:
+  #       value: "env.TAVILY_API_KEY"        # literal, env.VAR_NAME, or a vault reference; supply the env var via envFrom/extraEnv
+  #     usage:
+  #       cost_per_request: 0.001            # USD added to every billable call
+  #     routes:                              # only listed routes are relayed unless skip_route_check: true
+  #       - method: "POST"
+  #         path: "/search"
+  #         usage:
+  #           units_path: "usage.credits"
+  #           cost_per_unit: 0.008
+  #   - name: "textract"
+  #     base_url: "https://textract.us-east-1.amazonaws.com"
+  #     auth:
+  #       type: "aws_sigv4"
+  #       aws: { service: "textract" }
+  #     credential:
+  #       aws: { region: "us-east-1" }       # omit access_key/secret_key to use the pod's AWS credentials (IRSA)
+  #     routes:
+  #       - method: "POST"
+  #         path: "/"
+  #         headers: { X-Amz-Target: "Textract.AnalyzeDocument" }
+
+  # Model routers: named complexity classifiers that each take the requests their routing matches,
+  # after governance.routingRules. Each entry takes id, name and description, the settings of
+  # governance.complexityAnalyzerConfig (keywords, classifier, semantic, decision, llm, session,
+  # tier_boundaries), targets: the model each tier gets, and routing: which requests it takes.
+  # Routers are tried narrowest scope first (virtual key, user, team, customer, then global), by
+  # priority within a scope; the first enabled router whose condition holds classifies the
+  # request as SIMPLE, MEDIUM or COMPLEX, and its target for that tier replaces the provider and model.
+  # Rendered as top-level `model_routers` in config.json whenever declared. With sourceOfTruth "config.json",
+  # an explicit list (including []) removes stored routers it does not name; omit the key to leave them.
+  # Routers are separate from governance.complexityAnalyzerConfig, which routing rules read
+  # complexity_tier from.
+  # modelRouters:
+  #   - id: "support"                    # letters, digits, _ and - (max 64)
+  #     name: "Support"                  # unique across routers
+  #     description: "Classifies support traffic"
+  #     classifier: "decision"           # semantic (default) | decision | llm (needs an llm block)
+  #     decision:
+  #       provider: "typesafe"
+  #       model: "jev-latest"
+  #     keywords:                        # required, as in governance.complexityAnalyzerConfig
+  #       simple_keywords: ["how do I reset my password?"]
+  #       medium_keywords: ["why is my invoice higher than last month?"]
+  #       complex_keywords: ["plan a zero-downtime migration of our SSO setup."]
+  #     targets:                         # Optional; omit to keep the dashboard's. A tier with no target keeps the request's model; weights within a tier sum to 1
+  #       - tier: "SIMPLE"
+  #         provider: "openai"
+  #         model: "gpt-4o-mini"
+  #         weight: 1
+  #       - tier: "COMPLEX"
+  #         provider: "anthropic"
+  #         model: "claude-sonnet-4-5"
+  #         weight: 1
+  #         # key_id: "<key-id>"         # Optional key pin; requires provider
+  #         # fallbacks: ["openai/gpt-4o"]  # Replaces the request's fallback chain when this target is chosen
+  #     routing:                         # Optional; omit to keep the dashboard's. A new router without it starts off, global, after the other global routers
+  #       enabled: true                  # Default false
+  #       cel_expression: "model == 'support-assistant'"  # Optional; empty takes every request in scope. Cannot use complexity_tier
+  #       scope: "global"                # global, team, customer, virtual_key (user-scoped routing is API/UI only)
+  #       # scope_id: "team-1"           # Required for non-global scopes: the entity's ID, not its name
+  #       priority: 0                    # Lower = tried first; unique within the scope among model routers
+
+  # Datasheet overrides: edits to the synced model datasheet (pricing and model parameters) that
+  # survive every datasheet sync. Rendered directly as top-level `datasheet_overrides` in config.json
+  # and matched by (provider, model, mode). Both patches are RFC 7386 JSON merge patches: a key sets
+  # the value, null clears it, an omitted key keeps the upstream value. A file entry is applied when
+  # it changes, so UI edits stand until the entry itself changes. With sourceOfTruth "config.json",
+  # an explicit list (including []) removes stored overrides it does not name; omit the key to leave them.
+  # datasheetOverrides:
+  #   - provider: "openai"
+  #     model: "gpt-4o"
+  #     mode: "chat"                         # omit to apply the pricing patch to every mode of the model
+  #     pricing_patch:
+  #       input_cost_per_token: 0.0000022
+  #       max_output_tokens: 16384
+  #     params_patch:
+  #       supports_reasoning: false
+  #   - provider: "openai"
+  #     model: "ft:gpt-4o-mini:acme:support"
+  #     mode: "chat"                         # required when is_custom is true
+  #     is_custom: true                      # adds an entry the upstream datasheet does not list
+  #     pricing_patch:
+  #       input_cost_per_token: 0.0000003
+  #       output_cost_per_token: 0.0000012
+
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
     disabled: false
@@ -1715,8 +2072,8 @@ bifrost:
     # archiveGracePeriod: "15m"     # Delay before a window closes, to absorb clock skew (< archiveInterval)
     # archiveMaxObjectBytes: 134217728  # Roll a new part at this many uncompressed bytes (128MiB; ~2x peak mem when compress: true)
     # objectStorage:
-    #   type: s3        # Options: s3, gcs
-    #   bucket: ""      # Bucket name
+    #   type: s3        # Options: s3, gcs, azure
+    #   bucket: ""      # Bucket name, or Azure Blob container name
     #   prefix: bifrost # Base key path (audit-logs/ is appended under it)
     #   compress: false # Enable gzip compression for stored objects
     #
@@ -1732,6 +2089,11 @@ bifrost:
     #   # GCS configuration (when type is gcs)
     #   projectId: ""
     #   credentialsJson: ""   # Service account JSON, omit for default credentials
+    #
+    #   # Azure configuration (when type is azure): choose exactly one auth mode
+    #   # endpoint: "https://mystorageaccount.blob.core.windows.net" # DefaultAzureCredential / workload identity
+    #   # connectionString: "env.AZURE_AUDIT_STORAGE_CONNECTION_STRING" # Alternative; omit endpoint
+    #   # Inject this env var using bifrost.providerSecrets or extraEnv; provider credentials are not reused
 
   # Large payload optimization - streams large payloads without full materialization
   # largePayloadOptimization:
@@ -1890,6 +2252,7 @@ storage:
     #   passwordKey: "password"
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
     # matviewRefreshTimeout: "5m"  # Max time for one refresh pass (min 30s, max 30m; unset = 5x interval, min 5m). A timeout leaves views intact but staler.
+    # matviewRefreshTempFileLimit: "10GB"  # Cap temp files per Postgres process (Postgres temp_file_limit); parallel workers each get the cap. Keep cap x (workers + 1) well under free disk. Needs superuser or GRANT SET ON PARAMETER temp_file_limit.
     # migrationMatviewCancelAfter: "60s"  # During schema migrations, cancel an in-flight matview refresh (any replica/version) after this long. Unset = 60s; "off" = wait only.
     # ClickHouse connection settings (only applies when type is clickhouse)
     # clickhouse:
@@ -1917,16 +2280,23 @@ storage:
     # These logs are kept in full in the logs database instead. Hidden logs (content
     # logging disabled with retainContentInObjectStorage on) are still offloaded.
     objectStorageExcludeRequestTypes: []
+    # Record the caller's IP as client_ip on LLM, MCP and relay logs (leftmost
+    # X-Forwarded-For, else X-Real-IP, else the TCP peer). The headers are not
+    # verified, so only trust the value behind a proxy that overwrites them.
+    # Off by default. Maps to logs_store.capture_client_ip.
+    # captureClientIp: true
 
     # Object storage for offloading large log payloads (optional)
-    # When enabled, request/response payloads are stored in S3/GCS
+    # When enabled, request/response payloads are stored in S3/GCS/Azure Blob
     # while the DB keeps only lightweight index data for fast analytics.
     objectStorage:
       enabled: false
-      # type: s3        # Options: s3, gcs
-      # bucket: ""      # Bucket name
+      # type: s3        # Options: s3, gcs, azure
+      # bucket: ""      # Bucket name, or Azure Blob container name
       # prefix: bifrost # Key prefix for stored objects
       # compress: false  # Enable gzip compression for stored objects
+      # format: json      # json or parquet (parquet supported on s3/azure)
+      # compression: gzip # json: none/gzip; parquet: none/gzip/snappy/zstd
 
       # S3 configuration (when type is s3)
       # region: us-east-1
@@ -1940,6 +2310,12 @@ storage:
       # GCS configuration (when type is gcs)
       # projectId: ""
       # credentialsJson: ""  # Service account JSON, omit for default credentials
+
+      # Azure configuration (when type is azure): choose exactly one auth mode
+      # endpoint: "https://mystorageaccount.blob.core.windows.net" # DefaultAzureCredential / workload identity
+      # connectionString: "env.AZURE_STORAGE_CONNECTION_STRING" # Alternative; omit endpoint
+      # existingSecret: "bifrost-azure-storage" # Alternative to inline connectionString; omit endpoint
+      # connectionStringKey: "connection-string" # Secret key (defaults to connection-string)
 
 # PostgreSQL configuration (when any store uses postgres)
 postgresql:
@@ -1996,9 +2372,18 @@ postgresql:
     passwordKey: "password"
 
   primary:
+    # Arguments passed to the PostgreSQL image entrypoint, e.g.
+    # ["-c", "max_connections=200", "-c", "shared_buffers=256MB"].
+    # Changing these arguments restarts the bundled PostgreSQL pod.
+    extraArgs: []
+
     persistence:
       enabled: true
       size: 8Gi
+      # Optional PVC metadata for storage-controller integrations.
+      annotations: {}
+      # Requires VolumeAttributesClass support in Kubernetes and the CSI driver.
+      volumeAttributesClassName: ""
 
     resources:
       limits:
@@ -2148,8 +2533,59 @@ vectorStore:
 
       affinity: {}
 
+      # Extra environment variables for the Redis container, appended after the chart's own
+      # REDIS_PASSWORD / REDISCLI_AUTH. Standard Kubernetes EnvVar entries (value or valueFrom).
+      # REDIS_ARGS (server flags) and redis-stack module args such as REDISEARCH_ARGS are read from
+      # here. With auth enabled, setting extraEnv or envFrom starts Redis through `sh -c` so REDIS_ARGS
+      # is appended after --requirepass.
+      # extraEnv:
+      #   - name: REDIS_ARGS
+      #     value: "--maxmemory 400mb --maxmemory-policy allkeys-lru"
+      #   - name: REDISEARCH_ARGS
+      #     valueFrom:
+      #       configMapKeyRef:
+      #         name: redis-tuning
+      #         key: redisearch-args
+
+      # Environment variables for the Redis container from secrets/configmaps
+      # envFrom:
+      #   - configMapRef:
+      #       name: redis-tuning
+
+    # Prometheus metrics for the bundled Redis: runs an oliver006/redis_exporter sidecar in the
+    # Redis pod, adds a `metrics` port to the Redis Service and prometheus.io/* scrape annotations
+    # to the pod. The exporter authenticates with the same password as Redis when auth is enabled.
     metrics:
       enabled: false
+      # image:
+      #   repository: oliver006/redis_exporter   # default
+      #   tag: "v1.97.0"                         # default
+      #   pullPolicy: IfNotPresent               # default
+      # port: 9121                               # default
+      # resources:
+      #   limits:
+      #     cpu: 100m
+      #     memory: 64Mi
+      #   requests:
+      #     cpu: 25m
+      #     memory: 32Mi
+      # Extra environment variables for the exporter, e.g. REDIS_EXPORTER_CHECK_KEYS
+      # extraEnv:
+      #   - name: REDIS_EXPORTER_INCL_SYSTEM_METRICS
+      #     value: "true"
+      # ServiceMonitor for the Prometheus Operator (requires the monitoring.coreos.com/v1 CRDs)
+      # serviceMonitor:
+      #   enabled: false
+      #   namespace: monitoring   # Namespace for the ServiceMonitor (default: release namespace)
+      #   interval: "30s"
+      #   scrapeTimeout: "10s"
+      #   labels: {}              # Extra labels, e.g. the release label your Prometheus selects on
+      #   # Credentials for exporter basic auth (REDIS_EXPORTER_BASIC_AUTH_* in extraEnv)
+      #   basicAuth:
+      #     enabled: true
+      #     existingSecret: redis-exporter-auth   # In the ServiceMonitor's namespace
+      #     usernameKey: username                 # default
+      #     passwordKey: password                 # default
 
   # Qdrant configuration
   qdrant:

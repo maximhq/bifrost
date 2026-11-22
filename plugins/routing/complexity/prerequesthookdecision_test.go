@@ -262,6 +262,57 @@ func TestPreRequestHook_DecisionReceivesOnlyUserTurns(t *testing.T) {
 	}
 }
 
+// TestPreRequestHook_DecisionBelowMinConfidencePublishesNoTier checks the whole
+// hook: an answer below min_confidence leaves the request on its original model
+// and records mechanism=skipped, without cascading into the llm classifier.
+func TestPreRequestHook_DecisionBelowMinConfidencePublishesNoTier(t *testing.T) {
+	analyzerConfig := decisionAnalyzerTestConfig()
+	analyzerConfig.Decision = &complexity.DecisionConfig{MinConfidence: 0.95}
+	analyzerConfig.LLM = &complexity.LLMConfig{Provider: schemas.OpenAI, Model: "test-classifier-model", Timeout: time.Second}
+	decision := &decisionRecorder{tiers: map[string]string{"prove the scheduler is deadlock-free": "COMPLEX"}}
+	plugin := decisionTestPlugin(t, nil, analyzerConfig, decision)
+	failOnChatClassifier(t, plugin)
+
+	req := llmComplexityChatRequest("prove the scheduler is deadlock-free")
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
+
+	require.Equal(t, 1, decision.calls())
+	require.Nil(t, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+	require.Equal(t, complexity.MechanismSkipped, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	_, modelOut, _ := req.GetRequestFields()
+	require.Equal(t, "gpt-4o", modelOut, "the rule must not fire on a rejected tier")
+	require.Contains(t, routingLogs(bfCtx), "below min_confidence=0.95")
+}
+
+// TestPreRequestHook_DecisionBelowMinConfidenceHoldsSessionTier checks that a
+// rejected answer neither clears nor lowers the tier a session already reached.
+func TestPreRequestHook_DecisionBelowMinConfidenceHoldsSessionTier(t *testing.T) {
+	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	analyzerConfig := decisionAnalyzerTestConfig()
+	analyzerConfig.Session = &complexity.SessionConfig{Enabled: true}
+	decision := &decisionRecorder{tiers: map[string]string{"a medium request": complexity.TierMedium, "a simple request": complexity.TierSimple}}
+	plugin := decisionTestPlugin(t, &routing.Config{KVStore: store}, analyzerConfig, decision)
+
+	ctx := complexitySessionContext("decision-min-confidence")
+	require.NoError(t, plugin.PreRequestHook(ctx, chatRequest("a medium request")))
+	require.Equal(t, complexity.TierMedium, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+
+	gated := decisionAnalyzerTestConfig()
+	gated.Session = &complexity.SessionConfig{Enabled: true}
+	gated.Decision = &complexity.DecisionConfig{MinConfidence: 0.95}
+	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(gated))
+
+	ctx = complexitySessionContext("decision-min-confidence")
+	require.NoError(t, plugin.PreRequestHook(ctx, chatRequest("a simple request")))
+	require.Equal(t, complexity.TierMedium, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+	require.Equal(t, complexity.MechanismSession, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	require.Contains(t, routingLogs(ctx), "current classifier produced no tier")
+}
+
 // TestPreRequestHook_DecisionPrimaryFailurePublishesNoTier checks that a failed decision-model call
 // call leaves the request on its original model, records mechanism=skipped,
 // and never cascades into the llm classifier, even when an llm block is saved.

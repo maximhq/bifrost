@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/bits"
 	"math/rand"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -29,7 +30,9 @@ import (
 //
 // Past topicLimits.clustered requests the run stops clustering. What it has
 // found are the topics, and every request after that is given to the nearest
-// of them. That costs one page of vectors at a time, however long the window.
+// of them. That costs one page of vectors at a time, however long the window,
+// and where each request went is handed out as placements for the caller to
+// write as it goes, so nothing the run keeps grows with the window either.
 
 // topicLimits bounds one run.
 type topicLimits struct {
@@ -45,17 +48,27 @@ type topicLimits struct {
 	// slice has to stay well under it.
 	slice        int
 	sliceCeiling int
-	page         int64
+	// pruneGrace is how long a retired topic row is kept before upkeep
+	// deletes it. Zero means topicsRetireAfter; tests shorten it.
+	pruneGrace time.Duration
+	page       int64
 	// read is how many requests one run takes in, or zero for no bound. A
 	// window that holds more is not read to the end.
 	read int
+	// write is how many assignments are written in one call; zero is
+	// topicsWriteBatch.
+	write int
+	// pooled is how many unmatched requests' vectors a run keeps; zero is
+	// topicsMaxPooled.
+	pooled int
 }
 
-// defaultTopicLimits is what a deployment runs with. One run takes in 20,000
-// requests and clusters all of them: within that bound nothing is left over
-// to assign, and a window that holds more is sampled across its length.
+// defaultTopicLimits is what a deployment runs with. One run reads the whole
+// window: the first 20,000 requests it reads, drawn from across the window,
+// are clustered, and every one after is filed under its nearest topic and
+// written out with its page, so a larger window costs time, not memory.
 func defaultTopicLimits() topicLimits {
-	return topicLimits{batch: topicsMaxVectors, clustered: topicsMaxVectors, read: topicsMaxVectors, slice: 2000, sliceCeiling: 5000, page: topicsPageSize}
+	return topicLimits{batch: topicsMaxVectors, clustered: topicsMaxVectors, write: topicsWriteBatch, slice: 2000, sliceCeiling: 5000, page: topicsPageSize}
 }
 
 // errTopicReadLimit stops a read that has taken in all a run may.
@@ -77,6 +90,16 @@ type topicSample struct {
 	vector []float32
 }
 
+// topicMember is one request's place in a cluster: which request, and how
+// like the centre of the cluster k-means put it in it was. The similarity is
+// measured then, against that centre, because the vector is let go of after
+// clustering and the centre a merge settles on comes too late to measure
+// against.
+type topicMember struct {
+	logID      string
+	similarity float32
+}
+
 // topicCluster is a cluster as the run keeps it.
 type topicCluster struct {
 	// sum is the sum of the members' unit vectors, and size how many there
@@ -86,8 +109,21 @@ type topicCluster struct {
 	// samples are the members nearest the centre, nearest first.
 	samples   []topicSample
 	sampleIDs []string
-	label     string
+	drawn     []string // a fixed random draw of member ids, for naming from beyond the centre
+	// members is every request k-means put in the cluster. A seed run hands
+	// them to its writer once the topics are written; discovery, whose pool is
+	// bounded, files them itself.
+	members  []topicMember
+	label    string
+	id       string   // the topic row written for it, once there is one
+	absorbed []string // ids of the topics folded into it after that
 }
+
+// topicsMaxPooled bounds how many requests that matched no topic a run keeps
+// the vectors of for the next discovery. Vectors are the one thing here that
+// is not small, and a run that found no topic for a great many requests is
+// one whose topics are wrong, not one whose pool needs to be complete.
+const topicsMaxPooled = 5000
 
 // centroid is the cluster's centre: the direction of the sum.
 func (c *topicCluster) centroid() []float32 {
@@ -115,7 +151,13 @@ func (c *topicCluster) absorb(other topicCluster) {
 		c.sum[d] += value
 	}
 	c.size += other.size
+	c.members = append(c.members, other.members...)
+	if other.id != "" {
+		c.absorbed = append(c.absorbed, other.id)
+	}
+	c.absorbed = append(c.absorbed, other.absorbed...)
 	c.setSamples(append(c.samples, other.samples...))
+	c.drawn = drawMembers(c.drawn, other.drawn...)
 }
 
 func (c *topicCluster) setSamples(candidates []topicSample) {
@@ -125,17 +167,94 @@ func (c *topicCluster) setSamples(candidates []topicSample) {
 	})
 	c.samples, c.sampleIDs = c.samples[:0:0], nil
 	seen := map[string]struct{}{}
+	var repeats []topicSample
 	for _, candidate := range candidates {
 		if _, repeat := seen[candidate.logID]; repeat {
 			continue
 		}
 		seen[candidate.logID] = struct{}{}
+		if c.repeatsSample(candidate.vector) {
+			repeats = append(repeats, candidate)
+			continue
+		}
 		c.samples = append(c.samples, candidate)
 		c.sampleIDs = append(c.sampleIDs, candidate.logID)
 		if len(c.samples) == topicsLabelSamples {
-			break
+			return
 		}
 	}
+	// A cluster with too few distinct requests to fill its samples fills
+	// them with the repeats, nearest first, rather than show fewer.
+	for _, candidate := range repeats {
+		if len(c.samples) == topicsLabelSamples {
+			break
+		}
+		c.samples = append(c.samples, candidate)
+		c.sampleIDs = append(c.sampleIDs, candidate.logID)
+	}
+}
+
+// exampleIDs is what a topic keeps as its examples: the samples and the drawn
+// members, alternately and each once, so the few a reader links to and the
+// share a later merge names from both reach past the centre.
+func (c *topicCluster) exampleIDs() []string {
+	ids := make([]string, 0, len(c.sampleIDs)+len(c.drawn))
+	seen := make(map[string]struct{}, cap(ids))
+	for index := range max(len(c.sampleIDs), len(c.drawn)) {
+		for _, from := range [][]string{c.sampleIDs, c.drawn} {
+			if index >= len(from) {
+				continue
+			}
+			if _, repeat := seen[from[index]]; !repeat {
+				seen[from[index]] = struct{}{}
+				ids = append(ids, from[index])
+			}
+		}
+	}
+	return ids
+}
+
+// repeatsSample reports whether a vector is all but the same as a sample
+// already chosen. The same prompt sent to several providers, or retried, is
+// several requests with one text, and without this a subject's four examples
+// can be one request several times over, which is then most of what the
+// label is written from.
+func (c *topicCluster) repeatsSample(vector []float32) bool {
+	for _, sample := range c.samples {
+		if dot(sample.vector, vector) >= topicsDuplicateSimilarity {
+			return true
+		}
+	}
+	return false
+}
+
+// drawMembers adds ids to a draw and keeps the topicsLabelDrawn whose hash is
+// lowest. That is a uniform random sample of every id ever offered, the same
+// whichever order they came in, so two clusters' draws merge into the draw
+// of the merged cluster.
+func drawMembers(drawn []string, ids ...string) []string {
+	for _, id := range ids {
+		if slices.Contains(drawn, id) {
+			continue
+		}
+		if len(drawn) == topicsLabelDrawn && memberHash(id) >= memberHash(drawn[len(drawn)-1]) {
+			continue
+		}
+		drawn = append(drawn, id)
+		sort.SliceStable(drawn, func(i, j int) bool { return memberHash(drawn[i]) < memberHash(drawn[j]) })
+		// Clipped, so the next append copies rather than writing into an
+		// array a copy of this cluster may still share.
+		n := min(len(drawn), topicsLabelDrawn)
+		drawn = drawn[:n:n]
+	}
+	return drawn
+}
+
+// memberHash is where an id falls in the draw.
+func memberHash(id string) uint64 {
+	hash := fnv.New64a()
+	hash.Write([]byte(id))
+	return hash.Sum64()
 }
 
 // summarizeClusters turns one k-means result into clusters the run can keep,
@@ -166,10 +285,14 @@ func summarizeClusters(vectors []topicVector, assignments []int, centroids [][]f
 			// Its centroid is left over from seeding and stands for nothing.
 			continue
 		}
-		if observe != nil {
-			centre := clusters[cluster].centroid()
-			for _, member := range members[cluster] {
-				observe(dot(member.vector, centre))
+		centre := clusters[cluster].centroid()
+		clusters[cluster].members = make([]topicMember, 0, len(members[cluster]))
+		for _, member := range members[cluster] {
+			similarity := dot(member.vector, centre)
+			clusters[cluster].members = append(clusters[cluster].members, topicMember{logID: member.logID, similarity: similarity})
+			clusters[cluster].drawn = drawMembers(clusters[cluster].drawn, member.logID)
+			if observe != nil {
+				observe(similarity)
 			}
 		}
 		clusters[cluster].setSamples(members[cluster])
@@ -333,10 +456,32 @@ type topicRun struct {
 	unmatched int
 	folded    int
 	threshold *float64
+	// pooled are the requests that ended in no topic, with their vectors, up
+	// to topicsMaxPooled of them: what the next discovery starts from.
+	pooled    []topicVector
+	pooledIDs map[string]struct{}
+	// placed is where requests went since the caller last took them: each one
+	// the merge dropped, assigned, or matched to none.
+	placed []requestPlacement
+}
+
+// requestPlacement is where one request went: the index of its topic in the
+// run's clusters, or -1 for none.
+type requestPlacement struct {
+	logID      string
+	cluster    int
+	similarity float32
 }
 
 func newTopicRun(limits topicLimits, seed int64) *topicRun {
-	return &topicRun{limits: limits, seed: seed, rng: rand.New(rand.NewSource(seed))}
+	return &topicRun{limits: limits, seed: seed, rng: rand.New(rand.NewSource(seed)), pooledIDs: map[string]struct{}{}}
+}
+
+// takePlacements hands over where requests went since the last call.
+func (r *topicRun) takePlacements() []requestPlacement {
+	placed := r.placed
+	r.placed = nil
+	return placed
 }
 
 // add takes one request: into the batch while the run is still clustering,
@@ -487,6 +632,14 @@ func (r *topicRun) settleSmallClusters() {
 			topics = append(topics, cluster)
 		default:
 			r.dropped += cluster.size
+			for _, member := range cluster.members {
+				r.placed = append(r.placed, requestPlacement{logID: member.logID, cluster: -1})
+			}
+			// A cluster this small is no larger than its samples, so every
+			// member's vector is still here to keep.
+			for _, sample := range cluster.samples {
+				r.pool(topicVector{logID: sample.logID, vector: sample.vector})
+			}
 		}
 	}
 	r.clusters = topics
@@ -550,13 +703,33 @@ func (r *topicRun) assign(entry topicVector) {
 	}
 	if best < 0 || bestScore < r.floor {
 		r.unmatched++
+		r.placed = append(r.placed, requestPlacement{logID: entry.logID, cluster: -1})
+		r.pool(entry)
 		return
 	}
 	for d, value := range entry.vector {
 		r.clusters[best].sum[d] += value
 	}
 	r.clusters[best].size++
+	r.clusters[best].drawn = drawMembers(r.clusters[best].drawn, entry.logID)
+	r.placed = append(r.placed, requestPlacement{logID: entry.logID, cluster: best, similarity: bestScore})
 	r.assigned++
+}
+
+// pool keeps a request that matched no topic, vector and all, while there is
+// room.
+func (r *topicRun) pool(entry topicVector) {
+	limit := r.limits.pooled
+	if limit == 0 {
+		limit = topicsMaxPooled
+	}
+	if len(r.pooled) < limit {
+		r.pooled = append(r.pooled, entry)
+		if r.pooledIDs == nil {
+			r.pooledIDs = map[string]struct{}{}
+		}
+		r.pooledIDs[entry.logID] = struct{}{}
+	}
 }
 
 // read is how many requests the run has taken in.
@@ -619,8 +792,13 @@ type topicWindowReader struct {
 	// seen is the requests already taken, by a hash of their id. A slice that
 	// turns out too large is read again as two, and a store that walks its
 	// keys can hand the same entry back twice; a request clustered twice
-	// counts twice.
+	// counts twice. Read in slices, it holds one slice's requests: slices are
+	// disjoint ranges of time, so nothing taken in one comes back in another.
+	// probed holds what the probe took, for the whole read, since the probe's
+	// range lies under whichever slices cover it and they are read in no
+	// particular order; a probe read stops at the slice ceiling, so it is small.
 	seen          map[uint64]struct{}
+	probed        map[uint64]struct{}
 	taken         int
 	withoutVector int
 }
@@ -651,6 +829,7 @@ func (r *topicWindowReader) readSlices() error {
 	if found == 0 {
 		return nil
 	}
+	r.probed, r.seen = r.seen, map[uint64]struct{}{}
 	if found < r.limits.slice {
 		width = min(width*int64(r.limits.slice)/int64(found), span)
 	}
@@ -663,6 +842,7 @@ func (r *topicWindowReader) readSlices() error {
 		if err := r.readSplitting(from, min(from+width, r.to)); err != nil {
 			return err
 		}
+		clear(r.seen)
 	}
 	return nil
 }
@@ -718,6 +898,9 @@ func (r *topicWindowReader) readRange(from, to int64, filtered bool) (int, error
 			}
 			key := hashTopicID(logID)
 			if _, repeat := r.seen[key]; repeat {
+				continue
+			}
+			if _, repeat := r.probed[key]; repeat {
 				continue
 			}
 			r.seen[key] = struct{}{}

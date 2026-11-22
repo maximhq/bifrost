@@ -17,16 +17,280 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/maximhq/bifrost/core/network/proxytest"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestDocumentCitationsMockProvider(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		doc := gjson.GetBytes(body, "messages.0.content.0.document")
+		assert.True(t, doc.Get("citations.enabled").Bool(), "%s", body)
+		assert.Equal(t, "Budget: $4.2M.", doc.Get("source.content.0.text").Str, "%s", body)
+		assert.False(t, doc.Get("format").Exists(), "%s", body)
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		encoder := eventstream.NewEncoder()
+		for _, event := range []struct{ kind, payload string }{
+			{"messageStart", `{"role":"assistant"}`},
+			{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}}`},
+			{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"$4.2M."}}`},
+			{"contentBlockStop", `{"contentBlockIndex":0}`},
+			{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}}`},
+			{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"text":" Approved."}}`},
+			{"contentBlockStop", `{"contentBlockIndex":1}`},
+			{"messageStop", `{"stopReason":"end_turn"}`},
+			{"metadata", `{"usage":{"inputTokens":8,"outputTokens":4,"totalTokens":12}}`},
+		} {
+			assert.NoError(t, encoder.Encode(w, eventstream.Message{
+				Headers: eventstream.Headers{
+					{Name: ":message-type", Value: eventstream.StringValue("event")},
+					{Name: ":event-type", Value: eventstream.StringValue(event.kind)},
+					{Name: ":content-type", Value: eventstream.StringValue("application/json")},
+				}, Payload: []byte(event.payload),
+			}))
+		}
+	}))
+	defer server.Close()
+	provider := newTestProviderWithServer(t, server)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	var ingress BedrockConverseRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"name":"pack","source":{"content":[{"text":"Budget: $4.2M."}]},"citations":{"enabled":true}}},{"text":"Cite the budget."}]}]}`), &ingress))
+	ingress.ModelID = "global.anthropic.claude-haiku-5-5"
+	req, err := ingress.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	req.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")}
+	req.Params.MaxOutputTokens = schemas.Ptr(128)
+	stream, bErr := provider.ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bErr)
+	var text string
+	annotations, completed := 0, false
+	closedBlocks := 0
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError)
+		ev := chunk.BifrostResponsesStreamResponse
+		if ev == nil {
+			continue
+		}
+		switch ev.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+			if ev.OutputIndex != nil && *ev.OutputIndex == 1 {
+				require.Equal(t, 1, closedBlocks, "native contentBlockStop must close the first item before the next delta")
+			}
+			require.Zero(t, *ev.ContentIndex)
+			text += *ev.Delta
+		case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+			annotations++
+			require.Equal(t, "content_block_location", ev.Annotation.Type)
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			closedBlocks++
+		case schemas.ResponsesStreamResponseTypeCompleted:
+			completed = true
+			require.Len(t, ev.Response.Output, 2)
+			require.Len(t, ev.Response.Output[0].Content.ContentBlocks[0].Annotations, 1)
+			require.Len(t, ev.Response.Output[1].Content.ContentBlocks[0].Annotations, 1)
+		}
+	}
+	require.True(t, completed)
+	require.Equal(t, "$4.2M. Approved.", text)
+	require.Equal(t, 2, annotations)
+	require.Equal(t, 2, closedBlocks)
+	require.Equal(t, int32(1), calls.Load())
+	// Invalid combinations must fail locally, before dispatching to AWS.
+	req.Input[0].Content.ContentBlocks[0].Citations.Enabled = schemas.Ptr(false)
+	invalidCtx, cancelInvalid := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancelInvalid()
+	invalidStream, bErr := provider.ResponsesStream(invalidCtx, noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, invalidStream)
+	require.NotNil(t, bErr)
+	require.Equal(t, 400, *bErr.StatusCode)
+	require.Equal(t, int32(1), calls.Load())
+	require.Contains(t, bErr.Error.Message, "citations.enabled")
+}
+
+func TestDocumentCitationsPooledStateReset(t *testing.T) {
+	state := acquireBedrockResponsesStreamState()
+	state.TextAnnotations = map[int][]schemas.ResponsesOutputMessageContentTextAnnotation{0: {{Type: "char_location"}}}
+	state.flush()
+	require.Empty(t, state.TextAnnotations, "pool reset must not retain previous citations")
+	releaseBedrockResponsesStreamState(state)
+}
+
+func TestDocumentCitationsCustomToolResult(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		input := toolResultDocumentInput(&schemas.ResponsesInputMessageContentBlockFile{
+			Filename: schemas.Ptr("pack"), FileContent: []byte(`[{"type":"text","text":"Budget: $4.2M."}]`),
+		})
+		input[0].Output.ResponsesFunctionToolCallOutputBlocks[0].Citations = &schemas.Citations{Enabled: &enabled}
+		out, err := ToBedrockResponsesRequest(testBedrockCtx(), &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock, Model: "global.anthropic.claude-haiku-5-5", Input: input,
+		})
+		if !enabled {
+			bad, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "tool-document errors must not be swallowed: %v", err)
+			require.Equal(t, 400, *bad.StatusCode)
+			continue
+		}
+		require.NoError(t, err)
+		document := requireBedrockToolResult(t, out.Messages).Content[0].Document
+		require.Empty(t, document.Format)
+		require.True(t, document.Citations.Enabled)
+		require.Equal(t, "Budget: $4.2M.", *document.Source.Content[0].Text)
+	}
+}
+
+func TestDocumentCitationsInvalidSources(t *testing.T) {
+	for _, tc := range []struct{ name, fields, message string }{
+		{"missing citations", `"file_content":"Budget."`, "citations.enabled"},
+		{"disabled citations", `"file_content":"Budget.","citations":{"enabled":false}`, "citations.enabled"},
+		{"empty blocks", `"file_content":[],"citations":{"enabled":true}`, "non-empty array"},
+		{"non-text block", `"file_content":[{"type":"input_image"}],"citations":{"enabled":true}`, "only text blocks"},
+		{"missing text", `"file_content":[{"type":"text"}],"citations":{"enabled":true}`, "only text blocks"},
+		{"conflicting data", `"file_content":"Budget.","file_data":"QnVkZ2V0Lg==","citations":{"enabled":true}`, "cannot be combined"},
+		{"conflicting URL", `"file_content":"Budget.","file_url":"https://example.test/pack.txt","citations":{"enabled":true}`, "cannot be combined"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var req schemas.BifrostResponsesRequest
+			require.NoError(t, json.Unmarshal([]byte(`{"provider":"bedrock","model":"global.anthropic.claude-haiku-5-5","input":[{"role":"user","content":[{"type":"input_file","filename":"pack",`+tc.fields+`}]}]}`), &req))
+			_, err := ToBedrockResponsesRequest(testBedrockCtx(), &req)
+			bad, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "got %v", err)
+			require.Equal(t, 400, *bad.StatusCode)
+			require.Contains(t, bad.Error.Message, tc.message)
+		})
+	}
+}
+
+func TestDocumentCitationsCustomContentForms(t *testing.T) {
+	for _, content := range []string{
+		`"Budget: $4.2M.\nAudit: \"March\"."`,
+		`[{"type":"text","text":"Budget: $4.2M.\nAudit: \"March\"."}]`,
+	} {
+		document, err := materializeBedrockDocument(context.Background(), "global.anthropic.claude-haiku-5-5",
+			nil, nil, nil, nil, json.RawMessage(content), &schemas.Citations{Enabled: schemas.Ptr(true)}, bedrockDocumentSourceRequired)
+		require.NoError(t, err)
+		require.Empty(t, document.Format)
+		require.Len(t, document.Source.Content, 1)
+		require.Equal(t, "Budget: $4.2M.\nAudit: \"March\".", *document.Source.Content[0].Text)
+	}
+}
+
+// Custom document content is rendered without a marshal step that could fail and drop the
+// document; the bytes must decode to the same chunks MarshalSorted would produce.
+func TestBedrockDocumentContentJSON(t *testing.T) {
+	type chunk struct {
+		Text *string `json:"text,omitempty"`
+		Type string  `json:"type"`
+	}
+	texts := []string{"Budget: $4.2M.", "quote \" back\\slash", "line\nbreak\ttab\rcr", "ctrl \x00\x01\x1f", "日本語 <b>&</b> \u2028", "bad \xff utf8"}
+	parts := make([]BedrockDocumentContentBlock, 0, len(texts)+1)
+	want := make([]chunk, 0, len(texts)+1)
+	for i := range texts {
+		parts = append(parts, BedrockDocumentContentBlock{Text: &texts[i]})
+		want = append(want, chunk{Text: &texts[i], Type: "text"})
+	}
+	parts = append(parts, BedrockDocumentContentBlock{})
+	want = append(want, chunk{Type: "text"})
+
+	raw := bedrockDocumentContentJSON(parts)
+	require.True(t, json.Valid(raw), "invalid JSON: %s", raw)
+	var got []chunk
+	require.NoError(t, json.Unmarshal(raw, &got))
+	expected, err := providerUtils.MarshalSorted(want)
+	require.NoError(t, err)
+	var wantDecoded []chunk
+	require.NoError(t, json.Unmarshal(expected, &wantDecoded))
+	require.Equal(t, wantDecoded, got)
+
+	simple := bedrockDocumentContentJSON(parts[:1])
+	expectedSimple, err := providerUtils.MarshalSorted(want[:1])
+	require.NoError(t, err)
+	require.Equal(t, string(expectedSimple), string(simple), "key order must stay byte-stable")
+}
+
+func BenchmarkDocumentCitationsConversion(b *testing.B) {
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "global.anthropic.claude-haiku-5-5",
+		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+					Filename: schemas.Ptr("pack"), FileContent: json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."}]`),
+				}, Citations: &schemas.Citations{Enabled: schemas.Ptr(true)},
+			}}},
+		}},
+	}
+	ctx := testBedrockCtx()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToBedrockResponsesRequest(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkOrdinaryConverseStream(b *testing.B) {
+	benchmarkConverseStream(b, "global.anthropic.claude-haiku-5-5", []BedrockStreamEvent{
+		{Role: schemas.Ptr("assistant")},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}},
+		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
+	})
+}
+
+func BenchmarkDocumentCitationsStream(b *testing.B) {
+	var citation BedrockCitation
+	if err := json.Unmarshal([]byte(`{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}`), &citation); err != nil {
+		b.Fatal(err)
+	}
+	benchmarkConverseStream(b, "global.anthropic.claude-haiku-5-5", []BedrockStreamEvent{
+		{Role: schemas.Ptr("assistant")},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Citation: &citation}},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}},
+		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
+	})
+}
+
+func BenchmarkConverseGroundingStream(b *testing.B) {
+	benchmarkConverseStream(b, "us.amazon.nova-2-lite-v1:0", []BedrockStreamEvent{
+		{Role: schemas.Ptr("assistant")},
+		{ContentBlockIndex: schemas.Ptr(0), Start: &BedrockContentBlockStart{ToolUse: &BedrockToolUseStart{ToolUseID: "grounding", Name: string(BedrockSystemToolNovaGrounding)}}},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Citation: &BedrockCitation{Location: BedrockCitationLocation{Web: &BedrockWebCitationLocation{URL: "https://example.com", Domain: "example.com"}}}}},
+		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
+	})
+}
+
+func benchmarkConverseStream(b *testing.B, model string, chunks []BedrockStreamEvent) {
+	b.Helper()
+	b.ReportAllocs()
+	for b.Loop() {
+		state := acquireBedrockResponsesStreamState()
+		state.Model = &model
+		sequence := 0
+		for i := range chunks {
+			events, err, _ := chunks[i].ToBifrostResponsesStream(sequence, state)
+			if err != nil {
+				b.Fatal(err)
+			}
+			sequence += len(events)
+		}
+		FinalizeBedrockStream(state, sequence, &schemas.ResponsesResponseUsage{}, nil)
+		releaseBedrockResponsesStreamState(state)
+	}
+}
 
 // redirectTransport is an http.RoundTripper that rewrites every request's
 // host/scheme to a fixed target URL, used to redirect provider requests to a
@@ -227,29 +491,7 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 	// Server: returns 200 + correct headers, writes a truncated EventStream
 	// prelude (not a valid frame), then forcibly resets the TCP connection —
 	// producing a *net.OpError on the client's read side.
-	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
-		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		// Write a partial EventStream frame header (3 bytes, not a valid frame).
-		_, _ = w.Write([]byte{0x00, 0x00, 0x00})
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		hj, ok := w.(http.Hijacker)
-		if !ok {
-			return
-		}
-		conn, _, _ := hj.Hijack()
-		// RST instead of FIN — guarantees a *net.OpError on the client read.
-		if tc, ok := conn.(*net.TCPConn); ok {
-			_ = tc.SetLinger(0)
-		}
-		conn.Close()
-	}))
-	ts.Start()
+	ts := newMidStreamResetServer()
 	defer ts.Close()
 
 	provider := newTestProviderWithServer(t, ts)
@@ -284,6 +526,167 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 	require.NotNil(t, errChunk.BifrostError.Error)
 	assert.Equal(t, schemas.ErrProviderNetworkError, errChunk.BifrostError.Error.Message,
 		"net.OpError during EventStream decoding must use ErrProviderNetworkError message")
+}
+
+// newMidStreamResetServer returns a server that answers 200, writes a truncated
+// EventStream prelude (not a valid frame), then resets the TCP connection, which
+// produces a *net.OpError on the client's read side.
+func newMidStreamResetServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write([]byte{0x00, 0x00, 0x00})
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			return
+		}
+		conn, _, _ := hj.Hijack()
+		// RST instead of FIN — guarantees a *net.OpError on the client read.
+		if tc, ok := conn.(*net.TCPConn); ok {
+			_ = tc.SetLinger(0)
+		}
+		conn.Close()
+	}))
+}
+
+// TestStream_MidStreamDrop_IsUpstreamError verifies that a connection dropped after
+// the 200 reaches clients as a 502 upstream failure. Without a status the error
+// resolves to 400, which the Anthropic surface reports as invalid_request_error, a
+// type clients do not retry.
+func TestStream_MidStreamDrop_IsUpstreamError(t *testing.T) {
+	content := "hello"
+	streams := map[string]func(*BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError){
+		"text": func(p *BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.TextCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), &schemas.BifrostTextCompletionRequest{
+				Model: "mistral.mistral-7b-instruct-v0:2",
+				Input: &schemas.TextCompletionInput{PromptStr: &content},
+			})
+		},
+		"chat": func(p *BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.ChatCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testChatRequest())
+		},
+		"responses": func(p *BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), &schemas.BifrostResponsesRequest{
+				Model: "anthropic.claude-sonnet-4-5",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: &content},
+				}},
+			})
+		},
+	}
+	for name, stream := range streams {
+		t.Run(name, func(t *testing.T) {
+			ts := newMidStreamResetServer()
+			defer ts.Close()
+
+			streamChan, bifrostErr := stream(newTestProviderWithServer(t, ts))
+			require.Nil(t, bifrostErr)
+
+			var streamErr *schemas.BifrostError
+			for chunk := range streamChan {
+				if chunk != nil && chunk.BifrostError != nil && streamErr == nil {
+					streamErr = chunk.BifrostError
+				}
+			}
+
+			require.NotNil(t, streamErr, "expected an error chunk from the stream")
+			assert.False(t, streamErr.IsBifrostError)
+			require.NotNil(t, streamErr.StatusCode)
+			assert.Equal(t, http.StatusBadGateway, *streamErr.StatusCode)
+			assert.Equal(t, "api_error", anthropic.ToAnthropicChatCompletionError(streamErr).Error.Type)
+		})
+	}
+}
+
+// TestRequest_ConnectionFailure_IsUpstreamError verifies that a connection the server
+// closes before responding reaches clients as a 502 upstream failure. Without a
+// status the error resolves to 400, which reads as a malformed request.
+func TestRequest_ConnectionFailure_IsUpstreamError(t *testing.T) {
+	requests := map[string]func(*BedrockProvider) *schemas.BifrostError{
+		"converse": func(p *BedrockProvider) *schemas.BifrostError {
+			req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse", strings.NewReader(`{}`))
+			require.NoError(t, err)
+			_, _, _, bifrostErr := p.executeBedrockRequest(req)
+			return bifrostErr
+		},
+		"agent runtime": func(p *BedrockProvider) *schemas.BifrostError {
+			_, _, _, bifrostErr := p.completeAgentRuntimeRequest(testBedrockCtx(), []byte(`{}`), "/rerank", testBedrockKey())
+			return bifrostErr
+		},
+		"stream": func(p *BedrockProvider) *schemas.BifrostError {
+			_, bifrostErr := p.makeStreamingRequest(testBedrockCtx(), []byte(`{}`), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+			return bifrostErr
+		},
+		"list models": func(p *BedrockProvider) *schemas.BifrostError {
+			_, bifrostErr := p.listModelsByKey(testBedrockCtx(), testBedrockKey(), &schemas.BifrostListModelsRequest{Provider: schemas.Bedrock})
+			return bifrostErr
+		},
+	}
+	for name, send := range requests {
+		t.Run(name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hj, ok := w.(http.Hijacker)
+				if !ok {
+					http.Error(w, "hijack not supported", http.StatusInternalServerError)
+					return
+				}
+				conn, _, _ := hj.Hijack()
+				conn.Close()
+			}))
+			defer ts.Close()
+
+			bifrostErr := send(newTestProviderWithServer(t, ts))
+
+			require.NotNil(t, bifrostErr)
+			assert.False(t, bifrostErr.IsBifrostError)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusBadGateway, *bifrostErr.StatusCode)
+			require.NotNil(t, bifrostErr.Error)
+			require.NotNil(t, bifrostErr.Error.Type)
+			assert.Equal(t, schemas.ProviderConnectionFailed, *bifrostErr.Error.Type)
+			assert.Contains(t, []string{schemas.ErrProviderNetworkError, schemas.ErrProviderDoRequest}, bifrostErr.Error.Message)
+		})
+	}
+}
+
+func TestNewRequestError(t *testing.T) {
+	cases := []struct {
+		name           string
+		err            error
+		isBifrostError bool
+		status         int
+		errType        string
+		message        string
+	}{
+		{"cancelled", context.Canceled, false, 0, schemas.RequestCancelled, schemas.ErrRequestCancelled},
+		{"deadline", context.DeadlineExceeded, true, http.StatusGatewayTimeout, schemas.RequestTimedOut, schemas.ErrProviderRequestTimedOut},
+		{"network", &net.OpError{Op: "dial", Err: io.EOF}, false, http.StatusBadGateway, schemas.ProviderConnectionFailed, schemas.ErrProviderNetworkError},
+		{"other", io.ErrUnexpectedEOF, false, http.StatusBadGateway, schemas.ProviderConnectionFailed, schemas.ErrProviderDoRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostErr := newRequestError(tc.err, 25*time.Millisecond)
+
+			assert.Equal(t, tc.isBifrostError, bifrostErr.IsBifrostError)
+			if tc.status == 0 {
+				assert.Nil(t, bifrostErr.StatusCode)
+			} else {
+				require.NotNil(t, bifrostErr.StatusCode)
+				assert.Equal(t, tc.status, *bifrostErr.StatusCode)
+			}
+			require.NotNil(t, bifrostErr.Error.Type)
+			assert.Equal(t, tc.errType, *bifrostErr.Error.Type)
+			assert.Equal(t, tc.message, bifrostErr.Error.Message)
+			assert.Equal(t, int64(25), bifrostErr.ExtraFields.Latency)
+		})
+	}
 }
 
 // writeEventStreamException encodes a well-formed AWS EventStream exception
@@ -778,6 +1181,50 @@ func TestBedrockTransportTLSInsecureSkipVerify(t *testing.T) {
 	assert.True(t, transport.ForceAttemptHTTP2)
 }
 
+// TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy pins that
+// network_config.insecure_skip_verify only reaches targets: net/http would handshake
+// with an https:// proxy using TLSClientConfig, so without the hop dialer the proxy's
+// certificate would go unchecked although proxy_config.skip_tls_verify is off.
+func TestBedrockTransportInsecureTargetsStillVerifyHTTPSProxy(t *testing.T) {
+	recorder := proxytest.NewHTTPSRecorder(t, "bedrock-tls")
+	for _, enforceHTTP2 := range []bool{true, false} {
+		recorder.Reset()
+		config := &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 30,
+				InsecureSkipVerify:             true,
+				EnforceHTTP2:                   enforceHTTP2,
+			},
+			ProxyConfig: &schemas.ProxyConfig{
+				Type: schemas.HTTPProxy,
+				URL:  schemas.NewSecretVar("https://127.0.0.1:" + recorder.Port()),
+			},
+		}
+		config.CheckAndSetDefaults()
+
+		provider, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+
+		for name, client := range map[string]*http.Client{"client": provider.client, "realtime": provider.realtimeClient} {
+			resp, err := client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+			if err == nil {
+				resp.Body.Close()
+				t.Errorf("enforce_http2=%v %s: an https proxy whose certificate is not trusted was used", enforceHTTP2, name)
+			}
+		}
+		assert.Empty(t, recorder.Seen(), "enforce_http2=%v: the unverified proxy saw traffic", enforceHTTP2)
+
+		// With the proxy's CA in proxy_config, the same proxy is verified and used.
+		config.ProxyConfig.CACertPEM = schemas.NewSecretVar(recorder.CAPEM)
+		trusted, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+		resp, err := trusted.client.Get("http://bedrock-runtime.us-east-1.amazonaws.com/")
+		require.NoError(t, err, "enforce_http2=%v: the trusted https proxy was refused", enforceHTTP2)
+		resp.Body.Close()
+		assert.NotEmpty(t, recorder.Seen(), "enforce_http2=%v: the trusted proxy saw no traffic", enforceHTTP2)
+	}
+}
+
 func TestBedrockTransportTLSCACert(t *testing.T) {
 	testCACert := generateTestCACert(t)
 
@@ -838,6 +1285,9 @@ func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 	assert.True(t, transport.ForceAttemptHTTP2)
 	// TLSNextProto should NOT be set when HTTP/2 is enforced, allowing ALPN negotiation
 	assert.Nil(t, transport.TLSNextProto)
+	// Nova Sonic needs HTTP/2, which this transport already speaks, so it shares the pool
+	assert.Same(t, transport, provider.realtimeClient.Transport)
+	assert.Zero(t, provider.realtimeClient.Timeout, "a realtime session outlives the request timeout")
 }
 
 func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
@@ -858,6 +1308,12 @@ func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	// TLSNextProto must be set to empty map to truly disable HTTP/2 ALPN negotiation
 	assert.NotNil(t, transport.TLSNextProto)
 	assert.Empty(t, transport.TLSNextProto)
+	// Nova Sonic's bidirectional stream is HTTP/2 only, so it gets a transport of its own
+	realtimeTransport, ok := provider.realtimeClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.NotSame(t, transport, realtimeTransport)
+	assert.True(t, realtimeTransport.ForceAttemptHTTP2)
+	assert.Nil(t, realtimeTransport.TLSNextProto)
 }
 
 // TestSignAWSRequest_ExcludesVolatileHeadersFromSignature locks in the fix for the
@@ -1021,5 +1477,817 @@ func TestBedrockTransportProxyMatrix(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// TestResponsesStreamAttachesEachRawEventOnce verifies a Converse event that expands into several Responses events
+// rides on exactly one of them, the one streaming its text, declared as Bedrock's format, so its raw text never
+// reaches the client ahead of (or apart from) the normalized text it backs.
+func TestResponsesStreamAttachesEachRawEventOnce(t *testing.T) {
+	events := []struct{ eventType, payload string }{
+		{"messageStart", `{"role":"assistant"}`},
+		{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"mail alex@example.com"}}`},
+		{"contentBlockStop", `{"contentBlockIndex":0}`},
+		{"messageStop", `{"stopReason":"end_turn"}`},
+		{"metadata", `{"usage":{"inputTokens":3,"outputTokens":4,"totalTokens":7},"metrics":{"latencyMs":10}}`},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		for _, event := range events {
+			writeEventStreamEvent(t, w, event.eventType, []byte(event.payload))
+		}
+	}))
+	defer ts.Close()
+
+	ctx := testBedrockCtx()
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+	req := testResponsesRequest()
+	req.Model = testConverseStreamModel
+	stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bifrostErr)
+
+	carried := map[string]int{}
+	var textCarrier *schemas.BifrostResponsesStreamResponse
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		if raw, ok := event.ExtraFields.RawResponse.(string); ok {
+			carried[raw]++
+			if raw == events[1].payload {
+				textCarrier = event
+			}
+		}
+	}
+	for _, event := range events {
+		assert.LessOrEqual(t, carried[event.payload], 1, "%s raw attached more than once", event.eventType)
+	}
+	require.NotNil(t, textCarrier, "the text event's raw payload was not attached")
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeOutputTextDelta, textCarrier.Type)
+	assert.Equal(t, schemas.RawResponseFormatBedrockConverseStreamEvent, textCarrier.ExtraFields.RawResponseFormat)
+
+	redacted := *textCarrier
+	redacted.Delta = schemas.Ptr("mail [EMAIL]")
+	synced, err := schemas.SyncRawResponseText(textCarrier.ExtraFields.RawResponse, textCarrier.ExtraFields.RawResponseFormat, textCarrier, &redacted)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"contentBlockIndex":0,"delta":{"text":"mail [EMAIL]"}}`, synced.(string))
+}
+
+// TestConverseStreamRecordsEveryUpstreamEventRaw pins that the raw response a converse stream
+// records carries every upstream event exactly once. Events that produce no Bifrost chunk of their
+// own (messageStop, metadata) used to be dropped from the raw record, and the chunks emitted at the
+// end of the stream carried a placeholder "{}" instead, so a logged stream lost its stop reason,
+// its additionalModelResponseFields and its usage, and a missing field could not be told apart from
+// one AWS never sent.
+func TestConverseStreamRecordsEveryUpstreamEventRaw(t *testing.T) {
+	cases := []struct {
+		name     string
+		payloads []string
+		ordered  bool // false where a held event may only find a payload-free chunk after a later event
+	}{
+		{"one text block", []string{
+			`{"p":"m0","role":"assistant"}`,
+			`{"contentBlockIndex":0,"delta":{"text":"one, two, "},"p":"m1"}`,
+			`{"contentBlockIndex":0,"p":"m2"}`,
+			`{"additionalModelResponseFields":{"stop_sequence":"three"},"p":"m3","stopReason":"stop_sequence"}`,
+			`{"metrics":{"latencyMs":760},"p":"m4","usage":{"inputTokens":32,"outputTokens":5,"totalTokens":37}}`,
+		}, true},
+		{"a held stop before more text", []string{
+			`{"p":"n0","role":"assistant"}`,
+			`{"contentBlockIndex":0,"delta":{"text":"first"},"p":"n1"}`,
+			`{"contentBlockIndex":0,"p":"n2"}`,
+			`{"contentBlockIndex":1,"delta":{"text":"second"},"p":"n3"}`,
+			`{"contentBlockIndex":1,"p":"n4"}`,
+			`{"p":"n5","stopReason":"end_turn"}`,
+			`{"p":"n6","usage":{"inputTokens":3,"outputTokens":2,"totalTokens":5}}`,
+		}, false},
+	}
+	for _, api := range []string{"chat", "responses"} {
+		for _, tc := range cases {
+			payloads := tc.payloads
+			t.Run(api+"/"+tc.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+					writer.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+					writer.WriteHeader(http.StatusOK)
+					encoder := eventstream.NewEncoder()
+					for _, payload := range payloads {
+						assert.NoError(t, encoder.Encode(writer, eventstream.Message{
+							Headers: eventstream.Headers{
+								{Name: ":message-type", Value: eventstream.StringValue("event")},
+								{Name: ":event-type", Value: eventstream.StringValue("testEvent")},
+							},
+							Payload: []byte(payload),
+						}))
+					}
+				}))
+				defer server.Close()
+				provider := newTestProviderWithServer(t, server)
+				provider.sendBackRawResponse = true
+				ctx := testBedrockCtx()
+				var stream chan *schemas.BifrostStreamChunk
+				var requestError *schemas.BifrostError
+				if api == "chat" {
+					request := testChatRequest()
+					request.Model = testConverseStreamModel
+					stream, requestError = provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, testBedrockKey(), request)
+				} else {
+					request := testResponsesRequest()
+					request.Model = testConverseStreamModel
+					stream, requestError = provider.ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), request)
+				}
+				require.Nil(t, requestError)
+				var raws []string
+				for chunk := range stream {
+					require.Nil(t, chunk.BifrostError, "stream error: %+v", chunk.BifrostError)
+					var raw interface{}
+					switch {
+					case chunk.BifrostChatResponse != nil:
+						raw = chunk.BifrostChatResponse.ExtraFields.RawResponse
+					case chunk.BifrostResponsesStreamResponse != nil:
+						raw = chunk.BifrostResponsesStreamResponse.ExtraFields.RawResponse
+					}
+					if s, ok := raw.(string); ok && s != "" {
+						raws = append(raws, s)
+						var format schemas.RawResponseFormat
+						if chunk.BifrostChatResponse != nil {
+							format = chunk.BifrostChatResponse.ExtraFields.RawResponseFormat
+						} else {
+							format = chunk.BifrostResponsesStreamResponse.ExtraFields.RawResponseFormat
+						}
+						// Raw text plugins edit a declared stream event in place, so a chunk that declares
+						// the format must carry exactly one event, the text it streams included.
+						if format == schemas.RawResponseFormatBedrockConverseStreamEvent {
+							assert.NotContains(t, s, "\n\n", "a chunk declaring one stream event carries several: %q", s)
+						}
+					}
+				}
+				recorded := strings.Join(raws, "\n")
+				assert.NotContains(t, raws, "{}", "a placeholder stands in for an upstream event: %q", raws)
+				last := -1
+				for _, payload := range payloads {
+					assert.Equal(t, 1, strings.Count(recorded, payload), "upstream event %s recorded %d times in %q", payload, strings.Count(recorded, payload), raws)
+					if idx := strings.Index(recorded, payload); idx >= 0 && tc.ordered {
+						assert.Greater(t, idx, last, "upstream event %s recorded out of order in %q", payload, raws)
+						last = idx
+					}
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkHeldStreamRawStreamEnd measures what a converse stream with raw responses on now does
+// at its end: hold the three payload-free events (contentBlockStop, messageStop, metadata) and hand
+// them to the four closing chunks. With raw responses off none of this runs.
+func BenchmarkHeldStreamRawStreamEnd(b *testing.B) {
+	events := [][]byte{
+		[]byte(`{"contentBlockIndex":0,"p":"abcdefghij"}`),
+		[]byte(`{"additionalModelResponseFields":{"stop_sequence":"three"},"p":"abcdefghijklmnop","stopReason":"stop_sequence"}`),
+		[]byte(`{"metrics":{"latencyMs":760},"p":"abcdefghijklmnopqrstuvwxyzABCDEF","usage":{"inputTokens":32,"outputTokens":5,"totalTokens":37}}`),
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		var held heldStreamRaw
+		for _, e := range events {
+			held.hold(e)
+		}
+		for i := 0; i < 4; i++ {
+			var extra schemas.BifrostResponseExtraFields
+			held.attach(&extra, i == 3)
+		}
+	}
+}
+
+// TestConverseSyntheticStructuredOutput_FinishReason pins the bf_so_* path's finish_reason: only a
+// reply whose sole tool call is the synthetic tool becomes "stop"; a caller tool call keeps
+// "tool_calls" so an agent loop runs the tool instead of stopping.
+func TestConverseSyntheticStructuredOutput_FinishReason(t *testing.T) {
+	soRequest := func() *schemas.BifrostChatRequest {
+		req := testChatRequest()
+		req.Model = testConverseStreamModel // ungated: keeps the synthetic tool
+		responseFormat := any(map[string]any{"type": "json_schema", "json_schema": map[string]any{
+			"name": "capital", "schema": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}, "required": []string{"city"}},
+		}})
+		req.Params = &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+			Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+				Name:       "lookup_capital",
+				Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("country", map[string]any{"type": "string"}))},
+			}}},
+		}
+		return req
+	}
+	for name, tc := range map[string]struct{ tool, want string }{
+		"caller tool keeps tool_calls": {"lookup_capital", "tool_calls"},
+		"synthetic tool becomes stop":  {"bf_so_capital", "stop"},
+	} {
+		t.Run(name+"/chat", func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"output":{"message":{"role":"assistant","content":[{"toolUse":{"toolUseId":"t1","name":"` + tc.tool + `","input":{"country":"Australia","city":"Canberra"}}}]}},"stopReason":"tool_use","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}`))
+			}))
+			defer ts.Close()
+			resp, bifrostErr := newTestProviderWithServer(t, ts).ChatCompletion(testBedrockCtx(), testBedrockKey(), soRequest())
+			require.Nil(t, bifrostErr)
+			require.NotNil(t, resp.Choices[0].FinishReason)
+			assert.Equal(t, tc.want, *resp.Choices[0].FinishReason)
+		})
+		t.Run(name+"/chat stream", func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+				writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+				writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t1","name":"`+tc.tool+`"}},"contentBlockIndex":0}`))
+				writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"country\":\"Australia\"}"}},"contentBlockIndex":0}`))
+				writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+				writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"tool_use"}`))
+				writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":1}}`))
+			}))
+			defer ts.Close()
+			stream, bifrostErr := newTestProviderWithServer(t, ts).ChatCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), soRequest())
+			require.Nil(t, bifrostErr)
+			var finish string
+			for chunk := range stream {
+				require.Nil(t, chunk.BifrostError)
+				if chunk.BifrostChatResponse != nil {
+					for _, c := range chunk.BifrostChatResponse.Choices {
+						if c.FinishReason != nil {
+							finish = *c.FinishReason
+						}
+					}
+				}
+			}
+			assert.Equal(t, tc.want, finish)
+		})
+	}
+}
+
+// TestConverseSyntheticStructuredOutput_StreamCallerToolAfterSyntheticTool pins a reply that streams the
+// bf_so_* block first and a caller tool block after it: the caller's argument deltas must stay a tool
+// call, not be appended to the structured-output text.
+func TestConverseSyntheticStructuredOutput_StreamCallerToolAfterSyntheticTool(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}, "required": []string{"city"}}
+	callerTool := schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("country", map[string]any{"type": "string"}))}
+	server := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+			writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+			writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t0","name":"bf_so_capital"}},"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"city\":\"Canberra\"}"}},"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t1","name":"lookup_capital"}},"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"country\":\"Australia\"}"}},"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"tool_use"}`))
+			writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":1}}`))
+		}))
+	}
+
+	t.Run("chat stream", func(t *testing.T) {
+		ts := server()
+		defer ts.Close()
+		req := testChatRequest()
+		req.Model = testConverseStreamModel // ungated: keeps the synthetic tool
+		responseFormat := any(map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "capital", "schema": schema}})
+		req.Params = &schemas.ChatParameters{ResponseFormat: &responseFormat, Tools: []schemas.ChatTool{{
+			Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "lookup_capital", Parameters: &callerTool},
+		}}}
+		stream, bifrostErr := newTestProviderWithServer(t, ts).ChatCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+		require.Nil(t, bifrostErr)
+		var content, args strings.Builder
+		var toolNames []string
+		var finish string
+		for chunk := range stream {
+			require.Nil(t, chunk.BifrostError)
+			if chunk.BifrostChatResponse == nil {
+				continue
+			}
+			for _, c := range chunk.BifrostChatResponse.Choices {
+				if c.FinishReason != nil {
+					finish = *c.FinishReason
+				}
+				if c.ChatStreamResponseChoice == nil || c.Delta == nil {
+					continue
+				}
+				if c.Delta.Content != nil {
+					content.WriteString(*c.Delta.Content)
+				}
+				for _, tc := range c.Delta.ToolCalls {
+					if tc.Function.Name != nil {
+						toolNames = append(toolNames, *tc.Function.Name)
+					}
+					args.WriteString(tc.Function.Arguments)
+				}
+			}
+		}
+		assert.Equal(t, `{"city":"Canberra"}`, content.String(), "caller tool arguments leaked into content")
+		assert.Equal(t, []string{"lookup_capital"}, toolNames)
+		assert.Contains(t, args.String(), "Australia")
+		assert.Equal(t, "tool_calls", finish)
+	})
+
+	t.Run("responses stream", func(t *testing.T) {
+		ts := server()
+		defer ts.Close()
+		req := testResponsesRequest()
+		req.Model = testConverseStreamModel
+		req.Params = &schemas.ResponsesParameters{
+			Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{
+				Type: "json_schema", Name: schemas.Ptr("capital"), JSONSchema: schemas.JSONSchemaFromMap(schema),
+			}},
+			Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("lookup_capital"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &callerTool}}},
+		}
+		stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+		require.Nil(t, bifrostErr)
+		var text, args strings.Builder
+		for chunk := range stream {
+			require.Nil(t, chunk.BifrostError)
+			resp := chunk.BifrostResponsesStreamResponse
+			if resp == nil {
+				continue
+			}
+			switch resp.Type {
+			case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+				if resp.Delta != nil {
+					text.WriteString(*resp.Delta)
+				}
+			case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+				if resp.Delta != nil {
+					args.WriteString(*resp.Delta)
+				}
+			}
+		}
+		assert.Equal(t, `{"city":"Canberra"}`, text.String(), "caller tool arguments leaked into output_text")
+		assert.Contains(t, args.String(), "Australia")
+	})
+}
+
+// Unary twin of the stream case: prose beside the synthetic tool, cited or not, must not replace
+// the tool's JSON in choices[].message.content.
+func TestConverseSyntheticStructuredOutput_UnaryChatKeepsJSONOverCitedProse(t *testing.T) {
+	var resp BedrockConverseResponse
+	require.NoError(t, json.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[`+
+		`{"text":"Per the pack, "},`+
+		`{"citationsContent":{"content":[{"text":"the budget is $4.2M."}],"citations":[{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}]}},`+
+		`{"toolUse":{"toolUseId":"t0","name":"bf_so_budget","input":{"budget":"$4.2M"}}}]}},"stopReason":"tool_use"}`), &resp))
+	ctx := testBedrockCtx()
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, "bf_so_budget")
+	chat, err := resp.ToBifrostChatResponse(ctx, testConverseStreamModel)
+	require.NoError(t, err)
+	content := chat.Choices[0].Message.Content
+	require.NotNil(t, content.ContentStr, "content blocks: %+v", content.ContentBlocks)
+	assert.JSONEq(t, `{"budget":"$4.2M"}`, *content.ContentStr)
+	assert.Empty(t, content.ContentBlocks)
+}
+
+// A citation on the prose block beside the synthetic tool is prose too: it is held and dropped
+// with that block's text, so no annotation or extra message item reaches the structured output.
+func TestConverseSyntheticStructuredOutput_StreamDropsCitedProse(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}, "required": []string{"city"}}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+		writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"citation":{"title":"pack","sourceContent":[{"text":"Canberra."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}},"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"text":"Per the pack, "},"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t0","name":"bf_so_capital"}},"contentBlockIndex":1}`))
+		writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"city\":\"Canberra\"}"}},"contentBlockIndex":1}`))
+		writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":1}`))
+		writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"tool_use"}`))
+		writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":1}}`))
+	}))
+	defer ts.Close()
+	req := testResponsesRequest()
+	req.Model = testConverseStreamModel
+	req.Params = &schemas.ResponsesParameters{Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{
+		Type: "json_schema", Name: schemas.Ptr("capital"), JSONSchema: schemas.JSONSchemaFromMap(schema),
+	}}}
+	stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bifrostErr)
+	var text strings.Builder
+	annotations, messages := 0, 0
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError)
+		resp := chunk.BifrostResponsesStreamResponse
+		if resp == nil {
+			continue
+		}
+		switch resp.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+			text.WriteString(*resp.Delta)
+		case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+			annotations++
+		case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+			if resp.Item != nil && resp.Item.Type != nil && *resp.Item.Type == schemas.ResponsesMessageTypeMessage {
+				messages++
+			}
+		}
+	}
+	assert.Equal(t, `{"city":"Canberra"}`, text.String())
+	assert.Zero(t, annotations, "a citation on dropped prose leaked into the structured output")
+	assert.Equal(t, 1, messages, "only the structured-output text item may open")
+}
+
+// TestGrammarLimitRejectionMarksContext pins the trigger for the one tool-path retry: a 400 naming a
+// grammar limit on a request sent with outputConfig marks the context, and nothing else does.
+func TestGrammarLimitRejectionMarksContext(t *testing.T) {
+	const native = `{"messages":[],"outputConfig":{"textFormat":{"type":"json_schema"}}}`
+	cases := []struct {
+		name, body, message string
+		status              int
+		marked              bool
+	}{
+		{"grammar too large", native, "The model returned the following errors: The compiled grammar is too large, which would cause performance issues.", 400, true},
+		{"compilation timed out", native, "Grammar compilation timed out.", 400, true},
+		{"schema too complex", native, "compilation exceeded limits: Schema is too complex", 400, true},
+		{"tool path body", `{"messages":[],"toolConfig":{"tools":[]}}`, "The compiled grammar is too large", 400, false},
+		{"schema shape rejection", native, "The model returned the following errors: output_config.format.schema: For 'object' type, property 'x-order' is not supported", 400, true},
+		{"prefill rejection", native, "When using output format, pre-filling the `assistant` response is not supported.", 400, false},
+		{"other status", native, "The compiled grammar is too large", 500, false},
+	}
+	for _, tc := range cases {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Amzn-Errortype", "ValidationException:http://internal.amazon.com/coral/com.amazon.bedrock/")
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(`{"message":` + strconv.Quote(tc.message) + `}`))
+		}))
+		provider := newTestProviderWithServer(t, ts)
+		for _, route := range []string{"unary", "stream"} {
+			t.Run(tc.name+"/"+route, func(t *testing.T) {
+				ctx := testBedrockCtx()
+				var bifrostErr *schemas.BifrostError
+				if route == "unary" {
+					_, _, _, bifrostErr = provider.completeRequest(ctx, []byte(tc.body), "anthropic.claude-sonnet-4-5/converse", testBedrockKey(), "anthropic.claude-sonnet-4-5")
+				} else {
+					_, bifrostErr = provider.makeStreamingRequest(ctx, []byte(tc.body), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+				}
+				require.NotNil(t, bifrostErr)
+				state := ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry)
+				if tc.marked {
+					assert.Equal(t, schemas.StructuredOutputGrammarRejected, state)
+				} else {
+					assert.Nil(t, state)
+				}
+			})
+			// The forced attempt is never marked again, whatever its body carries.
+			t.Run(tc.name+"/"+route+"/already forced", func(t *testing.T) {
+				ctx := testBedrockCtx()
+				ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputForceTool)
+				if route == "unary" {
+					_, _, _, _ = provider.completeRequest(ctx, []byte(tc.body), "anthropic.claude-sonnet-4-5/converse", testBedrockKey(), "anthropic.claude-sonnet-4-5")
+				} else {
+					_, _ = provider.makeStreamingRequest(ctx, []byte(tc.body), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+				}
+				assert.Equal(t, schemas.StructuredOutputForceTool, ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry))
+			})
+		}
+		ts.Close()
+	}
+}
+
+// anthropicTextBlocks runs a Bedrock Responses stream through the /anthropic egress converter and
+// returns the text of every text block that was opened with content_block_start and closed with
+// content_block_stop, plus the text of deltas that arrived outside any opened block.
+func anthropicTextBlocks(t *testing.T, stream chan *schemas.BifrostStreamChunk) (blocks []string, orphanText string) {
+	t.Helper()
+	egressCtx := testBedrockCtx()
+	open := map[int]*strings.Builder{}
+	var orphan strings.Builder
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError)
+		if chunk.BifrostResponsesStreamResponse == nil {
+			continue
+		}
+		for _, ev := range anthropic.ToAnthropicResponsesStreamResponse(egressCtx, chunk.BifrostResponsesStreamResponse) {
+			switch ev.Type {
+			case anthropic.AnthropicStreamEventTypeContentBlockStart:
+				if ev.ContentBlock != nil && ev.ContentBlock.Type == anthropic.AnthropicContentBlockTypeText {
+					open[*ev.Index] = &strings.Builder{}
+				}
+			case anthropic.AnthropicStreamEventTypeContentBlockDelta:
+				if ev.Delta == nil || ev.Delta.Text == nil {
+					continue
+				}
+				if b, ok := open[*ev.Index]; ok {
+					b.WriteString(*ev.Delta.Text)
+				} else {
+					orphan.WriteString(*ev.Delta.Text)
+				}
+			case anthropic.AnthropicStreamEventTypeContentBlockStop:
+				if b, ok := open[*ev.Index]; ok {
+					blocks = append(blocks, b.String())
+					delete(open, *ev.Index)
+				}
+			}
+		}
+	}
+	return blocks, orphan.String()
+}
+
+// TestConverseSyntheticStructuredOutput_AnthropicEgressTextBlock pins GH #10128 / #8158: a streamed
+// /anthropic/v1/messages request with output_config.format on a Bedrock Claude model that takes the
+// synthetic bf_so_* tool must reach the client as one well-formed text block.
+func TestConverseSyntheticStructuredOutput_AnthropicEgressTextBlock(t *testing.T) {
+	const answer = `{"city":"Canberra","country":"Australia"}`
+	schema := map[string]any{"type": "object", "properties": map[string]any{
+		"city": map[string]any{"type": "string"}, "country": map[string]any{"type": "string"},
+	}, "required": []string{"city", "country"}, "additionalProperties": false}
+	soRequest := func(model string) *schemas.BifrostResponsesRequest {
+		req := testResponsesRequest()
+		req.Model = model
+		req.Params = &schemas.ResponsesParameters{Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{
+			Type: "json_schema", JSONSchema: schemas.JSONSchemaFromMap(schema),
+		}}}
+		return req
+	}
+
+	t.Run("bf_so tool deltas become one text block", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+			writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+			writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t0","name":"bf_so_json_response"}},"contentBlockIndex":0}`))
+			for _, part := range []string{``, `{\"city\"`, `:\"Canberra\",\"country\":\"Australia\"}`} {
+				writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"`+part+`"}},"contentBlockIndex":0}`))
+			}
+			writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"tool_use"}`))
+			writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":58,"totalTokens":59},"metrics":{"latencyMs":1}}`))
+		}))
+		defer ts.Close()
+		stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), soRequest("anthropic.claude-3-5-sonnet-20241022-v2:0"))
+		require.Nil(t, bifrostErr)
+		blocks, orphan := anthropicTextBlocks(t, stream)
+		assert.Empty(t, orphan, "text_delta events arrived without a content_block_start for their index")
+		assert.Equal(t, []string{answer}, blocks)
+	})
+
+	t.Run("unpinned plain text answer still streams", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+			writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"text":"{\"city\":\"Canberra\","},"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"text":"\"country\":\"Australia\"}"},"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"end_turn"}`))
+			writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":75,"totalTokens":76},"metrics":{"latencyMs":1}}`))
+		}))
+		defer ts.Close()
+		req := soRequest("anthropic.claude-3-7-sonnet-20250219-v1:0")
+		req.Params.Reasoning = &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(1024)} // thinking leaves bf_so_* unpinned
+		stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+		require.Nil(t, bifrostErr)
+		blocks, orphan := anthropicTextBlocks(t, stream)
+		assert.Empty(t, orphan)
+		assert.Equal(t, []string{answer}, blocks, "the model's text answer was suppressed")
+	})
+
+	t.Run("prose before the bf_so tool is still dropped", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+			writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"text":"Here is the JSON:"},"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t1","name":"bf_so_json_response"}},"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"city\":\"Canberra\",\"country\":\"Australia\"}"}},"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"tool_use"}`))
+			writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":60,"totalTokens":61},"metrics":{"latencyMs":1}}`))
+		}))
+		defer ts.Close()
+		req := soRequest("anthropic.claude-3-7-sonnet-20250219-v1:0")
+		req.Params.Reasoning = &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(1024)}
+		stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+		require.Nil(t, bifrostErr)
+		blocks, orphan := anthropicTextBlocks(t, stream)
+		assert.Empty(t, orphan)
+		assert.Equal(t, []string{answer}, blocks, "preamble leaked into the structured output")
+	})
+
+	// Unpinned bf_so_* (thinking on) answered in plain text: the held text events must still carry
+	// their upstream payload once released.
+	plainTextServer := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+			writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"text":"{\"city\":\"Canberra\","},"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"text":"\"country\":\"Australia\"}"},"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"end_turn"}`))
+			writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":75,"totalTokens":76},"metrics":{"latencyMs":1}}`))
+		}))
+	}
+	t.Run("released plain text keeps its raw payload", func(t *testing.T) {
+		ts := plainTextServer()
+		defer ts.Close()
+		provider := newTestProviderWithServer(t, ts)
+		provider.sendBackRawResponse = true
+		req := soRequest("anthropic.claude-3-7-sonnet-20250219-v1:0")
+		req.Params.Reasoning = &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(1024)}
+		stream, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+		require.Nil(t, bifrostErr)
+		var raws []string
+		for chunk := range stream {
+			require.Nil(t, chunk.BifrostError)
+			if resp := chunk.BifrostResponsesStreamResponse; resp != nil && resp.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta {
+				raw, _ := resp.ExtraFields.RawResponse.(string)
+				raws = append(raws, raw)
+			}
+		}
+		require.Len(t, raws, 2)
+		assert.Contains(t, raws[0], `Canberra`, "first released text delta lost its upstream payload")
+		assert.Contains(t, raws[1], `Australia`, "second released text delta lost its upstream payload")
+	})
+
+	t.Run("held text keeps its place before a caller tool", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+			writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"text":"Let me look that up."},"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+			writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t1","name":"lookup_capital"}},"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"country\":\"Australia\"}"}},"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":1}`))
+			writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"tool_use"}`))
+			writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":20,"totalTokens":21},"metrics":{"latencyMs":1}}`))
+		}))
+		defer ts.Close()
+		req := soRequest("anthropic.claude-3-7-sonnet-20250219-v1:0")
+		req.Params.Reasoning = &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(1024)}
+		req.Params.Tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("lookup_capital"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{
+				Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("country", map[string]any{"type": "string"})),
+			}}}}
+		stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+		require.Nil(t, bifrostErr)
+		egressCtx := testBedrockCtx()
+		var starts []anthropic.AnthropicContentBlockType
+		for chunk := range stream {
+			require.Nil(t, chunk.BifrostError)
+			if chunk.BifrostResponsesStreamResponse == nil {
+				continue
+			}
+			for _, ev := range anthropic.ToAnthropicResponsesStreamResponse(egressCtx, chunk.BifrostResponsesStreamResponse) {
+				if ev.Type == anthropic.AnthropicStreamEventTypeContentBlockStart && ev.ContentBlock != nil {
+					starts = append(starts, ev.ContentBlock.Type)
+				}
+			}
+		}
+		assert.Equal(t, []anthropic.AnthropicContentBlockType{anthropic.AnthropicContentBlockTypeText, anthropic.AnthropicContentBlockTypeToolUse}, starts,
+			"text block 0 must reach the client before caller tool block 1")
+	})
+}
+
+// TestConverseSyntheticStructuredOutput_ChatStreamUnpinnedTool pins the /v1/chat/completions side of
+// GH #10128: with bf_so_* unpinned (thinking on), a plain-text answer must stream as content, prose
+// before the synthetic tool must still be dropped, and text before a caller tool keeps its place.
+func TestConverseSyntheticStructuredOutput_ChatStreamUnpinnedTool(t *testing.T) {
+	const answer = `{"city":"Canberra","country":"Australia"}`
+	soRequest := func(withCallerTool bool) *schemas.BifrostChatRequest {
+		req := testChatRequest()
+		req.Model = "anthropic.claude-3-7-sonnet-20250219-v1:0"
+		responseFormat := any(map[string]any{"type": "json_schema", "json_schema": map[string]any{
+			"name": "capital", "schema": map[string]any{"type": "object", "properties": map[string]any{
+				"city": map[string]any{"type": "string"}, "country": map[string]any{"type": "string"},
+			}, "required": []string{"city", "country"}},
+		}})
+		req.Params = &schemas.ChatParameters{ResponseFormat: &responseFormat, Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(1024)}}
+		if withCallerTool {
+			req.Params.Tools = []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+				Name:       "lookup_capital",
+				Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("country", map[string]any{"type": "string"}))},
+			}}}
+		}
+		return req
+	}
+	type event struct{ kind, payload string }
+	serve := func(events ...event) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+			for _, e := range events {
+				writeEventStreamEvent(t, w, e.kind, []byte(e.payload))
+			}
+		}))
+	}
+	// collect returns the stream as an ordered list of "content:<text>" / "tool:<name>" entries
+	// (consecutive content merged) plus the raw payloads carried by content chunks.
+	collect := func(t *testing.T, provider *BedrockProvider, req *schemas.BifrostChatRequest) (order []string, raws []string, finish string) {
+		t.Helper()
+		stream, bifrostErr := provider.ChatCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+		require.Nil(t, bifrostErr)
+		for chunk := range stream {
+			require.Nil(t, chunk.BifrostError)
+			if chunk.BifrostChatResponse == nil {
+				continue
+			}
+			for _, c := range chunk.BifrostChatResponse.Choices {
+				if c.FinishReason != nil {
+					finish = *c.FinishReason
+				}
+				if c.ChatStreamResponseChoice == nil || c.Delta == nil {
+					continue
+				}
+				if c.Delta.Content != nil && *c.Delta.Content != "" {
+					raw, _ := chunk.BifrostChatResponse.ExtraFields.RawResponse.(string)
+					raws = append(raws, raw)
+					if n := len(order); n > 0 && strings.HasPrefix(order[n-1], "content:") {
+						order[n-1] += *c.Delta.Content
+					} else {
+						order = append(order, "content:"+*c.Delta.Content)
+					}
+				}
+				for _, tc := range c.Delta.ToolCalls {
+					if tc.Function.Name != nil {
+						order = append(order, "tool:"+*tc.Function.Name)
+					}
+				}
+			}
+		}
+		return order, raws, finish
+	}
+	plainText := []event{
+		{"messageStart", `{"role":"assistant"}`},
+		{"contentBlockDelta", `{"delta":{"text":"{\"city\":\"Canberra\","},"contentBlockIndex":0}`},
+		{"contentBlockDelta", `{"delta":{"text":"\"country\":\"Australia\"}"},"contentBlockIndex":0}`},
+		{"contentBlockStop", `{"contentBlockIndex":0}`},
+		{"messageStop", `{"stopReason":"end_turn"}`},
+		{"metadata", `{"usage":{"inputTokens":1,"outputTokens":75,"totalTokens":76},"metrics":{"latencyMs":1}}`},
+	}
+
+	t.Run("plain text answer streams as content", func(t *testing.T) {
+		ts := serve(plainText...)
+		defer ts.Close()
+		order, _, finish := collect(t, newTestProviderWithServer(t, ts), soRequest(false))
+		assert.Equal(t, []string{"content:" + answer}, order, "the model's text answer was suppressed")
+		assert.Equal(t, "stop", finish)
+	})
+
+	t.Run("released plain text keeps its raw payload", func(t *testing.T) {
+		ts := serve(plainText...)
+		defer ts.Close()
+		provider := newTestProviderWithServer(t, ts)
+		provider.sendBackRawResponse = true
+		_, raws, _ := collect(t, provider, soRequest(false))
+		require.Len(t, raws, 2)
+		assert.Contains(t, raws[0], "Canberra")
+		assert.Contains(t, raws[1], "Australia")
+	})
+
+	t.Run("prose before the bf_so tool is still dropped", func(t *testing.T) {
+		ts := serve(
+			event{"messageStart", `{"role":"assistant"}`},
+			event{"contentBlockDelta", `{"delta":{"text":"Here is the JSON:"},"contentBlockIndex":0}`},
+			event{"contentBlockStop", `{"contentBlockIndex":0}`},
+			event{"contentBlockStart", `{"start":{"toolUse":{"toolUseId":"t1","name":"bf_so_capital"}},"contentBlockIndex":1}`},
+			event{"contentBlockDelta", `{"delta":{"toolUse":{"input":"{\"city\":\"Canberra\",\"country\":\"Australia\"}"}},"contentBlockIndex":1}`},
+			event{"contentBlockStop", `{"contentBlockIndex":1}`},
+			event{"messageStop", `{"stopReason":"tool_use"}`},
+			event{"metadata", `{"usage":{"inputTokens":1,"outputTokens":60,"totalTokens":61},"metrics":{"latencyMs":1}}`},
+		)
+		defer ts.Close()
+		order, _, finish := collect(t, newTestProviderWithServer(t, ts), soRequest(false))
+		assert.Equal(t, []string{"content:" + answer}, order, "preamble leaked into the structured output")
+		assert.Equal(t, "stop", finish)
+	})
+
+	t.Run("held text keeps its place before a caller tool", func(t *testing.T) {
+		ts := serve(
+			event{"messageStart", `{"role":"assistant"}`},
+			event{"contentBlockDelta", `{"delta":{"text":"Let me look that up."},"contentBlockIndex":0}`},
+			event{"contentBlockStop", `{"contentBlockIndex":0}`},
+			event{"contentBlockStart", `{"start":{"toolUse":{"toolUseId":"t1","name":"lookup_capital"}},"contentBlockIndex":1}`},
+			event{"contentBlockDelta", `{"delta":{"toolUse":{"input":"{\"country\":\"Australia\"}"}},"contentBlockIndex":1}`},
+			event{"contentBlockStop", `{"contentBlockIndex":1}`},
+			event{"messageStop", `{"stopReason":"tool_use"}`},
+			event{"metadata", `{"usage":{"inputTokens":1,"outputTokens":20,"totalTokens":21},"metrics":{"latencyMs":1}}`},
+		)
+		defer ts.Close()
+		order, _, finish := collect(t, newTestProviderWithServer(t, ts), soRequest(true))
+		assert.Equal(t, []string{"content:Let me look that up.", "tool:lookup_capital"}, order)
+		assert.Equal(t, "tool_calls", finish)
+	})
+}
+
+var holdConverseEventSink heldConverseEvent
+
+// BenchmarkHoldConverseEvent prices the per-event work the bf_so_* stream path adds when bf_so_* is
+// unpinned and the model streams text: classify the event, then hold a copy (plus its payload when
+// raw responses are on). Requests without structured output never reach this code.
+func BenchmarkHoldConverseEvent(b *testing.B) {
+	payload := []byte(`{"contentBlockIndex":0,"delta":{"text":"{\"city\":\"Canberra\","},"p":"abcdefghij"}`)
+	text := `{"city":"Canberra",`
+	ev := BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Text: &text}}
+	blocks := map[int]struct{}{0: {}}
+	for _, sendRaw := range []bool{false, true} {
+		b.Run("sendRaw="+strconv.FormatBool(sendRaw), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if isTextBlockEvent(&ev, blocks) {
+					holdConverseEventSink = holdConverseEvent(&ev, payload, sendRaw, true)
+				}
+			}
+		})
 	}
 }

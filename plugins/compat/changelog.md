@@ -1,1 +1,2 @@
-- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
+- fix: Baseten decision models are served natively instead of through Responses emulation
+- chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0

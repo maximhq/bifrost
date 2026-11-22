@@ -260,7 +260,7 @@ bifrost:
 |-------|-------------|
 | `expires_at` | RFC3339 expiry. Once passed, requests with the key are rejected |
 | `delete_after_expire` | Delete the key once `expires_at` passes. Omit to follow `bifrost.client.deleteExpiredVirtualKeys` (default `false`); `true` or `false` overrides it for this key |
-| `disable_content_logging` | Per-key override of `bifrost.client.disableContentLogging`. Omit to inherit; `false` forces content into the log store even when the client setting is `true` |
+| `disable_content_logging` | Per-key override of `bifrost.client.disableContentLogging`. Omit to inherit; `false` forces content into the log store even when the client setting is `true`. A project's own `disable_content_logging` overrides it for requests scoped to that project |
 | `business_unit_id` | Owning business unit. Mutually exclusive with `team_id` and `customer_id` |
 
 To delete expired keys globally, set `bifrost.client.deleteExpiredVirtualKeys: true` (renders into `client.delete_expired_virtual_keys`). A daily job then removes every expired key except those with `delete_after_expire: false`.
@@ -414,6 +414,10 @@ bifrost:
 
 ## Complexity Router Configuration
 
+<Warning>
+**Deprecated.** `complexityAnalyzerConfig` and the `complexity_tier` routing-rule variable will be replaced by Routers in Bifrost v3.0.0. Existing values keep working until then, and v3.0.0 will migrate them to routers. We recommend declaring [Model Routers](#model-routers) for both existing and new setups; they take the same settings. See [Moving from the Complexity Router](/features/routers#moving-from-the-complexity-router).
+</Warning>
+
 If you use `complexity_tier` in routing rules, choose a decision model or Semantic as the primary classifier in Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`. The decision model is Typesafe Jev by default, or any decision model reachable through `/v1/decisions` (for example `gpt-6-luna` on `openai`, Clef on `cloudflare`, or Laya or Nimble served by a custom provider with `base_provider_type: typesafe`); it uses that provider's enabled key. Semantic needs an embedding provider and reference phrases.
 
 Omit this block, or leave `complexityAnalyzerConfig: null`, to leave complexity classification disabled. To enable it, supply all three `keywords` lists. They are required by the current config shape even when the decision model is primary, though it does not use the phrases. In the default split mode, supplied phrases merge with stored built-in defaults; with `sourceOfTruth: config.json`, the supplied lists are the complete phrase set.
@@ -441,9 +445,9 @@ bifrost:
         complex_keywords: ["design a solution under several competing constraints."]
 ```
 
-`decision.provider` and `decision.model` are set together; omit both to use `typesafe`/`jev-latest`. `decision.previous_message_count` accepts 0 to 5 earlier user messages in addition to the current request. Decision-model usage counts toward request cost and budgets.
+`decision.provider` and `decision.model` are set together; omit both to use `typesafe`/`jev-latest`. `decision.previous_message_count` accepts 0 to 5 earlier user messages in addition to the current request. `decision.min_confidence` (0 to 1, default `0`) is the confidence an answer must reach to publish its tier. Decision-model usage counts toward request cost and budgets.
 
-`decision.criteria` optionally overrides the tier guidance the decision model classifies against. Its keys are `SIMPLE`, `MEDIUM`, and `COMPLEX`, each with an optional `definition` (max 500 characters), `signals`, and `examples` (each max 12 items of 300 characters). A supplied list replaces the whole default list, and anything omitted uses the shipped default. See [Tier guidance](/features/complexity-router#tier-guidance) for the defaults and how to write your own. To use the decision model after an inconclusive semantic result, keep the semantic configuration below, set `semantic.fallback: decision`, and optionally include the `decision` settings above.
+`decision.criteria` optionally overrides the tier guidance the decision model classifies against. Its keys are `SIMPLE`, `MEDIUM`, and `COMPLEX`, each with an optional `definition` (max 500 characters), `signals`, and `examples` (each max 12 items of 300 characters). A supplied list replaces the whole default list, and anything omitted uses the shipped default. See [Tier guidance](/features/routers#tier-guidance) for the defaults and how to write your own. To use the decision model after an inconclusive semantic result, keep the semantic configuration below, set `semantic.fallback: decision`, and optionally include the `decision` settings above.
 
 For Semantic as the primary classifier:
 
@@ -476,6 +480,50 @@ In the default split mode, runtime UI and API edits are preserved while the matc
 <Note>
 Existing releases that still use `code_keywords`, `technical_keywords`, and `reasoning_keywords` remain valid during upgrade. Bifrost maps them into the three reference-phrase lists; new configurations should use the three-list shape shown above. Legacy `tier_boundaries` also remain accepted when present, but are optional and ignored by semantic routing.
 </Note>
+
+---
+
+## Model Routers
+
+`bifrost.modelRouters` declares named model routers (see [Routers](/features/routers) for how they work). The chart renders them as the top-level `model_routers` section of `config.json`, passing every field through as written. Omit the key (the default) to render nothing and keep the routers that are stored. Any declared list is rendered, `[]` included: with `config.json` as the source of truth, routers the list does not name are removed, so `modelRouters: []` deletes every stored router.
+
+Each router takes an `id` (letters, digits, `_` and `-`), a unique `name`, an optional `description`, the same settings as `complexityAnalyzerConfig` above (`keywords` (required), `classifier`, `semantic`, `decision`, `llm`, `session`, and `tier_boundaries`), `targets`, and `routing`. `classifier` is `semantic` (the default), `decision`, or `llm`; `llm` classifies with the model in the `llm` block. Routers are separate from `complexityAnalyzerConfig`, which routing rules keep reading `complexity_tier` from.
+
+`targets` sets the model each tier gets. A tier with no target keeps the request's model, and weights within a tier sum to 1. Leave `targets` out to keep the targets set in the dashboard; an empty list clears them.
+
+`routing` decides which requests the router takes. Routers are tried after the routing rules, on the request as the routing rules left it: narrowest scope first (virtual key, user, team, customer, then global), and by `priority` within a scope. The first enabled router whose `cel_expression` holds classifies the request as `SIMPLE`, `MEDIUM`, or `COMPLEX`, and its target for that tier replaces the provider and model; no other router is tried. `scope` (`global`, `team`, `customer`, or `virtual_key`), `scope_id`, and `cel_expression` work as in routing rules, but `cel_expression` cannot use `complexity_tier`, and priorities are unique among model routers only. Routing whose `scope_id` names no existing entity is skipped at load with a warning. A condition of `model == "<name>"` lets apps ask for the router by that model name. Leave `routing` out to keep the routing set in the dashboard; a new router without it starts off (`enabled: false`), global, after the other global routers.
+
+```yaml
+bifrost:
+  modelRouters:
+    - id: "support"
+      name: "Support"
+      description: "Classifies support traffic"
+      classifier: decision
+      decision:
+        provider: typesafe
+        model: jev-latest
+      keywords:
+        simple_keywords: ["how do I reset my password?"]
+        medium_keywords: ["why is my invoice higher than last month?"]
+        complex_keywords: ["plan a zero-downtime migration of our SSO setup."]
+      targets:                                      # weights within a tier sum to 1
+        - tier: SIMPLE
+          provider: "openai"
+          model: "gpt-4o-mini"
+          weight: 1
+        - tier: COMPLEX
+          provider: "anthropic"
+          model: "claude-sonnet-4-5"
+          weight: 1
+          fallbacks: ["openai/gpt-4o"]              # replaces the request's chain when this target is chosen
+      routing:
+        enabled: true
+        cel_expression: "model == 'support-assistant'"  # apps send model: "support-assistant"
+        scope: "team"
+        scope_id: "team-support"                    # the team's ID, not its name
+        priority: 0
+```
 
 ---
 

@@ -248,7 +248,7 @@ func (e *AsyncJobExecutor) executeJob(job *AsyncJob, operation AsyncOperation, c
 		return
 	}
 
-	respJSON, err := sonic.Marshal(resp)
+	respJSON, err := marshalAsyncResponse(resp)
 	if err != nil {
 		e.logger.Warn("failed to marshal result: %v", err)
 		markFailed(fmt.Sprintf("failed to serialize result: %v", err))
@@ -427,4 +427,17 @@ func getVirtualKeyFromContext(ctx *schemas.BifrostContext) *string {
 		return nil
 	}
 	return &vkValue
+}
+
+// marshalAsyncResponse preserves completion counts before the job leaves memory.
+// Encoding stays sonic.Marshal as before the fix; only Chat/Text with an explicit
+// zero are wrapped.
+func marshalAsyncResponse(resp any) ([]byte, error) {
+	switch result := resp.(type) {
+	case *schemas.BifrostChatResponse:
+		resp = result.WithPreservedUsage()
+	case *schemas.BifrostTextCompletionResponse:
+		resp = result.WithPreservedUsage()
+	}
+	return sonic.Marshal(resp)
 }

@@ -8,6 +8,7 @@ import type { AgentLogFilters } from "@/lib/types/agentLogs";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { ListTree, Radio, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 interface AgentHeaderViewProps {
 	filters: AgentLogFilters;
@@ -43,6 +44,7 @@ export function AgentHeaderView({
 	onToggleColumnVisibility,
 	onResetColumns,
 }: AgentHeaderViewProps) {
+	const { t } = useTranslation("observability");
 	const [timezone, setTimezone] = useTimezonePreference();
 	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
 	const [endTime, setEndTime] = useState<Date | undefined>(filters.end_time ? new Date(filters.end_time) : undefined);
@@ -79,52 +81,54 @@ export function AgentHeaderView({
 	}, [onSearchChange]);
 
 	return (
-		<div className="flex grow flex-wrap items-center justify-between gap-2">
+		// Below @4xl the controls wrap: buttons on one row, search on its own, then the
+		// date picker with the icon button. Wrapped rows stretch so each fills evenly.
+		<div className="flex grow flex-wrap items-center justify-start gap-2 @4xl/agent-logs-header:flex-nowrap @4xl/agent-logs-header:justify-between">
 			<Button
 				variant="outline"
 				size="sm"
-				className="h-7.5 disabled:opacity-100"
+				className="h-7.5 flex-1 disabled:opacity-100 @4xl/agent-logs-header:flex-none"
 				onClick={onRefresh}
 				disabled={loading}
 				data-testid="agent-logs-header-refresh-btn"
 			>
 				<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-				Refresh
+				{t("labels.refresh")}
 			</Button>
 			<Button
 				variant={polling ? "default" : "outline"}
 				size="sm"
-				className="h-7.5"
+				className="h-7.5 flex-1 @4xl/agent-logs-header:flex-none"
 				onClick={() => onPollToggle(!polling)}
 				data-testid="agent-logs-header-live-btn"
 			>
 				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
-				Live
+				{t("labels.live")}
 			</Button>
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<Button
 						variant={grouped ? "default" : "outline"}
 						size="sm"
-						className="h-7.5"
+						className="h-7.5 flex-1 @4xl/agent-logs-header:flex-none"
 						onClick={() => onGroupedToggle(!grouped)}
 						data-testid="agent-logs-header-group-btn"
 						aria-pressed={grouped}
 					>
 						<ListTree className="h-4 w-4" />
-						Group
+						{t("labels.group")}
 					</Button>
 				</TooltipTrigger>
 				<TooltipContent sideOffset={6} className="max-w-64">
-					Groups operations sharing a context under the context&apos;s first matching operation. Expand a row to view its operations.
+					{t("agentLogs.header.groupHelp")}
 				</TooltipContent>
 			</Tooltip>
-			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 items-center gap-2 rounded-sm border">
+			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center gap-2 rounded-sm border @4xl/agent-logs-header:basis-auto">
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input
 					type="text"
 					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0 dark:bg-zinc-900"
-					placeholder="Search agent, operation, or any identifier"
+					placeholder={t("agentLogs.header.searchPlaceholder")}
 					value={localSearch}
 					onChange={(e) => handleSearchChange(e.target.value)}
 					data-testid="agent-logs-header-search-input"
@@ -133,7 +137,7 @@ export function AgentHeaderView({
 					<button
 						type="button"
 						onClick={clearSearch}
-						aria-label="Clear search"
+						aria-label={t("agentLogs.header.clearSearch")}
 						className="text-muted-foreground hover:text-foreground mr-2 transition-colors"
 						data-testid="agent-logs-header-search-clear-btn"
 					>
@@ -141,9 +145,11 @@ export function AgentHeaderView({
 					</button>
 				)}
 			</div>
-			<div className="flex items-center gap-2">
+			<div className="flex flex-1 items-center gap-2 @4xl/agent-logs-header:flex-none">
 				<DateTimePickerWithRange
-					buttonClassName="w-full sm:w-auto"
+					className="flex-1 @4xl/agent-logs-header:flex-none"
+					buttonClassName="w-full @4xl/agent-logs-header:w-auto"
+					triggerTestId="agent-logs-header-date-range"
 					dateTime={{ from: startTime, to: endTime }}
 					predefinedPeriod={period || undefined}
 					showTimezone

@@ -79,10 +79,6 @@ func assertDocumentSurvived(t *testing.T, msgs []schemas.ResponsesMessage) {
 	if file.FileData == nil && file.FileURL == nil && blocks[0].FileID == nil {
 		t.Fatal("input_file block carries none of file_data / file_url / file_id")
 	}
-	// OpenAI requires a filename whenever inline file_data is sent.
-	if file.FileData != nil && (file.Filename == nil || *file.Filename == "") {
-		t.Fatal("input_file block has file_data but no filename; OpenAI rejects this")
-	}
 }
 
 func TestToolResultDocumentSurvivesGroupedConversion(t *testing.T) {
@@ -99,20 +95,32 @@ func TestToolResultDocumentSurvivesConversion(t *testing.T) {
 	assertDocumentSurvived(t, msgs)
 }
 
-// A document with no title must still produce a usable input_file block:
-// OpenAI rejects inline file_data that has no filename, so the converter has
-// to synthesize one rather than leave it unset.
-func TestToolResultDocumentWithoutTitleGetsFilename(t *testing.T) {
+// A document with no title must still produce a usable input_file block, and
+// must not gain a filename here: it would return to Anthropic as a title the
+// client never sent. OpenAI's filename requirement is met at OpenAI egress
+// (TestToOpenAIResponsesRequest_AnthropicIngressUntitledDocumentGetsFilename).
+func TestToolResultDocumentWithoutTitleStaysUntitled(t *testing.T) {
 	src := base64PDFSource()
 	blocks := toolResultWithDocument(src)
 	blocks[0].Content.ContentBlocks[0].Title = nil
 
 	role := schemas.ResponsesInputMessageRoleUser
-	msgs := convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &role, false)
-	assertDocumentSurvived(t, msgs)
-
-	msgs = convertAnthropicContentBlocksToResponsesMessages(nil, blocks, &role, false, "")
-	assertDocumentSurvived(t, msgs)
+	for name, msgs := range map[string][]schemas.ResponsesMessage{
+		"grouped":   convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &role, false),
+		"ungrouped": convertAnthropicContentBlocksToResponsesMessages(nil, blocks, &role, false, ""),
+	} {
+		assertDocumentSurvived(t, msgs)
+		for _, msg := range msgs {
+			if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Output == nil {
+				continue
+			}
+			for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+				if file := block.ResponsesInputMessageContentBlockFile; file != nil && file.Filename != nil {
+					t.Fatalf("%s: untitled document gained filename %q", name, *file.Filename)
+				}
+			}
+		}
+	}
 }
 
 // A tool_result mixing text and a document must preserve both, in order.

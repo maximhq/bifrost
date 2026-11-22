@@ -11,6 +11,12 @@ import (
 const (
 	ProviderJobKindBatch = "batch"
 	ProviderJobKindVideo = "video"
+	// ProviderJobKindRelay is an async job a relay route started. Its
+	// Provider column holds the endpoint name.
+	ProviderJobKindRelay = "relay"
+	// ProviderJobKindInteraction is a stored run the provider reports on every read, such as a
+	// Gemini Interaction reached through passthrough.
+	ProviderJobKindInteraction = "interaction"
 )
 
 // Accounting lifecycle states for a TableProviderJob.

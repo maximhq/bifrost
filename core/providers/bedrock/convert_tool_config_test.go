@@ -688,50 +688,115 @@ func TestConvertChatParameters_ResponseFormatWithPinnedServerTool_NoConflictingC
 	}
 }
 
-// TestConvertInferenceConfig_GLMSkipsStopSequences locks in the fix for the
-// user-reported 400 ("This model doesn't support the stopSequences field"):
-// GLM models on Bedrock reject inferenceConfig.stopSequences, so we omit it
-// for them while keeping it for every other model family.
-func TestConvertInferenceConfig_GLMSkipsStopSequences(t *testing.T) {
+// converseStopSequenceCases lists models probed live against bedrock-runtime
+// Converse in us-east-1 with inferenceConfig.stopSequences set. Most newer
+// families 400 with "This model doesn't support the stopSequences field".
+var converseStopSequenceCases = []struct {
+	model   string
+	accepts bool
+}{
+	{"anthropic.claude-sonnet-4", true},
+	{"us.anthropic.claude-opus-4-8", true},
+	{"us.amazon.nova-pro-v1:0", true},
+	{"us.amazon.nova-2-lite-v1:0", true},
+	{"meta.llama3-70b-instruct-v1:0", true},
+	{"us.meta.llama4-maverick-17b-instruct-v1:0", true},
+	{"us.deepseek.r1-v1:0", true},
+	{"mistral.mistral-7b-instruct-v0:2", true},
+	{"mistral.mixtral-8x7b-instruct-v0:1", true},
+	{"mistral.mistral-large-2402-v1:0", true},
+	{"mistral.mistral-small-2402-v1:0", true},
+	{"us.mistral.pixtral-large-2502-v1:0", true},
+	{"us.writer.palmyra-x5-v1:0", true},
+	{"deepseek.v3.2", false},
+	{"us.deepseek.v3.2", false},
+	{"zai.glm-5", false},
+	{"qwen.qwen3-32b-v1:0", false},
+	{"google.gemma-3-12b-it", false},
+	{"minimax.minimax-m2.5", false},
+	{"moonshotai.kimi-k2.5", false},
+	{"nvidia.nemotron-super-3-120b", false},
+	{"openai.gpt-oss-120b-1:0", false},
+	{"us.openai.gpt-6-luna", false},
+	{"us.xai.grok-4.6", false},
+	{"mistral.mistral-large-3-675b-instruct", false},
+	{"mistral.devstral-2-123b", false},
+	{"mistral.voxtral-small-24b-2507", false},
+	{"writer.palmyra-vision-7b", false},
+}
+
+// TestConvertInferenceConfig_StopSequencesByFamily pins which Converse models
+// keep stopSequences on the chat path; the rest would 400 if it were sent.
+func TestConvertInferenceConfig_StopSequencesByFamily(t *testing.T) {
 	params := &schemas.ChatParameters{
 		MaxCompletionTokens: schemas.Ptr(12000),
 		Stop:                []string{"hi"},
 	}
-
-	glm := convertInferenceConfig(params, schemas.ResolveModelCaps(schemas.Bedrock, "zai.glm-5"))
-	if glm.StopSequences != nil {
-		t.Fatalf("expected StopSequences to be omitted for GLM, got %v", glm.StopSequences)
-	}
-	// Other inference params must still pass through.
-	if glm.MaxTokens == nil || *glm.MaxTokens != 12000 {
-		t.Fatalf("expected MaxTokens to be preserved, got %v", glm.MaxTokens)
-	}
-
-	other := convertInferenceConfig(params, schemas.ResolveModelCaps(schemas.Bedrock, "anthropic.claude-sonnet-4"))
-	if len(other.StopSequences) != 1 || other.StopSequences[0] != "hi" {
-		t.Fatalf("expected StopSequences to be preserved for non-GLM, got %v", other.StopSequences)
+	for _, tc := range converseStopSequenceCases {
+		t.Run(tc.model, func(t *testing.T) {
+			cfg := convertInferenceConfig(params, schemas.ResolveModelCaps(schemas.Bedrock, tc.model))
+			if got := len(cfg.StopSequences) == 1 && cfg.StopSequences[0] == "hi"; got != tc.accepts {
+				t.Fatalf("stopSequences sent = %v, want %v (got %v)", got, tc.accepts, cfg.StopSequences)
+			}
+			// Other inference params must still pass through.
+			if cfg.MaxTokens == nil || *cfg.MaxTokens != 12000 {
+				t.Fatalf("expected MaxTokens to be preserved, got %v", cfg.MaxTokens)
+			}
+		})
 	}
 }
 
-// TestToBedrockResponsesRequest_GLMSkipsStopSequences verifies the Responses
-// path (where `stop` arrives via ExtraParams) also drops stopSequences for GLM.
-func TestToBedrockResponsesRequest_GLMSkipsStopSequences(t *testing.T) {
+// TestToBedrockResponsesRequest_StopSequencesByFamily covers the Responses path
+// (the one /anthropic/v1/messages takes), where `stop` arrives via ExtraParams.
+func TestToBedrockResponsesRequest_StopSequencesByFamily(t *testing.T) {
+	for _, tc := range converseStopSequenceCases {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    tc.model,
+				Input:    []schemas.ResponsesMessage{glmUserMessage("hello")},
+				Params: &schemas.ResponsesParameters{
+					MaxOutputTokens: schemas.Ptr(32000),
+					ExtraParams:     map[string]interface{}{"stop": []string{"hi"}},
+				},
+			}
+			bedrockReq, err := ToBedrockResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+			}
+			got := bedrockReq.InferenceConfig != nil && len(bedrockReq.InferenceConfig.StopSequences) == 1
+			if got != tc.accepts {
+				t.Fatalf("stopSequences sent = %v, want %v", got, tc.accepts)
+			}
+		})
+	}
+}
+
+// TestToBedrockResponsesRequest_StopSequencesFollowAliasModelName checks that an
+// alias with an opaque wire id is gated on its canonical model_name. The opaque
+// id alone would omit stopSequences, so keeping them proves model_name decided.
+func TestToBedrockResponsesRequest_StopSequencesFollowAliasModelName(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key:    "team-claude",
+		Config: &schemas.AliasConfig{ModelID: "abc12xyz", ModelName: schemas.Ptr("anthropic.claude-sonnet-4")},
+	})
 	req := &schemas.BifrostResponsesRequest{
-		Model: "zai.glm-5",
-		Input: []schemas.ResponsesMessage{glmUserMessage("hello")},
+		Provider: schemas.Bedrock,
+		Model:    "abc12xyz",
+		Input:    []schemas.ResponsesMessage{glmUserMessage("hello")},
 		Params: &schemas.ResponsesParameters{
 			MaxOutputTokens: schemas.Ptr(32000),
 			ExtraParams:     map[string]interface{}{"stop": []string{"hi"}},
 		},
 	}
-
 	bedrockReq, err := ToBedrockResponsesRequest(ctx, req)
 	if err != nil {
 		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
 	}
-	if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.StopSequences != nil {
-		t.Fatalf("expected StopSequences to be omitted for GLM, got %v", bedrockReq.InferenceConfig.StopSequences)
+	if bedrockReq.InferenceConfig == nil || len(bedrockReq.InferenceConfig.StopSequences) != 1 || bedrockReq.InferenceConfig.StopSequences[0] != "hi" {
+		t.Fatalf("expected exactly one StopSequence for an alias of anthropic.claude-sonnet-4, got %+v", bedrockReq.InferenceConfig)
 	}
 }
 
@@ -1465,6 +1530,217 @@ func BenchmarkConverseParallelToolCalls(b *testing.B) {
 					},
 				}
 				if _, err := ToBedrockResponsesRequest(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// converseToolStrict returns toolConfig.tools[i].toolSpec.strict as it goes on
+// the Converse wire, so a field the struct cannot carry fails the assertion.
+func converseToolStrict(t *testing.T, out *BedrockConverseRequest, i int) (value, present bool) {
+	t.Helper()
+	if out == nil || out.ToolConfig == nil {
+		t.Fatalf("expected a toolConfig, got %+v", out)
+	}
+	raw, err := json.Marshal(out.ToolConfig)
+	if err != nil {
+		t.Fatalf("marshal toolConfig: %v", err)
+	}
+	res := providerUtils.GetJSONField(raw, fmt.Sprintf("tools.%d.toolSpec.strict", i))
+	return res.Bool(), res.Exists()
+}
+
+// strictWeatherSchema is a schema Bedrock accepts under strict tool use:
+// every property required and additionalProperties false.
+func strictWeatherSchema() *schemas.ToolFunctionParameters {
+	return &schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("city", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+		),
+		Required:             []string{"city"},
+		AdditionalProperties: &schemas.AdditionalPropertiesStruct{AdditionalPropertiesBool: schemas.Ptr(false)},
+	}
+}
+
+// TestToBedrockChatCompletionRequest_ForwardsToolStrict covers /v1/chat/completions
+// to Claude on Bedrock: Converse ToolSpecification has a strict member ("Flag to
+// enable structured output enforcement on a tool usage response",
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolSpecification.html),
+// so function.strict must reach toolSpec.strict instead of being dropped.
+// strict:false is the default and stays off the wire, so a client that never
+// asked for enforcement (Codex flags every tool false) sends the pre-strict
+// bytes even to a profile without structured outputs, such as in.anthropic
+// Claude Haiku 4.5; an explicit true is forwarded for Bedrock to accept or 400.
+func TestToBedrockChatCompletionRequest_ForwardsToolStrict(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		strict      *bool
+		wantPresent bool
+		wantValue   bool
+	}{
+		{"claude strict true", "global.anthropic.claude-sonnet-4-6", schemas.Ptr(true), true, true},
+		{"claude strict false omitted", "global.anthropic.claude-sonnet-4-6", schemas.Ptr(false), false, false},
+		{"claude strict unset", "global.anthropic.claude-sonnet-4-6", nil, false, false},
+		{"in.anthropic haiku 4.5 strict false omitted", "in.anthropic.claude-haiku-4-5-20251001-v1:0", schemas.Ptr(false), false, false},
+		{"in.anthropic haiku 4.5 strict true forwarded", "in.anthropic.claude-haiku-4-5-20251001-v1:0", schemas.Ptr(true), true, true},
+		{"non-Anthropic model drops strict", "meta.llama3-3-70b-instruct-v1:0", schemas.Ptr(true), false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    tt.model,
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")}}},
+				Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:       "get_weather",
+						Parameters: strictWeatherSchema(),
+						Strict:     tt.strict,
+					},
+				}}},
+			}
+			out, err := ToBedrockChatCompletionRequest(ctx, req)
+			if err != nil {
+				t.Fatalf("ToBedrockChatCompletionRequest failed: %v", err)
+			}
+			got, present := converseToolStrict(t, out, 0)
+			if present != tt.wantPresent || got != tt.wantValue {
+				t.Errorf("toolSpec.strict = (present=%v, value=%v), want (present=%v, value=%v)", present, got, tt.wantPresent, tt.wantValue)
+			}
+		})
+	}
+}
+
+// TestToBedrockResponsesRequest_ForwardsToolStrict is the /v1/responses (and Go
+// SDK) twin of TestToBedrockChatCompletionRequest_ForwardsToolStrict.
+func TestToBedrockResponsesRequest_ForwardsToolStrict(t *testing.T) {
+	tests := []struct {
+		name        string
+		model       string
+		strict      *bool
+		wantPresent bool
+		wantValue   bool
+	}{
+		{"claude strict true", "global.anthropic.claude-sonnet-4-6", schemas.Ptr(true), true, true},
+		{"claude strict false omitted", "global.anthropic.claude-sonnet-4-6", schemas.Ptr(false), false, false},
+		{"claude strict unset", "global.anthropic.claude-sonnet-4-6", nil, false, false},
+		{"in.anthropic haiku 4.5 strict false omitted", "in.anthropic.claude-haiku-4-5-20251001-v1:0", schemas.Ptr(false), false, false},
+		{"in.anthropic haiku 4.5 strict true forwarded", "in.anthropic.claude-haiku-4-5-20251001-v1:0", schemas.Ptr(true), true, true},
+		{"non-Anthropic model drops strict", "meta.llama3-3-70b-instruct-v1:0", schemas.Ptr(true), false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    tt.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")},
+				}},
+				Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("get_weather"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: strictWeatherSchema(),
+						Strict:     tt.strict,
+					},
+				}}},
+			}
+			out, err := ToBedrockResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+			}
+			got, present := converseToolStrict(t, out, 0)
+			if present != tt.wantPresent || got != tt.wantValue {
+				t.Errorf("toolSpec.strict = (present=%v, value=%v), want (present=%v, value=%v)", present, got, tt.wantPresent, tt.wantValue)
+			}
+		})
+	}
+}
+
+// TestBedrockConverseIngress_ToolStrictRoundTrip covers the native
+// /bedrock/model/{modelId}/converse route: AWS's own strict tool example must
+// keep toolSpec.strict through ingress decode, the neutral request, and egress.
+func TestBedrockConverseIngress_ToolStrictRoundTrip(t *testing.T) {
+	body := `{
+		"messages": [{"role": "user", "content": [{"text": "What's the weather like in New York?"}]}],
+		"toolConfig": {
+			"tools": [{"toolSpec": {
+				"name": "get_weather",
+				"description": "Get the current weather for a specified location",
+				"strict": true,
+				"inputSchema": {"json": {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"], "additionalProperties": false}}
+			}}]
+		}
+	}`
+	var converseReq BedrockConverseRequest
+	if err := json.Unmarshal([]byte(body), &converseReq); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	converseReq.ModelID = "bedrock/global.anthropic.claude-sonnet-4-6"
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	if err != nil {
+		t.Fatalf("ingress: %v", err)
+	}
+	if len(bifrostReq.Params.Tools) != 1 || bifrostReq.Params.Tools[0].ResponsesToolFunction == nil {
+		t.Fatalf("expected one function tool, got %+v", bifrostReq.Params.Tools)
+	}
+	if s := bifrostReq.Params.Tools[0].ResponsesToolFunction.Strict; s == nil || !*s {
+		t.Errorf("ingress ResponsesToolFunction.Strict = %v, want true", s)
+	}
+
+	bifrostReq.Provider = schemas.Bedrock
+	out, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("egress: %v", err)
+	}
+	if got, present := converseToolStrict(t, out, 0); !present || !got {
+		t.Errorf("egress toolSpec.strict = (present=%v, value=%v), want (present=true, value=true)", present, got)
+	}
+}
+
+// BenchmarkConverseToolStrict measures the chat egress with and without tool
+// strict flags. Forwarding reuses the inbound pointer and resolves the model
+// family once per request, so a flagged request costs at most one extra
+// allocation however many tools carry the flag.
+func BenchmarkConverseToolStrict(b *testing.B) {
+	for _, bc := range []struct {
+		name   string
+		strict *bool
+		tools  int
+	}{
+		{"strict_unset", nil, 1},
+		{"strict_true", schemas.Ptr(true), 1},
+		{"strict_unset_30_tools", nil, 30},
+		{"strict_false_30_tools", schemas.Ptr(false), 30},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			params := &schemas.ChatParameters{}
+			for i := range bc.tools {
+				params.Tools = append(params.Tools, schemas.ChatTool{
+					Type:     schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{Name: fmt.Sprintf("tool_%d", i), Parameters: strictWeatherSchema(), Strict: bc.strict},
+				})
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				req := &schemas.BifrostChatRequest{
+					Provider: schemas.Bedrock,
+					Model:    "global.anthropic.claude-sonnet-4-6",
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")}}},
+					Params:   params,
+				}
+				if _, err := ToBedrockChatCompletionRequest(ctx, req); err != nil {
 					b.Fatal(err)
 				}
 			}

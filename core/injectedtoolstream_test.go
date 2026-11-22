@@ -557,6 +557,34 @@ func TestInjectedResponsesStream_ClientCallsSurviveAtMaxDepth(t *testing.T) {
 	assert.Equal(t, "c1", *output[0].CallID)
 }
 
+func TestInjectedResponsesStream_KeepsAdvisorIterations(t *testing.T) {
+	s := newInjectedResponsesStream(testInjectedSet(t))
+	withAdvisorPass := func(e *schemas.BifrostResponsesStreamResponse, input int) *schemas.BifrostResponsesStreamResponse {
+		e.Response.Usage.Iterations = []schemas.ResponsesResponseUsage{{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: input, OutputTokens: 1}}
+		return e
+	}
+	t1 := &responsesEvents{respID: "resp_1"}
+	feedResponses(s, t1.created(),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "web_search")),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "web_search")),
+		withAdvisorPass(t1.completed(10), 100),
+	)
+	s.endTurn()
+	t2 := &responsesEvents{respID: "resp_2"}
+	turn2 := feedResponses(s, t2.created(),
+		t2.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, textItem("msg_2", "Sunny.")),
+		t2.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, textItem("msg_2", "Sunny.")),
+		withAdvisorPass(t2.completed(20), 200),
+	)
+
+	last := turn2[len(turn2)-1]
+	require.True(t, last.terminal)
+	iterations := last.event.Response.Usage.Iterations
+	require.Len(t, iterations, 2, "both turns' advisor passes must reach pricing")
+	assert.Equal(t, 100, iterations[0].InputTokens)
+	assert.Equal(t, 200, iterations[1].InputTokens)
+}
+
 // A failure delivered as an ordinary event ends the client stream; it must still carry
 // the usage of the turns that finished before it.
 func TestInjectedResponsesStream_FailureEventCarriesEarlierUsage(t *testing.T) {

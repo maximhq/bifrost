@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +124,85 @@ func TestRealtimeProviderInputLifecycle(t *testing.T) {
 	assert.Equal(t, "next", inputs[0].ItemID)
 }
 
+// TestRealtimeProviderInputEchoOfTheClientsMessage keeps a message the client sent without an id, and the
+// announcement the provider answers it with, as one input.
+func TestRealtimeProviderInputEchoOfTheClientsMessage(t *testing.T) {
+	const clientRaw = `{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"Say hello."}]}}`
+	announce := func(id, text string) string {
+		return `{"type":"conversation.item.added","item":{"id":"` + id + `","type":"message","role":"user","content":[{"type":"input_text","text":"` + text + `"}]}}`
+	}
+	record := func(session *bfws.Session, raw string) {
+		t.Helper()
+		event, err := schemas.ParseRealtimeEvent([]byte(raw))
+		assert.NoError(t, err)
+		recordRealtimeProviderInput(nil, session, event, raw)
+	}
+
+	t.Run("the echo is the message it answers", func(t *testing.T) {
+		session := bfws.NewSession(nil)
+		session.RecordRealtimeInput("", "Say hello.", clientRaw)
+		record(session, announce("item_4", "Say hello."))
+		record(session, strings.Replace(announce("item_4", "Say hello."), "item.added", "item.done", 1))
+		inputs := session.ConsumeRealtimeTurnInputs()
+		assert.Len(t, inputs, 1)
+		assert.Equal(t, "item_4", inputs[0].ItemID)
+		assert.Equal(t, "Say hello.", inputs[0].Summary)
+	})
+
+	t.Run("each echo answers one message", func(t *testing.T) {
+		session := bfws.NewSession(nil)
+		session.RecordRealtimeInput("", "yes", clientRaw)
+		session.RecordRealtimeInput("", "yes", clientRaw)
+		record(session, announce("a", "yes"))
+		record(session, announce("b", "yes"))
+		inputs := session.PeekRealtimeTurnInputs()
+		assert.Len(t, inputs, 2)
+		assert.Equal(t, []string{"a", "b"}, []string{inputs[0].ItemID, inputs[1].ItemID})
+		record(session, announce("c", "yes"))
+		assert.Len(t, session.PeekRealtimeTurnInputs(), 3, "an announcement with no message left to answer is an input of its own")
+	})
+
+	t.Run("an announcement of other text is an input of its own", func(t *testing.T) {
+		session := bfws.NewSession(nil)
+		session.RecordRealtimeInput("", "Say hello.", clientRaw)
+		record(session, announce("item_9", "Something else."))
+		assert.Len(t, session.PeekRealtimeTurnInputs(), 2)
+	})
+
+	t.Run("a provider's audio item does not take a typed message", func(t *testing.T) {
+		session := bfws.NewSession(nil)
+		session.RecordRealtimeInput("", "Say hello.", clientRaw)
+		record(session, `{"type":"conversation.item.added","item":{"id":"audio","type":"message","role":"user","content":[{"type":"input_audio","transcript":null}]}}`)
+		inputs := session.PeekRealtimeTurnInputs()
+		assert.Len(t, inputs, 2)
+		assert.Equal(t, realtimeMissingTranscriptText, inputs[1].Summary)
+	})
+
+	t.Run("a message that carries its id still merges by id", func(t *testing.T) {
+		session := bfws.NewSession(nil)
+		session.RecordRealtimeInput("item_7", "Say hello.", clientRaw)
+		record(session, announce("item_7", "Say hello."))
+		assert.Len(t, session.PeekRealtimeTurnInputs(), 1)
+	})
+}
+
+// BenchmarkRealtimeProviderInputAnnouncement measures one user message: the client's record and the provider's announcement of it.
+func BenchmarkRealtimeProviderInputAnnouncement(b *testing.B) {
+	const clientRaw = `{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"Say hello."}]}}`
+	const raw = `{"type":"conversation.item.added","item":{"id":"item_4","type":"message","role":"user","content":[{"type":"input_text","text":"Say hello."}]}}`
+	event, err := schemas.ParseRealtimeEvent([]byte(raw))
+	if err != nil {
+		b.Fatal(err)
+	}
+	session := bfws.NewSession(nil)
+	b.ReportAllocs()
+	for b.Loop() {
+		session.RecordRealtimeInput("", "Say hello.", clientRaw)
+		recordRealtimeProviderInput(nil, session, event, raw)
+		session.ConsumeRealtimeTurnInputs()
+	}
+}
+
 // BenchmarkRealtimeProviderInputDelta measures the common streaming path without input work.
 func BenchmarkRealtimeProviderInputDelta(b *testing.B) {
 	session := bfws.NewSession(nil)
@@ -154,6 +234,15 @@ func TestRealtimeInvalidRequestErrorFinalization(t *testing.T) {
 	assert.Same(t, policyErr, finalizeRealtimeTurnHooksWithError(nil, nil, session, schemas.OpenAI, "realtime", nil, schemas.RTEventError, nil, newRealtimeWireBifrostError(400, "invalid_request_error", "unsupported modality")))
 }
 
+// TestRealtimeErrorFinalizationDropsInterimUsage keeps a failed turn's usage out of the next turn.
+func TestRealtimeErrorFinalizationDropsInterimUsage(t *testing.T) {
+	session := bfws.NewSession(nil)
+	session.AddRealtimeInterimUsage(&schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110})
+	got := finalizeRealtimeTurnHooksWithError(nil, nil, session, schemas.Gemini, "gemini-3.8-live", nil, schemas.RTEventError, nil, newRealtimeWireBifrostError(400, "invalid_request_error", "unsupported modality"))
+	assert.Nil(t, got)
+	assert.Nil(t, session.ConsumeRealtimeInterimUsage())
+}
+
 func TestMapRealtimeWireErrorFields(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -179,5 +268,58 @@ func TestMapRealtimeWireErrorFields(t *testing.T) {
 			assert.Equal(t, tc.wantCode, code)
 			assert.Equal(t, tc.err.Error.Message, message)
 		})
+	}
+}
+
+// TestUpdateRealtimeSessionTracksVoiceType pins that the session keeps the voice's type beside its
+// name, so Voice Live pricing can tell an Azure voice from the model's own.
+func TestUpdateRealtimeSessionTracksVoiceType(t *testing.T) {
+	session := bfws.NewSession(nil)
+	for _, tc := range []struct {
+		name, raw, wantVoice, wantType string
+	}{
+		{"object voice", `{"type":"session.update","session":{"voice":{"name":"en-US-AvaNeural","type":"azure-standard"}}}`, "en-US-AvaNeural", "azure-standard"},
+		{"nested object voice", `{"type":"session.updated","session":{"audio":{"output":{"voice":{"name":"en-US-Ava","type":"azure-custom"}}}}}`, "en-US-Ava", "azure-custom"},
+		{"string voice clears the type", `{"type":"session.update","session":{"voice":"alloy"}}`, "alloy", ""},
+	} {
+		event, err := schemas.ParseRealtimeEvent([]byte(tc.raw))
+		assert.NoError(t, err, tc.name)
+		updateRealtimeSessionFromEvent(session, event)
+		assert.Equal(t, tc.wantVoice, session.RealtimeVoice(), tc.name)
+		assert.Equal(t, tc.wantType, session.RealtimeVoiceType(), tc.name)
+	}
+}
+
+// TestApplyVoiceLivePricing pins how a Voice Live turn's audio is split for pricing: output audio from
+// an Azure standard voice is Standard Speech, from a custom or personal voice Custom Speech, and from
+// the model's own voice LLM audio. Input audio is Standard Speech for a model that does not hear
+// audio natively (Azure speech to text transcribes it) and LLM audio for a realtime model.
+func TestApplyVoiceLivePricing(t *testing.T) {
+	for _, tc := range []struct {
+		name, model, voiceType         string
+		wantInputStandard              int
+		wantOutputStandard, wantCustom int
+	}{
+		{name: "realtime model with an Azure standard voice", model: "gpt-realtime", voiceType: "azure-standard", wantOutputStandard: 52},
+		{name: "realtime model with its own voice", model: "gpt-realtime-mini", voiceType: "openai"},
+		{name: "realtime model with a custom voice", model: "gpt-realtime", voiceType: "azure-custom", wantCustom: 52},
+		{name: "realtime model with a personal voice", model: "gpt-realtime", voiceType: "azure-personal", wantCustom: 52},
+		{name: "azure-realtime native voice", model: "azure-realtime", voiceType: "azure-realtime-native"},
+		{name: "text model with an Azure standard voice", model: "gpt-4.1", voiceType: "azure-standard", wantInputStandard: 50, wantOutputStandard: 52},
+		{name: "text model without a voice type speaks through Azure", model: "gpt-5", wantInputStandard: 50, wantOutputStandard: 52},
+	} {
+		resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Usage: &schemas.ResponsesResponseUsage{
+			InputTokens:         70,
+			OutputTokens:        66,
+			InputTokensDetails:  &schemas.ResponsesResponseInputTokens{TextTokens: 20, AudioTokens: 50},
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{TextTokens: 14, AudioTokens: 52},
+		}}}
+		applyVoiceLivePricing(resp, tc.voiceType, tc.model)
+		r := resp.ResponsesResponse
+		assert.Equal(t, schemas.PricingSurfaceVoiceLive, r.ExtraFields.PricingSurface, tc.name)
+		assert.Equal(t, tc.wantInputStandard, r.Usage.InputTokensDetails.StandardSpeechAudioTokens, tc.name)
+		assert.Zero(t, r.Usage.InputTokensDetails.CustomSpeechAudioTokens, tc.name)
+		assert.Equal(t, tc.wantOutputStandard, r.Usage.OutputTokensDetails.StandardSpeechAudioTokens, tc.name)
+		assert.Equal(t, tc.wantCustom, r.Usage.OutputTokensDetails.CustomSpeechAudioTokens, tc.name)
 	}
 }
