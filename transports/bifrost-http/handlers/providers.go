@@ -531,8 +531,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 
 	if err := h.reloadProviderAfterCreate(ctx, payload.Provider); err != nil {
 		logger.Warn("Failed to reload provider %s after add: %v", payload.Provider, err)
+		// Configuration first: while it is stored, a request can lazily prepare a stopped provider again.
+		rollbackErr := h.inMemoryStore.RemoveProvider(context.Background(), payload.Provider)
 		h.stopRuntimeProvider(payload.Provider)
-		if rollbackErr := h.inMemoryStore.RemoveProvider(context.Background(), payload.Provider); rollbackErr != nil {
+		if rollbackErr != nil {
 			logger.Error("Failed to rollback provider %s after reload failure: %v", payload.Provider, rollbackErr)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initialize provider after add: %v (rollback failed: %v)", err, rollbackErr))
 			return
@@ -1728,7 +1730,8 @@ func (h *ProviderHandler) listBaseModels(ctx *fasthttp.RequestCtx) {
 
 // stopRuntimeProvider stops a provider the client may have prepared lazily, for a create that is
 // being rolled back. lib.Config registers the prefix before the reload, so an inference request in
-// that window can start workers that removing the configuration alone would leave running.
+// that window can start workers that removing the configuration alone would leave running. Call it
+// after the configuration is removed, so getProviderQueue cannot prepare the provider again.
 func (h *ProviderHandler) stopRuntimeProvider(provider schemas.ModelProvider) {
 	if h.client == nil {
 		return

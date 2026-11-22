@@ -1322,16 +1322,37 @@ func TestProviderRegistration_PrefixRoutesDuringPostCreateReload(t *testing.T) {
 	assert.Zero(t, fixture.otherCalls.Load(), "a request during the reload lost its prefix and was load balanced")
 }
 
+// deleteObserver reports each provider deletion to onDelete before passing it to the store.
+type deleteObserver struct {
+	configstore.ConfigStore
+	onDelete func(schemas.ModelProvider)
+}
+
+func (d *deleteObserver) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
+	d.onDelete(provider)
+	return d.ConfigStore.DeleteProvider(ctx, provider, tx...)
+}
+
 // A request during the post-create reload prepares the provider in core. A failed create must stop
-// that runtime provider, not only drop the configuration and the prefix.
+// that runtime provider, not only drop the configuration and the prefix. The configuration goes
+// first: while it is still stored, a request can lazily prepare a provider that was just stopped.
 func TestProviderRegistration_FailedCreateStopsRuntimeProvider(t *testing.T) {
 	fixture := newProviderRegistrationFixture(t)
+	runningAtConfigDelete := false
+	fixture.server.Config.ConfigStore = &deleteObserver{ConfigStore: fixture.server.Config.ConfigStore, onDelete: func(provider schemas.ModelProvider) {
+		if provider == fixture.provider {
+			// GetConfiguredProviders reads only live providers; GetProviderByKey would lazily prepare one.
+			running, _ := fixture.server.Client.GetConfiguredProviders()
+			runningAtConfigDelete = slices.Contains(running, provider)
+		}
+	}}
 	manager, baseURL, httpClient := startReloadWithRequest(t, fixture, true)
 
 	status, body := providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/api/providers", fixture.createBody, "")
 	require.Equal(t, 500, status, body)
 	require.Equal(t, 200, manager.status, manager.body)
 	require.EqualValues(t, 1, fixture.targetCalls.Load(), "the in-window request should have reached the new provider")
+	assert.True(t, runningAtConfigDelete, "runtime provider was stopped while its configuration was still stored, so a request could prepare it again")
 	assert.Nil(t, fixture.server.Client.GetProviderByKey(fixture.provider), "rolled-back provider is still running in core")
 	assert.False(t, schemas.IsKnownProvider(string(fixture.provider)), "rolled-back provider prefix is still registered")
 	_, err := fixture.server.Config.GetProviderConfigRaw(fixture.provider)

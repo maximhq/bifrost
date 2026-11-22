@@ -1163,7 +1163,7 @@ const registrationFolder = JSON.parse(readFileSync(join(here, "provider-harness.
   (item) => item.name === "378. Management-created provider prefixes route immediately (provider-prefix-registration)",
 );
 assert.ok(registrationFolder, "provider-prefix-registration folder is missing");
-function registrationSandbox({ failStep = -1, setupFailure = "http", fixtureEnabled = true, caseIndex = 0, failCleanupStep = -1 } = {}) {
+function registrationSandbox({ failStep = -1, setupFailure = "http", fixtureEnabled = true, caseIndex = 0, failCleanupStep = -1, lingeringProvider = false } = {}) {
   const values = new Map([
     ["baseUrl", "http://gateway-fixture"], ["providerErrorFixture", fixtureEnabled ? "1" : "0"],
     ["providerErrorFixtureUrl", "http://upstream-fixture"], ["setupToken", "fixture-token"],
@@ -1181,6 +1181,11 @@ function registrationSandbox({ failStep = -1, setupFailure = "http", fixtureEnab
     test: (name, fn) => { try { fn(); } catch (error) { state.failures.push({ name, error }); } },
     sendRequest: (request, callback) => {
       state.calls.push(request);
+      if (request.method === "GET") {
+        // A provider lookup after cleanup: 404 once removed, 200 if DELETE silently left it in place.
+        callback(null, { code: lingeringProvider ? 200 : 404, text: () => "{}", json: () => ({}) });
+        return;
+      }
       const fail = request.method !== "DELETE" && step++ === failStep;
       const networkError = fail && setupFailure === "network";
       const badJSON = fail && setupFailure === "json";
@@ -1276,6 +1281,21 @@ test("provider-prefix-registration: failed cleanup is reported and remaining res
   assert.strictEqual(ctx.state.failures.length, 1);
   assert.ok(ctx.state.failures[0].name.includes("cleanup"));
   assert.strictEqual(ctx.state.calls.filter((call) => call.method === "DELETE").length, 3);
+});
+
+test("provider-prefix-registration: cleanup confirms each provider is gone, not only that DELETE answered 200", () => {
+  const ctx = registrationSandbox();
+  ctx.run("prerequest");
+  ctx.run("test");
+  assert.deepStrictEqual(ctx.state.failures, []);
+  const lookups = ctx.state.calls.filter((call) => call.method === "GET");
+  assert.strictEqual(lookups.length, 2, "each created provider is looked up after its DELETE");
+  for (const call of lookups) assert.ok(call.url.includes("/api/providers/"));
+  const lingering = registrationSandbox({ lingeringProvider: true });
+  lingering.run("prerequest");
+  lingering.run("test");
+  assert.strictEqual(lingering.state.failures.length, 2, "a provider still present after a 200 DELETE must fail cleanup");
+  for (const failure of lingering.state.failures) assert.ok(failure.name.includes("cleanup removed"));
 });
 
 test("provider-prefix-registration: wrong provider, unexpected status, and non-JSON replies fail and still clean up", () => {
