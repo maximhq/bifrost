@@ -1,3 +1,4 @@
+- [fix]: Fetch URLs are logged without their query, fragment or userinfo, so a token in a URL query never reaches a log row [@jimaldon](https://github.com/jimaldon)
 - [fix]: keep a Search row's result count so cost recalculation prices a matched search, not just an empty one [@jimaldon](https://github.com/jimaldon)
 - [feat]: log Search queries and Fetch URLs, never result pages, and report per-request cost on recalculation [@jimaldon](https://github.com/jimaldon)
 - feat: speech sessions are logged with their full input text

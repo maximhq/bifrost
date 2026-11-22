@@ -1261,6 +1261,20 @@ type toolsSearchLogParams struct {
 	IncludeContent *bool  `json:"include_content,omitempty"`
 }
 
+// redactFetchURL keeps the page identity but drops the query, fragment and userinfo. A caller
+// can put a token in a query string, and a log row must not persist it; validation already
+// refuses userinfo, and this is the logging-side guard for a URL that reached the provider.
+func redactFetchURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.User = nil
+	return parsed.String()
+}
+
 // toolsFetchLogParams is the fetch request shape kept in a log row.
 type toolsFetchLogParams struct {
 	URL string `json:"url"`
@@ -4035,7 +4049,7 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 		}
 	case schemas.FetchRequest:
 		if req.FetchRequest != nil {
-			initialData.Params = toolsFetchLogParams{URL: req.FetchRequest.URL}
+			initialData.Params = toolsFetchLogParams{URL: redactFetchURL(req.FetchRequest.URL)}
 		}
 	case schemas.DecisionRequest:
 		initialData.Params = req.DecisionRequest.Questions
