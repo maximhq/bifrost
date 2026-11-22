@@ -192,16 +192,43 @@ func TestDocumentCitationsEmptyFileDataIsNotAConflict(t *testing.T) {
 // A citationsContent block whose content carries no text adds no empty message: its citations
 // annotate the preceding text, like the content-less Nova web citations.
 func TestDocumentCitationsWithoutGeneratedTextAnnotatePrecedingText(t *testing.T) {
-	var in bedrock.BedrockConverseResponse
-	require.NoError(t, sonic.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"The budget is $4.2M."},`+
-		`{"citationsContent":{"content":[{}],"citations":[{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}]}}]}},"stopReason":"end_turn"}`), &in))
-	resp, err := in.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	for name, content := range map[string]string{"no text field": `[{}]`, "empty text": `[{"text":""}]`, "empty fragments": `[{"text":""},{}]`} {
+		t.Run(name, func(t *testing.T) {
+			var in bedrock.BedrockConverseResponse
+			require.NoError(t, sonic.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"The budget is $4.2M."},`+
+				`{"citationsContent":{"content":`+content+`,"citations":[{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}]}}]}},"stopReason":"end_turn"}`), &in))
+			resp, err := in.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+			require.NoError(t, err)
+			require.Len(t, resp.Output, 1, "no empty text message may be added")
+			block := resp.Output[0].Content.ContentBlocks[0]
+			require.Equal(t, "The budget is $4.2M.", *block.Text)
+			require.Len(t, block.Annotations, 1)
+			assert.Equal(t, "content_block_location", block.Annotations[0].Type)
+		})
+	}
+}
+
+// A citation-only item (a stream that closed a block holding a citation and no text) keeps its
+// citations when the completed response is rendered as Converse.
+func TestDocumentCitationsCitationOnlyItemRendersAsConverse(t *testing.T) {
+	resp := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr(""),
+			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{{
+				Type: "content_block_location", Index: schemas.Ptr(0), StartBlockIndex: schemas.Ptr(0), EndBlockIndex: schemas.Ptr(1),
+				Filename: schemas.Ptr("pack"), SourceContent: []string{"Budget: $4.2M."},
+			}}},
+		}}},
+	}}}
+	out, err := bedrock.ToBedrockConverseResponse(resp)
 	require.NoError(t, err)
-	require.Len(t, resp.Output, 1, "no empty text message may be added")
-	block := resp.Output[0].Content.ContentBlocks[0]
-	require.Equal(t, "The budget is $4.2M.", *block.Text)
-	require.Len(t, block.Annotations, 1)
-	assert.Equal(t, "content_block_location", block.Annotations[0].Type)
+	wire, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	citation := gjson.GetBytes(wire, "output.message.content.#(citationsContent).citationsContent.citations.0")
+	require.True(t, citation.Exists(), "citation-only item lost its citations: %s", wire)
+	assert.Equal(t, int64(1), citation.Get("location.documentChunk.end").Int())
+	assert.Equal(t, "Budget: $4.2M.", citation.Get("sourceContent.0.text").Str)
 }
 
 func TestDocumentCitationsPreserveLegacyWeb(t *testing.T) {

@@ -5036,8 +5036,7 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 					texts = append(texts, *part.Text)
 				}
 			}
-			if len(texts) > 0 {
-				text := strings.Join(texts, "")
+			if text := strings.Join(texts, ""); text != "" {
 				lastTextOutputIdx = len(outputMessages)
 				outputMessages = append(outputMessages, createTextMessage(&text, convertBedrockRoleToBifrostRole(msg.Role), schemas.ResponsesOutputMessageContentTypeText, isOutputMessage))
 			}
@@ -5834,6 +5833,28 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, sh
 
 // convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks converts Bifrost content to Bedrock content blocks.
 // The ctx is propagated to URL fetches inside image blocks.
+// citationOnlyBedrockBlock renders an empty text block's annotations as a citationsContent block
+// when rendering a Converse response. Requests drop it: replaying a citation with no cited text
+// to the model carries nothing.
+func citationOnlyBedrockBlock(ctx context.Context, block schemas.ResponsesMessageContentBlock) *BedrockContentBlock {
+	if !isConverseResponseRendering(ctx) || block.ResponsesOutputMessageContentText == nil {
+		return nil
+	}
+	var cited *BedrockCitationsContent
+	for _, annotation := range block.Annotations {
+		if citation := bedrockCitationFromAnnotation(annotation); citation != nil {
+			if cited == nil {
+				cited = &BedrockCitationsContent{}
+			}
+			cited.Citations = append(cited.Citations, *citation)
+		}
+	}
+	if cited == nil {
+		return nil
+	}
+	return &BedrockContentBlock{CitationsContent: cited}
+}
+
 func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx context.Context, model string, content schemas.ResponsesMessageContent, docNamer *bedrockDocNamer) ([]BedrockContentBlock, error) {
 	var blocks []BedrockContentBlock
 
@@ -5848,6 +5869,12 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 			switch block.Type {
 			case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
 				if block.Text == nil || *block.Text == "" {
+					// A citation-only item (a streamed block that carried a citation and no
+					// text) renders as a content-less citationsContent block in a Converse
+					// response; anything else empty is dropped, as before.
+					if cited := citationOnlyBedrockBlock(ctx, block); cited != nil {
+						blocks = append(blocks, *cited)
+					}
 					continue
 				}
 				if block.GuardContent != nil {
