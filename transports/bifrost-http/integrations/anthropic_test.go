@@ -9,13 +9,35 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 )
+
+func TestDocumentCitationsAnthropicRouteRoundTrip(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		var incoming anthropic.AnthropicMessageRequest
+		require.NoError(t, sonic.Unmarshal([]byte(`{"model":"bedrock/global.anthropic.claude-haiku-5-5","max_tokens":128,"messages":[{"role":"user","content":[{"type":"document","title":"pack","source":{"type":"content","content":[{"type":"text","text":"Budget: $4.2M."},{"type":"text","text":"Audit: March."}]},"citations":{"enabled":true}},{"type":"text","text":"Cite the budget."}]}]}`), &incoming))
+		incoming.Stream = &streaming
+		route := createAnthropicMessagesRouteConfig("/anthropic", nil)[0]
+		req, err := route.RequestConverter(ctx, &incoming)
+		require.NoError(t, err)
+		require.Equal(t, schemas.Bedrock, req.ResponsesRequest.Provider)
+		out, err := bedrock.ToBedrockResponsesRequest(ctx, req.ResponsesRequest)
+		require.NoError(t, err)
+		wire, err := providerUtils.MarshalSorted(out)
+		require.NoError(t, err)
+		require.Equal(t, "Budget: $4.2M.", gjson.GetBytes(wire, "messages.0.content.0.document.source.content.0.text").Str)
+		require.Equal(t, "Audit: March.", gjson.GetBytes(wire, "messages.0.content.0.document.source.content.1.text").Str)
+		require.True(t, gjson.GetBytes(wire, "messages.0.content.0.document.citations.enabled").Bool())
+	}
+}
 
 func TestAnthropicMessagesBillingHeaderNormalizedBeforeDispatch(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
