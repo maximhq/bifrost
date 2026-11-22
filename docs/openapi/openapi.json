@@ -137535,12 +137535,12 @@
           "max_results": {
             "type": "integer",
             "minimum": 1,
-            "description": "Number of results to return. Providers cap it differently (DeepSeek: 50)."
+            "description": "Number of results to return. Providers cap it differently (DeepSeek: 50). DeepSeek also accepts its native count."
           },
           "include_content": {
             "type": "boolean",
             "default": false,
-            "description": "When true, each result carries page text in content. Increases response size."
+            "description": "When true, each result carries page text in content. Increases response size. DeepSeek also accepts its native need_content."
           },
           "include_domains": {
             "type": "array",

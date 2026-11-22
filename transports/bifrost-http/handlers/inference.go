@@ -222,11 +222,15 @@ var rerankParamsKnownFields = map[string]bool{
 
 // Known fields for SearchHandlerRequest.
 var searchParamsKnownFields = map[string]bool{
-	"model":            true,
-	"fallbacks":        true,
-	"query":            true,
-	"max_results":      true,
-	"include_content":  true,
+	"model":           true,
+	"fallbacks":       true,
+	"query":           true,
+	"max_results":     true,
+	"include_content": true,
+	// DeepSeek-native aliases for max_results and include_content. A native client
+	// changing only its base URL must not have these land in ExtraParams.
+	"count":            true,
+	"need_content":     true,
 	"include_domains":  true,
 	"exclude_domains":  true,
 	"published_after":  true,
@@ -686,6 +690,8 @@ type SearchHandlerRequest struct {
 	Query           string   `json:"query"`
 	MaxResults      *int     `json:"max_results"`
 	IncludeContent  *bool    `json:"include_content"`
+	Count           *int     `json:"count"`
+	NeedContent     *bool    `json:"need_content"`
 	IncludeDomains  []string `json:"include_domains"`
 	ExcludeDomains  []string `json:"exclude_domains"`
 	PublishedAfter  *string  `json:"published_after"`
@@ -1577,13 +1583,26 @@ func prepareSearchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schema
 	if err != nil {
 		return nil, err
 	}
-	provider, model := resolveToolsRouting(base)
+	// DeepSeek's native body names these count and need_content. The neutral field wins
+	// when a caller sends both, so a drop-in native body and a neutral body cannot disagree.
+	maxResults := req.MaxResults
+	if maxResults == nil {
+		maxResults = req.Count
+	}
+	includeContent := req.IncludeContent
+	if includeContent == nil {
+		includeContent = req.NeedContent
+	}
+	provider, model, err := resolveToolsRouting(base)
+	if err != nil {
+		return nil, err
+	}
 	return &schemas.BifrostSearchRequest{
 		Provider:        provider,
 		Model:           model,
 		Query:           query,
-		MaxResults:      req.MaxResults,
-		IncludeContent:  req.IncludeContent,
+		MaxResults:      maxResults,
+		IncludeContent:  includeContent,
 		IncludeDomains:  req.IncludeDomains,
 		ExcludeDomains:  req.ExcludeDomains,
 		PublishedAfter:  req.PublishedAfter,
@@ -1620,7 +1639,10 @@ func prepareFetchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas
 	if err != nil {
 		return nil, err
 	}
-	provider, model := resolveToolsRouting(base)
+	provider, model, err := resolveToolsRouting(base)
+	if err != nil {
+		return nil, err
+	}
 	return &schemas.BifrostFetchRequest{
 		Provider:    provider,
 		Model:       model,
@@ -1656,18 +1678,23 @@ func parseToolsFallbacks(entries []string) ([]schemas.Fallback, error) {
 //
 // Search and Fetch carry no model upstream, so an absent model means DeepSeek, the provider
 // that serves these operations. A bare token in "model" is read as a provider name, because
-// there is no model for the caller to name.
-func resolveToolsRouting(base *requestBase) (schemas.ModelProvider, string) {
+// there is no model for the caller to name. A token that is not a known or custom provider
+// is refused: it is almost certainly a model name, and routing it as a provider would fail
+// later with a misleading provider-not-found error.
+func resolveToolsRouting(base *requestBase) (schemas.ModelProvider, string, error) {
 	if base == nil {
-		return schemas.DeepSeek, ""
+		return schemas.DeepSeek, "", nil
 	}
 	if base.Provider != "" {
-		return base.Provider, base.ModelName
+		return base.Provider, base.ModelName, nil
 	}
 	if base.ModelName != "" {
-		return schemas.ModelProvider(base.ModelName), ""
+		if !schemas.IsKnownProvider(base.ModelName) {
+			return "", "", fmt.Errorf("model %q must be a provider name, or a provider/model", base.ModelName)
+		}
+		return schemas.ModelProvider(base.ModelName), "", nil
 	}
-	return schemas.DeepSeek, ""
+	return schemas.DeepSeek, "", nil
 }
 
 // prepareDecisionRequest prepares a BifrostDecisionRequest from the HTTP

@@ -64,6 +64,41 @@ func TestPrepareSearchRequest_CarriesOptionalFields(t *testing.T) {
 	}
 }
 
+// A native DeepSeek body names count and need_content. They must not land in ExtraParams,
+// where they are only forwarded with the passthrough header.
+func TestPrepareSearchRequest_AcceptsDeepSeekNativeAliases(t *testing.T) {
+	req, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search", `{"query":"q","count":4,"need_content":true}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.MaxResults == nil || *req.MaxResults != 4 {
+		t.Fatalf("max_results = %v, want count's 4", req.MaxResults)
+	}
+	if req.IncludeContent == nil || !*req.IncludeContent {
+		t.Fatalf("include_content = %v, want need_content's true", req.IncludeContent)
+	}
+	if _, ok := req.ExtraParams["count"]; ok {
+		t.Fatal("count reached ExtraParams instead of becoming max_results")
+	}
+	if _, ok := req.ExtraParams["need_content"]; ok {
+		t.Fatal("need_content reached ExtraParams instead of becoming include_content")
+	}
+}
+
+func TestPrepareSearchRequest_NeutralFieldsWinOverNativeAliases(t *testing.T) {
+	req, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search",
+		`{"query":"q","max_results":2,"include_content":false,"count":9,"need_content":true}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.MaxResults == nil || *req.MaxResults != 2 {
+		t.Fatalf("max_results = %v, want the neutral 2", req.MaxResults)
+	}
+	if req.IncludeContent == nil || *req.IncludeContent {
+		t.Fatalf("include_content = %v, want the neutral false", req.IncludeContent)
+	}
+}
+
 // A provider's own options are not part of the neutral shape; they reach the provider in
 // ExtraParams, which is where DeepSeek reads ori_question and localization from.
 func TestPrepareSearchRequest_CarriesProviderOptionsInExtraParams(t *testing.T) {
@@ -89,6 +124,7 @@ func TestPrepareSearchRequest_RejectsInvalidInput(t *testing.T) {
 		{name: "blank query", body: `{"query":"   "}`},
 		{name: "published_after not a date", body: `{"query":"q","published_after":"last week"}`},
 		{name: "published_before not a date", body: `{"query":"q","published_before":"2026-13-01"}`},
+		{name: "bare model token is not a provider", body: `{"query":"q","model":"deepseek-chat"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -115,6 +151,12 @@ func TestPrepareSearchRequest_LeavesProviderBoundsToTheProvider(t *testing.T) {
 	body := `{"query":"` + strings.Repeat("a", 129) + `","max_results":100}`
 	if _, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search", body), nil); err != nil {
 		t.Fatalf("provider-specific bounds must not be enforced at the edge: %v", err)
+	}
+}
+
+func TestPrepareFetchRequest_RejectsABareModelTokenThatIsNotAProvider(t *testing.T) {
+	if _, err := prepareFetchRequest(jsonToolsCtx("/v1/tools/fetch", `{"url":"https://example.com/page","model":"deepseek-chat"}`), nil); err == nil {
+		t.Fatal("a bare model name must be refused rather than routed as a provider")
 	}
 }
 

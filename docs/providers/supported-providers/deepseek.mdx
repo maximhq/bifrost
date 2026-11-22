@@ -59,7 +59,9 @@ curl -X POST http://localhost:8080/v1/tools/search \
 
 Search takes the provider-neutral request: `query` (required; DeepSeek allows 1-128
 characters) and `max_results` (DeepSeek allows 1-50, default 10), and `include_content`
-returns page text in each result. DeepSeek has no domain or date filters, so
+returns page text in each result. DeepSeek's native `count` and `need_content` are accepted
+as aliases for `max_results` and `include_content`; if a body sends both forms, the neutral
+field wins. DeepSeek has no domain or date filters, so
 `include_domains`, `exclude_domains`, `published_after` and `published_before` are refused
 with a 400; use the query operators instead: `site:`, `-site:`, `-term`, `"exact phrase"`,
 `lang:`, `after:` and `before:`. DeepSeek's own options are sent as top-level fields:
