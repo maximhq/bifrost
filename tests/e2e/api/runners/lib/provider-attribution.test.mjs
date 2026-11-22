@@ -122,4 +122,18 @@ test("Nace is matched as a whole word, not inside prompt words", () => {
   assert.strictEqual(match("drex-max-v1.1"), "nace");
 });
 
+test("prompt prose and test scripts do not claim Nace attribution", () => {
+  const withNace = makeMatchProvider((p) => ["nace", "openai"].includes(p));
+  const row = (model) => ({
+    name: "decision through the unified endpoint",
+    request: {
+      url: "{{baseUrl}}/v1/decisions",
+      body: { mode: "raw", raw: JSON.stringify({ model, input: "Compare Nace and OpenAI, including drex-v2.0." }) },
+    },
+    event: [{ listen: "test", script: { exec: ["// Assert the Nace-shaped fields."] } }],
+  });
+  assert.strictEqual(providerOfItem(row("openai/gpt-4o"), ["Unified decision requests"], withNace), "openai");
+  assert.strictEqual(providerOfItem(row("nace/drex-max-v1.1"), ["Unified decision requests"], withNace), "nace");
+});
+
 console.log(`\n${passed} passed`);

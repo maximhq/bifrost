@@ -14,6 +14,8 @@
 // Extracted from harness-monitor.mjs so it can be tested directly; the keyword
 // table mirrors filter-collection.mjs.
 
+import { buildHaystack, declaredProviderOf, requestModelOf } from "./haystack.mjs";
+
 export const PROVIDER_KEYWORDS = {
   openai: ["openai", "/openai", "gpt-", "o3", "o1"],
   anthropic: ["anthropic", "claude-"],
@@ -108,7 +110,7 @@ export function providerOfFolder(folderName, matchProvider) {
 // /v1/chat/completions that names no provider, and the name
 // ("openai/gpt-4o-mini ...") is the only other thing the log prints.
 //
-// Item JSON + ancestor folder names is the last resort - rows the log cannot
+// Item identity + ancestor folder names is the last resort - rows the log cannot
 // attribute at all. Those inflate a denominator the numerator can never reach,
 // which is the safe direction to be wrong in: the table under-reports progress
 // rather than over-reporting passes.
@@ -120,7 +122,10 @@ export function providerOfItem(item, ancestors, matchProvider) {
     providerOfFolder(leafFolder, matchProvider) ||
     matchProvider(url.toLowerCase()) ||
     matchProvider(String(item.name || "").toLowerCase()) ||
-    matchProvider(stripBase64Blobs(JSON.stringify(item) + " " + ancestors.join(" ")).toLowerCase())
+    matchProvider((
+      buildHaystack({ ...item, request: { ...req, body: undefined } }, ancestors) +
+      " " + (requestModelOf(item) || "") + " " + (declaredProviderOf(item) || "")
+    ).toLowerCase())
   );
 }
 

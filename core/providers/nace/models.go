@@ -92,13 +92,7 @@ func ToBifrostModel(native NaceModel, provider schemas.ModelProvider) schemas.Mo
 		entry.ProviderExtra = extra
 	}
 	switch model {
-	case "drex-v2.0":
-		entry.MaxInputTokens = schemas.Ptr(131072)
-		entry.Pricing = &schemas.Pricing{Prompt: schemas.Ptr("0.00000006"), Completion: schemas.Ptr("0")}
-	case "drex-v1.5":
-		entry.MaxInputTokens = schemas.Ptr(131072)
-		entry.Pricing = &schemas.Pricing{Prompt: schemas.Ptr("0.00000005"), Completion: schemas.Ptr("0")}
-	case "drex-max", "drex-max-v1.1", "drex-max-finance":
+	case "drex-v2.0", "drex-max-v1.1", "drex-max-finance":
 		entry.MaxInputTokens = schemas.Ptr(262144)
 		entry.Pricing = &schemas.Pricing{Prompt: schemas.Ptr("0.00000003"), Completion: schemas.Ptr("0")}
 	}

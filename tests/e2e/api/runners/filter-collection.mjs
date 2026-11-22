@@ -15,7 +15,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
-import { buildHaystack, declaredProviderOf } from "./lib/haystack.mjs";
+import { buildHaystack, declaredProviderOf, requestModelOf } from "./lib/haystack.mjs";
 import { walkRequests, buildProducerIndex, chainedDependencies, scriptDependencies } from "./lib/chained-vars.mjs";
 import { retryableNames } from "./lib/rate-limit-retry.mjs";
 import {
@@ -314,8 +314,7 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const haystack = buildHaystack(item, ancestorNames);
   // Nace's SDK routes contain openai/typesafe, but require Nace credentials.
   // Inspect the model separately: prompt prose is not provider identity.
-  let model;
-  try { model = JSON.parse(item.request?.body?.raw || "{}").model; } catch {}
+  const model = requestModelOf(item);
   const naceIdentity = buildHaystack({ ...item, request: { ...item.request, body: undefined } }, ancestorNames);
   const isNace = (typeof model === "string" && /^(nace\/|drex-)/i.test(model)) || /\bnace\b/.test(naceIdentity) || naceIdentity.includes("drex-");
   if (provider === "nace") return isNace;

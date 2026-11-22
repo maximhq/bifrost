@@ -48,6 +48,19 @@ export function buildHaystack(item, ancestorNames) {
   ).toLowerCase();
 }
 
+// Read the model separately from prompt prose for provider identity checks.
+export function requestModelOf(item) {
+  const body = item?.request?.body;
+  let model;
+  if (body?.mode === "raw") {
+    try { model = JSON.parse(body.raw).model; } catch {}
+  } else {
+    const fields = body?.mode === "formdata" ? body.formdata : body?.mode === "urlencoded" ? body.urlencoded : [];
+    model = fields?.find((field) => field && field.key === "model" && !field.disabled)?.value;
+  }
+  return typeof model === "string" ? model : undefined;
+}
+
 // declaredProviderOf returns the provider a request names in a "provider" form field (multipart or
 // urlencoded) or "provider" query parameter, lowercased, or undefined. Files API calls on
 // /openai/v1/files carry their real provider there ("azure", "gemini"), while their URL matches the
