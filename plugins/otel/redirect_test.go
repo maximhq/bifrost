@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,25 +14,42 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// redirectPair starts a target that counts requests and a collector that answers every
-// request with a 307 to it.
-func redirectPair(t *testing.T) (collectorURL, locationMarker string, targetHits *atomic.Int32) {
+const (
+	locationMarker = "redirect-location-marker"
+	bodyMarker     = "redirect-body-marker"
+)
+
+var redirectCodes = []int{
+	http.StatusMultipleChoices,
+	http.StatusMovedPermanently,
+	http.StatusFound,
+	http.StatusSeeOther,
+	http.StatusNotModified,
+	http.StatusTemporaryRedirect,
+	http.StatusPermanentRedirect,
+}
+
+// redirectPair starts a target and a collector that answers every request with code, a
+// Location pointing at the target and a body. Both count their requests.
+func redirectPair(t *testing.T, code int) (collectorURL string, collectorHits, targetHits *atomic.Int32) {
 	t.Helper()
-	targetHits = &atomic.Int32{}
+	collectorHits, targetHits = &atomic.Int32{}, &atomic.Int32{}
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		targetHits.Add(1)
 	}))
 	t.Cleanup(target.Close)
 
-	locationMarker = "redirect-location-marker"
-	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, target.URL+"/"+locationMarker, http.StatusTemporaryRedirect)
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		collectorHits.Add(1)
+		w.Header().Set("Location", target.URL+"/"+locationMarker)
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(bodyMarker))
 	}))
 	t.Cleanup(collector.Close)
-	return collector.URL, locationMarker, targetHits
+	return collector.URL, collectorHits, targetHits
 }
 
-func assertRedirectRefused(t *testing.T, err error, marker string, targetHits *atomic.Int32) {
+func assertRedirectRefused(t *testing.T, err error, collectorHits, targetHits *atomic.Int32) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("export succeeded across a redirect, want an error")
@@ -39,35 +57,48 @@ func assertRedirectRefused(t *testing.T, err error, marker string, targetHits *a
 	if !strings.Contains(err.Error(), errRedirectRefused.Error()) {
 		t.Errorf("error %q does not report the refused redirect", err)
 	}
-	if strings.Contains(err.Error(), marker) {
-		t.Errorf("error %q carries the redirect Location", err)
+	for _, marker := range []string{locationMarker, bodyMarker} {
+		if strings.Contains(err.Error(), marker) {
+			t.Errorf("error %q carries %q", err, marker)
+		}
 	}
 	if got := targetHits.Load(); got != 0 {
 		t.Errorf("redirect target saw %d requests, want 0", got)
+	}
+	if got := collectorHits.Load(); got != 1 {
+		t.Errorf("collector saw %d requests, want exactly 1 (no retry)", got)
 	}
 }
 
 func TestTraceExportRefusesRedirects(t *testing.T) {
 	logger = bifrost.NewDefaultLogger(schemas.LogLevelError)
-	collectorURL, marker, targetHits := redirectPair(t)
+	for _, code := range redirectCodes {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			collectorURL, collectorHits, targetHits := redirectPair(t, code)
 
-	client, err := NewOtelClientHTTP(collectorURL, nil, "", true, 3*time.Second)
-	if err != nil {
-		t.Fatalf("NewOtelClientHTTP: %v", err)
+			client, err := NewOtelClientHTTP(collectorURL, nil, "", true, 3*time.Second)
+			if err != nil {
+				t.Fatalf("NewOtelClientHTTP: %v", err)
+			}
+			defer client.Close()
+
+			assertRedirectRefused(t, client.Emit(context.Background(), nil), collectorHits, targetHits)
+		})
 	}
-	defer client.Close()
-
-	assertRedirectRefused(t, client.Emit(context.Background(), nil), marker, targetHits)
 }
 
 func TestMetricsExportRefusesRedirects(t *testing.T) {
-	collectorURL, marker, targetHits := redirectPair(t)
+	for _, code := range redirectCodes {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			collectorURL, collectorHits, targetHits := redirectPair(t, code)
 
-	exp, err := createHTTPExporter(context.Background(), &MetricsConfig{Endpoint: collectorURL + "/v1/metrics", Insecure: true})
-	if err != nil {
-		t.Fatalf("createHTTPExporter: %v", err)
+			exp, err := createHTTPExporter(context.Background(), &MetricsConfig{Endpoint: collectorURL + "/v1/metrics", Insecure: true})
+			if err != nil {
+				t.Fatalf("createHTTPExporter: %v", err)
+			}
+			defer func() { _ = exp.Shutdown(context.Background()) }()
+
+			assertRedirectRefused(t, exp.Export(context.Background(), oneMetric()), collectorHits, targetHits)
+		})
 	}
-	defer func() { _ = exp.Shutdown(context.Background()) }()
-
-	assertRedirectRefused(t, exp.Export(context.Background(), oneMetric()), marker, targetHits)
 }
