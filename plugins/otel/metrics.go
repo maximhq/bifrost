@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"sync"
@@ -283,25 +284,31 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 	return m, nil
 }
 
-func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
-	opts := []otlpmetrichttp.Option{
-		otlpmetrichttp.WithEndpointURL(config.Endpoint),
-		// The global proxy when it is enabled for API traffic, else the environment.
-		otlpmetrichttp.WithProxy(network.DefaultProxyFunc(network.ClientPurposeAPI)),
-	}
+// metricsExportTimeout is the OTLP SDK's default export timeout, which WithHTTPClient
+// would otherwise drop along with the proxy and TLS options.
+const metricsExportTimeout = 10 * time.Second
 
-	if len(config.Headers) > 0 {
-		opts = append(opts, otlpmetrichttp.WithHeaders(config.Headers))
-	}
+func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// The global proxy when it is enabled for API traffic, else the environment.
+	transport.Proxy = network.DefaultProxyFunc(network.ClientPurposeAPI)
 
 	// The endpoint scheme decides the transport, so Insecure only relaxes certificate
-	// verification. The SDK rejects a TLS config on a plaintext endpoint.
+	// verification.
 	if u, err := url.Parse(config.Endpoint); err == nil && u.Scheme == "https" {
 		tlsConfig, err := buildTLSConfig(config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
-		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(tlsConfig))
+		transport.TLSClientConfig = tlsConfig
+	}
+
+	opts := []otlpmetrichttp.Option{
+		otlpmetrichttp.WithEndpointURL(config.Endpoint),
+		otlpmetrichttp.WithHTTPClient(newExportClient(transport, metricsExportTimeout)),
+	}
+	if len(config.Headers) > 0 {
+		opts = append(opts, otlpmetrichttp.WithHeaders(config.Headers))
 	}
 
 	return otlpmetrichttp.New(ctx, opts...)
