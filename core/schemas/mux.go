@@ -240,12 +240,14 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 
 				// Map file
 				if block.File != nil {
+					respBlocks[i].Citations = block.Citations
 					respBlocks[i].FileID = block.File.FileID
 					respBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
-						FileData: block.File.FileData,
-						FileURL:  block.File.FileURL,
-						Filename: block.File.Filename,
-						FileType: block.File.FileType,
+						FileData:    block.File.FileData,
+						FileContent: block.File.FileContent,
+						FileURL:     block.File.FileURL,
+						Filename:    block.File.Filename,
+						FileType:    block.File.FileType,
 					}
 				}
 
@@ -714,11 +716,13 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 					}
 				}
 				if block.File != nil {
+					rb.Citations = block.Citations
 					rb.ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
-						FileData: block.File.FileData,
-						FileURL:  block.File.FileURL,
-						Filename: block.File.Filename,
-						FileType: block.File.FileType,
+						FileData:    block.File.FileData,
+						FileContent: block.File.FileContent,
+						FileURL:     block.File.FileURL,
+						Filename:    block.File.Filename,
+						FileType:    block.File.FileType,
 					}
 					rb.FileID = block.File.FileID
 				}
@@ -788,11 +792,14 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 
 					// Map file
 					if block.File != nil {
+						respBlocks[i].Citations = block.Citations
 						respBlocks[i].FileID = block.File.FileID
 						respBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
-							FileData: block.File.FileData,
-							Filename: block.File.Filename,
-							FileType: block.File.FileType,
+							FileData:    block.File.FileData,
+							FileContent: block.File.FileContent,
+							FileURL:     block.File.FileURL,
+							Filename:    block.File.Filename,
+							FileType:    block.File.FileType,
 						}
 					}
 
@@ -1151,12 +1158,14 @@ func ToChatMessages(rms []ResponsesMessage, sources *[]int) []ChatMessage {
 						}
 					}
 					if block.ResponsesInputMessageContentBlockFile != nil {
+						chatBlocks[i].Citations = block.Citations
 						chatBlocks[i].File = &ChatInputFile{
-							FileData: block.ResponsesInputMessageContentBlockFile.FileData,
-							FileURL:  block.ResponsesInputMessageContentBlockFile.FileURL,
-							Filename: block.ResponsesInputMessageContentBlockFile.Filename,
-							FileType: block.ResponsesInputMessageContentBlockFile.FileType,
-							FileID:   block.FileID,
+							FileData:    block.ResponsesInputMessageContentBlockFile.FileData,
+							FileContent: block.ResponsesInputMessageContentBlockFile.FileContent,
+							FileURL:     block.ResponsesInputMessageContentBlockFile.FileURL,
+							Filename:    block.ResponsesInputMessageContentBlockFile.Filename,
+							FileType:    block.ResponsesInputMessageContentBlockFile.FileType,
+							FileID:      block.FileID,
 						}
 					}
 					if block.Audio != nil {

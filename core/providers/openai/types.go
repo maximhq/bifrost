@@ -604,6 +604,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 					if dropEmptyTextFiles && isEmptyChatTextFile(block.File) {
 						continue
 					}
+					block = openAIChatFileContentBlock(block)
 					stripBlockCacheControl := block.CacheControl != nil && !keepCacheControl
 					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileURL != nil || fileNeedsWireRewrite(block.File.FileData, block.File.Filename, block.File.FileType))) || audioURLShadowedByData(block.InputAudio)
 					if needsBlockCopy {
@@ -950,6 +951,10 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 						hasContentModification = true
 						continue
 					}
+					if rewritten, changed := openAIResponsesFileContentBlock(block); changed {
+						block = rewritten
+						hasContentModification = true
+					}
 
 					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
 					if needsBlockCopy {
@@ -1043,6 +1048,8 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				if msg.ResponsesToolMessage.Output != nil {
 					outputBlocks, hadToolReferences = withoutToolReferenceBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
 				}
+				// Custom documents become text before the flatten check below.
+				outputBlocks, rewroteFileContent := rewriteResponsesFileContentBlocks(outputBlocks)
 				if hadToolReferences && len(outputBlocks) == 0 {
 					empty := ""
 					outputCopy := *msg.ResponsesToolMessage.Output
@@ -1059,9 +1066,9 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					toolMsgModified = true
 				} else if outputBlocks != nil {
 					// Strip CacheControl and FileType from tool message output blocks if needed
-					hasToolModification := hadToolReferences
+					hasToolModification := hadToolReferences || rewroteFileContent
 					for _, block := range outputBlocks {
-						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) {
+						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || responsesBlockHasFileContent(&block) || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) {
 							hasToolModification = true
 							break
 						}
@@ -1289,6 +1296,9 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 			if audioURLShadowedByData(block.InputAudio) {
 				return true
 			}
+			if chatBlockHasFileContent(&block) {
+				return true
+			}
 		}
 		// An empty text document needs no wire rewrite of its own, but is dropped beside other content.
 		if chatEmptyTextFilesToDrop(msg.Content.ContentBlocks) {
@@ -1342,6 +1352,9 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType) {
 				return true
 			}
+			if responsesBlockHasFileContent(&block) {
+				return true
+			}
 			if block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0 {
 				return true
 			}
@@ -1389,6 +1402,9 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 					return true
 				}
 				if block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType) {
+					return true
+				}
+				if responsesBlockHasFileContent(&block) {
 					return true
 				}
 			}

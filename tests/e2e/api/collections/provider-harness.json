@@ -347110,6 +347110,1481 @@
           }
         }
       ]
+    },
+    {
+      "name": "375. Chat tool-result images follow the model's image support (chat-tool-images) (#9456 / PR #9769)",
+      "description": "Regression from #9070: the shared Chat converter replaced tool images with placeholders, including direct Chat and translated Responses/Anthropic requests. A Chat tool message takes text only, so for a model that accepts images (datasheet supports_vision, or OpenAI/Azure OpenAI when the model has no record) each result's image is attributed and moved into user content after all parallel results. Every other OpenAI-compatible host (Groq, Cerebras, DeepSeek, Mistral, Ollama, vLLM, ...) serves text-only models that reject an image_url part with a 400, so without a vision record they keep the placeholder and get no extra user turn. The openai/gpt-4o-mini unary and streaming cases pin the moved images and actual image interpretation using the same red/blue PNG fixtures as folder 88 (file names/tool text reveal no colors; exact bytes, order, call IDs, completion and model color answers are asserted). The groq/openai/gpt-oss-120b case pins the text-only side: before the gate it was sent an image_url part. Native Responses preservation already has folder 295 coverage; custom and built-in Responses fallback are pinned by Go capture tests. No error statuses are skipped.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions unary: parallel tool images reach the strict Chat wire and retain provenance - chat-tool-images - #9456 / PR #9769",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var STREAMING = false;",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('chat-tool-images: request accepted', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "});",
+                  "var events = [];",
+                  "var done = false;",
+                  "if (STREAMING) {",
+                  "  var lines = text.split(/\\r?\\n/);",
+                  "  lines.forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (data === '[DONE]') { done = true; return; }",
+                  "    if (data) { events.push(JSON.parse(data)); }",
+                  "  });",
+                  "} else {",
+                  "  events.push(pm.response.json());",
+                  "}",
+                  "var raw;",
+                  "var answer = '';",
+                  "var finished = false;",
+                  "events.forEach(function (event) {",
+                  "  pm.test('chat-tool-images: no error event', function () {",
+                  "    pm.expect(event.error, JSON.stringify(event)).to.equal(undefined);",
+                  "    pm.expect(event.is_bifrost_error, JSON.stringify(event)).not.to.equal(true);",
+                  "  });",
+                  "  var candidate = (event.extra_fields || {}).raw_request;",
+                  "  if (!raw && candidate) { raw = typeof candidate === 'string' ? JSON.parse(candidate) : candidate; }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var content = STREAMING ? (choice.delta || {}).content : (choice.message || {}).content;",
+                  "    if (typeof content === 'string') { answer += content; }",
+                  "    if (choice.finish_reason === 'stop') { finished = true; }",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: response completes', function () {",
+                  "  pm.expect(events.length, text).to.be.above(0);",
+                  "  pm.expect(finished, text).to.equal(true);",
+                  "  if (STREAMING) { pm.expect(done, text).to.equal(true); }",
+                  "});",
+                  "pm.test('chat-tool-images: strict Chat wire retains both tool images', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.messages, JSON.stringify(raw)).to.be.an('array');",
+                  "  var messages = raw.messages;",
+                  "  pm.expect(messages.map(function (m) { return m.role; }), JSON.stringify(messages)).to.eql(['user', 'assistant', 'tool', 'tool', 'user']);",
+                  "  pm.expect(messages[2].tool_call_id).to.equal('call_a');",
+                  "  pm.expect(messages[3].tool_call_id).to.equal('call_b');",
+                  "  [messages[2], messages[3]].forEach(function (m) {",
+                  "    if (Array.isArray(m.content)) {",
+                  "      m.content.forEach(function (part) {",
+                  "        pm.expect(part.type, JSON.stringify(m)).to.equal('text');",
+                  "        pm.expect(part.text).not.to.include('base64,');",
+                  "        pm.expect(part.text).not.to.include('not shown');",
+                  "      });",
+                  "    } else {",
+                  "      pm.expect(m.content).to.be.a('string');",
+                  "      pm.expect(m.content).not.to.include('base64,');",
+                  "      pm.expect(m.content).not.to.include('not shown');",
+                  "    }",
+                  "  });",
+                  "  var parts = messages[4].content;",
+                  "  pm.expect(parts, JSON.stringify(messages[4])).to.be.an('array');",
+                  "  pm.expect(parts.length).to.equal(4);",
+                  "  pm.expect(parts[0].text).to.equal('Images returned by tool call call_a:');",
+                  "  pm.expect(parts[2].text).to.equal('Images returned by tool call call_b:');",
+                  "  var sent = parts.filter(function (part) { return part.type === 'image_url'; });",
+                  "  var requested = JSON.parse(pm.request.body.raw).messages.filter(function (m) { return m.role === 'tool'; });",
+                  "  pm.expect(sent.length).to.equal(2);",
+                  "  sent.forEach(function (part, i) {",
+                  "    pm.expect(part.image_url.url).to.equal(requested[i].content[0].image_url.url);",
+                  "    pm.expect(part.image_url.detail).to.equal('low');",
+                  "    pm.expect(part.prompt_cache_breakpoint).to.equal(undefined);",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: the model reads each tool image', function () {",
+                  "  var colors = JSON.parse(answer);",
+                  "  pm.expect(String(colors.call_a).toLowerCase(), answer).to.equal('red');",
+                  "  pm.expect(String(colors.call_b).toLowerCase(), answer).to.equal('blue');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read both files. Report the dominant color returned by each tool call in lowercase JSON with keys call_a and call_b. Do not guess from the tool text.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_a\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"a.png\\\"}\"\n          }\n        },\n        {\n          \"id\": \"call_b\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"b.png\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_a\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_b\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwBfCEPbPYxhD+HEIgwW4zdrn64YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAm3EgQAbtio+AAAAAElFTkSuQmCC\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read_file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"response_format\": {\n    \"type\": \"json_object\"\n  },\n  \"max_completion_tokens\": 64,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions streaming: parallel tool images reach the strict Chat wire and retain provenance - chat-tool-images - #9456 / PR #9769",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var STREAMING = true;",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('chat-tool-images: request accepted', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "});",
+                  "var events = [];",
+                  "var done = false;",
+                  "if (STREAMING) {",
+                  "  var lines = text.split(/\\r?\\n/);",
+                  "  lines.forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (data === '[DONE]') { done = true; return; }",
+                  "    if (data) { events.push(JSON.parse(data)); }",
+                  "  });",
+                  "} else {",
+                  "  events.push(pm.response.json());",
+                  "}",
+                  "var raw;",
+                  "var answer = '';",
+                  "var finished = false;",
+                  "events.forEach(function (event) {",
+                  "  pm.test('chat-tool-images: no error event', function () {",
+                  "    pm.expect(event.error, JSON.stringify(event)).to.equal(undefined);",
+                  "    pm.expect(event.is_bifrost_error, JSON.stringify(event)).not.to.equal(true);",
+                  "  });",
+                  "  var candidate = (event.extra_fields || {}).raw_request;",
+                  "  if (!raw && candidate) { raw = typeof candidate === 'string' ? JSON.parse(candidate) : candidate; }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var content = STREAMING ? (choice.delta || {}).content : (choice.message || {}).content;",
+                  "    if (typeof content === 'string') { answer += content; }",
+                  "    if (choice.finish_reason === 'stop') { finished = true; }",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: response completes', function () {",
+                  "  pm.expect(events.length, text).to.be.above(0);",
+                  "  pm.expect(finished, text).to.equal(true);",
+                  "  if (STREAMING) { pm.expect(done, text).to.equal(true); }",
+                  "});",
+                  "pm.test('chat-tool-images: strict Chat wire retains both tool images', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.messages, JSON.stringify(raw)).to.be.an('array');",
+                  "  var messages = raw.messages;",
+                  "  pm.expect(messages.map(function (m) { return m.role; }), JSON.stringify(messages)).to.eql(['user', 'assistant', 'tool', 'tool', 'user']);",
+                  "  pm.expect(messages[2].tool_call_id).to.equal('call_a');",
+                  "  pm.expect(messages[3].tool_call_id).to.equal('call_b');",
+                  "  [messages[2], messages[3]].forEach(function (m) {",
+                  "    if (Array.isArray(m.content)) {",
+                  "      m.content.forEach(function (part) {",
+                  "        pm.expect(part.type, JSON.stringify(m)).to.equal('text');",
+                  "        pm.expect(part.text).not.to.include('base64,');",
+                  "        pm.expect(part.text).not.to.include('not shown');",
+                  "      });",
+                  "    } else {",
+                  "      pm.expect(m.content).to.be.a('string');",
+                  "      pm.expect(m.content).not.to.include('base64,');",
+                  "      pm.expect(m.content).not.to.include('not shown');",
+                  "    }",
+                  "  });",
+                  "  var parts = messages[4].content;",
+                  "  pm.expect(parts, JSON.stringify(messages[4])).to.be.an('array');",
+                  "  pm.expect(parts.length).to.equal(4);",
+                  "  pm.expect(parts[0].text).to.equal('Images returned by tool call call_a:');",
+                  "  pm.expect(parts[2].text).to.equal('Images returned by tool call call_b:');",
+                  "  var sent = parts.filter(function (part) { return part.type === 'image_url'; });",
+                  "  var requested = JSON.parse(pm.request.body.raw).messages.filter(function (m) { return m.role === 'tool'; });",
+                  "  pm.expect(sent.length).to.equal(2);",
+                  "  sent.forEach(function (part, i) {",
+                  "    pm.expect(part.image_url.url).to.equal(requested[i].content[0].image_url.url);",
+                  "    pm.expect(part.image_url.detail).to.equal('low');",
+                  "    pm.expect(part.prompt_cache_breakpoint).to.equal(undefined);",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: the model reads each tool image', function () {",
+                  "  var colors = JSON.parse(answer);",
+                  "  pm.expect(String(colors.call_a).toLowerCase(), answer).to.equal('red');",
+                  "  pm.expect(String(colors.call_b).toLowerCase(), answer).to.equal('blue');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read both files. Report the dominant color returned by each tool call in lowercase JSON with keys call_a and call_b. Do not guess from the tool text.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_a\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"a.png\\\"}\"\n          }\n        },\n        {\n          \"id\": \"call_b\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"b.png\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_a\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_b\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwBfCEPbPYxhD+HEIgwW4zdrn64YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAm3EgQAbtio+AAAAAElFTkSuQmCC\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read_file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"response_format\": {\n    \"type\": \"json_object\"\n  },\n  \"max_completion_tokens\": 64,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "groq/openai/gpt-oss-120b /v1/chat/completions unary: text-only model keeps the tool image placeholder and gets no image part - chat-tool-images - #9456 / PR #9769",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('chat-tool-images: text-only model accepts the request', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "});",
+                  "var json = pm.response.json();",
+                  "pm.test('chat-tool-images: response completes', function () {",
+                  "  pm.expect(json.error, text).to.equal(undefined);",
+                  "  pm.expect(json.choices, text).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(json.choices[0].finish_reason, text).to.be.oneOf(['stop', 'length']);",
+                  "});",
+                  "pm.test('chat-tool-images: tool images stay placeholders and no user turn is added', function () {",
+                  "  var candidate = (json.extra_fields || {}).raw_request;",
+                  "  pm.expect(candidate, 'raw_request missing: ' + text).to.exist;",
+                  "  var raw = typeof candidate === 'string' ? JSON.parse(candidate) : candidate;",
+                  "  var messages = raw.messages;",
+                  "  pm.expect(messages.map(function (m) { return m.role; }), JSON.stringify(messages)).to.eql(['user', 'assistant', 'tool', 'tool']);",
+                  "  [messages[2], messages[3]].forEach(function (m) {",
+                  "    pm.expect(m.content, JSON.stringify(m)).to.be.a('string');",
+                  "    pm.expect(m.content).to.include('returned by the tool, not shown');",
+                  "    pm.expect(m.content).not.to.include('base64,');",
+                  "  });",
+                  "  pm.expect(JSON.stringify(raw)).not.to.include('image_url');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"groq/openai/gpt-oss-120b\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Two files were read. Say in one short sentence whether you could see their contents.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_a\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"a.png\\\"}\"\n          }\n        },\n        {\n          \"id\": \"call_b\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"b.png\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_a\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_b\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwBfCEPbPYxhD+HEIgwW4zdrn64YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAm3EgQAbtio+AAAAAElFTkSuQmCC\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read_file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"max_completion_tokens\": 128,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "376. Bedrock document citation fidelity (document citation fidelity)",
+      "description": "Covers custom-document forwarding and document citation fidelity on Converse, Anthropic-to-Bedrock, Responses, and Chat routes, including streaming. Chat preserves generated text; document locations are returned on the other surfaces. Custom content requires enabled citations; existing model-specific S3 refusals remain unchanged.",
+      "item": [
+        {
+          "name": "376.01 bedrock/claude-haiku-5-5 custom content Converse (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j=pm.response.json(), text='', citations=[];",
+                  "(j.output.message.content || []).forEach(function (b) {",
+                  "  if (b.citationsContent) {",
+                  "    (b.citationsContent.content || []).forEach(function (x) { text += x.text || ''; });",
+                  "    (b.citationsContent.citations || []).forEach(function (x) { if (x.location && x.location.documentChunk) { citations.push(x.location.documentChunk); } });",
+                  "  }",
+                  "});",
+                  "pm.test('document citations preserve source locations', function () {",
+                  "  pm.expect(citations.length, pm.response.text()).to.be.above(0);",
+                  "  citations.forEach(function (a) {",
+                  "    pm.expect(a.documentIndex).to.eql(0);",
+                  "    pm.expect(a.start).to.be.at.least(0);",
+                  "    pm.expect(a.end).to.be.above(a.start);",
+                  "  });",
+                  "});",
+                  "pm.test('generated answer survives citation conversion', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"document\": {\n            \"name\": \"pack\",\n            \"source\": {\n              \"content\": [\n                {\n                  \"text\": \"The board approved the 2026 budget of $4.2M.\"\n                },\n                {\n                  \"text\": \"The audit committee met on 3 March.\"\n                }\n              ]\n            },\n            \"citations\": {\n              \"enabled\": true\n            }\n          }\n        },\n        {\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128\n  },\n  \"additionalModelRequestFields\": {\n    \"thinking\": {\n      \"type\": \"disabled\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-5-5/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-5-5",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.02 bedrock/claude-haiku-5-5 custom content ConverseStream (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('AWS EventStream framing', function () { pm.expect(pm.response.headers.get('content-type') || '').to.include('vnd.amazon.eventstream'); });",
+                  "var raw=pm.response.stream.toString('utf8'), text='', citations=[], m;",
+                  "var textDeltas=/\"delta\":\\s*\\{\"text\":\\s*(\"(?:[^\"\\\\]|\\\\.)*\")\\s*\\}/g;",
+                  "while ((m=textDeltas.exec(raw))) { text += JSON.parse(m[1]); }",
+                  "var locations=/\"documentChunk\":\\s*(\\{[^}]+\\})/g;",
+                  "while ((m=locations.exec(raw))) { citations.push(JSON.parse(m[1])); }",
+                  "pm.test('document citations preserve source locations', function () {",
+                  "  pm.expect(citations.length, pm.response.text()).to.be.above(0);",
+                  "  citations.forEach(function (a) {",
+                  "    pm.expect(a.documentIndex).to.eql(0);",
+                  "    pm.expect(a.start).to.be.at.least(0);",
+                  "    pm.expect(a.end).to.be.above(a.start);",
+                  "  });",
+                  "});",
+                  "pm.test('generated answer survives citation conversion', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"document\": {\n            \"name\": \"pack\",\n            \"source\": {\n              \"content\": [\n                {\n                  \"text\": \"The board approved the 2026 budget of $4.2M.\"\n                },\n                {\n                  \"text\": \"The audit committee met on 3 March.\"\n                }\n              ]\n            },\n            \"citations\": {\n              \"enabled\": true\n            }\n          }\n        },\n        {\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128\n  },\n  \"additionalModelRequestFields\": {\n    \"thinking\": {\n      \"type\": \"disabled\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-5-5/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-5-5",
+                "converse-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.03 bedrock/claude-haiku-5-5 plain text Converse (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j=pm.response.json(), text='', citations=[];",
+                  "(j.output.message.content || []).forEach(function (b) {",
+                  "  if (b.citationsContent) {",
+                  "    (b.citationsContent.content || []).forEach(function (x) { text += x.text || ''; });",
+                  "    (b.citationsContent.citations || []).forEach(function (x) { if (x.location && x.location.documentChar) { citations.push(x.location.documentChar); } });",
+                  "  }",
+                  "});",
+                  "pm.test('document citations preserve source locations', function () {",
+                  "  pm.expect(citations.length, pm.response.text()).to.be.above(0);",
+                  "  citations.forEach(function (a) {",
+                  "    pm.expect(a.documentIndex).to.eql(0);",
+                  "    pm.expect(a.start).to.be.at.least(0);",
+                  "    pm.expect(a.end).to.be.above(a.start);",
+                  "  });",
+                  "});",
+                  "pm.test('generated answer survives citation conversion', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"document\": {\n            \"name\": \"pack\",\n            \"source\": {\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            \"citations\": {\n              \"enabled\": true\n            },\n            \"format\": \"txt\"\n          }\n        },\n        {\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128\n  },\n  \"additionalModelRequestFields\": {\n    \"thinking\": {\n      \"type\": \"disabled\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-5-5/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-5-5",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.04 bedrock/claude-haiku-5-5 plain text ConverseStream (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('AWS EventStream framing', function () { pm.expect(pm.response.headers.get('content-type') || '').to.include('vnd.amazon.eventstream'); });",
+                  "var raw=pm.response.stream.toString('utf8'), text='', citations=[], m;",
+                  "var textDeltas=/\"delta\":\\s*\\{\"text\":\\s*(\"(?:[^\"\\\\]|\\\\.)*\")\\s*\\}/g;",
+                  "while ((m=textDeltas.exec(raw))) { text += JSON.parse(m[1]); }",
+                  "var locations=/\"documentChar\":\\s*(\\{[^}]+\\})/g;",
+                  "while ((m=locations.exec(raw))) { citations.push(JSON.parse(m[1])); }",
+                  "pm.test('document citations preserve source locations', function () {",
+                  "  pm.expect(citations.length, pm.response.text()).to.be.above(0);",
+                  "  citations.forEach(function (a) {",
+                  "    pm.expect(a.documentIndex).to.eql(0);",
+                  "    pm.expect(a.start).to.be.at.least(0);",
+                  "    pm.expect(a.end).to.be.above(a.start);",
+                  "  });",
+                  "});",
+                  "pm.test('generated answer survives citation conversion', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"document\": {\n            \"name\": \"pack\",\n            \"source\": {\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            \"citations\": {\n              \"enabled\": true\n            },\n            \"format\": \"txt\"\n          }\n        },\n        {\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128\n  },\n  \"additionalModelRequestFields\": {\n    \"thinking\": {\n      \"type\": \"disabled\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-5-5/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-5-5",
+                "converse-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.05 bedrock/claude-haiku-5-5 anthropic custom content unary (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j=pm.response.json(), text='', citations=[];",
+                  "(j.content || []).forEach(function (b) { text += b.text || ''; (b.citations || []).forEach(function (a) { citations.push({documentIndex:a.document_index,start:a.start_block_index,end:a.end_block_index}); }); });",
+                  "pm.test('document citations preserve source locations', function () {",
+                  "  pm.expect(citations.length, pm.response.text()).to.be.above(0);",
+                  "  citations.forEach(function (a) {",
+                  "    pm.expect(a.documentIndex).to.eql(0);",
+                  "    pm.expect(a.start).to.be.at.least(0);",
+                  "    pm.expect(a.end).to.be.above(a.start);",
+                  "  });",
+                  "});",
+                  "pm.test('generated answer survives citation conversion', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"title\": \"pack\",\n          \"source\": {\n            \"type\": \"content\",\n            \"content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": false,\n  \"thinking\": {\n    \"type\": \"disabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.06 bedrock/claude-haiku-5-5 anthropic custom content streaming (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var events=[]; pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data: ') === 0 && line.slice(6) !== '[DONE]') { events.push(JSON.parse(line.slice(6))); } });",
+                  "var text='', citations=[];",
+                  "events.forEach(function (e) { if (e.delta && e.delta.type === 'text_delta') { text += e.delta.text || ''; } if (e.delta && e.delta.type === 'citations_delta') { var a=e.delta.citation; citations.push({documentIndex:a.document_index,start:a.start_block_index,end:a.end_block_index}); } });",
+                  "pm.test('document citations preserve source locations', function () {",
+                  "  pm.expect(citations.length, pm.response.text()).to.be.above(0);",
+                  "  citations.forEach(function (a) {",
+                  "    pm.expect(a.documentIndex).to.eql(0);",
+                  "    pm.expect(a.start).to.be.at.least(0);",
+                  "    pm.expect(a.end).to.be.above(a.start);",
+                  "  });",
+                  "});",
+                  "pm.test('generated answer survives citation conversion', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"title\": \"pack\",\n          \"source\": {\n            \"type\": \"content\",\n            \"content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"disabled\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.07 bedrock/claude-haiku-5-5 responses custom content unary (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j=pm.response.json(), text='', citations=[];",
+                  "(j.output || []).forEach(function (o) { (o.content || []).forEach(function (b) { text += b.text || ''; (b.annotations || []).forEach(function (a) { citations.push({documentIndex:a.index,start:a.start_block_index,end:a.end_block_index}); }); }); });",
+                  "pm.test('document citations preserve source locations', function () {",
+                  "  pm.expect(citations.length, pm.response.text()).to.be.above(0);",
+                  "  citations.forEach(function (a) {",
+                  "    pm.expect(a.documentIndex).to.eql(0);",
+                  "    pm.expect(a.start).to.be.at.least(0);",
+                  "    pm.expect(a.end).to.be.above(a.start);",
+                  "  });",
+                  "});",
+                  "pm.test('generated answer survives citation conversion', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"The audit committee met on 3 March.\"\n            }\n          ],\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": false,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.08 bedrock/claude-haiku-5-5 responses custom content streaming (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var events=[]; pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data: ') === 0 && line.slice(6) !== '[DONE]') { events.push(JSON.parse(line.slice(6))); } });",
+                  "var text='', citations=[];",
+                  "events.forEach(function (e) { if (e.type === 'response.output_text.delta') { text += e.delta || ''; } if (e.type === 'response.output_text.annotation.added') { var a=e.annotation; citations.push({documentIndex:a.index,start:a.start_block_index,end:a.end_block_index}); } });",
+                  "pm.test('document citations preserve source locations', function () {",
+                  "  pm.expect(citations.length, pm.response.text()).to.be.above(0);",
+                  "  citations.forEach(function (a) {",
+                  "    pm.expect(a.documentIndex).to.eql(0);",
+                  "    pm.expect(a.start).to.be.at.least(0);",
+                  "    pm.expect(a.end).to.be.above(a.start);",
+                  "  });",
+                  "});",
+                  "pm.test('generated answer survives citation conversion', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });",
+                  "pm.test('completed response retains streamed text and citations', function () {",
+                  "  var completed=events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "  pm.expect(completed.length, pm.response.text()).to.eql(1);",
+                  "  var finalText='', finalCitations=[];",
+                  "  (completed[0].response.output || []).forEach(function (o) { (o.content || []).forEach(function (b) { finalText += b.text || ''; (b.annotations || []).forEach(function (a) { finalCitations.push(a); }); }); });",
+                  "  pm.expect(finalText, pm.response.text()).to.eql(text);",
+                  "  pm.expect(finalCitations.length, pm.response.text()).to.eql(citations.length);",
+                  "  pm.expect(finalCitations.length, pm.response.text()).to.be.above(0);",
+                  "  finalCitations.forEach(function (a, i) { pm.expect(a.type).to.eql('content_block_location'); pm.expect(a.index).to.eql(citations[i].documentIndex); pm.expect(a.start_block_index).to.eql(citations[i].start); pm.expect(a.end_block_index).to.eql(citations[i].end); });",
+                  "});",
+                  "pm.test('Responses indices and annotation lifecycle are item-local', function () {",
+                  "  var opened={}, closed={}, nextAnnotation={};",
+                  "  events.forEach(function (e) {",
+                  "    if (e.type === 'response.output_item.added') { opened[e.output_index]=e.item.id; nextAnnotation[e.output_index]=0; }",
+                  "    if (e.type === 'response.output_item.done' && e.item) { closed[e.item.id]=true; }",
+                  "    if (e.type === 'response.output_text.delta' || e.type === 'response.output_text.annotation.added') { pm.expect(opened[e.output_index]).to.be.a('string'); pm.expect(e.content_index).to.eql(0); pm.expect(e.item_id).to.eql(opened[e.output_index]); pm.expect(closed[e.item_id], e.type + ' after output_item.done for ' + e.item_id).to.not.eql(true); }",
+                  "    if (e.type === 'response.output_text.annotation.added') { pm.expect(e.annotation_index).to.eql(nextAnnotation[e.output_index]++); }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"The audit committee met on 3 March.\"\n            }\n          ],\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.09 bedrock/claude-haiku-5-5 chat custom content unary (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text=pm.response.json().choices[0].message.content || '';",
+                  "pm.test('cited answer text is not discarded', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"pack\",\n            \"file_content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": false,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.10 bedrock/claude-haiku-5-5 chat custom content streaming (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var events=[]; pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data: ') === 0 && line.slice(6) !== '[DONE]') { events.push(JSON.parse(line.slice(6))); } });",
+                  "var text='';",
+                  "events.forEach(function (e) { if (e.choices && e.choices[0].delta) { text += e.choices[0].delta.content || ''; } });",
+                  "pm.test('cited answer text is not discarded', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"pack\",\n            \"file_content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": true,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.11 bedrock/claude-haiku-5-5 custom content without citations returns actionable 400 (document citation fidelity) [EXPECT-400]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unsupported content is a 400, never a conversion 500', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); pm.expect(pm.response.text()).to.include('citations.enabled'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"The audit committee met on 3 March.\"\n            }\n          ],\n          \"citations\": {\n            \"enabled\": false\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.12 bedrock/claude-haiku-5-5 Converse preserves model-specific S3 refusal (document citation fidelity) [EXPECT-400]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unsupported S3 source reaches the existing model gate', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); pm.expect(pm.response.text()).to.include('does not support s3://'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"document\": {\n            \"name\": \"pack\",\n            \"format\": \"pdf\",\n            \"source\": {\n              \"s3Location\": {\n                \"uri\": \"s3://bucket/key.pdf\"\n              }\n            }\n          }\n        },\n        {\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 64\n  },\n  \"additionalModelRequestFields\": {\n    \"thinking\": {\n      \"type\": \"disabled\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-5-5/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-5-5",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.13 bedrock/claude-haiku-5-5 responses structured output streaming keeps citations out of the JSON (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('structured output with cited document: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var events=[]; pm.response.text().split(/\\r?\\n/).forEach(function (line) { if (line.indexOf('data: ') === 0 && line.slice(6) !== '[DONE]') { events.push(JSON.parse(line.slice(6))); } });",
+                  "var text='', annotations=0, messages=0;",
+                  "events.forEach(function (e) { if (e.type === 'response.output_text.delta') { text += e.delta || ''; } if (e.type === 'response.output_text.annotation.added') { annotations++; } if (e.type === 'response.output_item.added' && e.item && e.item.type === 'message') { messages++; } });",
+                  "pm.test('no citation from dropped prose reaches the structured output', function () { pm.expect(annotations, pm.response.text().slice(0, 1500)).to.eql(0); });",
+                  "pm.test('only the structured-output message item opens', function () { pm.expect(messages, pm.response.text().slice(0, 1500)).to.eql(1); });",
+                  "pm.test('streamed text is the schema JSON', function () { var parsed; try { parsed = JSON.parse(text); } catch (e) { pm.expect.fail('output_text is not JSON: ' + text); } pm.expect(parsed.budget, text).to.be.a('string').and.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"The audit committee met on 3 March.\"\n            }\n          ],\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Cite the document for the approved budget, then give the answer.\"\n        }\n      ]\n    }\n  ],\n  \"text\": {\n    \"format\": {\n      \"type\": \"json_schema\",\n      \"name\": \"budget_answer\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"budget\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"budget\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  },\n  \"stream\": true,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.14 bedrock/claude-haiku-5-5 responses custom content beside an empty file_data is accepted (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty file_data beside file_content is not a second source', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var j=pm.response.json(), text='', citations=0;",
+                  "(j.output || []).forEach(function (o) { (o.content || []).forEach(function (b) { text += b.text || ''; citations += (b.annotations || []).length; }); });",
+                  "pm.test('custom document still answers with citations', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); pm.expect(citations, pm.response.text()).to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_data\": \"\",\n          \"file_content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"The audit committee met on 3 March.\"\n            }\n          ],\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Respond in one short sentence and cite the supporting document.\"\n        }\n      ]\n    }\n  ],\n  \"stream\": false,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "376.15 bedrock/claude-haiku-5-5 chat structured output with a cited document keeps the JSON (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('structured output chat with cited document: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "pm.test('message content is the schema JSON, not cited prose', function () { var c = ((pm.response.json().choices || [])[0] || {}).message.content; var parsed; try { parsed = JSON.parse(c); } catch (e) { pm.expect.fail('content is not JSON: ' + c); } pm.expect(parsed.budget, c).to.be.a('string').and.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_completion_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"pack\",\n            \"file_content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Cite the document for the approved budget, then give the answer.\"\n        }\n      ]\n    }\n  ],\n  \"response_format\": {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n      \"name\": \"budget_answer\",\n      \"schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"budget\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"budget\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "377. Custom document content on OpenAI-shaped wires (document citation fidelity)",
+      "item": [
+        {
+          "name": "377.01 /v1/chat/completions -> openai/gpt-5.4-mini custom document content goes out as text (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('custom content chat: answer uses the document', function () { var j = pm.response.json(); pm.expect(((j.choices || [])[0] || {}).message.content || '', pm.response.text().slice(0, 500)).to.match(/4\\.2/); });",
+                  "pm.test('custom content chat: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('custom content chat: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream; the log row is written asynchronously, so poll (ten reads a second apart).",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 1200);",
+                  "      pm.test('custom content chat: file_content never reaches the OpenAI wire', function () { pm.expect(JSON.stringify(rr), dump).to.not.include('file_content'); });",
+                  "      pm.test('custom content chat: document text is a text block', function () { var c = (rr.messages || [])[0].content || []; var hit = c.filter(function (b) { return b.type === 'text' && /4\\.2M/.test(b.text || '') && /3 March/.test(b.text || ''); }); pm.expect(hit.length, dump).to.eql(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('custom content chat: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_completion_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"pack\",\n            \"file_content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          },\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Answer in one short sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "377.02 /v1/responses -> openai/gpt-5.4-mini custom document content goes out as input_text (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('custom content responses: answer uses the document', function () { var j = pm.response.json(), t = ''; (j.output || []).forEach(function (o) { (o.content || []).forEach(function (b) { t += b.text || ''; }); }); pm.expect(t, pm.response.text().slice(0, 500)).to.match(/4\\.2/); });",
+                  "pm.test('custom content responses: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('custom content responses: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream; the log row is written asynchronously, so poll (ten reads a second apart).",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 1200);",
+                  "      pm.test('custom content responses: file_content never reaches the OpenAI wire', function () { pm.expect(JSON.stringify(rr), dump).to.not.include('file_content'); });",
+                  "      pm.test('custom content responses: document text is an input_text block', function () { var c = ((rr.input || [])[0] || {}).content || []; var hit = c.filter(function (b) { return b.type === 'input_text' && /4\\.2M/.test(b.text || '') && /3 March/.test(b.text || ''); }); pm.expect(hit.length, dump).to.eql(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('custom content responses: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"The audit committee met on 3 March.\"\n            }\n          ],\n          \"citations\": {\n            \"enabled\": true\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Answer in one short sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "377.03 /v1/chat/completions -> openai/gpt-5.4-mini custom document beside an empty text/plain file_data is kept (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty file_data document: answer uses the document', function () { var j = pm.response.json(); pm.expect(((j.choices || [])[0] || {}).message.content || '', pm.response.text().slice(0, 500)).to.match(/4\\.2/); });",
+                  "pm.test('empty file_data document: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('empty file_data document: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream; the log row is written asynchronously, so poll (ten reads a second apart).",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 1200);",
+                  "      pm.test('empty file_data document: file_content never reaches the OpenAI wire', function () { pm.expect(JSON.stringify(rr), dump).to.not.include('file_content'); });",
+                  "      pm.test('empty file_data document: document text was not dropped as an empty file', function () { var c = (rr.messages || [])[0].content || []; var hit = c.filter(function (b) { return b.type === 'text' && /4\\.2M/.test(b.text || ''); }); pm.expect(hit.length, dump).to.eql(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('empty file_data document: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_completion_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"pack.txt\",\n            \"file_data\": \"\",\n            \"file_type\": \"text/plain\",\n            \"file_content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Answer in one short sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "377.04 /v1/responses -> openai/gpt-5.4-mini tool output holding only a custom document is sent as a string (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('custom document tool output: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('custom document tool output: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream; the log row is written asynchronously, so poll (ten reads a second apart).",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 1200);",
+                  "      pm.test('custom document tool output: file_content never reaches the OpenAI wire', function () { pm.expect(JSON.stringify(rr), dump).to.not.include('file_content'); });",
+                  "      pm.test('custom document tool output: function_call_output.output is a string', function () { var out = (rr.input || []).filter(function (i) { return i.type === 'function_call_output'; }); pm.expect(out.length, dump).to.eql(1); pm.expect(out[0].output, dump).to.be.a('string').and.match(/4\\.2M/); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('custom document tool output: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_output_tokens\": 128,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"read_pack\",\n      \"description\": \"Returns the budget pack.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {},\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Use read_pack.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_pack\",\n      \"name\": \"read_pack\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_pack\",\n      \"output\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack\",\n          \"file_content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"The board approved the 2026 budget of $4.2M.\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"The audit committee met on 3 March.\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "377.05 /v1/chat/completions -> openai/gpt-5.4-mini custom document beside the empty text data URL is kept (document citation fidelity)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty data URL document: answer uses the document', function () { var j = pm.response.json(); pm.expect(((j.choices || [])[0] || {}).message.content || '', pm.response.text().slice(0, 500)).to.match(/4\\.2/); });",
+                  "pm.test('empty data URL document: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('empty data URL document: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream; the log row is written asynchronously, so poll (ten reads a second apart).",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 1200);",
+                  "      pm.test('empty data URL document: file_content never reaches the OpenAI wire', function () { pm.expect(JSON.stringify(rr), dump).to.not.include('file_content'); });",
+                  "      pm.test('empty data URL document: document text was not dropped as an empty file', function () { var c = (rr.messages || [])[0].content || []; var hit = c.filter(function (b) { return b.type === 'text' && /4\\.2M/.test(b.text || ''); }); pm.expect(hit.length, dump).to.eql(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('empty data URL document: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_completion_tokens\": 128,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"pack.txt\",\n            \"file_data\": \"data:text/plain;base64,\",\n            \"file_content\": [\n              {\n                \"type\": \"text\",\n                \"text\": \"The board approved the 2026 budget of $4.2M.\"\n              },\n              {\n                \"type\": \"text\",\n                \"text\": \"The audit committee met on 3 March.\"\n              }\n            ]\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What budget was approved? Answer in one short sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "372. Bedrock Claude stop_reason on truncation (#9379 / #9497)",
+      "description": "Bedrock Claude stop_reason on truncation (#9379 / #9495 / #9497). Bifrost's Anthropic-shaped egress must report the Anthropic enum: a turn cut by max_tokens is max_tokens on InvokeModel (non-streaming and streaming) and on /anthropic/v1/messages through Bedrock. Pins the truncation path live on all four Anthropic-shaped wires (InvokeModel non-stream and stream, /anthropic/v1/messages non-stream and stream). guardrail_intervened (end_turn on InvokeModel, refusal on /anthropic/v1/messages), content_filter (refusal) and model_context_window_exceeded cannot be triggered on demand against a live model (the shared profile has no Bedrock guardrail) and are covered by Go unit tests.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 · InvokeModel max_tokens truncation reports max_tokens (non-stream) - #9379",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 1,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from one to ten.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock invoke: truncated turn reports stop_reason max_tokens - #9379', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.stop_reason, 'expected Anthropic max_tokens, got: ' + pm.response.text()).to.equal('max_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 · InvokeModel max_tokens truncation reports max_tokens (stream) - #9379",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 1,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from one to ten.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock invoke-with-response-stream: message_delta reports max_tokens - #9379', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var rawText = pm.response.text() || '';",
+                  "  var matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, 'no invoke-stream chunks: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var events = matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  var md = events.filter(function (e) { return e.type === 'message_delta'; })[0];",
+                  "  pm.expect(md, 'no message_delta in stream: ' + JSON.stringify(events).slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(md.delta.stop_reason, 'expected max_tokens, got: ' + JSON.stringify(md)).to.equal('max_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 · /anthropic/v1/messages max_tokens truncation reports max_tokens (non-stream) - #9497",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 1,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from one to ten.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic messages via bedrock: truncated turn reports stop_reason max_tokens - #9497', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.stop_reason, 'expected max_tokens, got: ' + pm.response.text()).to.equal('max_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 · /anthropic/v1/messages max_tokens truncation reports max_tokens (stream) - #9497",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 1,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from one to ten.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic messages stream via bedrock: message_delta reports stop_reason max_tokens - #9497', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var rawText = pm.response.text() || '';",
+                  "  var events = rawText.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) {",
+                  "    try { return JSON.parse(l.slice(5).trim()); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  pm.expect(events.length, 'no SSE data events: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var md = events.filter(function (e) { return e.type === 'message_delta'; })[0];",
+                  "  pm.expect(md, 'no message_delta in stream: ' + rawText.slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(md.delta && md.delta.stop_reason, 'expected max_tokens, got: ' + JSON.stringify(md)).to.equal('max_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
