@@ -4183,6 +4183,13 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 		documentBlock.Title = file.Filename
 	}
 
+	// file_content wins over file_id, file_data and file_url: an Anthropic document has exactly one
+	// source and this converter has no error path. Bedrock rejects the same mix with a 400.
+	if len(file.FileContent) > 0 {
+		documentBlock.Source.SourceObj = &AnthropicSource{Type: "content", Content: file.FileContent}
+		return documentBlock
+	}
+
 	// Handle uploaded file references from OpenAI-compatible file blocks.
 	if file.FileID != nil && *file.FileID != "" {
 		documentBlock.Source.SourceObj.Type = "file"
@@ -4273,6 +4280,12 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 	// Set title if provided
 	if fileBlock != nil && fileBlock.Filename != nil {
 		documentBlock.Title = fileBlock.Filename
+	}
+
+	// file_content takes precedence over the other sources, as in ConvertToAnthropicDocumentBlock.
+	if fileBlock != nil && len(fileBlock.FileContent) > 0 {
+		documentBlock.Source.SourceObj = &AnthropicSource{Type: "content", Content: fileBlock.FileContent}
+		return documentBlock
 	}
 
 	// Handle file_id reference

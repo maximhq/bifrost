@@ -11175,6 +11175,8 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 
 	// Handle different source types
 	switch src.Type {
+	case "content", "content_block":
+		resultBlock.ResponsesInputMessageContentBlockFile.FileContent = src.Content
 	case "url":
 		// URL source
 		if src.URL != nil {
