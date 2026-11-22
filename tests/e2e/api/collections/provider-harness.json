@@ -346913,7 +346913,330 @@
       ]
     },
     {
-      "name": "375. Bedrock invoke stream message_start carries null stop fields (#9538 / PR #9543)",
+      "name": "375. Chat tool-result images follow the model's image support (chat-tool-images) (#9456 / PR #9769)",
+      "description": "Regression from #9070: the shared Chat converter replaced tool images with placeholders, including direct Chat and translated Responses/Anthropic requests. A Chat tool message takes text only, so for a model that accepts images (datasheet supports_vision, or OpenAI/Azure OpenAI when the model has no record) each result's image is attributed and moved into user content after all parallel results. Every other OpenAI-compatible host (Groq, Cerebras, DeepSeek, Mistral, Ollama, vLLM, ...) serves text-only models that reject an image_url part with a 400, so without a vision record they keep the placeholder and get no extra user turn. The openai/gpt-4o-mini unary and streaming cases pin the moved images and actual image interpretation using the same red/blue PNG fixtures as folder 88 (file names/tool text reveal no colors; exact bytes, order, call IDs, completion and model color answers are asserted). The groq/openai/gpt-oss-120b case pins the text-only side: before the gate it was sent an image_url part. Native Responses preservation already has folder 295 coverage; custom and built-in Responses fallback are pinned by Go capture tests. No error statuses are skipped.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions unary: parallel tool images reach the strict Chat wire and retain provenance - chat-tool-images - #9456 / PR #9769",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var STREAMING = false;",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('chat-tool-images: request accepted', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "});",
+                  "var events = [];",
+                  "var done = false;",
+                  "if (STREAMING) {",
+                  "  var lines = text.split(/\\r?\\n/);",
+                  "  lines.forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (data === '[DONE]') { done = true; return; }",
+                  "    if (data) { events.push(JSON.parse(data)); }",
+                  "  });",
+                  "} else {",
+                  "  events.push(pm.response.json());",
+                  "}",
+                  "var raw;",
+                  "var answer = '';",
+                  "var finished = false;",
+                  "events.forEach(function (event) {",
+                  "  pm.test('chat-tool-images: no error event', function () {",
+                  "    pm.expect(event.error, JSON.stringify(event)).to.equal(undefined);",
+                  "    pm.expect(event.is_bifrost_error, JSON.stringify(event)).not.to.equal(true);",
+                  "  });",
+                  "  var candidate = (event.extra_fields || {}).raw_request;",
+                  "  if (!raw && candidate) { raw = typeof candidate === 'string' ? JSON.parse(candidate) : candidate; }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var content = STREAMING ? (choice.delta || {}).content : (choice.message || {}).content;",
+                  "    if (typeof content === 'string') { answer += content; }",
+                  "    if (choice.finish_reason === 'stop') { finished = true; }",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: response completes', function () {",
+                  "  pm.expect(events.length, text).to.be.above(0);",
+                  "  pm.expect(finished, text).to.equal(true);",
+                  "  if (STREAMING) { pm.expect(done, text).to.equal(true); }",
+                  "});",
+                  "pm.test('chat-tool-images: strict Chat wire retains both tool images', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.messages, JSON.stringify(raw)).to.be.an('array');",
+                  "  var messages = raw.messages;",
+                  "  pm.expect(messages.map(function (m) { return m.role; }), JSON.stringify(messages)).to.eql(['user', 'assistant', 'tool', 'tool', 'user']);",
+                  "  pm.expect(messages[2].tool_call_id).to.equal('call_a');",
+                  "  pm.expect(messages[3].tool_call_id).to.equal('call_b');",
+                  "  [messages[2], messages[3]].forEach(function (m) {",
+                  "    if (Array.isArray(m.content)) {",
+                  "      m.content.forEach(function (part) {",
+                  "        pm.expect(part.type, JSON.stringify(m)).to.equal('text');",
+                  "        pm.expect(part.text).not.to.include('base64,');",
+                  "        pm.expect(part.text).not.to.include('not shown');",
+                  "      });",
+                  "    } else {",
+                  "      pm.expect(m.content).to.be.a('string');",
+                  "      pm.expect(m.content).not.to.include('base64,');",
+                  "      pm.expect(m.content).not.to.include('not shown');",
+                  "    }",
+                  "  });",
+                  "  var parts = messages[4].content;",
+                  "  pm.expect(parts, JSON.stringify(messages[4])).to.be.an('array');",
+                  "  pm.expect(parts.length).to.equal(4);",
+                  "  pm.expect(parts[0].text).to.equal('Images returned by tool call call_a:');",
+                  "  pm.expect(parts[2].text).to.equal('Images returned by tool call call_b:');",
+                  "  var sent = parts.filter(function (part) { return part.type === 'image_url'; });",
+                  "  var requested = JSON.parse(pm.request.body.raw).messages.filter(function (m) { return m.role === 'tool'; });",
+                  "  pm.expect(sent.length).to.equal(2);",
+                  "  sent.forEach(function (part, i) {",
+                  "    pm.expect(part.image_url.url).to.equal(requested[i].content[0].image_url.url);",
+                  "    pm.expect(part.image_url.detail).to.equal('low');",
+                  "    pm.expect(part.prompt_cache_breakpoint).to.equal(undefined);",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: the model reads each tool image', function () {",
+                  "  var colors = JSON.parse(answer);",
+                  "  pm.expect(String(colors.call_a).toLowerCase(), answer).to.equal('red');",
+                  "  pm.expect(String(colors.call_b).toLowerCase(), answer).to.equal('blue');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read both files. Report the dominant color returned by each tool call in lowercase JSON with keys call_a and call_b. Do not guess from the tool text.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_a\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"a.png\\\"}\"\n          }\n        },\n        {\n          \"id\": \"call_b\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"b.png\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_a\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_b\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwBfCEPbPYxhD+HEIgwW4zdrn64YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAm3EgQAbtio+AAAAAElFTkSuQmCC\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read_file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"response_format\": {\n    \"type\": \"json_object\"\n  },\n  \"max_completion_tokens\": 64,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions streaming: parallel tool images reach the strict Chat wire and retain provenance - chat-tool-images - #9456 / PR #9769",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var STREAMING = true;",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('chat-tool-images: request accepted', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "});",
+                  "var events = [];",
+                  "var done = false;",
+                  "if (STREAMING) {",
+                  "  var lines = text.split(/\\r?\\n/);",
+                  "  lines.forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (data === '[DONE]') { done = true; return; }",
+                  "    if (data) { events.push(JSON.parse(data)); }",
+                  "  });",
+                  "} else {",
+                  "  events.push(pm.response.json());",
+                  "}",
+                  "var raw;",
+                  "var answer = '';",
+                  "var finished = false;",
+                  "events.forEach(function (event) {",
+                  "  pm.test('chat-tool-images: no error event', function () {",
+                  "    pm.expect(event.error, JSON.stringify(event)).to.equal(undefined);",
+                  "    pm.expect(event.is_bifrost_error, JSON.stringify(event)).not.to.equal(true);",
+                  "  });",
+                  "  var candidate = (event.extra_fields || {}).raw_request;",
+                  "  if (!raw && candidate) { raw = typeof candidate === 'string' ? JSON.parse(candidate) : candidate; }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var content = STREAMING ? (choice.delta || {}).content : (choice.message || {}).content;",
+                  "    if (typeof content === 'string') { answer += content; }",
+                  "    if (choice.finish_reason === 'stop') { finished = true; }",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: response completes', function () {",
+                  "  pm.expect(events.length, text).to.be.above(0);",
+                  "  pm.expect(finished, text).to.equal(true);",
+                  "  if (STREAMING) { pm.expect(done, text).to.equal(true); }",
+                  "});",
+                  "pm.test('chat-tool-images: strict Chat wire retains both tool images', function () {",
+                  "  pm.expect(raw, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(raw.messages, JSON.stringify(raw)).to.be.an('array');",
+                  "  var messages = raw.messages;",
+                  "  pm.expect(messages.map(function (m) { return m.role; }), JSON.stringify(messages)).to.eql(['user', 'assistant', 'tool', 'tool', 'user']);",
+                  "  pm.expect(messages[2].tool_call_id).to.equal('call_a');",
+                  "  pm.expect(messages[3].tool_call_id).to.equal('call_b');",
+                  "  [messages[2], messages[3]].forEach(function (m) {",
+                  "    if (Array.isArray(m.content)) {",
+                  "      m.content.forEach(function (part) {",
+                  "        pm.expect(part.type, JSON.stringify(m)).to.equal('text');",
+                  "        pm.expect(part.text).not.to.include('base64,');",
+                  "        pm.expect(part.text).not.to.include('not shown');",
+                  "      });",
+                  "    } else {",
+                  "      pm.expect(m.content).to.be.a('string');",
+                  "      pm.expect(m.content).not.to.include('base64,');",
+                  "      pm.expect(m.content).not.to.include('not shown');",
+                  "    }",
+                  "  });",
+                  "  var parts = messages[4].content;",
+                  "  pm.expect(parts, JSON.stringify(messages[4])).to.be.an('array');",
+                  "  pm.expect(parts.length).to.equal(4);",
+                  "  pm.expect(parts[0].text).to.equal('Images returned by tool call call_a:');",
+                  "  pm.expect(parts[2].text).to.equal('Images returned by tool call call_b:');",
+                  "  var sent = parts.filter(function (part) { return part.type === 'image_url'; });",
+                  "  var requested = JSON.parse(pm.request.body.raw).messages.filter(function (m) { return m.role === 'tool'; });",
+                  "  pm.expect(sent.length).to.equal(2);",
+                  "  sent.forEach(function (part, i) {",
+                  "    pm.expect(part.image_url.url).to.equal(requested[i].content[0].image_url.url);",
+                  "    pm.expect(part.image_url.detail).to.equal('low');",
+                  "    pm.expect(part.prompt_cache_breakpoint).to.equal(undefined);",
+                  "  });",
+                  "});",
+                  "pm.test('chat-tool-images: the model reads each tool image', function () {",
+                  "  var colors = JSON.parse(answer);",
+                  "  pm.expect(String(colors.call_a).toLowerCase(), answer).to.equal('red');",
+                  "  pm.expect(String(colors.call_b).toLowerCase(), answer).to.equal('blue');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Read both files. Report the dominant color returned by each tool call in lowercase JSON with keys call_a and call_b. Do not guess from the tool text.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_a\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"a.png\\\"}\"\n          }\n        },\n        {\n          \"id\": \"call_b\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"b.png\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_a\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_b\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwBfCEPbPYxhD+HEIgwW4zdrn64YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAm3EgQAbtio+AAAAAElFTkSuQmCC\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read_file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"response_format\": {\n    \"type\": \"json_object\"\n  },\n  \"max_completion_tokens\": 64,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "groq/openai/gpt-oss-120b /v1/chat/completions unary: text-only model keeps the tool image placeholder and gets no image part - chat-tool-images - #9456 / PR #9769",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('chat-tool-images: text-only model accepts the request', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "});",
+                  "var json = pm.response.json();",
+                  "pm.test('chat-tool-images: response completes', function () {",
+                  "  pm.expect(json.error, text).to.equal(undefined);",
+                  "  pm.expect(json.choices, text).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(json.choices[0].finish_reason, text).to.be.oneOf(['stop', 'length']);",
+                  "});",
+                  "pm.test('chat-tool-images: tool images stay placeholders and no user turn is added', function () {",
+                  "  var candidate = (json.extra_fields || {}).raw_request;",
+                  "  pm.expect(candidate, 'raw_request missing: ' + text).to.exist;",
+                  "  var raw = typeof candidate === 'string' ? JSON.parse(candidate) : candidate;",
+                  "  var messages = raw.messages;",
+                  "  pm.expect(messages.map(function (m) { return m.role; }), JSON.stringify(messages)).to.eql(['user', 'assistant', 'tool', 'tool']);",
+                  "  [messages[2], messages[3]].forEach(function (m) {",
+                  "    pm.expect(m.content, JSON.stringify(m)).to.be.a('string');",
+                  "    pm.expect(m.content).to.include('returned by the tool, not shown');",
+                  "    pm.expect(m.content).not.to.include('base64,');",
+                  "  });",
+                  "  pm.expect(JSON.stringify(raw)).not.to.include('image_url');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"groq/openai/gpt-oss-120b\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Two files were read. Say in one short sentence whether you could see their contents.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call_a\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"a.png\\\"}\"\n          }\n        },\n        {\n          \"id\": \"call_b\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"read_file\",\n            \"arguments\": \"{\\\"path\\\":\\\"b.png\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_a\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeUlEQVR4nO3PQQkAMAzAwIqof2UTMxF7HINABFzm7H7dcEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFj12qxUDxeFqrFAAAAABJRU5ErkJggg==\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_b\",\n      \"content\": [\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAe0lEQVR4nO3PUQkAIBTAwBfCEPbPYxhD+HEIgwW4zdrn64YLGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLWhACxrQgga0oAEtaEALGtCCBrSgAS1oQAsa0IIGtKABLXjsAm3EgQAbtio+AAAAAElFTkSuQmCC\",\n            \"detail\": \"low\"\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"read_file\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"path\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"path\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"max_completion_tokens\": 128,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "376. Bedrock invoke stream message_start carries null stop fields (#9538 / PR #9543)",
       "description": "Regression for #9538 / PR #9543. The Bedrock InvokeModel streaming route (POST /bedrock/model/{id}/invoke-with-response-stream) re-emits Anthropic-native events through toAnthropicInvokeStreamBytes. The initial message_start frame must carry stop_reason and stop_sequence as explicit nulls (as the Anthropic API does), not omit them. The case decodes the base64 bytes envelopes and asserts both properties are present and strictly null.",
       "item": [
         {
