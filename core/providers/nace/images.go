@@ -44,6 +44,10 @@ func splitImages(input schemas.DecisionInput) (schemas.DecisionInput, []string, 
 			if part.ID != nil {
 				return schemas.DecisionInput{}, nil, providerUtils.InvalidRequestErrorf("nace does not support image asset references; send ordered inline images")
 			}
+			// Reject the ninth image before encoding or validating its payload.
+			if len(images) >= 8 {
+				return schemas.DecisionInput{}, nil, providerUtils.InvalidRequestErrorf("nace accepts at most 8 images")
+			}
 			var image string
 			switch {
 			case part.ImageURL != nil:
@@ -73,9 +77,6 @@ func splitImages(input schemas.DecisionInput) (schemas.DecisionInput, []string, 
 			message.Content.Parts = parts
 			messages = append(messages, message)
 		}
-	}
-	if len(images) > 8 {
-		return schemas.DecisionInput{}, nil, providerUtils.InvalidRequestErrorf("nace accepts at most 8 images")
 	}
 	return schemas.DecisionInput{Messages: messages}, images, nil
 }
