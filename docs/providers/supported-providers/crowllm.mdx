@@ -36,7 +36,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 
-`x-bf-api-key` selects a key **by name** from your Bifrost provider configuration — it does not take the CrowLLM secret. Add the key under the `crowllm` provider (for example `{"name": "crowllm-key", "value": "&lt;your CrowLLM API key&gt;"}`) and use that name in the header, or omit the header when you only run one key.
+`x-bf-api-key` selects a key **by name** from your Bifrost provider configuration — it does not take the CrowLLM secret. Add the key under the `crowllm` provider (for example `{"name": "crowllm-key", "value": "&lt;your CrowLLM API key&gt;", "models": ["*"]}`) and use that name in the header, or omit the header when you only run one key.
 
 Set `network_config.base_url` on the provider to route through a different host; it defaults to `https://crowllm.com`.
 
