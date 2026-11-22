@@ -243414,6 +243414,10 @@
                   "pm.test('control: without the direct key the request is refused for lacking a credential', function () {",
                   "  pm.expect(pm.response.code, text).to.eql(401);",
                   "  pm.expect(json.type, text).to.equal('virtual_key_required');",
+                  "});",
+                  "// Governance refused it, so it is declared as a policy refusal. Undeclared, the bare 401 was classified as the provider rejecting a key (provider_auth_failed) and Warp showed it as its model being unreachable.",
+                  "pm.test('the refusal is declared as governance-owned: extra_fields.error_type is policy_access_denied', function () {",
+                  "  pm.expect((json.extra_fields || {}).error_type, text).to.equal('policy_access_denied');",
                   "});"
                 ]
               }
