@@ -1650,6 +1650,9 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	if err := configstore.ValidateOAuth2BrowserBaseURL(cc.OAuth2ServerConfig); err != nil {
 		return err
 	}
+	if err := configstore.ValidateOAuth2AdditionalIssuers(cc.OAuth2ServerConfig); err != nil {
+		return err
+	}
 	// Entries match exactly, so a partial wildcard would silently approve nothing.
 	// PUT /api/config rejects one; config.json and older DB rows reach here.
 	if oc := cc.OAuth2ServerConfig; oc != nil {

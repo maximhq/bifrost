@@ -13375,6 +13375,69 @@ const OAS46 = folder("OAS-46 A server cap below 2025-11-25 turns off Client ID M
   request("OAS-46", "auto: metadata documents are advertised again", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), cimdFlag(true)] }),
 ]));
 
+// OAS-47: a second issuer on another hostname. TUNNEL_HOST stands in for a client that reaches Bifrost only
+// through a private tunnel; requests carrying it reach the same server.
+const TUNNEL_ISS = "http://bifrost-tunnel.mcp-harness.example";
+const TUNNEL_HOST = { key: "Host", value: "bifrost-tunnel.mcp-harness.example" };
+const issuedBy = (iss) => A.custom(`the access token's iss is ${iss}, its aud ${iss}/mcp`, [
+  CLAIMS_FN,
+  "var c = claims((pm.response.json() || {}).access_token);",
+  `pm.expect(c.iss, 'claims: ' + JSON.stringify(c)).to.equal(${lit(iss)});`,
+  `pm.expect([].concat(c.aud), 'claims: ' + JSON.stringify(c)).to.include(${lit(iss + "/mcp")});`,
+]);
+const OAS47 = folder("OAS-47 Additional issuers on other hostnames", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on, additional_issuer_urls [${TUNNEL_ISS}]. Requests with Host ${TUNNEL_HOST.value} play a hosted client that only reaches the tunnel; the user's browser stays on the base URL. Two grants are started through the tunnel resource; the first is exchanged and refreshed, then the tunnel issuer is removed with the second grant's code still unexchanged.`, [
+  ...fleetGrantSetup("OAS-47"),
+  oauthConfig("OAS-47", "both", [`cc.oauth2_server_config.additional_issuer_urls = [${lit(TUNNEL_ISS)}];`], `setup: ${BOTH}, temp-token auth on, additional_issuer_urls [${TUNNEL_ISS}]`),
+  request("OAS-47", "authorization server metadata on the tunnel hostname", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, headers: [TUNNEL_HOST], asserts: [A.status(200), A.custom("issuer and endpoints are the tunnel's", [
+    "var b = pm.response.json();",
+    `pm.expect(b.issuer, 'body: ' + pm.response.text()).to.equal(${lit(TUNNEL_ISS)});`,
+    `pm.expect(b.token_endpoint).to.equal(${lit(TUNNEL_ISS + "/oauth2/token")});`,
+    `pm.expect(b.registration_endpoint).to.equal(${lit(TUNNEL_ISS + "/oauth2/register")});`,
+    `pm.expect(b.authorization_endpoint).to.equal(${lit(TUNNEL_ISS + "/oauth2/authorize")});`,
+  ])] }),
+  request("OAS-47", "authorization server metadata on an unlisted hostname is the primary's", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, headers: [EVIL], asserts: [A.status(200), A.custom("issuer is the base URL", ["pm.expect(pm.response.json().issuer, 'body: ' + pm.response.text()).to.equal(pm.variables.get('base_url'));"])] }),
+  request("OAS-47", "protected resource metadata on the tunnel hostname", "GET", "/.well-known/oauth-protected-resource/mcp", { noAuth: true, headers: [TUNNEL_HOST], asserts: [A.status(200), A.custom("resource and authorization server are the tunnel's", [
+    "var b = pm.response.json();",
+    `pm.expect(b.resource, 'body: ' + pm.response.text()).to.equal(${lit(TUNNEL_ISS + "/mcp")});`,
+    `pm.expect(b.authorization_servers).to.deep.equal([${lit(TUNNEL_ISS)}]);`,
+  ])] }),
+  request("OAS-47", "/mcp on the tunnel hostname with an unverifiable token", "POST", "/mcp", { noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, TUNNEL_HOST, { key: "Authorization", value: "Bearer eyJhbGciOiJub25lIn0.e30.unverifiable" }], asserts: [A.status(401), A.custom("WWW-Authenticate points at the tunnel's resource metadata", [
+    `pm.expect(pm.response.headers.get('WWW-Authenticate'), 'headers').to.equal('Bearer resource_metadata="' + ${lit(TUNNEL_ISS)} + '/.well-known/oauth-protected-resource/mcp"');`,
+  ])] }),
+  request("OAS-47", "register through the tunnel", "POST", "/oauth2/register", {
+    noAuth: true, headers: [TUNNEL_HOST], body: { client_name: "OAS-47 client", redirect_uris: [LOOPBACK_CB], grant_types: REFRESHABLE }, asserts: [A.status(201)],
+    extraTests: ["pm.collectionVariables.set('oas47_client', pm.response.json().client_id);"],
+  }),
+  ...["oas47_f", "oas47_g"].flatMap((flow, i) => {
+    const label = i === 0 ? "the first grant" : "the second grant";
+    return [
+      request("OAS-47", `authorize ${label} on the base URL with the tunnel's resource`, "GET", goodAuthorize("oas47_client", { resource: `${TUNNEL_ISS}/mcp` }), {
+        noAuth: true, noRedirect: true, asserts: [A.status(302), consentLocation()],
+        extraTests: [
+          "var loc = pm.response.headers.get('Location') || '';",
+          "var m = /[?&]flow=([^#&]+)#t=(.+)$/.exec(loc);",
+          `pm.collectionVariables.set(${lit(flow + "_id")}, m ? decodeURIComponent(m[1]) : '');`,
+          `pm.collectionVariables.set(${lit(flow + "_tt")}, m ? decodeURIComponent(m[2]) : '');`,
+        ],
+      }),
+      consent("OAS-47", flow, `consent ${label} with the full-access VK`, "temp", vkBody("OAS-47"), [A.status(200), codeIssued(), A.custom("the redirect's iss is the tunnel issuer (RFC 9207)", [
+        "var u = (pm.response.json() || {}).redirect_url || '';",
+        "var m = /[?&]iss=([^&]+)/.exec(u);",
+        `pm.expect(m && decodeURIComponent(m[1]), 'redirect_url: ' + u).to.equal(${lit(TUNNEL_ISS)});`,
+      ])], { extraTests: saveCode(flow) }),
+    ];
+  }),
+  tokenReq("OAS-47", "exchange the first grant's code through the tunnel", codeParams("oas47_f", "oas47_client"), [A.status(200), tokensIssued(), issuedBy(TUNNEL_ISS)], { headers: [TUNNEL_HOST], extraTests: saveTokens("oas47_f") }),
+  mcpWithToken("OAS-47", "the tunnel's access token lists every tool on the base URL", "oas47_f_at", [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  request("OAS-47", "the tunnel's access token lists every tool on the tunnel hostname", "POST", "/mcp", { noAuth: true, raw: JSON.stringify(listMsg), headers: [MCP_ACCEPT, TUNNEL_HOST, { key: "Authorization", value: "Bearer {{oas47_f_at}}" }], asserts: [A.status(200), toolNamesInList(ALL_TOOLS)] }),
+  tokenReq("OAS-47", "refresh on the base URL keeps the tunnel issuer", refreshParams("oas47_f_rt", "oas47_client"), [A.status(200), tokensIssued(), issuedBy(TUNNEL_ISS)], { extraTests: saveTokens("oas47_r") }),
+  oauthConfig("OAS-47", "both", [], `setup: remove the tunnel issuer (${BOTH}, temp-token auth on)`),
+  mcpWithToken("OAS-47", "the tunnel's access token is refused once the issuer is removed", "oas47_r_at", [A.status(401), A.msgContains("invalid issuer")]),
+  tokenReq("OAS-47", "its refresh token is refused", refreshParams("oas47_r_rt", "oas47_client"), [A.status(400), O.error("invalid_grant"), O.desc("no longer serves")]),
+  tokenReq("OAS-47", "the second grant's code is refused rather than exchanged", codeParams("oas47_g", "oas47_client"), [A.status(400), O.error("invalid_grant"), O.desc("no longer serves")]),
+  ...fleetGrantTeardown("OAS-47"),
+]);
+
 // ================================================================ network paths
 
 // The fleet is reached under a *.proxy.test name that only the mock's forward proxy resolves, so a request
@@ -13671,7 +13734,7 @@ const collection = {
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46, OAS47]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80, INF81, INF82]),

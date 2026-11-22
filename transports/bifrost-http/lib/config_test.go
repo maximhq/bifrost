@@ -2981,6 +2981,51 @@ func TestValidateClientConfig_BrowserBaseURL(t *testing.T) {
 	require.ErrorContains(t, err, "browser_base_url references env.BIFROST_TEST_BROWSER_URL, which resolves to an empty value")
 }
 
+// TestValidateClientConfig_AdditionalIssuers pins the rules that keep issuer
+// selection unambiguous: each entry needs the primary, is an absolute URL, and
+// has a hostname no other issuer uses, since the hostname picks the issuer.
+func TestValidateClientConfig_AdditionalIssuers(t *testing.T) {
+	t.Setenv("BIFROST_TEST_TUNNEL_ISSUER", "")
+	cfg := func(primary string, extra ...string) *configstore.ClientConfig {
+		oc := &tables.OAuth2ServerConfig{}
+		if primary != "" {
+			oc.IssuerURL = schemas.NewSecretVar(primary)
+		}
+		for _, e := range extra {
+			oc.AdditionalIssuerURLs = append(oc.AdditionalIssuerURLs, schemas.NewSecretVar(e))
+		}
+		return &configstore.ClientConfig{OAuth2ServerConfig: oc}
+	}
+	tooMany := make([]string, configstore.MaxAdditionalIssuerURLs+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("https://tunnel-%d.example.com", i)
+	}
+	for name, tc := range map[string]struct {
+		cc      *configstore.ClientConfig
+		wantErr string
+	}{
+		"none":                     {cfg("https://corp.example.com"), ""},
+		"one, with a base path":    {cfg("https://corp.example.com", "https://tunnel.example.com/bifrost/"), ""},
+		"without a primary":        {cfg("", "https://tunnel.example.com"), "requires issuer_url"},
+		"not absolute":             {cfg("https://corp.example.com", "tunnel.example.com"), "additional_issuer_urls[0] must be an absolute"},
+		"empty entry":              {cfg("https://corp.example.com", ""), "additional_issuer_urls[0] is empty"},
+		"unresolved reference":     {cfg("https://corp.example.com", "env.BIFROST_TEST_TUNNEL_ISSUER"), "additional_issuer_urls[0] references env.BIFROST_TEST_TUNNEL_ISSUER, which resolves to an empty value"},
+		"primary's hostname":       {cfg("https://corp.example.com", "https://CORP.example.com:443/other"), "repeats the hostname"},
+		"IPv6 zone identifier":     {cfg("https://corp.example.com", "https://[fe80::1%25eth0]"), "additional_issuer_urls[0] host must not be percent-encoded"},
+		"percent-encoded hostname": {cfg("https://corp.example.com", "https://tunn%65l.example.com"), "additional_issuer_urls[0] must be an absolute"},
+		"IPv6 with a port":         {cfg("https://corp.example.com", "https://[2001:db8::1]:8443"), ""},
+		"another entry's hostname": {cfg("https://corp.example.com", "https://tunnel.example.com", "http://tunnel.example.com:80"), "additional_issuer_urls[1] repeats the hostname"},
+		"over the limit":           {cfg("https://corp.example.com", tooMany...), "at most"},
+	} {
+		err := validateClientConfig(tc.cc)
+		if tc.wantErr == "" {
+			require.NoError(t, err, name)
+		} else {
+			require.ErrorContains(t, err, tc.wantErr, name)
+		}
+	}
+}
+
 // TestValidateClientConfig_IssuerURLRequiredForDiscovery locks in that OAuth
 // discovery (mode oauth|both) cannot be enabled without a pinned issuer_url -
 // left unset, every issuer reference would derive from the unauthenticated,

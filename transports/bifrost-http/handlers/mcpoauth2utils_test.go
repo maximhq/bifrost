@@ -73,6 +73,35 @@ func TestOAuth2IssuerURL(t *testing.T) {
 	})
 }
 
+// TestOAuth2IssuerURL_AdditionalIssuers pins how a request picks its issuer: the
+// additional issuer whose hostname is the Host (case and default port ignored),
+// else the primary, so a forged Host never names an issuer of its own.
+func TestOAuth2IssuerURL_AdditionalIssuers(t *testing.T) {
+	cfg := withTunnelIssuer(newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false))
+	cfg.ClientConfig.OAuth2ServerConfig.AdditionalIssuerURLs = append(cfg.ClientConfig.OAuth2ServerConfig.AdditionalIssuerURLs,
+		schemas.NewSecretVar("https://other.test/bifrost/"))
+	for host, want := range map[string]string{
+		"bifrost-tunnel.test":     testTunnelIssuer,
+		"BIFROST-TUNNEL.test:443": testTunnelIssuer,
+		"other.test":              "https://other.test/bifrost",
+		"bifrost.test":            testIssuer,
+		"evil.test":               testIssuer,
+		"":                        testIssuer,
+	} {
+		assert.Equal(t, want, oauth2IssuerURL(hostCtx(host), cfg), "host %q", host)
+	}
+	assert.Equal(t, []string{testIssuer, testTunnelIssuer, "https://other.test/bifrost"}, oauth2AcceptedIssuers(hostCtx("evil.test"), cfg))
+
+	assert.Equal(t, testTunnelIssuer, oauth2IssuerForResource(hostCtx("bifrost.test"), cfg, testTunnelIssuer+"/mcp"), "the grant's issuer, not the host's")
+	assert.True(t, oauth2ResourceServed(hostCtx("bifrost.test"), cfg, testTunnelIssuer+"/mcp", testMCPResource))
+	assert.False(t, oauth2ResourceServed(hostCtx("bifrost.test"), cfg, "https://evil.test/mcp", testMCPResource))
+	assert.False(t, oauth2ResourceServed(hostCtx("bifrost.test"), cfg, testTunnelIssuer+"/gateway/claude-code", testMCPResource), "another resource path")
+
+	single := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+	assert.Equal(t, testIssuer, oauth2IssuerURL(hostCtx("bifrost-tunnel.test"), single), "no additional issuers: always the primary")
+	assert.Equal(t, []string{testIssuer}, oauth2AcceptedIssuers(hostCtx("bifrost-tunnel.test"), single))
+}
+
 func TestOAuth2BrowserBaseURL(t *testing.T) {
 	t.Run("is the issuer when unset", func(t *testing.T) {
 		cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)

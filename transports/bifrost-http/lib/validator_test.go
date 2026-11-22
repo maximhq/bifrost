@@ -4772,6 +4772,8 @@ func TestValidateConfigSchema_IssuerURLRequiredForDiscovery(t *testing.T) {
 		{"both without issuer_url", `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{}}}`, true},
 		{"oauth with issuer_url", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://issuer.example.com"}}}`, false},
 		{"headers without issuer_url", `{"client":{"mcp_server_auth_mode":"headers"}}`, false},
+		{"oauth with additional_issuer_urls", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://corp.example.com","additional_issuer_urls":["https://tunnel.example.com",{"value":"env.BIFROST_TUNNEL_ISSUER","env_var":"BIFROST_TUNNEL_ISSUER","from_env":true}]}}}`, false},
+		{"additional_issuer_urls as a string", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://corp.example.com","additional_issuer_urls":"https://tunnel.example.com"}}}`, true},
 		{"oauth with browser_base_url", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://tunnel.example.com","browser_base_url":"https://bifrost.corp.example.com"}}}`, false},
 		{"browser_base_url as an env reference", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://tunnel.example.com","browser_base_url":{"value":"env.BIFROST_BROWSER_URL","env_var":"BIFROST_BROWSER_URL","from_env":true}}}}`, false},
 	} {

@@ -138,9 +138,9 @@ func verifyBifrostJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Conf
 
 	// Pin the issuer to this instance: the kid + signature checks only prove the
 	// token was signed by our key, so a different authorization server sharing
-	// the same keypair would otherwise pass. Issuance stamps iss from the same
-	// oauth2IssuerURL, so the two always agree.
-	issuer := oauth2IssuerURL(ctx, store)
+	// the same keypair would otherwise pass. With several configured issuers, a
+	// token from any of them is honoured on every hostname.
+	selected := oauth2IssuerURL(ctx, store)
 
 	claims := &jwtMCPClaims{}
 	tok, err := jwt.ParseWithClaims(rawToken, claims, func(t *jwt.Token) (any, error) {
@@ -151,7 +151,7 @@ func verifyBifrostJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Conf
 			return nil, fmt.Errorf("unknown key id %q", kid)
 		}
 		return pubKey, nil
-	}, jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithIssuer(issuer),
+	}, jwt.WithExpirationRequired(), jwt.WithIssuedAt(),
 		// Accept exactly the algorithm we issue. The SigningMethodRSA type
 		// assertion above admits the whole RS family (RS256/384/512); pin to
 		// RS256 so verification matches issuance.
@@ -168,7 +168,17 @@ func verifyBifrostJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Conf
 		return nil, oauth2TokenRejection{fmt.Errorf("token missing iat claim")}
 	}
 
-	// RFC 8707: the token must have been issued for this specific resource.
+	if !oauth2IssuerAccepted(store, selected, claims.Issuer) {
+		return nil, oauth2TokenRejection{fmt.Errorf("invalid token: token has invalid issuer")}
+	}
+
+	// RFC 8707: the token must have been issued for this resource, under the
+	// issuer that issued it, so one hostname's iss cannot pair with another's aud.
+	if claims.Issuer != selected {
+		if suffix, ok := strings.CutPrefix(resource, selected); ok {
+			resource = claims.Issuer + suffix
+		}
+	}
 	aud, err := claims.GetAudience()
 	if err != nil || !slices.Contains(aud, resource) {
 		return nil, oauth2TokenRejection{fmt.Errorf("token audience does not match this resource")}
