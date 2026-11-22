@@ -32,7 +32,13 @@ The decision in `BifrostContext` contains only bounded scalar metadata and
 small, capped result lists. Stream buffers stay in the coalescer, keyed by the
 request fingerprint and bounded by `max_in_flight`, `max_buffered_chunks`, and
 `max_buffered_bytes`. The request context retains only the leader's flight
-handle; it never stores a request pointer or stream payload.
+handle; it never stores a request pointer or stream payload. Coalescing always
+includes a SHA-256 discriminator built from resolved `Grant.Identity`
+identifiers. Optional virtual-key and customer scopes add their identifiers
+when enabled; they cannot disable the mandatory tenant boundary. Requests
+without a resolved identity and large-payload passthrough requests bypass
+coalescing. The configured bypass header is captured from the HTTP transport
+request before inference begins.
 
 ## Configuration
 

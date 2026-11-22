@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -15,6 +16,7 @@ import (
 // package never changes Prometheus' process-wide default registry.
 type Metrics struct {
 	registry            *prometheus.Registry
+	catalog             Catalog
 	requestsBlocked     *prometheus.CounterVec
 	capabilityFailures  *prometheus.CounterVec
 	downgrades          *prometheus.CounterVec
@@ -149,12 +151,23 @@ func NewMetrics(cfg MetricsConfig) (*Metrics, error) {
 		},
 	}
 
+	registered := make([]prometheus.Collector, 0, len(collectors))
+	rollback := func() {
+		for i := len(registered) - 1; i >= 0; i-- {
+			registerer.Unregister(registered[i])
+		}
+	}
 	for _, spec := range collectors {
-		collector, err := registerCollector(registerer, spec.new())
+		collector, newlyRegistered, err := registerCollector(registerer, spec.new())
 		if err != nil {
+			rollback()
 			return nil, errors.New("register requestguard metric " + spec.name + ": " + err.Error())
 		}
+		if newlyRegistered {
+			registered = append(registered, collector)
+		}
 		if err := spec.set(collector); err != nil {
+			rollback()
 			return nil, err
 		}
 	}
@@ -165,15 +178,15 @@ func collectorTypeError(name string) error {
 	return errors.New("registered collector has an unexpected type for " + name)
 }
 
-func registerCollector(registerer prometheus.Registerer, collector prometheus.Collector) (prometheus.Collector, error) {
+func registerCollector(registerer prometheus.Registerer, collector prometheus.Collector) (prometheus.Collector, bool, error) {
 	if err := registerer.Register(collector); err != nil {
 		var already prometheus.AlreadyRegisteredError
 		if errors.As(err, &already) {
-			return already.ExistingCollector, nil
+			return already.ExistingCollector, false, nil
 		}
-		return nil, err
+		return nil, false, err
 	}
-	return collector, nil
+	return collector, true, nil
 }
 
 // GetRegistry returns the registry owned or directly supplied to this Metrics
@@ -185,27 +198,40 @@ func (m *Metrics) GetRegistry() *prometheus.Registry {
 	return m.registry
 }
 
+func (m *Metrics) modelLabel(provider schemas.ModelProvider, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || m == nil || isNilCatalog(m.catalog) {
+		return "unknown"
+	}
+	if m.catalog.GetModelCapabilities(provider, model) == nil &&
+		m.catalog.GetModelInfo(provider, model) == nil &&
+		m.catalog.GetPricingEntryForModel(model, provider) == nil {
+		return "unknown"
+	}
+	return model
+}
+
 func (m *Metrics) RecordRequestBlocked(reason string, provider schemas.ModelProvider, model string) {
 	if m != nil && m.requestsBlocked != nil {
-		m.requestsBlocked.WithLabelValues(reason, string(provider), model).Inc()
+		m.requestsBlocked.WithLabelValues(reason, string(provider), m.modelLabel(provider, model)).Inc()
 	}
 }
 
 func (m *Metrics) RecordCapabilityFailure(capability string, provider schemas.ModelProvider, model string) {
 	if m != nil && m.capabilityFailures != nil {
-		m.capabilityFailures.WithLabelValues(capability, string(provider), model).Inc()
+		m.capabilityFailures.WithLabelValues(capability, string(provider), m.modelLabel(provider, model)).Inc()
 	}
 }
 
-func (m *Metrics) RecordDowngrade(reason, fromModel, toModel string) {
+func (m *Metrics) RecordDowngrade(reason string, fromProvider schemas.ModelProvider, fromModel string, toProvider schemas.ModelProvider, toModel string) {
 	if m != nil && m.downgrades != nil {
-		m.downgrades.WithLabelValues(reason, fromModel, toModel).Inc()
+		m.downgrades.WithLabelValues(reason, m.modelLabel(fromProvider, fromModel), m.modelLabel(toProvider, toModel)).Inc()
 	}
 }
 
 func (m *Metrics) RecordCoalescedExecutionAvoided(provider schemas.ModelProvider, model string, streaming bool) {
 	if m != nil && m.coalescedExecutions != nil {
-		m.coalescedExecutions.WithLabelValues(string(provider), model, strconv.FormatBool(streaming)).Inc()
+		m.coalescedExecutions.WithLabelValues(string(provider), m.modelLabel(provider, model), strconv.FormatBool(streaming)).Inc()
 	}
 }
 
@@ -213,7 +239,7 @@ func (m *Metrics) RecordEstimatedSavingsUSD(source string, provider schemas.Mode
 	if m == nil || m.estimatedSavingsUSD == nil || amount <= 0 || math.IsNaN(amount) || math.IsInf(amount, 0) {
 		return
 	}
-	m.estimatedSavingsUSD.WithLabelValues(source, string(provider), model).Add(amount)
+	m.estimatedSavingsUSD.WithLabelValues(source, string(provider), m.modelLabel(provider, model)).Add(amount)
 }
 
 func (m *Metrics) ObserveEvalDuration(stage string, elapsed time.Duration) {

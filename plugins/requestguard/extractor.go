@@ -70,19 +70,20 @@ func ExtractRequestFeatures(req *schemas.BifrostRequest) RequestFeatures {
 }
 
 func extractChatFeatures(features *RequestFeatures, req *schemas.BifrostChatRequest) {
-	if features == nil || req == nil || req.Params == nil {
+	if features == nil || req == nil {
 		return
 	}
-	params := req.Params
-	features.ToolCount = len(params.Tools)
-	features.RequiresTools = features.ToolCount > 0
-	features.RequiresParallelTools = features.RequiresTools && params.ParallelToolCalls != nil && *params.ParallelToolCalls
-	features.RequiresToolChoice = params.ToolChoice != nil
-	features.RequiresForcedToolChoice = params.ToolChoice.IsForced()
-	features.RequiresStructuredOutput = isStructuredChatFormat(params.ResponseFormat)
-	features.RequiresStructuredOutputWithTools = features.RequiresStructuredOutput && features.RequiresTools
-	if params.MaxCompletionTokens != nil && *params.MaxCompletionTokens > 0 {
-		features.RequestedMaxOutputTokens = *params.MaxCompletionTokens
+	if params := req.Params; params != nil {
+		features.ToolCount = len(params.Tools)
+		features.RequiresTools = features.ToolCount > 0
+		features.RequiresParallelTools = features.RequiresTools && params.ParallelToolCalls != nil && *params.ParallelToolCalls
+		features.RequiresToolChoice = params.ToolChoice != nil
+		features.RequiresForcedToolChoice = params.ToolChoice.IsForced()
+		features.RequiresStructuredOutput = isStructuredChatFormat(params.ResponseFormat)
+		features.RequiresStructuredOutputWithTools = features.RequiresStructuredOutput && features.RequiresTools
+		if params.MaxCompletionTokens != nil && *params.MaxCompletionTokens > 0 {
+			features.RequestedMaxOutputTokens = *params.MaxCompletionTokens
+		}
 	}
 
 	for i := range req.Input {
@@ -100,19 +101,20 @@ func extractChatFeatures(features *RequestFeatures, req *schemas.BifrostChatRequ
 }
 
 func extractResponsesFeatures(features *RequestFeatures, req *schemas.BifrostResponsesRequest) {
-	if features == nil || req == nil || req.Params == nil {
+	if features == nil || req == nil {
 		return
 	}
-	params := req.Params
-	features.ToolCount = len(params.Tools)
-	features.RequiresTools = features.ToolCount > 0
-	features.RequiresParallelTools = features.RequiresTools && params.ParallelToolCalls != nil && *params.ParallelToolCalls
-	features.RequiresToolChoice = params.ToolChoice != nil
-	features.RequiresForcedToolChoice = params.ToolChoice.IsForced()
-	features.RequiresStructuredOutput = isStructuredResponsesFormat(params.Text)
-	features.RequiresStructuredOutputWithTools = features.RequiresStructuredOutput && features.RequiresTools
-	if params.MaxOutputTokens != nil && *params.MaxOutputTokens > 0 {
-		features.RequestedMaxOutputTokens = *params.MaxOutputTokens
+	if params := req.Params; params != nil {
+		features.ToolCount = len(params.Tools)
+		features.RequiresTools = features.ToolCount > 0
+		features.RequiresParallelTools = features.RequiresTools && params.ParallelToolCalls != nil && *params.ParallelToolCalls
+		features.RequiresToolChoice = params.ToolChoice != nil
+		features.RequiresForcedToolChoice = params.ToolChoice.IsForced()
+		features.RequiresStructuredOutput = isStructuredResponsesFormat(params.Text)
+		features.RequiresStructuredOutputWithTools = features.RequiresStructuredOutput && features.RequiresTools
+		if params.MaxOutputTokens != nil && *params.MaxOutputTokens > 0 {
+			features.RequestedMaxOutputTokens = *params.MaxOutputTokens
+		}
 	}
 
 	for i := range req.Input {

@@ -46,6 +46,7 @@ func Init(config Config, logger schemas.Logger, catalog Catalog) (*Plugin, error
 	if err != nil {
 		return nil, err
 	}
+	metrics.catalog = catalog
 	return &Plugin{
 		config:    config,
 		logger:    logger,
@@ -91,7 +92,7 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 				reason = "budget_exceeded"
 			}
 			decision.Reasons = appendUnique(decision.Reasons, "request downgraded after "+strings.ReplaceAll(reason, "_", " "))
-			p.metrics.RecordDowngrade(reason, decision.OriginalModel, recommendation.Model)
+			p.metrics.RecordDowngrade(reason, decision.OriginalProvider, decision.OriginalModel, recommendation.Provider, recommendation.Model)
 			p.metrics.RecordEstimatedSavingsUSD("downgrade", recommendation.Provider, recommendation.Model, recommendation.EstimatedSavingsUSD)
 		}
 	}
@@ -133,11 +134,9 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 			ctx.Log(schemas.LogLevelWarn, "request blocked by requestguard: "+decision.BlockReason)
 		}
 		p.metrics.ObserveEvalDuration("pre_llm", time.Since(started))
-		allowFallbacks := p.config.CapabilityGuard.AllowFallbacksOnBlock
-		if evaluation.budgetBlocking {
-			allowFallbacks = p.config.BudgetGuard.AllowFallbacksOnBlock
-		}
-		return req, &schemas.LLMPluginShortCircuit{Error: buildBlockError(decision, allowFallbacks, evaluation.budgetBlocking)}, nil
+		allowFallbacks := (!evaluation.capabilityBlocking || p.config.CapabilityGuard.AllowFallbacksOnBlock) &&
+			(!evaluation.budgetBlocking || p.config.BudgetGuard.AllowFallbacksOnBlock)
+		return req, &schemas.LLMPluginShortCircuit{Error: buildBlockError(decision, allowFallbacks, evaluation.budgetBlocking && !evaluation.capabilityBlocking)}, nil
 	}
 
 	if ctx != nil {
@@ -147,6 +146,9 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 
 	if !p.config.Coalescer.Enabled {
 		return req, nil, nil
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return req, &schemas.LLMPluginShortCircuit{Error: requestGuardContextError(ctx.Err())}, nil
 	}
 	fingerprintStarted := time.Now()
 	fingerprint, eligible, _ := ComputeFingerprint(ctx, req, evaluation.features, p.config.Coalescer)
@@ -160,6 +162,18 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 		requestContext = ctx
 	}
 	handle, leader := p.coalescer.Acquire(requestContext, fingerprint, evaluation.features.IsStreaming)
+	if handle != nil {
+		contextErr := handle.ContextErr
+		if contextErr == nil && ctx != nil {
+			contextErr = ctx.Err()
+		}
+		if contextErr != nil {
+			if leader {
+				p.coalescer.Abort(handle, requestGuardContextError(contextErr))
+			}
+			return req, &schemas.LLMPluginShortCircuit{Error: requestGuardContextError(contextErr)}, nil
+		}
+	}
 	if handle == nil {
 		decision.CoalesceRole = "bypass"
 		if ctx != nil {
@@ -189,7 +203,11 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 		if ctx != nil {
 			ctx.SetValue(guardDecisionContextKey, decision)
 		}
-		return req, &schemas.LLMPluginShortCircuit{Stream: handle.Chunks}, nil
+		streamCtx := ctx
+		if ctx != nil {
+			streamCtx = ctx.Root()
+		}
+		return req, &schemas.LLMPluginShortCircuit{Stream: forwardCoalescedFollowerStream(streamCtx, handle)}, nil
 	}
 	if handle.Response == nil && handle.Err == nil {
 		handle.Err = coalescerError("coalesced leader completed without a response")
@@ -244,7 +262,20 @@ func (p *Plugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, _ *schemas.
 	return nil, nil
 }
 
-func (p *Plugin) HTTPTransportPreHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+func (p *Plugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if p == nil || ctx == nil || req == nil {
+		return nil, nil
+	}
+	header := strings.TrimSpace(p.config.Coalescer.BypassHeader)
+	if header == "" {
+		return nil, nil
+	}
+	for name := range req.Headers {
+		if strings.EqualFold(name, header) {
+			ctx.SetValue(bypassHeaderContextKey, true)
+			break
+		}
+	}
 	return nil, nil
 }
 
@@ -293,24 +324,25 @@ func (p *Plugin) HTTPTransportStreamChunkHook(_ *schemas.BifrostContext, _ *sche
 func (p *Plugin) active() bool { return p != nil && p.config.Enabled }
 
 type requestEvaluation struct {
-	features          RequestFeatures
-	estimate          CostEstimate
-	usage             *schemas.BifrostLLMUsage
-	capability        CapabilityResult
-	contextIssue      *CapabilityIssue
-	budget            BudgetResult
-	issues            []CapabilityIssue
-	capabilityProblem bool
-	budgetProblem     bool
-	blocked           bool
-	budgetBlocking    bool
+	features           RequestFeatures
+	estimate           CostEstimate
+	usage              *schemas.BifrostLLMUsage
+	capability         CapabilityResult
+	contextIssue       *CapabilityIssue
+	budget             BudgetResult
+	issues             []CapabilityIssue
+	capabilityProblem  bool
+	budgetProblem      bool
+	blocked            bool
+	capabilityBlocking bool
+	budgetBlocking     bool
 }
 
 func (p *Plugin) evaluate(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) requestEvaluation {
 	features := ExtractRequestFeatures(req)
 	capabilityStarted := time.Now()
 	capability := EvaluateCapabilities(p.catalog, p.config.CapabilityGuard, features)
-	estimate, usage := EstimateTokens(req, features, p.config.BudgetGuard, p.catalog)
+	estimate, usage := EstimateTokens(ctx, req, features, p.config.BudgetGuard, p.catalog)
 	contextIssue := EvaluateContextLimit(p.catalog, p.config.CapabilityGuard, features, estimate)
 	p.metrics.ObserveEvalDuration("capability", time.Since(capabilityStarted))
 
@@ -324,25 +356,20 @@ func (p *Plugin) evaluate(ctx *schemas.BifrostContext, req *schemas.BifrostReque
 	}
 	capabilityProblem := len(issues) > 0
 	budgetProblem := len(budget.Violations) > 0
-	blocked := capability.Blocked || budget.ShouldBlock || budget.ShouldDowngrade
+	capabilityBlocking := capability.Blocked
 	for _, issue := range issues {
 		if issue.Severity == IssueSeverityBlock || issue.Severity == IssueSeverityDowngrade {
-			blocked = true
+			capabilityBlocking = true
 		}
 	}
+	budgetBlocking := budget.ShouldBlock || budget.ShouldDowngrade
+	blocked := capabilityBlocking || budgetBlocking
 	if blocked {
-		budgetBlocking := budget.ShouldBlock || budget.ShouldDowngrade
-		for _, issue := range issues {
-			if issue.Severity == IssueSeverityBlock || issue.Severity == IssueSeverityDowngrade {
-				budgetBlocking = false
-				break
-			}
-		}
 		return requestEvaluation{
 			features: features, estimate: estimate, usage: usage, capability: capability,
 			contextIssue: contextIssue, budget: budget, issues: issues,
 			capabilityProblem: capabilityProblem, budgetProblem: budgetProblem,
-			blocked: true, budgetBlocking: budgetBlocking,
+			blocked: true, capabilityBlocking: capabilityBlocking, budgetBlocking: budgetBlocking,
 		}
 	}
 	return requestEvaluation{
@@ -544,6 +571,83 @@ func buildBlockError(decision *GuardDecision, allowFallbacks, budgetBlocking boo
 		bifrostErr.Error.Param = structured
 	}
 	return bifrostErr
+}
+
+func requestGuardContextError(err error) *schemas.BifrostError {
+	message := "request context canceled"
+	status := 499
+	if err == context.DeadlineExceeded {
+		message = "request context deadline exceeded"
+		status = 504
+	} else if err != nil && err != context.Canceled {
+		message = err.Error()
+	}
+	typeName := "request_guard_context"
+	allowFallbacks := false
+	return &schemas.BifrostError{
+		Type:           &typeName,
+		IsBifrostError: true,
+		StatusCode:     &status,
+		Error:          &schemas.ErrorField{Message: message},
+		AllowFallbacks: &allowFallbacks,
+	}
+}
+
+func forwardCoalescedFollowerStream(ctx *schemas.BifrostContext, handle *FlightHandle) chan *schemas.BifrostStreamChunk {
+	stream := make(chan *schemas.BifrostStreamChunk)
+	var done <-chan struct{}
+	if ctx != nil {
+		done = ctx.Done()
+	}
+	go func() {
+		defer close(stream)
+		for {
+			if ctx != nil && ctx.Err() != nil {
+				return
+			}
+			select {
+			case chunk, open := <-handle.Chunks:
+				if !open {
+					if ctx != nil && ctx.Err() != nil {
+						return
+					}
+					if err := handle.coalescer.streamFollowerError(handle); err != nil {
+						sendCoalescedTerminalError(stream, err, done)
+					}
+					return
+				}
+				if chunk == nil {
+					continue
+				}
+				select {
+				case stream <- chunk:
+				case <-done:
+					return
+				}
+			case <-handle.streamDone:
+				if ctx != nil && ctx.Err() != nil {
+					return
+				}
+				if err := handle.coalescer.streamFollowerError(handle); err != nil {
+					sendCoalescedTerminalError(stream, err, done)
+				}
+				return
+			case <-done:
+				return
+			}
+		}
+	}()
+	return stream
+}
+
+func sendCoalescedTerminalError(stream chan<- *schemas.BifrostStreamChunk, err *schemas.BifrostError, done <-chan struct{}) {
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case stream <- &schemas.BifrostStreamChunk{BifrostError: err}:
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 func streamChunkFromResponse(resp *schemas.BifrostResponse) *schemas.BifrostStreamChunk {

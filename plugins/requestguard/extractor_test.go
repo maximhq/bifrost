@@ -103,6 +103,35 @@ func TestExtractResponsesRequestFeatures(t *testing.T) {
 	}
 }
 
+func TestExtractVisionWhenChatParamsAreNil(t *testing.T) {
+	features := ExtractRequestFeatures(&schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Input: []schemas.ChatMessage{{Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+				Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "https://example.test/image.png"},
+			}}}}},
+		},
+	})
+	if !features.RequiresVision || features.ImageCount != 1 {
+		t.Fatalf("features without Params = %+v, want vision detected", features)
+	}
+}
+
+func TestExtractVisionWhenResponsesParamsAreNil(t *testing.T) {
+	features := ExtractRequestFeatures(&schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Input: []schemas.ResponsesMessage{{Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+				ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: stringPtr("https://example.test/image.png")},
+			}}}}},
+		},
+	})
+	if !features.RequiresVision || features.ImageCount != 1 {
+		t.Fatalf("Responses features without Params = %+v, want vision detected", features)
+	}
+}
+
 func TestExtractRequestFeaturesUnsupportedAndNilInputs(t *testing.T) {
 	tests := []struct {
 		name string

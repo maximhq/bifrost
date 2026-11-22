@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -107,6 +108,43 @@ func TestBudgetGuardBlockAndAutoDowngrade(t *testing.T) {
 	}
 }
 
+func TestBlockingFallbackPolicyHonorsEveryActiveGuard(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		capabilityFallback bool
+		budgetFallback     bool
+		wantFallback       bool
+	}{
+		{name: "capability allows but budget denies", capabilityFallback: true},
+		{name: "budget allows but capability denies", budgetFallback: true},
+		{name: "both allow", capabilityFallback: true, budgetFallback: true, wantFallback: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CapabilityGuard.Mode = PolicyBlock
+			cfg.CapabilityGuard.AllowFallbacksOnBlock = test.capabilityFallback
+			cfg.BudgetGuard.Mode = PolicyBlock
+			cfg.BudgetGuard.MaxEstimatedCostUSD = 0.000001
+			cfg.BudgetGuard.AllowFallbacksOnBlock = test.budgetFallback
+			plugin, err := Init(cfg, nil, requestGuardTestCatalog())
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			defer plugin.Cleanup()
+			_, short, err := plugin.PreLLMHook(requestGuardTestContext(), requestGuardTestRequest(schemas.ChatCompletionRequest, schemas.OpenAI, "expensive", true))
+			if err != nil || short == nil || short.Error == nil {
+				t.Fatalf("PreLLMHook() = (%+v, %v), want multi-policy block", short, err)
+			}
+			if short.Error.AllowFallbacks == nil || *short.Error.AllowFallbacks != test.wantFallback {
+				t.Errorf("AllowFallbacks = %v, want %v", short.Error.AllowFallbacks, test.wantFallback)
+			}
+			if short.Error.ExtraFields.ErrorType != schemas.ErrorTypePolicyModelBlocked {
+				t.Errorf("ErrorType = %q, want capability block to retain primary classification", short.Error.ExtraFields.ErrorType)
+			}
+		})
+	}
+}
+
 func TestUnaryCoalescingConcurrent(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	cfg := DefaultConfig()
@@ -131,7 +169,9 @@ func TestUnaryCoalescingConcurrent(t *testing.T) {
 	var releaseLeaderOnce sync.Once
 	releaseLeaderNow := func() { releaseLeaderOnce.Do(func() { close(releaseLeader) }) }
 	t.Cleanup(releaseLeaderNow)
-	leaderContexts := make(chan *schemas.BifrostContext, requestCount)
+	leaderContexts := make(chan *schemas.BifrostContext, 1)
+	unexpectedLeaders := make(chan *schemas.BifrostContext, requestCount)
+	var leaderClaimed atomic.Bool
 	followerShortCircuits := make(chan *schemas.LLMPluginShortCircuit, requestCount-1)
 	leaderResponse := requestGuardTestResponse("leader")
 	var requests sync.WaitGroup
@@ -150,28 +190,81 @@ func TestUnaryCoalescingConcurrent(t *testing.T) {
 				followerShortCircuits <- short
 				return
 			}
+			if !leaderClaimed.CompareAndSwap(false, true) {
+				unexpectedLeaders <- ctx
+				return
+			}
 			leaderContexts <- ctx
 			<-releaseLeader
 			plugin.PostLLMHook(ctx, leaderResponse, nil)
 		}()
 	}
+	workersDone := make(chan struct{})
+	go func() {
+		requests.Wait()
+		close(workersDone)
+	}()
+	waitForWorkers := func() bool {
+		select {
+		case <-workersDone:
+			return true
+		case <-time.After(5 * time.Second):
+			return false
+		}
+	}
+	failAndJoin := func(message string) {
+		releaseLeaderNow()
+		if !waitForWorkers() {
+			t.Errorf("requestguard workers did not exit after release")
+		}
+		t.Fatal(message)
+	}
 
 	var leaderCtx *schemas.BifrostContext
 	select {
 	case leaderCtx = <-leaderContexts:
+	case <-unexpectedLeaders:
+		failAndJoin("unexpected extra coalescer leader or bypass")
+	case <-workersDone:
+		failAndJoin("all requests returned before an expected coalescer leader started")
 	case <-time.After(2 * time.Second):
-		t.Fatal("no coalescer leader started")
+		failAndJoin("no coalescer leader started")
 	}
-	waitForRequestGuardTimeout(t, 5*time.Second, func() bool {
-		plugin.coalescer.mu.Lock()
-		defer plugin.coalescer.mu.Unlock()
-		for _, flight := range plugin.coalescer.flights {
-			return flight.waiters == requestCount-1
+	waitDeadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case <-unexpectedLeaders:
+			failAndJoin("unexpected extra coalescer leader or bypass")
+		default:
 		}
-		return false
-	})
+		plugin.coalescer.mu.Lock()
+		followersReady := false
+		for _, flight := range plugin.coalescer.flights {
+			followersReady = flight.waiters == requestCount-1
+			break
+		}
+		plugin.coalescer.mu.Unlock()
+		if followersReady {
+			break
+		}
+		if time.Now().After(waitDeadline) {
+			failAndJoin("timed out waiting for all coalesced followers")
+		}
+		select {
+		case <-workersDone:
+			failAndJoin("requests exited before all followers joined the leader")
+		case <-time.After(time.Millisecond):
+		}
+	}
 	releaseLeaderNow()
-	requests.Wait()
+	if !waitForWorkers() {
+		t.Fatal("timed out waiting for requestguard workers after leader release")
+	}
+	select {
+	case <-unexpectedLeaders:
+		t.Fatal("unexpected extra coalescer leader or bypass")
+	default:
+	}
 
 	seenResponses := map[*schemas.BifrostResponse]struct{}{leaderResponse: {}}
 	followers := 0
@@ -283,6 +376,98 @@ func TestStreamingCoalescingConcurrent(t *testing.T) {
 	followers.Wait()
 }
 
+func TestStreamingCoalescingPropagatesLeaderError(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.CapabilityGuard.Mode = PolicyOff
+	cfg.BudgetGuard.Mode = PolicyOff
+	cfg.Coalescer.Enabled = true
+	cfg.Coalescer.EnableStreaming = true
+	plugin, err := Init(cfg, nil, requestGuardTestCatalog())
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	defer plugin.Cleanup()
+
+	leaderCtx := requestGuardTestContext()
+	_, short, err := plugin.PreLLMHook(leaderCtx, requestGuardTestRequest(schemas.ChatCompletionStreamRequest, schemas.OpenAI, "expensive", false))
+	if err != nil || short != nil {
+		t.Fatalf("leader PreLLMHook() = (%+v, %v), want provider execution", short, err)
+	}
+	followerCtx := requestGuardTestContext()
+	_, follower, err := plugin.PreLLMHook(followerCtx, requestGuardTestRequest(schemas.ChatCompletionStreamRequest, schemas.OpenAI, "expensive", false))
+	if err != nil || follower == nil || follower.Stream == nil {
+		t.Fatalf("follower PreLLMHook() = (%+v, %v), want coalesced stream", follower, err)
+	}
+
+	want := coalescerError("upstream stream failed")
+	plugin.PostLLMHook(leaderCtx, nil, want)
+	select {
+	case chunk, open := <-follower.Stream:
+		if !open || chunk == nil || chunk.BifrostError == nil || chunk.BifrostError.Error.Message != want.Error.Message {
+			t.Fatalf("follower terminal chunk = (%+v, %v), want leader error", chunk, open)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("follower did not receive leader stream error")
+	}
+}
+
+func TestCoalescedFollowerStreamPropagatesEvictionAndShutdownErrors(t *testing.T) {
+	t.Run("slow follower", func(t *testing.T) {
+		c := NewCoalescer(CoalescerConfig{Enabled: true, EnableStreaming: true, MaxInFlight: 4, MaxBufferedChunks: 1, MaxBufferedBytes: 1 << 16})
+		defer c.Close()
+		leader, _ := c.Acquire(context.Background(), "slow", true)
+		follower, _ := c.Acquire(context.Background(), "slow", true)
+		stream := forwardCoalescedFollowerStream(nil, follower)
+		for i := 0; i < 8; i++ {
+			if !c.PublishChunk(leader, &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: fmt.Sprintf("chunk-%d", i)}}) {
+				t.Fatalf("PublishChunk(%d) = false", i)
+			}
+		}
+		c.FinishStream(leader)
+		var chunks []*schemas.BifrostStreamChunk
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case chunk, open := <-stream:
+				if !open {
+					if len(chunks) == 0 || chunks[len(chunks)-1].BifrostError == nil {
+						t.Fatalf("follower stream ended without terminal error: %+v", chunks)
+					}
+					return
+				}
+				chunks = append(chunks, chunk)
+			case <-timer.C:
+				t.Fatalf("follower eviction stream stalled: %+v", chunks)
+			}
+		}
+	})
+
+	t.Run("coalescer shutdown", func(t *testing.T) {
+		c := NewCoalescer(CoalescerConfig{Enabled: true, EnableStreaming: true, MaxInFlight: 4, MaxBufferedChunks: 4, MaxBufferedBytes: 1 << 16})
+		leader, _ := c.Acquire(context.Background(), "shutdown", true)
+		follower, _ := c.Acquire(context.Background(), "shutdown", true)
+		stream := forwardCoalescedFollowerStream(nil, follower)
+		c.PublishChunk(leader, &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "prefix"}})
+		c.Close()
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case chunk, open := <-stream:
+				if !open {
+					t.Fatal("shutdown stream closed without terminal error")
+				}
+				if chunk != nil && chunk.BifrostError != nil {
+					return
+				}
+			case <-timer.C:
+				t.Fatal("shutdown follower stream stalled")
+			}
+		}
+	})
+}
+
 func TestHTTPResponseHeadersAndMetrics(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	cfg := DefaultConfig()
@@ -373,7 +558,7 @@ func BenchmarkEstimateAndBudget(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		estimate, _ := EstimateTokens(req, features, config.BudgetGuard, catalog)
+		estimate, _ := EstimateTokens(requestGuardTestContext(), req, features, config.BudgetGuard, catalog)
 		_ = EvaluateBudget(config.BudgetGuard, estimate)
 	}
 }
@@ -406,10 +591,6 @@ func BenchmarkComputeFingerprint(b *testing.B) {
 	}
 }
 
-func requestGuardTestContext() *schemas.BifrostContext {
-	return schemas.NewBifrostContext(context.Background(), time.Time{})
-}
-
 func requestGuardTestRequest(requestType schemas.RequestType, provider schemas.ModelProvider, model string, toolsAndVision bool) *schemas.BifrostRequest {
 	request := &schemas.BifrostRequest{
 		RequestType: requestType,
@@ -435,6 +616,7 @@ func requestGuardTestRequest(requestType schemas.RequestType, provider schemas.M
 
 func requestGuardTestCatalog() *fakeCatalog {
 	return &fakeCatalog{
+		requestTypeSupported: true,
 		capabilitiesByRoute: map[string]*schemas.ModelCapabilities{
 			routeKey(schemas.OpenAI, "expensive"): {SupportsFunctionCalling: boolPtr(false)},
 			routeKey(schemas.OpenAI, "cheap"): {

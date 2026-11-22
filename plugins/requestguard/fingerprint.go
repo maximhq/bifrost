@@ -10,6 +10,16 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+type requestGuardBypassHeaderContextKey struct{}
+
+var bypassHeaderContextKey requestGuardBypassHeaderContextKey
+
+type fingerprintTenantIdentity struct {
+	key          []byte
+	virtualKeyID string
+	customerIDs  []string
+}
+
 // ComputeFingerprint returns a stable SHA-256 request key for eligible unary
 // or streaming chat/Responses requests. It only reads the pooled request during
 // this call and returns scalar output.
@@ -19,6 +29,11 @@ func ComputeFingerprint(ctx *schemas.BifrostContext, req *schemas.BifrostRequest
 	}
 	if req == nil {
 		return "", false, "request is nil"
+	}
+	if ctx != nil {
+		if largePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); largePayload {
+			return "", false, "large payload passthrough is not coalesced"
+		}
 	}
 	if !features.Supported {
 		return "", false, "request type is unsupported"
@@ -68,19 +83,21 @@ func ComputeFingerprint(ctx *schemas.BifrostContext, req *schemas.BifrostRequest
 	writeHashPart(h, "provider", []byte(provider))
 	writeHashPart(h, "model", []byte(model))
 	writeHashPart(h, "request_type", []byte(requestType))
-	if cfg.IncludeVirtualKeyScope && ctx != nil {
-		virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
-		if virtualKeyID == "" {
-			virtualKeyID, _ = ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
-		}
-		writeHashPart(h, "virtual_key_scope", []byte(virtualKeyID))
+	identity, hasTenant, err := tenantIdentityForFingerprint(ctx)
+	if err != nil {
+		return "", false, "tenant identity cannot be encoded: " + err.Error()
 	}
-	if cfg.IncludeCustomerScope && ctx != nil {
-		customerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string)
-		if customerID == "" {
-			customerID, _ = ctx.Value(schemas.BifrostContextKeyGovernanceScopedCustomerID).(string)
+	if !hasTenant {
+		return "", false, "tenant identity is unavailable"
+	}
+	writeHashPart(h, "tenant_scope", identity.key)
+	if cfg.IncludeVirtualKeyScope && identity.virtualKeyID != "" {
+		writeHashPart(h, "virtual_key_scope", []byte(identity.virtualKeyID))
+	}
+	if cfg.IncludeCustomerScope {
+		for _, customerID := range identity.customerIDs {
+			writeHashPart(h, "customer_scope", []byte(customerID))
 		}
-		writeHashPart(h, "customer_scope", []byte(customerID))
 	}
 
 	var temperature *float64
@@ -149,10 +166,12 @@ func ComputeFingerprint(ctx *schemas.BifrostContext, req *schemas.BifrostRequest
 		var tools any
 		var toolChoice any
 		var responseFormat any
+		var instructions any
 		var temp, topP, maxTokens any
 		if responses.Params != nil {
 			tools = responses.Params.Tools
 			toolChoice = responses.Params.ToolChoice
+			instructions = responses.Params.Instructions
 			if responses.Params.Text != nil {
 				responseFormat = responses.Params.Text.Format
 			}
@@ -164,7 +183,7 @@ func ComputeFingerprint(ctx *schemas.BifrostContext, req *schemas.BifrostRequest
 			label string
 			value any
 		}{
-			{"tools", tools}, {"tool_choice", toolChoice}, {"response_format", responseFormat},
+			{"instructions", instructions}, {"tools", tools}, {"tool_choice", toolChoice}, {"response_format", responseFormat},
 			{"temperature", temp}, {"top_p", topP}, {"seed", nil}, {"max_tokens", maxTokens}, {"stop", nil},
 		} {
 			if !addJSON(part.label, part.value) {
@@ -182,6 +201,9 @@ func hasHeaderKey(ctx *schemas.BifrostContext, header string) bool {
 	if ctx == nil {
 		return false
 	}
+	if present, _ := ctx.Value(bypassHeaderContextKey).(bool); present {
+		return true
+	}
 	headers, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
 	for key := range headers {
 		if strings.EqualFold(key, header) {
@@ -189,6 +211,62 @@ func hasHeaderKey(ctx *schemas.BifrostContext, header string) bool {
 		}
 	}
 	return false
+}
+
+func tenantIdentityForFingerprint(ctx *schemas.BifrostContext) (fingerprintTenantIdentity, bool, error) {
+	if ctx == nil {
+		return fingerprintTenantIdentity{}, false, nil
+	}
+	grant := ctx.Grant()
+	if grant == nil {
+		return fingerprintTenantIdentity{}, false, nil
+	}
+	identity := grant.Identity()
+	if identity == nil {
+		return fingerprintTenantIdentity{}, false, nil
+	}
+
+	h := sha256.New()
+	found := false
+	add := func(label, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		writeHashPart(h, label, []byte(value))
+		found = true
+	}
+
+	tenant := fingerprintTenantIdentity{}
+	if user := identity.User(); user != nil {
+		add("user", user.ID)
+	}
+	if virtualKey := identity.VirtualKey(); virtualKey != nil {
+		tenant.virtualKeyID = strings.TrimSpace(virtualKey.ID)
+		add("virtual_key", tenant.virtualKeyID)
+	}
+	for _, customer := range identity.Customers() {
+		customerID := strings.TrimSpace(customer.ID)
+		if customerID == "" {
+			continue
+		}
+		tenant.customerIDs = append(tenant.customerIDs, customerID)
+		add("customer", customerID)
+	}
+	for _, team := range identity.Teams() {
+		add("team", team.ID)
+	}
+	for _, unit := range identity.BusinessUnits() {
+		add("business_unit", unit.ID)
+	}
+	if project := identity.Project(); project != nil {
+		add("project", project.ID)
+	}
+	if !found {
+		return fingerprintTenantIdentity{}, false, nil
+	}
+	tenant.key = h.Sum(nil)
+	return tenant, true, nil
 }
 
 func writeHashPart(h hash.Hash, label string, value []byte) {

@@ -13,7 +13,7 @@ const estimatedMessageOverhead = 4
 // EstimateTokens estimates prompt and completion usage without retaining the
 // pooled request or any pointer into it. Text-like content is counted by Unicode
 // code point; media is represented by the configured per-image estimate.
-func EstimateTokens(req *schemas.BifrostRequest, features RequestFeatures, cfg BudgetGuardConfig, catalog Catalog) (CostEstimate, *schemas.BifrostLLMUsage) {
+func EstimateTokens(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, features RequestFeatures, cfg BudgetGuardConfig, catalog Catalog) (CostEstimate, *schemas.BifrostLLMUsage) {
 	chars := 0
 	messageCount := 0
 	var provider schemas.ModelProvider
@@ -84,6 +84,20 @@ func EstimateTokens(req *schemas.BifrostRequest, features RequestFeatures, cfg B
 						runeLenPtr(message.ResponsesToolMessage.Name),
 						runeLenPtr(message.ResponsesToolMessage.Arguments),
 					)
+					if output := message.ResponsesToolMessage.Output; output != nil {
+						chars = addChars(chars, runeLenPtr(output.ResponsesToolCallOutputStr))
+						for j := range output.ResponsesFunctionToolCallOutputBlocks {
+							block := &output.ResponsesFunctionToolCallOutputBlocks[j]
+							chars = addChars(chars, runeLenPtr(block.Text))
+							if block.ResponsesInputMessageContentBlockFile != nil {
+								chars = addChars(chars,
+									runeLenPtr(block.ResponsesInputMessageContentBlockFile.FileData),
+									runeLenPtr(block.ResponsesInputMessageContentBlockFile.FileURL),
+									runeLenPtr(block.ResponsesInputMessageContentBlockFile.Filename),
+								)
+							}
+						}
+					}
 				}
 			}
 			if responses.Params != nil {
@@ -146,33 +160,17 @@ func EstimateTokens(req *schemas.BifrostRequest, features RequestFeatures, cfg B
 		CompletionTokens: outputTokens,
 		TotalTokens:      totalTokens,
 	}
-	if cost, available := PriceEstimate(catalog, usage, provider, model, requestType, nil); available {
+	if cost, available := PriceEstimate(catalog, usage, provider, model, requestType, BuildPricingScopes(ctx, provider)); available {
 		estimate.EstimatedCostUSD = cost
 		estimate.PricingAvailable = true
 	}
 	return estimate, usage
 }
 
-// BuildPricingScopes creates a detached pricing scope value. The catalog's
-// current scope model has no customer field, so the customer ID is mapped to
-// UserID while virtual-key identity uses VirtualKeyID.
+// BuildPricingScopes returns the catalog's pricing scopes for this request.
+// The catalog helper is nil-safe and attributes UserID to the calling user.
 func BuildPricingScopes(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *modelcatalog.PricingLookupScopes {
-	if ctx == nil {
-		return nil
-	}
-	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
-	if virtualKeyID == "" {
-		virtualKeyID, _ = ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
-	}
-	customerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string)
-	if customerID == "" {
-		customerID, _ = ctx.Value(schemas.BifrostContextKeyGovernanceScopedCustomerID).(string)
-	}
-	return &modelcatalog.PricingLookupScopes{
-		UserID:       customerID,
-		VirtualKeyID: virtualKeyID,
-		Provider:     string(provider),
-	}
+	return modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 }
 
 // PriceEstimate prices an estimate only when the model catalog has an entry

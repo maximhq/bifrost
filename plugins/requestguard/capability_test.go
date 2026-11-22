@@ -158,6 +158,32 @@ func TestEvaluateCapabilitiesNilCatalogFailsOpen(t *testing.T) {
 	}
 }
 
+func TestUnknownCapabilityBlockSeverityFollowsMode(t *testing.T) {
+	for _, test := range []struct {
+		mode PolicyMode
+		want string
+	}{
+		{mode: PolicyBlock, want: IssueSeverityBlock},
+		{mode: PolicyDowngrade, want: IssueSeverityDowngrade},
+		{mode: PolicyWarn, want: IssueSeverityWarning},
+		{mode: PolicyAudit, want: IssueSeverityAudit},
+	} {
+		t.Run(string(test.mode), func(t *testing.T) {
+			cfg := CapabilityGuardConfig{Mode: test.mode, UnknownPolicy: UnknownCapabilityBlock, CheckTools: true}
+			features := RequestFeatures{Supported: true, RequiresTools: true, Model: "unknown"}
+			result := EvaluateCapabilities(nil, cfg, features)
+			if len(result.Issues) != 1 || result.Issues[0].Severity != test.want {
+				t.Fatalf("unknown capability result = %+v, want severity %s", result, test.want)
+			}
+			cfg.CheckContextLimit = true
+			contextIssue := EvaluateContextLimit(nil, cfg, features, CostEstimate{})
+			if contextIssue == nil || contextIssue.Severity != test.want {
+				t.Fatalf("unknown context-limit issue = %+v, want severity %s", contextIssue, test.want)
+			}
+		})
+	}
+}
+
 func TestEvaluateCapabilitiesNoOpForUnsupportedAndOff(t *testing.T) {
 	catalog := &fakeCatalog{}
 	features := RequestFeatures{Supported: false}

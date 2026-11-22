@@ -52,7 +52,7 @@ func RecommendModels(
 		models := catalog.GetModelsForProvider(provider)
 		for _, model := range models {
 			model = strings.TrimSpace(model)
-			if model == "" || model == features.Model {
+			if model == "" || (provider == features.Provider && model == features.Model) {
 				continue
 			}
 			key := string(provider) + "\x00" + model
@@ -67,6 +67,10 @@ func RecommendModels(
 			modelInfo := catalog.GetModelInfo(provider, model)
 			entry := catalog.GetPricingEntryForModel(model, provider)
 			if (modelInfo != nil && modelInfo.IsDeprecated) || (entry != nil && entry.IsDeprecated) {
+				continue
+			}
+			caps := catalog.GetModelCapabilities(provider, model)
+			if !supportsRequestEndpoint(catalog, model, provider, features.RequestType, caps) {
 				continue
 			}
 

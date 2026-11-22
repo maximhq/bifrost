@@ -3,7 +3,7 @@ module github.com/maximhq/bifrost/plugins/requestguard
 go 1.27.4
 
 require (
-	github.com/maximhq/bifrost/core v1.16.0
+	github.com/maximhq/bifrost/core v1.16.1
 	github.com/maximhq/bifrost/framework v1.13.0
 	github.com/prometheus/client_golang v1.23.3-0.20251103151724-a5ae20370e5e
 )

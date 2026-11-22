@@ -13,13 +13,18 @@ import (
 // both known failures and unknowns.
 func EvaluateCapabilities(catalog Catalog, cfg CapabilityGuardConfig, features RequestFeatures) CapabilityResult {
 	result := CapabilityResult{Action: CapabilityActionAllow, Pass: true}
-	if isNilCatalog(catalog) || !features.Supported || cfg.Mode == PolicyOff || cfg.Mode == "" {
+	if !features.Supported || cfg.Mode == PolicyOff || cfg.Mode == "" {
 		return result
 	}
 
-	caps := catalog.GetModelCapabilities(features.Provider, features.Model)
-	modelInfo := catalog.GetModelInfo(features.Provider, features.Model)
-	pricingEntry := catalog.GetPricingEntryForModel(features.Model, features.Provider)
+	var caps *schemas.ModelCapabilities
+	var modelInfo *schemas.Model
+	var pricingEntry *modelcatalog.PricingEntry
+	if !isNilCatalog(catalog) {
+		caps = catalog.GetModelCapabilities(features.Provider, features.Model)
+		modelInfo = catalog.GetModelInfo(features.Provider, features.Model)
+		pricingEntry = catalog.GetPricingEntryForModel(features.Model, features.Provider)
+	}
 	knownModel := caps != nil || modelInfo != nil || pricingEntry != nil
 
 	addUnsupported := func(capability, reason string) {
@@ -47,7 +52,7 @@ func EvaluateCapabilities(catalog Catalog, cfg CapabilityGuardConfig, features R
 		case UnknownCapabilityBlock:
 			addCapabilityIssue(&result, CapabilityIssue{
 				Capability: capability,
-				Severity:   IssueSeverityBlock,
+				Severity:   severityForMode(cfg.Mode),
 				Reason:     reason,
 				Unknown:    true,
 			})
@@ -104,7 +109,7 @@ func EvaluateCapabilities(catalog Catalog, cfg CapabilityGuardConfig, features R
 	if cfg.CheckStreaming && features.IsStreaming {
 		if !knownModel {
 			addUnknown("streaming", "model is not present in the model catalog")
-		} else if !catalog.IsRequestTypeSupported(features.Model, features.Provider, features.RequestType) && !supportsStreamingEndpoint(caps, features.RequestType) {
+		} else if !supportsRequestEndpoint(catalog, features.Model, features.Provider, features.RequestType, caps) {
 			addUnsupported("streaming", "model does not advertise support for this streaming endpoint")
 		}
 	}
@@ -174,7 +179,7 @@ func contextLimitUnknown(cfg CapabilityGuardConfig, reason string) *CapabilityIs
 	case UnknownCapabilityWarn:
 		return &CapabilityIssue{Capability: "context_limit", Severity: IssueSeverityWarning, Reason: reason, Unknown: true}
 	case UnknownCapabilityBlock:
-		return &CapabilityIssue{Capability: "context_limit", Severity: IssueSeverityBlock, Reason: reason, Unknown: true}
+		return &CapabilityIssue{Capability: "context_limit", Severity: severityForMode(cfg.Mode), Reason: reason, Unknown: true}
 	default:
 		return nil
 	}
@@ -255,6 +260,16 @@ func supportsStreamingEndpoint(caps *schemas.ModelCapabilities, requestType sche
 		}
 	}
 	return false
+}
+
+// supportsRequestEndpoint accepts the catalog's request-type index or its
+// endpoint metadata fallback. The same predicate is used for unary and stream
+// candidates so recommender eligibility matches capability evaluation.
+func supportsRequestEndpoint(catalog Catalog, model string, provider schemas.ModelProvider, requestType schemas.RequestType, caps *schemas.ModelCapabilities) bool {
+	if !isNilCatalog(catalog) && catalog.IsRequestTypeSupported(model, provider, requestType) {
+		return true
+	}
+	return supportsStreamingEndpoint(caps, requestType)
 }
 
 func modelMaxOutputTokens(caps *schemas.ModelCapabilities, modelInfo *schemas.Model, entry *modelcatalog.PricingEntry) *int {

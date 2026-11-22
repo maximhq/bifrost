@@ -13,10 +13,12 @@ import (
 // requests with the same eligible fingerprint. Its retained state is bounded
 // by MaxInFlight, MaxBufferedChunks, and MaxBufferedBytes.
 type Coalescer struct {
-	mu      sync.Mutex
-	cfg     CoalescerConfig
-	flights map[string]*coalescedFlight
-	closed  bool
+	mu                  sync.Mutex
+	cfg                 CoalescerConfig
+	flights             map[string]*coalescedFlight
+	streamSubscribers   map[*streamSubscriber]struct{}
+	subscribersByHandle map[*FlightHandle]*streamSubscriber
+	closed              bool
 }
 
 type coalescedFlight struct {
@@ -41,6 +43,8 @@ type streamSubscriber struct {
 	active      bool
 	queuedBytes int
 	stop        func() bool
+	queueClosed bool
+	doneClosed  bool
 }
 
 type queuedChunk struct {
@@ -56,6 +60,7 @@ type FlightHandle struct {
 	Err        *schemas.BifrostError
 	Chunks     chan *schemas.BifrostStreamChunk
 	ContextErr error
+	streamDone <-chan struct{}
 
 	coalescer *Coalescer
 	flight    *coalescedFlight
@@ -79,7 +84,12 @@ func NewCoalescer(cfg CoalescerConfig) *Coalescer {
 	if cfg.MaxBufferedBytes <= 0 {
 		cfg.MaxBufferedBytes = defaults.MaxBufferedBytes
 	}
-	return &Coalescer{cfg: cfg, flights: make(map[string]*coalescedFlight)}
+	return &Coalescer{
+		cfg:                 cfg,
+		flights:             make(map[string]*coalescedFlight),
+		streamSubscribers:   make(map[*streamSubscriber]struct{}),
+		subscribersByHandle: make(map[*FlightHandle]*streamSubscriber),
+	}
 }
 
 // Acquire joins a matching flight or creates a new leader. A nil handle with a
@@ -92,6 +102,9 @@ func (c *Coalescer) Acquire(ctx context.Context, key string, streaming bool) (*F
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return &FlightHandle{ContextErr: err}, false
 	}
 	c.mu.Lock()
 	if c.closed || !c.cfg.Enabled {
@@ -118,8 +131,13 @@ func (c *Coalescer) Acquire(ctx context.Context, key string, streaming bool) (*F
 		flight.waiters++
 		handle := &FlightHandle{coalescer: c, flight: flight, streaming: false}
 		c.mu.Unlock()
-		if !c.waitForUnary(ctx, flight) {
+		completed, contextErr := c.waitForUnary(ctx, flight)
+		if !completed {
 			c.decrementWaiter(flight)
+			if contextErr != nil {
+				handle.ContextErr = contextErr
+				return handle, false
+			}
 			return nil, true
 		}
 		c.decrementWaiter(flight)
@@ -172,6 +190,7 @@ func (c *Coalescer) acquireStreamFollowerLocked(ctx context.Context, flight *coa
 		done:   make(chan struct{}),
 		active: true,
 	}
+	handle.streamDone = subscriber.done
 	for _, bufferedChunk := range flight.buffer {
 		cloned, size, err := cloneChunkAndSize(bufferedChunk)
 		if err != nil || subscriber.queuedBytes > c.cfg.MaxBufferedBytes-size {
@@ -181,6 +200,8 @@ func (c *Coalescer) acquireStreamFollowerLocked(ctx context.Context, flight *coa
 		subscriber.queuedBytes += size
 	}
 	flight.subscribers[handle] = subscriber
+	c.streamSubscribers[subscriber] = struct{}{}
+	c.subscribersByHandle[handle] = subscriber
 	if ctx.Done() != nil {
 		subscriber.stop = context.AfterFunc(ctx, func() {
 			c.cancelStreamFollower(flight, handle, ctx.Err())
@@ -190,16 +211,24 @@ func (c *Coalescer) acquireStreamFollowerLocked(ctx context.Context, flight *coa
 	return handle
 }
 
-func (c *Coalescer) waitForUnary(ctx context.Context, flight *coalescedFlight) bool {
+func (c *Coalescer) waitForUnary(ctx context.Context, flight *coalescedFlight) (bool, error) {
 	timer := time.NewTimer(c.cfg.WaitTimeout)
 	defer timer.Stop()
 	select {
 	case <-flight.done:
-		return true
+		return true, nil
 	case <-ctx.Done():
-		return false
+		return false, ctx.Err()
 	case <-timer.C:
-		return false
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		select {
+		case <-flight.done:
+			return true, nil
+		default:
+			return false, nil
+		}
 	}
 }
 
@@ -343,10 +372,8 @@ func (c *Coalescer) FinishStream(handle *FlightHandle, errors ...*schemas.Bifros
 	close(flight.done)
 	for follower, subscriber := range flight.subscribers {
 		follower.Err, _ = cloneBifrostError(clonedErr)
-		c.stopSubscriberContextLocked(subscriber)
 		subscriber.active = false
-		delete(flight.subscribers, follower)
-		close(subscriber.queue)
+		c.closeSubscriberQueueLocked(subscriber)
 	}
 }
 
@@ -386,14 +413,16 @@ func (c *Coalescer) Close() {
 		flight.complete = true
 		if flight.streaming {
 			flight.streamErr, _ = cloneBifrostError(closeErr)
-			for follower, subscriber := range flight.subscribers {
-				follower.Err, _ = cloneBifrostError(closeErr)
-				c.abortSubscriberLocked(flight, subscriber, closeErr, nil)
+			for _, subscriber := range flight.subscribers {
+				c.shutdownSubscriberLocked(flight, subscriber, closeErr)
 			}
 		} else {
 			flight.err, _ = cloneBifrostError(closeErr)
 		}
 		close(flight.done)
+	}
+	for subscriber := range c.streamSubscribers {
+		c.shutdownSubscriberLocked(subscriber.handle.flight, subscriber, closeErr)
 	}
 	c.flights = make(map[string]*coalescedFlight)
 }
@@ -411,22 +440,47 @@ func (c *Coalescer) removeFlightLocked(flight *coalescedFlight) {
 func (c *Coalescer) cancelStreamFollower(flight *coalescedFlight, handle *FlightHandle, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if subscriber := flight.subscribers[handle]; subscriber != nil {
+	if subscriber := c.subscribersByHandle[handle]; subscriber != nil {
 		c.abortSubscriberLocked(flight, subscriber, nil, err)
 	}
 }
 
 func (c *Coalescer) abortSubscriberLocked(flight *coalescedFlight, subscriber *streamSubscriber, err *schemas.BifrostError, contextErr error) {
-	if !subscriber.active {
+	if subscriber.doneClosed {
 		return
 	}
 	subscriber.active = false
 	delete(flight.subscribers, subscriber.handle)
 	subscriber.handle.Err, _ = cloneBifrostError(err)
 	subscriber.handle.ContextErr = contextErr
+	c.closeSubscriberQueueLocked(subscriber)
+	if contextErr != nil {
+		delete(flight.subscribers, subscriber.handle)
+		c.stopSubscriberContextLocked(subscriber)
+		close(subscriber.done)
+		subscriber.doneClosed = true
+	}
+}
+
+func (c *Coalescer) shutdownSubscriberLocked(flight *coalescedFlight, subscriber *streamSubscriber, err *schemas.BifrostError) {
+	if subscriber.doneClosed {
+		return
+	}
+	subscriber.active = false
+	delete(flight.subscribers, subscriber.handle)
+	subscriber.handle.Err, _ = cloneBifrostError(err)
+	subscriber.handle.ContextErr = nil
 	c.stopSubscriberContextLocked(subscriber)
 	close(subscriber.done)
-	close(subscriber.queue)
+	subscriber.doneClosed = true
+	c.closeSubscriberQueueLocked(subscriber)
+}
+
+func (c *Coalescer) closeSubscriberQueueLocked(subscriber *streamSubscriber) {
+	if subscriber != nil && !subscriber.queueClosed {
+		close(subscriber.queue)
+		subscriber.queueClosed = true
+	}
 }
 
 func (c *Coalescer) stopSubscriberContextLocked(subscriber *streamSubscriber) {
@@ -437,7 +491,10 @@ func (c *Coalescer) stopSubscriberContextLocked(subscriber *streamSubscriber) {
 }
 
 func (c *Coalescer) forwardStreamFollower(subscriber *streamSubscriber) {
-	defer close(subscriber.handle.Chunks)
+	defer func() {
+		close(subscriber.handle.Chunks)
+		c.cleanupStreamSubscriber(subscriber)
+	}()
 	for {
 		select {
 		case <-subscriber.done:
@@ -460,6 +517,30 @@ func (c *Coalescer) forwardStreamFollower(subscriber *streamSubscriber) {
 			}
 		}
 	}
+}
+
+func (c *Coalescer) streamFollowerError(handle *FlightHandle) *schemas.BifrostError {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if handle == nil {
+		return nil
+	}
+	return handle.Err
+}
+
+func (c *Coalescer) cleanupStreamSubscriber(subscriber *streamSubscriber) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if subscriber == nil {
+		return
+	}
+	if subscriber.handle != nil && subscriber.handle.flight != nil {
+		delete(subscriber.handle.flight.subscribers, subscriber.handle)
+		delete(c.subscribersByHandle, subscriber.handle)
+	}
+	subscriber.active = false
+	c.stopSubscriberContextLocked(subscriber)
+	delete(c.streamSubscribers, subscriber)
 }
 
 func cloneResponse(response *schemas.BifrostResponse) (*schemas.BifrostResponse, error) {

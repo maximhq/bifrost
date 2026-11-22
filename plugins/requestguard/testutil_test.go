@@ -1,7 +1,11 @@
 package requestguard
 
 import (
+	"context"
+	"time"
+
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
@@ -62,3 +66,33 @@ func (f *fakeCatalog) IsRequestTypeSupported(string, schemas.ModelProvider, sche
 func boolPtr(value bool) *bool       { return &value }
 func intPtr(value int) *int          { return &value }
 func stringPtr(value string) *string { return &value }
+
+func requestGuardTestContext() *schemas.BifrostContext {
+	return requestGuardTestContextForIdentity("requestguard-test-user", "requestguard-test-key", "requestguard-test-customer")
+}
+
+func requestGuardTestContextForIdentity(userID, virtualKeyID, customerID string) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	var user *schemas.UserRef
+	if userID != "" {
+		user = &schemas.UserRef{ID: userID}
+	}
+	var virtualKey *schemas.EntityRef
+	if virtualKeyID != "" {
+		virtualKey = &schemas.EntityRef{ID: virtualKeyID}
+	}
+	var customers []schemas.EntityRef
+	if customerID != "" {
+		customers = []schemas.EntityRef{{ID: customerID}}
+	}
+	g := grant.New()
+	g.SetIdentity(grant.NewIdentity(schemas.Credential{Kind: "requestguard-test"}, user, virtualKey, nil, customers, nil, nil))
+	if !ctx.SetGrant(g) {
+		panic("failed to install requestguard test grant")
+	}
+	return ctx
+}
+
+func requestGuardUnscopedTestContext() *schemas.BifrostContext {
+	return schemas.NewBifrostContext(context.Background(), time.Time{})
+}

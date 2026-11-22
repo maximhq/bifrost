@@ -5023,8 +5023,8 @@
                         "wait_timeout": { "type": "integer", "minimum": 0, "default": 25, "description": "Unary follower wait limit in milliseconds" },
                         "max_buffered_chunks": { "type": "integer", "minimum": 0, "default": 1024 },
                         "max_buffered_bytes": { "type": "integer", "minimum": 0, "default": 1048576 },
-                        "include_virtual_key_scope": { "type": "boolean", "default": false },
-                        "include_customer_scope": { "type": "boolean", "default": false },
+                        "include_virtual_key_scope": { "type": "boolean", "default": true },
+                        "include_customer_scope": { "type": "boolean", "default": true },
                         "bypass_header": { "type": "string" }
                       },
                       "additionalProperties": false
