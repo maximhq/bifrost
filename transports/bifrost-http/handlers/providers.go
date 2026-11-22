@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/url"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -93,6 +95,23 @@ type ProviderHandler struct {
 	inMemoryStore *lib.Config
 	client        *bifrost.Bifrost
 	modelsManager ModelsManager
+	providerLocks [providerLockStripes]sync.Mutex // serializes create/update/delete per provider name
+}
+
+// providerLockStripes bounds the per-name locks: names hash onto a fixed set of mutexes, so the
+// memory is constant and nothing has to be freed when a provider goes away.
+const providerLockStripes = 64
+
+// lockProvider serializes create, update and delete for one provider name and returns the unlock.
+// A rolled-back create removes the configuration before it stops the runtime provider; without
+// this, a concurrent create for the same name could store its configuration in that gap and the
+// rollback would then stop its runtime and unregister its prefix.
+func (h *ProviderHandler) lockProvider(provider schemas.ModelProvider) func() {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(provider))
+	mu := &h.providerLocks[hash.Sum32()%providerLockStripes]
+	mu.Lock()
+	return mu.Unlock
 }
 
 // NewProviderHandler creates a new provider handler instance
@@ -460,6 +479,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			}
 		}
 	}
+	defer h.lockProvider(payload.Provider)() // covers the existence check through any rollback
 	// Check if provider already exists
 	if _, err := h.inMemoryStore.GetProviderConfigRedacted(payload.Provider); err != nil {
 		if !errors.Is(err, lib.ErrNotFound) {
@@ -573,6 +593,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err))
 		return
 	}
+	defer h.lockProvider(provider)() // the upsert path below can create the provider
 
 	payload := struct {
 		Keys []schemas.Key `json:"keys"` // API keys for the provider
@@ -842,6 +863,7 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err))
 		return
 	}
+	defer h.lockProvider(provider)()
 
 	// Check if provider exists
 	existing, err := h.inMemoryStore.GetProviderConfigRedacted(provider)

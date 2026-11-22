@@ -1272,24 +1272,30 @@ func TestProviderRegistration_FirstHTTPRequestHonorsPrefix(t *testing.T) {
 	}
 }
 
-// reloadWithRequest sends a first inference request to the new provider while its post-create
-// reload is in flight, then fails the reload when fail is set so the create is rolled back.
+// reloadWithRequest sends a first inference request to the new provider while its first post-create
+// reload is in flight, runs during (if set), then fails that reload when fail is set so the create is
+// rolled back. Later reloads pass straight through.
 type reloadWithRequest struct {
 	*BifrostHTTPServer
 	t              *testing.T
 	client         *http.Client
 	baseURL, model string
 	fail           bool
+	during         func()
+	calls          atomic.Int32
 	status         int
 	body           string
 }
 
 func (r *reloadWithRequest) ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*configstoreTables.TableProvider, error) {
 	table, err := r.BifrostHTTPServer.ReloadProvider(ctx, provider, isNew)
-	if err != nil {
-		return nil, err
+	if err != nil || r.calls.Add(1) > 1 {
+		return table, err
 	}
 	r.status, r.body = providerRegistrationHTTPRequest(r.t, r.client, "POST", r.baseURL+"/v1/chat/completions", fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, r.model), "sk-bf-registration")
+	if r.during != nil {
+		r.during()
+	}
 	if r.fail {
 		return nil, errors.New("reload failed")
 	}
@@ -1357,6 +1363,33 @@ func TestProviderRegistration_FailedCreateStopsRuntimeProvider(t *testing.T) {
 	assert.False(t, schemas.IsKnownProvider(string(fixture.provider)), "rolled-back provider prefix is still registered")
 	_, err := fixture.server.Config.GetProviderConfigRaw(fixture.provider)
 	assert.ErrorIs(t, err, lib.ErrNotFound)
+}
+
+// A rolled-back create removes the configuration and then stops the runtime provider. A second
+// create for the same name must not run in between: its configuration would pass the absence
+// check and the rollback would then stop its runtime and unregister its prefix. Creates for one
+// name are serialized, so the second create waits for the rollback and then keeps its provider.
+func TestProviderRegistration_ConcurrentCreateWaitsForRollback(t *testing.T) {
+	fixture := newProviderRegistrationFixture(t)
+	manager, baseURL, httpClient := startReloadWithRequest(t, fixture, true)
+	second := make(chan [2]any, 1)
+	manager.during = func() {
+		go func() {
+			status, body := providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/api/providers", fixture.createBody, "")
+			second <- [2]any{status, body}
+		}()
+		time.Sleep(200 * time.Millisecond) // let the second create reach the handler while this one is in flight
+	}
+
+	status, body := providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/api/providers", fixture.createBody, "")
+	require.Equal(t, 500, status, body)
+	result := <-second
+	require.Equal(t, 200, result[0], result[1])
+	assert.True(t, schemas.IsKnownProvider(string(fixture.provider)), "the rollback unregistered the second create's prefix")
+
+	status, body = providerRegistrationHTTPRequest(t, httpClient, "POST", baseURL+"/v1/chat/completions", fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`, string(fixture.provider)+"/registration-model"), "sk-bf-registration")
+	require.Equal(t, 200, status, body)
+	assert.Zero(t, fixture.otherCalls.Load(), "the second create's provider lost its prefix")
 }
 
 // TestReloadProvider_FailedRefetchKeepsPreviousCatalog is the regression guard
