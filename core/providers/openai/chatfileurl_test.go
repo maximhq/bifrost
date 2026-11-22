@@ -622,6 +622,28 @@ func TestMarshalCustomDocumentContentEdgeShapes(t *testing.T) {
 		assert.Equal(t, "Budget: $4.2M.", gjson.GetBytes(body, "0.content.0.text").String(), "%s", body)
 	})
 
+	t.Run("the empty text data URL is no source beside file_content", func(t *testing.T) {
+		req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileContent: chunks, FileData: schemas.Ptr("data:text/plain;base64,")}},
+			}},
+		}}}
+		body, err := req.MarshalJSON()
+		require.NoError(t, err)
+		assert.Equal(t, "Budget: $4.2M.", gjson.GetBytes(body, "messages.0.content.0.text").String(), "chat: %s", body)
+
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileContent: chunks, FileData: schemas.Ptr("data:text/plain;base64,")}},
+			}},
+		}}}
+		body, err = input.MarshalJSON()
+		require.NoError(t, err)
+		assert.Equal(t, "Budget: $4.2M.", gjson.GetBytes(body, "0.content.0.text").String(), "responses: %s", body)
+	})
+
 	t.Run("prompt cache breakpoint survives the rewrite", func(t *testing.T) {
 		req := &OpenAIChatRequest{Model: "gpt-5.6", Messages: []OpenAIMessage{{
 			Role: schemas.ChatMessageRoleUser,

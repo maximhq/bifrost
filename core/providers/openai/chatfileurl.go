@@ -434,7 +434,7 @@ func openAIChatFileContentBlock(block schemas.ChatContentBlock) schemas.ChatCont
 	if file == nil || len(file.FileContent) == 0 {
 		return block
 	}
-	hasOtherSource := (file.FileData != nil && *file.FileData != "") || (file.FileURL != nil && *file.FileURL != "") || (file.FileID != nil && *file.FileID != "")
+	hasOtherSource := fileDataIsSource(file.FileData) || (file.FileURL != nil && *file.FileURL != "") || (file.FileID != nil && *file.FileID != "")
 	if !hasOtherSource {
 		if text, ok := fileContentText(file.FileContent); ok {
 			return schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: &text, CacheControl: block.CacheControl, PromptCacheBreakpoint: block.PromptCacheBreakpoint}
@@ -453,7 +453,7 @@ func openAIResponsesFileContentBlock(block schemas.ResponsesMessageContentBlock)
 	if file == nil || len(file.FileContent) == 0 {
 		return block, false
 	}
-	hasOtherSource := (file.FileData != nil && *file.FileData != "") || (file.FileURL != nil && *file.FileURL != "") || (block.FileID != nil && *block.FileID != "")
+	hasOtherSource := fileDataIsSource(file.FileData) || (file.FileURL != nil && *file.FileURL != "") || (block.FileID != nil && *block.FileID != "")
 	if !hasOtherSource {
 		if text, ok := fileContentText(file.FileContent); ok {
 			return schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: &text, CacheControl: block.CacheControl, PromptCacheBreakpoint: block.PromptCacheBreakpoint}, true
@@ -495,4 +495,10 @@ func rewriteResponsesFileContentBlocks(blocks []schemas.ResponsesMessageContentB
 		out[i], _ = openAIResponsesFileContentBlock(blocks[i])
 	}
 	return out, true
+}
+
+// fileDataIsSource reports whether file_data carries bytes: empty, and the empty text data URL
+// isEmptyInlineTextFile also recognizes, are no source beside file_content.
+func fileDataIsSource(fileData *string) bool {
+	return fileData != nil && *fileData != "" && *fileData != "data:text/plain;base64,"
 }
