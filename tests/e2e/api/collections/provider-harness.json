@@ -348230,6 +348230,162 @@
           }
         }
       ]
+    },
+    {
+      "name": "372. Bedrock Claude stop_reason on truncation (#9379 / #9497)",
+      "description": "Bedrock Claude stop_reason on truncation (#9379 / #9495 / #9497). Bifrost's Anthropic-shaped egress must report the Anthropic enum: a turn cut by max_tokens is max_tokens on InvokeModel (non-streaming and streaming) and on /anthropic/v1/messages through Bedrock. Pins the truncation path live on all four Anthropic-shaped wires (InvokeModel non-stream and stream, /anthropic/v1/messages non-stream and stream). guardrail_intervened (end_turn on InvokeModel, refusal on /anthropic/v1/messages), content_filter (refusal) and model_context_window_exceeded cannot be triggered on demand against a live model (the shared profile has no Bedrock guardrail) and are covered by Go unit tests.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 · InvokeModel max_tokens truncation reports max_tokens (non-stream) - #9379",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 1,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from one to ten.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock invoke: truncated turn reports stop_reason max_tokens - #9379', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.stop_reason, 'expected Anthropic max_tokens, got: ' + pm.response.text()).to.equal('max_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 · InvokeModel max_tokens truncation reports max_tokens (stream) - #9379",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 1,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from one to ten.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('bedrock invoke-with-response-stream: message_delta reports max_tokens - #9379', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var rawText = pm.response.text() || '';",
+                  "  var matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, 'no invoke-stream chunks: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var events = matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  var md = events.filter(function (e) { return e.type === 'message_delta'; })[0];",
+                  "  pm.expect(md, 'no message_delta in stream: ' + JSON.stringify(events).slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(md.delta.stop_reason, 'expected max_tokens, got: ' + JSON.stringify(md)).to.equal('max_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 · /anthropic/v1/messages max_tokens truncation reports max_tokens (non-stream) - #9497",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 1,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from one to ten.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic messages via bedrock: truncated turn reports stop_reason max_tokens - #9497', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.stop_reason, 'expected max_tokens, got: ' + pm.response.text()).to.equal('max_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 · /anthropic/v1/messages max_tokens truncation reports max_tokens (stream) - #9497",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 1,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from one to ten.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic messages stream via bedrock: message_delta reports stop_reason max_tokens - #9497', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var rawText = pm.response.text() || '';",
+                  "  var events = rawText.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) {",
+                  "    try { return JSON.parse(l.slice(5).trim()); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  pm.expect(events.length, 'no SSE data events: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var md = events.filter(function (e) { return e.type === 'message_delta'; })[0];",
+                  "  pm.expect(md, 'no message_delta in stream: ' + rawText.slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(md.delta && md.delta.stop_reason, 'expected max_tokens, got: ' + JSON.stringify(md)).to.equal('max_tokens');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
