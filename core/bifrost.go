@@ -6312,8 +6312,25 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			go func() {
 				defer cancelCtx()
 				defer close(wrapped)
-				for chunk := range rawStream {
-					wrapped <- chunk
+				for {
+					if ctx.Err() != nil {
+						return
+					}
+					var chunk *schemas.BifrostStreamChunk
+					var ok bool
+					select {
+					case <-ctx.Done():
+						return
+					case chunk, ok = <-rawStream:
+						if !ok {
+							return
+						}
+					}
+					select {
+					case wrapped <- chunk:
+					case <-ctx.Done():
+						return
+					}
 				}
 			}()
 		}()

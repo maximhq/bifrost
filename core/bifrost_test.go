@@ -10906,14 +10906,16 @@ type observedContextIdentity struct {
 	requestID string
 	traceID   string
 	customVal any
+	rootCtx   *schemas.BifrostContext
 }
 
 type identityRecordingPlugin struct {
-	mu           sync.Mutex
-	observed     []observedContextIdentity
-	capturedCtx  *schemas.BifrostContext
-	shortCircuit bool
-	customKey    any
+	mu            sync.Mutex
+	observed      []observedContextIdentity
+	capturedCtx   *schemas.BifrostContext
+	shortCircuit  bool
+	customKey     any
+	streamFactory func(ctx *schemas.BifrostContext) chan *schemas.BifrostStreamChunk
 }
 
 func (p *identityRecordingPlugin) GetName() string { return "identity-recording" }
@@ -10935,6 +10937,7 @@ func (p *identityRecordingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *s
 		requestID: reqID,
 		traceID:   traceID,
 		customVal: customVal,
+		rootCtx:   ctx.Root(),
 	})
 	p.capturedCtx = ctx.Root()
 	p.mu.Unlock()
@@ -10942,6 +10945,9 @@ func (p *identityRecordingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *s
 	if p.shortCircuit {
 		switch req.RequestType {
 		case schemas.ChatCompletionStreamRequest:
+			if p.streamFactory != nil {
+				return req, &schemas.LLMPluginShortCircuit{Stream: p.streamFactory(ctx)}, nil
+			}
 			ch := make(chan *schemas.BifrostStreamChunk, 1)
 			ch <- &schemas.BifrostStreamChunk{
 				BifrostChatResponse: &schemas.BifrostChatResponse{Model: "gpt-4o-mini"},
@@ -11033,13 +11039,18 @@ func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
 
 	plugin.mu.Lock()
 	observed := append([]observedContextIdentity(nil), plugin.observed...)
-	completedNilRootCtx := plugin.capturedCtx
 	plugin.mu.Unlock()
 
-	// Completed nil-context operations release their internal cancellation watcher.
-	assert.Error(t, completedNilRootCtx.Err())
-
 	require.Len(t, observed, 4)
+
+	// Completed nil-context operations release their internal cancellation watchers.
+	assert.Error(t, observed[0].rootCtx.Err(), "realtime turn cleanup should cancel nil-context watcher")
+	require.Eventually(t, func() bool {
+		return observed[1].rootCtx.Err() != nil
+	}, 2*time.Second, 10*time.Millisecond, "completed stream should cancel nil-context watcher")
+	assert.Error(t, observed[2].rootCtx.Err(), "completed chat request should cancel nil-context watcher")
+	assert.Error(t, observed[3].rootCtx.Err(), "websocket pre-hooks cleanup should cancel nil-context watcher")
+
 	seenReqIDs := make(map[string]struct{}, len(observed))
 	seenTraceIDs := make(map[string]struct{}, 3)
 	for i, item := range observed {
@@ -11086,6 +11097,7 @@ func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
 	assert.Equal(t, "caller-req-123", explicitObs.requestID)
 	assert.Equal(t, "caller-trace-456", explicitObs.traceID)
 	assert.Equal(t, "caller-custom", explicitObs.customVal)
+	assert.NoError(t, explicitObs.rootCtx.Err())
 
 	// Instance shutdown cancels an in-flight nil-context operation while it is still active.
 	activeHooks, activeErr := client.RunStreamPreHooks(nil, &schemas.BifrostRequest{
@@ -11111,4 +11123,92 @@ func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
 		t.Fatal("expected active nil-context request context to cancel on client.Shutdown()")
 	}
 	assert.Error(t, activeNilRootCtx.Err())
+}
+
+func TestNilContextStreamForwardingStopsOnShutdown(t *testing.T) {
+	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer initCtx.Cancel()
+
+	secondChunkHandedOff := make(chan struct{})
+	producerDone := make(chan struct{})
+
+	plugin := &identityRecordingPlugin{
+		shortCircuit: true,
+		streamFactory: func(ctx *schemas.BifrostContext) chan *schemas.BifrostStreamChunk {
+			ch := make(chan *schemas.BifrostStreamChunk)
+			go func() {
+				defer close(producerDone)
+				defer close(ch)
+				select {
+				case ch <- &schemas.BifrostStreamChunk{
+					BifrostChatResponse: &schemas.BifrostChatResponse{Model: "gpt-4o-mini"},
+				}:
+				case <-ctx.Done():
+					return
+				}
+				select {
+				case ch <- &schemas.BifrostStreamChunk{
+					BifrostChatResponse: &schemas.BifrostChatResponse{Model: "gpt-4o-mini"},
+				}:
+					close(secondChunkHandedOff)
+				case <-ctx.Done():
+					return
+				}
+				<-ctx.Done()
+			}()
+			return ch
+		},
+	}
+
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 10)
+	client, err := Init(initCtx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	streamCh, streamErr := client.ChatCompletionStreamRequest(nil, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	})
+	require.Nil(t, streamErr)
+	require.NotNil(t, streamCh)
+
+	// Consume only the first chunk, then abandon reading.
+	select {
+	case chunk, ok := <-streamCh:
+		require.True(t, ok)
+		require.NotNil(t, chunk)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first stream chunk")
+	}
+
+	// Wait until the forwarder has read chunk 2 from rawStream and blocked trying to send it.
+	select {
+	case <-secondChunkHandedOff:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for forwarder to accept second chunk")
+	}
+
+	// Shutting down the client must unblock forwarding and close the output stream promptly.
+	client.Shutdown()
+	select {
+	case _, ok := <-streamCh:
+		assert.False(t, ok, "expected nil-context output stream to close on shutdown with stopped consumer")
+	case <-time.After(2 * time.Second):
+		t.Fatal("nil-context stream forwarding blocked after client.Shutdown()")
+	}
+
+	select {
+	case <-producerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected producer goroutine to observe shutdown cancellation")
+	}
 }
