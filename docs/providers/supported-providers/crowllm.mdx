@@ -13,7 +13,7 @@ CrowLLM is an **OpenAI-compatible gateway** at `https://crowllm.com/v1`: one end
 | Operation | Non-Streaming | Streaming | Endpoint |
 |-----------|---------------|-----------|----------|
 | Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
-| Responses API | ✅ | ✅ | `/v1/responses` |
+| Responses API | ✅ (bridged to Chat Completions) | ✅ (bridged to Chat Completions) | `/v1/chat/completions` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | Embeddings | ✅ | - | `/v1/embeddings` |
 | Image Generation | ✅ | - | `/v1/images/generations` |
@@ -30,8 +30,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "x-bf-api-key: <your-crowllm-key>" \
   -d '{
-    "provider": "crowllm",
-    "model": "deepseek-v4-flash",
+    "model": "crowllm/deepseek-v4-flash",
     "messages": [{"role": "user", "content": "Hello"}]
   }'
 ```
