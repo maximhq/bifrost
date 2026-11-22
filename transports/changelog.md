@@ -1,3 +1,8 @@
+## 🔒 Security
+
+- **Go 1.27.4** - Security release with fixes to `net/http` (a possible HTTP server crash, CVE-2026-97054), cgo, the go command, the compiler and the linker. Bifrost now builds with Go 1.27.4, and the Docker images (`Dockerfile`, `Dockerfile.local`, `Dockerfile.redhat`) move to `golang:1.27.4-alpine3.24`. Custom Go plugins must be rebuilt with Go 1.27.4 to load.
+- **Dependency security updates** - `golang.org/x/net` 0.62.0 (CVE-2026-78661 excessive resource use parsing HTML, CVE-2026-97045 incorrect HTML rendering), `github.com/klauspost/compress` 1.20.3 (CVE-2026-116591 crash processing compressed data) and `github.com/andybalholm/brotli` 1.2.8 (CVE-2026-111497 excessive memory use decompressing data).
+
 ## ✨ Features
 
 - **Rapid-MLX** - Key configuration and URL validation for local Apple Silicon inference

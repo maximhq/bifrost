@@ -483,6 +483,10 @@ type ConfigStore interface {
 	GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error)
 	GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error)
 	UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
+	// SetVirtualMCPConfigIssues records the parts of a Virtual MCP's config.json declaration that could
+	// not be applied, or clears them with nil. It writes nothing else, and UpdateVirtualMCP never
+	// writes this column.
+	SetVirtualMCPConfigIssues(ctx context.Context, id uint, issues *string) error
 	DeleteVirtualMCP(ctx context.Context, id uint) error
 	AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
 	DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error

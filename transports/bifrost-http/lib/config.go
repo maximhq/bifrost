@@ -719,6 +719,12 @@ type Config struct {
 	muEnabledAgents sync.RWMutex
 	client          *bifrost.Bifrost
 
+	// fileVirtualMCPs are the mcp.virtual_mcps declarations from the last config.json load, kept so a
+	// client registered later can be linked into the declarations that name it. Guarded by
+	// muFileVirtualMCPs, which also serializes those late reconciles.
+	fileVirtualMCPs   []schemas.VirtualMCPConfig
+	muFileVirtualMCPs sync.Mutex
+
 	configPath string
 
 	// GovernanceFileSync is what the last LoadConfig wrote from config.json's teams and customers.
@@ -2625,6 +2631,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 	// config.json authoritative for the virtual_mcps subsection.
 	if configData.MCP != nil {
 		forceFileSync := configData.isConfigJSONSourceOfTruth() && configData.mcpSectionPresent("virtual_mcps")
+		config.rememberFileVirtualMCPs(configData.MCP.VirtualMCPs)
 		if err := reconcileVirtualMCPsConfig(ctx, config.ConfigStore, configData.MCP.VirtualMCPs, forceFileSync); err != nil {
 			logger.Warn("failed to reconcile virtual MCPs from config.json: %v", err)
 		}
