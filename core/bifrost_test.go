@@ -11033,8 +11033,11 @@ func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
 
 	plugin.mu.Lock()
 	observed := append([]observedContextIdentity(nil), plugin.observed...)
-	lastNilRootCtx := plugin.capturedCtx
+	completedNilRootCtx := plugin.capturedCtx
 	plugin.mu.Unlock()
+
+	// Completed nil-context operations release their internal cancellation watcher.
+	assert.Error(t, completedNilRootCtx.Err())
 
 	require.Len(t, observed, 4)
 	seenReqIDs := make(map[string]struct{}, len(observed))
@@ -11057,7 +11060,7 @@ func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
 		seenTraceIDs[item.traceID] = struct{}{}
 	}
 
-	// Explicit caller context keeps its caller-supplied values.
+	// Explicit caller context keeps its caller-supplied values and is not canceled by Bifrost.
 	callerCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	callerCtx.SetValue(schemas.BifrostContextKeyRequestID, "caller-req-123")
 	callerCtx.SetValue(schemas.BifrostContextKeyTraceID, "caller-trace-456")
@@ -11075,6 +11078,7 @@ func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
 	require.Nil(t, explicitErr)
 	for range explicitCh {
 	}
+	assert.NoError(t, callerCtx.Err())
 
 	plugin.mu.Lock()
 	explicitObs := plugin.observed[len(plugin.observed)-1]
@@ -11083,13 +11087,28 @@ func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
 	assert.Equal(t, "caller-trace-456", explicitObs.traceID)
 	assert.Equal(t, "caller-custom", explicitObs.customVal)
 
-	// Instance shutdown still cancels nil-context request contexts.
-	require.NoError(t, lastNilRootCtx.Err())
+	// Instance shutdown cancels an in-flight nil-context operation while it is still active.
+	activeHooks, activeErr := client.RunStreamPreHooks(nil, &schemas.BifrostRequest{
+		RequestType: schemas.WebSocketResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+		},
+	})
+	require.Nil(t, activeErr)
+	require.NotNil(t, activeHooks)
+	defer activeHooks.Cleanup()
+
+	plugin.mu.Lock()
+	activeNilRootCtx := plugin.capturedCtx
+	plugin.mu.Unlock()
+
+	require.NoError(t, activeNilRootCtx.Err())
 	client.Shutdown()
 	select {
-	case <-lastNilRootCtx.Done():
+	case <-activeNilRootCtx.Done():
 	case <-time.After(2 * time.Second):
-		t.Fatal("expected nil-context request context to cancel on client.Shutdown()")
+		t.Fatal("expected active nil-context request context to cancel on client.Shutdown()")
 	}
-	assert.Error(t, lastNilRootCtx.Err())
+	assert.Error(t, activeNilRootCtx.Err())
 }
