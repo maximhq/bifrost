@@ -1278,6 +1278,15 @@ func copyBedrockAnnotations(annotations []schemas.ResponsesOutputMessageContentT
 	return out
 }
 
+// ownedBedrockAnnotations hands the retained annotations to output_item.done: they are already
+// copies owned by the state and are deleted once the item closes, so no second copy is needed.
+func ownedBedrockAnnotations(annotations []schemas.ResponsesOutputMessageContentTextAnnotation) []schemas.ResponsesOutputMessageContentTextAnnotation {
+	if annotations == nil {
+		return []schemas.ResponsesOutputMessageContentTextAnnotation{}
+	}
+	return annotations
+}
+
 // appendBedrockTextDoneEvents closes text and citations at a block stop, tool start, or EOF.
 func appendBedrockTextDoneEvents(responses []*schemas.BifrostResponsesStreamResponse, state *BedrockResponsesStreamState, outputIndex, contentIndex, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
 	annotations := state.TextAnnotations[outputIndex]
@@ -1317,7 +1326,7 @@ func appendBedrockTextDoneEvents(responses []*schemas.BifrostResponsesStreamResp
 			Type: schemas.ResponsesOutputMessageContentTypeText,
 			Text: schemas.Ptr(text),
 			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-				Annotations: copyBedrockAnnotations(annotations),
+				Annotations: ownedBedrockAnnotations(annotations),
 				LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
 			},
 		})
