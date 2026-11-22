@@ -1894,19 +1894,14 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 		}
 	}
 
-	// Stop reason. A tool_use block still wins over end_turn: some providers (e.g. Gemini)
-	// report a plain stop on a function-call turn. A guardrail block's end_turn is final.
-	stopReason := anthropicInvokeStopReason(resp)
-	if (stopReason == "" || stopReason == string(anthropic.AnthropicStopReasonEndTurn)) && !invokeGuardrailIntervened(resp) {
-		stopReason = string(anthropic.AnthropicStopReasonEndTurn)
-		for _, block := range result.Content {
-			if block.Type == "tool_use" {
-				stopReason = string(anthropic.AnthropicStopReasonToolUse)
-				break
-			}
+	hasToolUse := false
+	for _, block := range result.Content {
+		if block.Type == "tool_use" {
+			hasToolUse = true
+			break
 		}
 	}
-	result.StopReason = stopReason
+	result.StopReason = anthropicInvokeTerminalStopReason(resp, hasToolUse)
 
 	// Usage
 	if resp.Usage != nil {
@@ -2066,13 +2061,16 @@ var bedrockInvokeStreamStateKey = bedrockInvokeStreamStateKeyType{}
 // index after it. Copying each event's ContentIndex straight through therefore opens
 // block N and closes block N+1, leaving N open for the rest of the stream. The Anthropic
 // egress keeps the same bookkeeping for the same reason (blockIndexFor / allocBlockIndex
-// in providers/anthropic/responses.go).
+// in providers/anthropic/responses.go). It also records whether a client tool_use block
+// was streamed, so the terminal message_delta can report tool_use like the non-streaming
+// converter does.
 //
 // Only the pointer lives on the context: the map is bounded by the number of content
 // blocks in the stream rather than by its content, and it is released with the request.
 type bedrockInvokeStreamState struct {
 	mu           sync.Mutex
 	openedBlocks map[string]int // item key -> content index its content_block_start used
+	sawToolUse   bool           // a client tool_use block was streamed
 }
 
 func getOrCreateBedrockInvokeStreamState(ctx *schemas.BifrostContext) *bedrockInvokeStreamState {
@@ -2095,6 +2093,24 @@ func lookupBedrockInvokeStreamState(ctx *schemas.BifrostContext) *bedrockInvokeS
 	}
 	state, _ := ctx.Value(bedrockInvokeStreamStateKey).(*bedrockInvokeStreamState)
 	return state
+}
+
+func (s *bedrockInvokeStreamState) markToolUse() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sawToolUse = true
+}
+
+func (s *bedrockInvokeStreamState) hasToolUse() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sawToolUse
 }
 
 func (s *bedrockInvokeStreamState) rememberBlockIndex(key string, index int) {
@@ -2164,6 +2180,21 @@ func anthropicInvokeStopReason(resp *schemas.BifrostResponsesResponse) string {
 		return string(anthropic.ConvertBifrostFinishReasonToAnthropic(*resp.StopReason))
 	}
 	return string(anthropic.AnthropicStopReasonFromIncompleteDetails(resp.IncompleteDetails))
+}
+
+// anthropicInvokeTerminalStopReason is the stop_reason both InvokeModel converters report:
+// anthropicInvokeStopReason, defaulting to end_turn, upgraded to tool_use when the turn
+// carried a client tool_use block. Some providers (e.g. Gemini) report a plain stop on a
+// function-call turn. The upgrade never overrides max_tokens, refusal or a guardrail block.
+func anthropicInvokeTerminalStopReason(resp *schemas.BifrostResponsesResponse, hasToolUse bool) string {
+	stopReason := anthropicInvokeStopReason(resp)
+	if stopReason != "" && stopReason != string(anthropic.AnthropicStopReasonEndTurn) {
+		return stopReason
+	}
+	if hasToolUse && !invokeGuardrailIntervened(resp) {
+		return string(anthropic.AnthropicStopReasonToolUse)
+	}
+	return string(anthropic.AnthropicStopReasonEndTurn)
 }
 
 // invokeGuardrailIntervened reports whether a Bedrock guardrail blocked the turn.
@@ -2277,7 +2308,11 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 			}
 			// Remember where this item opened so its output_item.done closes this block
 			// and not whichever index the neutral stream happens to carry by then.
-			getOrCreateBedrockInvokeStreamState(ctx).rememberBlockIndex(bedrockInvokeStreamItemKey(resp), idx)
+			state := getOrCreateBedrockInvokeStreamState(ctx)
+			state.rememberBlockIndex(bedrockInvokeStreamItemKey(resp), idx)
+			if blockType == "tool_use" {
+				state.markToolUse()
+			}
 		} else {
 			// Skip — content_block_start is emitted on ContentPartAdded where we know the block type
 			return nil, nil
@@ -2401,10 +2436,7 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 	// with message_delta + message_stop, or the client never sees the stop reason.
 	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		// Emit message_delta + message_stop as two separate events
-		stopReason := anthropicInvokeStopReason(resp.Response)
-		if stopReason == "" {
-			stopReason = string(anthropic.AnthropicStopReasonEndTurn)
-		}
+		stopReason := anthropicInvokeTerminalStopReason(resp.Response, lookupBedrockInvokeStreamState(ctx).hasToolUse())
 
 		// Build message_delta event
 		messageDelta := map[string]interface{}{

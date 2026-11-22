@@ -3828,6 +3828,54 @@ func TestToBedrockInvokeAnthropicResponse_StopReasonWithToolCall(t *testing.T) {
 	}
 }
 
+// The streaming route applies the same tool_use upgrade as the non-streaming one: a
+// provider that reports a plain stop on a function-call turn (Gemini) still ends the
+// stream with tool_use once a tool_use block was streamed. A server-side tool search is
+// not a client tool call and does not upgrade.
+func TestToAnthropicInvokeStreamBytes_StopReasonWithToolCall(t *testing.T) {
+	toolItem := invokeStopReasonToolCallItem()
+	searchItem := schemas.ResponsesMessage{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("srvtoolu_1"), Name: schemas.Ptr("tool_search")},
+	}
+	tests := []struct {
+		name       string
+		item       *schemas.ResponsesMessage
+		stopReason *string
+		expected   string
+	}{
+		{"stop with streamed tool call is tool_use", &toolItem, schemas.Ptr("stop"), "tool_use"},
+		{"no stop reason with streamed tool call is tool_use", &toolItem, nil, "tool_use"},
+		{"tool_calls is tool_use", &toolItem, schemas.Ptr("tool_calls"), "tool_use"},
+		{"length with streamed tool call stays max_tokens", &toolItem, schemas.Ptr("length"), "max_tokens"},
+		{"content_filter with streamed tool call stays refusal", &toolItem, schemas.Ptr("content_filter"), "refusal"},
+		{"guardrail_intervened with streamed tool call stays end_turn", &toolItem, schemas.Ptr("guardrail_intervened"), "end_turn"},
+		{"stop with only a server tool search stays end_turn", &searchItem, schemas.Ptr("stop"), "end_turn"},
+		{"stop without a tool call stays end_turn", nil, schemas.Ptr("stop"), "end_turn"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.item != nil {
+				_, err := toAnthropicInvokeStreamBytes(ctx, &schemas.BifrostResponsesStreamResponse{
+					Type:         schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					OutputIndex:  schemas.Ptr(0),
+					ContentIndex: schemas.Ptr(0),
+					Item:         tt.item,
+				})
+				require.NoError(t, err)
+			}
+			frames, err := toAnthropicInvokeStreamBytes(ctx, &schemas.BifrostResponsesStreamResponse{
+				Type:     schemas.ResponsesStreamResponseTypeCompleted,
+				Response: &schemas.BifrostResponsesResponse{StopReason: tt.stopReason},
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, frames)
+			assert.Equal(t, tt.expected, gjson.GetBytes(frames[0], "delta.stop_reason").String())
+		})
+	}
+}
+
 func invokeStopReasonToolCallItem() schemas.ResponsesMessage {
 	return schemas.ResponsesMessage{
 		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
