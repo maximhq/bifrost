@@ -830,6 +830,9 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 			Error: &schemas.ErrorField{
 				Message: message,
 			},
+			// Declared, like every other refusal here: left to ClassifyErrorType, a bare 401 reads
+			// as the provider rejecting Bifrost's key.
+			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypePolicyAccessDenied},
 		}
 	}
 	p.cfgMutex.RUnlock()

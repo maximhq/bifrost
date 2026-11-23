@@ -611,6 +611,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_mcp_config_issues_column"}, run: migrationAddVirtualMCPConfigIssuesColumn},
 	{IDs: []string{"add_disable_content_logging_columns"}, run: migrationAddDisableContentLoggingColumns},
 	{IDs: []string{"add_key_disable_content_logging_column"}, run: migrationAddKeyDisableContentLoggingColumn},
+	{IDs: []string{"add_warp_virtual_key_id_column"}, run: migrationAddWarpVirtualKeyIDColumn},
 	{IDs: []string{"add_rapidmlx_key_config_column"}, run: migrationAddRapidMLXKeyConfigColumn},
 }
 
@@ -17862,6 +17863,27 @@ func migrationAddVirtualMCPConfigIssuesColumn(ctx context.Context, db *gorm.DB, 
 		Rollback: func(tx *gorm.DB) error {
 			// Reversible: the column is display-only and rewritten at every config.json load.
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableVirtualMCP{}, "config_issues")
+		},
+	})
+}
+
+// migrationAddWarpVirtualKeyIDColumn adds the virtual key Warp's model calls
+// present for a caller with no user identity of their own.
+func migrationAddWarpVirtualKeyIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_virtual_key_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "virtual_key_id"); err != nil {
+				return fmt.Errorf("add virtual_key_id column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column such a caller's calls carry no credential, as before.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "virtual_key_id")
 		},
 	})
 }

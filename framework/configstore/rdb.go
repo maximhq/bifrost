@@ -4810,6 +4810,15 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyRelayGrant{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
 		}
+		// Warp's own virtual key setting must not outlive the key either: left behind, every Warp turn
+		// from a caller with no identity was refused until an administrator chose another key. Cleared,
+		// such a caller gets the ordinary "no credential" refusal, which names the setting. Guarded by
+		// HasTable for a store that never created Warp's table.
+		if txDB.Migrator().HasTable(&tables.TableWarpConfig{}) {
+			if err := txDB.WithContext(ctx).Model(&tables.TableWarpConfig{}).Where("virtual_key_id = ?", id).Update("virtual_key_id", "").Error; err != nil {
+				return err
+			}
+		}
 		// Delete upstream OAuth flow rows tied to this VK. No flow_mode
 		// filter needed: an admin-mode flow row never populates
 		// virtual_key_id (see InitiateOAuthFlow), so this can't match one by

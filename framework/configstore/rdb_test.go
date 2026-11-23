@@ -2139,6 +2139,35 @@ func TestDeleteVirtualKey(t *testing.T) {
 	assert.Error(t, err, "Should not find deleted virtual key")
 }
 
+// Warp's settings name a virtual key its model calls present for a caller with no
+// identity of their own. Like every other reference to a key, it must not outlive
+// the key: left behind, every such caller's Warp turn was refused with "Warp's
+// virtual key no longer exists" until an administrator noticed and chose another.
+// Deleting the key clears it, and leaves a setting naming a different key alone.
+func TestDeleteVirtualKey_ClearsWarpVirtualKey(t *testing.T) {
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableWarpConfig{}))
+	ctx := context.Background()
+
+	for _, id := range []string{"vk-warp", "vk-other"} {
+		require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+			ID: id, Name: id, Value: *schemas.NewSecretVar(id + "-value"), IsActive: schemas.Ptr(true),
+		}))
+	}
+	require.NoError(t, store.UpsertWarpConfig(ctx, &tables.TableWarpConfig{Enabled: true, Provider: "openai", Model: "gpt-4o", VirtualKeyID: "vk-warp"}))
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, "vk-other"))
+	config, err := store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "vk-warp", config.VirtualKeyID, "deleting another key leaves Warp's alone")
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, "vk-warp"))
+	config, err = store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, config.VirtualKeyID, "Warp must not keep naming a deleted key")
+	assert.Equal(t, "gpt-4o", config.Model, "only the reference is cleared")
+}
+
 func TestDeleteVirtualKey_RevokesInboundVKGrants(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

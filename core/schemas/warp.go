@@ -155,6 +155,12 @@ type WarpConfig struct {
 	// Empty is valid and common: a provider on a trusted network, or one using
 	// ambient IAM credentials, needs no key at all.
 	APIKeyID string `json:"api_key_id,omitempty"`
+	// VirtualKeyID names the virtual key Warp's model calls present when the person
+	// asking has no user identity of their own: the local admin, or a deployment
+	// without an identity provider. Like APIKeyID it is a reference, not the key.
+	// Empty leaves such a caller's calls carrying no credential, which enforced
+	// inference auth refuses.
+	VirtualKeyID string `json:"virtual_key_id,omitempty"`
 	// AdditionalModels are the other models an operator has exposed. Provider
 	// and Model above stay the default; see ForModel.
 	AdditionalModels []WarpModel `json:"additional_models,omitempty"`
