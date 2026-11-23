@@ -3913,6 +3913,30 @@ func TestToBifrostResponsesRequest_ToolResultKeepsDocumentAndJSON(t *testing.T) 
 	assert.Equal(t, "Notes", *fileBlock.ResponsesInputMessageContentBlockFile.Filename)
 }
 
+// A Converse tool_result holding a document beside a searchResult must keep the envelope, the
+// only form that carries the searchResult; building output blocks for the document drops it.
+func TestToBifrostResponsesRequest_ToolResultKeepsDocumentAndSearchResult(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var req BedrockConverseRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"modelId":"us.anthropic.claude-sonnet-5-5","messages":[`+
+		`{"role":"user","content":[{"text":"Search."}]},`+
+		`{"role":"assistant","content":[{"toolUse":{"toolUseId":"toolu_01","name":"search","input":{}}}]},`+
+		`{"role":"user","content":[{"toolResult":{"toolUseId":"toolu_01","content":[`+
+		`{"document":{"format":"txt","name":"Notes","source":{"bytes":"UElORUFQUExF"}}},`+
+		`{"searchResult":{"source":"https://example.com/kb","title":"KB","content":[{"text":"ORCHID-7731"}]}}]}}]}]}`), &req))
+	bifrostReq, err := req.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+
+	converseReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	raw, err := sonic.Marshal(converseReq)
+	require.NoError(t, err)
+	content := gjson.GetBytes(raw, `messages.#(content.0.toolResult).content.0.toolResult.content`)
+	require.True(t, content.Exists(), "tool_result missing from the Converse egress: %s", raw)
+	assert.Equal(t, "Notes", content.Get("0.document.name").String(), "document dropped: %s", content.Raw)
+	assert.Equal(t, "ORCHID-7731", content.Get("1.searchResult.content.0.text").String(), "searchResult dropped: %s", content.Raw)
+}
+
 const invokeDocPresignedURL = "https://bucket.example.com/reports/q3.docx?X-Amz-Signature=SUPERSECRET"
 
 func TestInvokeRequest_DocumentURLSourceIsCarriedForTheEgressFetch(t *testing.T) {

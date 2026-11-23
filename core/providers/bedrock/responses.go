@@ -5273,8 +5273,9 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			// here: it drops the json:"-" reference and only the Converse egress decodes it. If that
 			// ingress learns search_result, map it here as well. A document is carried too, because
 			// flattening the result to its first text would send the model a result without it.
+			// An envelope stays authoritative: output blocks cannot carry its searchResult or video.
 			var outputBlocks []schemas.ResponsesMessageContentBlock
-			if slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool {
+			if !hasUnrepresentableBlock && slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool {
 				return c.AnthropicToolReference != nil || c.Document != nil
 			}) {
 				for _, c := range block.ToolResult.Content {
