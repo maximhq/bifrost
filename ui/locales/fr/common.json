@@ -304,6 +304,11 @@
 	"configSyncAlert": {
 		"message": "Cette configuration est synchronisée depuis <code0>config.json</code0>. Toute mise à jour future de config.json écrasera les modifications faites dans l’interface. Si vous utilisez config.json pour initialiser la configuration, vous pouvez ignorer cette alerte."
 	},
+	"configIssuesAlert": {
+		"title": "Une partie de la déclaration config.json n'a pas été appliquée",
+		"badge": "Problèmes de configuration",
+		"hint": "Le reste de la déclaration est appliqué. Chaque élément ci-dessus disparaît de lui-même dès que ce qu'il nomme existe, par exemple quand le client MCP manquant est enregistré."
+	},
 	"breadcrumb": {
 		"label": "fil d’Ariane",
 		"more": "Plus"

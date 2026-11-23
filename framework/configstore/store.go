@@ -483,6 +483,10 @@ type ConfigStore interface {
 	GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error)
 	GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error)
 	UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
+	// SetVirtualMCPConfigIssues records the parts of a Virtual MCP's config.json declaration that could
+	// not be applied, or clears them with nil. It writes nothing else, and UpdateVirtualMCP never
+	// writes this column.
+	SetVirtualMCPConfigIssues(ctx context.Context, id uint, issues *string) error
 	DeleteVirtualMCP(ctx context.Context, id uint) error
 	AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
 	DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
@@ -1122,6 +1126,9 @@ type ConfigStore interface {
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
+	// DeleteTerminalSidekiqJobs deletes up to limit jobs of kind that reached a
+	// terminal status before the cutoff and returns how many it removed.
+	DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error)
 
 	// Phrase-suggestion schedule state: the next run of a router's schedule,
 	// claimed by one node when due. On the interface rather than read off the
