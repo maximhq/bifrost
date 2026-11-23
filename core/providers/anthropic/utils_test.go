@@ -6421,3 +6421,67 @@ func TestParseJSONInput(t *testing.T) {
 		})
 	}
 }
+
+// ConvertBifrostFinishReasonToAnthropic is the shared egress mapping for Anthropic-shaped
+// responses. Only reasons Anthropic defines may leave it: a policy block (content_filter,
+// Bedrock's guardrail_intervened) is refusal, any other unknown reason is end_turn.
+func TestConvertBifrostFinishReasonToAnthropic(t *testing.T) {
+	tests := []struct {
+		name     string
+		reason   string
+		expected AnthropicStopReason
+	}{
+		{"stop", "stop", AnthropicStopReasonEndTurn},
+		{"length", "length", AnthropicStopReasonMaxTokens},
+		{"tool_calls", "tool_calls", AnthropicStopReasonToolUse},
+		{"content_filter", "content_filter", AnthropicStopReasonRefusal},
+		{"refusal passes through", "refusal", AnthropicStopReasonRefusal},
+		{"model_context_window_exceeded passes through", "model_context_window_exceeded", AnthropicStopReasonModelContextWindowExceeded},
+		{"guardrail_intervened becomes refusal", "guardrail_intervened", AnthropicStopReasonRefusal},
+		{"malformed_model_output becomes end_turn", "malformed_model_output", AnthropicStopReasonEndTurn},
+		{"unset stays empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ConvertBifrostFinishReasonToAnthropic(tt.reason); got != tt.expected {
+				t.Errorf("ConvertBifrostFinishReasonToAnthropic(%q) = %q, want %q", tt.reason, got, tt.expected)
+			}
+		})
+	}
+}
+
+// A Bedrock guardrail block reaching /anthropic/v1/messages has no guardrail header to carry
+// the signal, so it must surface as refusal rather than an ordinary end_turn.
+func TestToAnthropicResponsesResponse_GuardrailInterventionIsRefusal(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	resp := ToAnthropicResponsesResponse(ctx, &schemas.BifrostResponsesResponse{
+		ID:         schemas.Ptr("resp_1"),
+		Model:      "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+		StopReason: schemas.Ptr("guardrail_intervened"),
+		IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{
+			Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+		},
+		Output: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Sorry, the model cannot answer this question.")},
+		}},
+	})
+	if resp == nil {
+		t.Fatal("ToAnthropicResponsesResponse returned nil")
+	}
+	if resp.StopReason != AnthropicStopReasonRefusal {
+		t.Errorf("stop_reason = %q, want %q", resp.StopReason, AnthropicStopReasonRefusal)
+	}
+}
+
+func BenchmarkConvertBifrostFinishReasonToAnthropic(b *testing.B) {
+	for _, reason := range []string{"stop", "refusal", "guardrail_intervened", "malformed_model_output"} {
+		b.Run(reason, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = ConvertBifrostFinishReasonToAnthropic(reason)
+			}
+		})
+	}
+}

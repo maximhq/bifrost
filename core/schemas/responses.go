@@ -2151,10 +2151,11 @@ type ResponsesInputMessageContentBlockImage struct {
 }
 
 type ResponsesInputMessageContentBlockFile struct {
-	FileData *string `json:"file_data,omitempty"` // Base64 encoded file data or plain text
-	FileURL  *string `json:"file_url,omitempty"`  // Direct URL to file
-	Filename *string `json:"filename,omitempty"`  // Name of the file
-	FileType *string `json:"file_type,omitempty"` // MIME type (e.g., "application/pdf", "text/plain")
+	FileContent json.RawMessage `json:"file_content,omitempty"` // Custom document content: a string or array of text blocks, preserving citation boundaries
+	FileData    *string         `json:"file_data,omitempty"`    // Base64 encoded file data or plain text
+	FileURL     *string         `json:"file_url,omitempty"`     // Direct URL to file
+	Filename    *string         `json:"filename,omitempty"`     // Name of the file
+	FileType    *string         `json:"file_type,omitempty"`    // MIME type (e.g., "application/pdf", "text/plain")
 }
 
 type ResponsesInputMessageContentBlockAudio struct {
@@ -2172,16 +2173,17 @@ type ResponsesOutputMessageContentText struct {
 }
 
 type ResponsesOutputMessageContentTextAnnotation struct {
-	Type        string  `json:"type"`                  // "file_citation" | "url_citation" | "container_file_citation" | "file_path"
-	Index       *int    `json:"index,omitempty"`       // Common index field (FileCitation, FilePath)
-	FileID      *string `json:"file_id,omitempty"`     // Common file ID field (FileCitation, ContainerFileCitation, FilePath)
-	Text        *string `json:"text,omitempty"`        // Text of the citation
-	StartIndex  *int    `json:"start_index,omitempty"` // Common start index field (URLCitation, ContainerFileCitation)
-	EndIndex    *int    `json:"end_index,omitempty"`   // Common end index field (URLCitation, ContainerFileCitation)
-	Filename    *string `json:"filename,omitempty"`
-	Title       *string `json:"title,omitempty"`
-	URL         *string `json:"url,omitempty"`
-	ContainerID *string `json:"container_id,omitempty"`
+	SourceContent []string `json:"source_content,omitempty"` // Bedrock citation source fragments, retained for native round trips
+	Type          string   `json:"type"`                     // "file_citation" | "url_citation" | "container_file_citation" | "file_path"
+	Index         *int     `json:"index,omitempty"`          // Common index field (FileCitation, FilePath)
+	FileID        *string  `json:"file_id,omitempty"`        // Common file ID field (FileCitation, ContainerFileCitation, FilePath)
+	Text          *string  `json:"text,omitempty"`           // Text of the citation
+	StartIndex    *int     `json:"start_index,omitempty"`    // Common start index field (URLCitation, ContainerFileCitation)
+	EndIndex      *int     `json:"end_index,omitempty"`      // Common end index field (URLCitation, ContainerFileCitation)
+	Filename      *string  `json:"filename,omitempty"`
+	Title         *string  `json:"title,omitempty"`
+	URL           *string  `json:"url,omitempty"`
+	ContainerID   *string  `json:"container_id,omitempty"`
 
 	// Anthropic specific fields
 	StartCharIndex  *int    `json:"start_char_index,omitempty"`
@@ -4686,7 +4688,8 @@ type BifrostResponsesStreamResponse struct {
 	// gateway compatibility guide), so the provider-native egress can restore them
 	// on the re-rendered frame. Deliberately NOT copied by WithDefaults: OpenAI-shaped
 	// surfaces never see it.
-	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
+	SafeguardResults         json.RawMessage `json:"safeguard_results,omitempty"`
+	BedrockContentBlockIndex *int            `json:"-"` // Native Converse index, distinct from the item-local content_index
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`

@@ -47,7 +47,7 @@
 
 ## 🐞 Fixed
 
-- **Virtual Key Active Defaults** - Omitted `is_active` stays active during config.json sync, legacy NULL states are repaired in the background, and reads remain consistent during rolling upgrades (thanks [@Constantine3](https://github.com/Constantine3)!)
+- **Custom Provider Prefixes on Create** - A provider created through the API resolves by its `name/model` prefix as soon as its configuration is stored, so requests sent during the post-create reload and model discovery are no longer load balanced to another provider. A create that is rolled back also stops any workers such a request started
 - **Mid-Conversation System Reminders** - Claude Code's trailing system reminder now keeps one form (native or `<system-reminder>`) across turns, decided from the messages actually sent. On Bedrock InvokeModel the changing form had invalidated the prompt cache every turn, cutting cached input and raising cost. The `<system-reminder>` envelope also drops its trailing newline, and the cache breakpoint stays on the marked block. Native placement is now controlled by the `supports_native_mid_conversation_system` datasheet field
 - **Vertex Prompt Cache Misses** - Vertex Claude request bodies always end with `tools`, `system`, `messages`, so turn-to-turn cache reads no longer miss when a client sends `messages` first
 - **Cached Tokens Counted Twice** - Anthropic streaming usage, on chat and Responses streams and on the passthrough route, counts each cached prompt token once, including upstreams such as kimi-code that report the cache split on `message_delta` (thanks [@is911](https://github.com/is911) and [@wangkanai](https://github.com/wangkanai)!)
@@ -88,6 +88,7 @@
   </Note>
 - **Large File Uploads** - Multipart uploads are streamed to temp files and on to the provider instead of being held in memory, on the Files API (OpenAI, Azure), passthrough routes and transport plugins. Body size limits and their 413 still apply
 - **Virtual Key Budgets** - Updating the budget of a config.json virtual key no longer fails with `invalid reset duration format` (thanks [@High-PO](https://github.com/High-PO)!). Moving a quarterly budget to another window, or updating a team's or customer's rate-limit maximum alone, no longer fails with a 500, and a budget window added with Reset Usage starts at zero
+- **Virtual Key Active Defaults** - Omitted `is_active` stays active during config.json sync, legacy NULL states are repaired in the background, and reads remain consistent during rolling upgrades (thanks [@Constantine3](https://github.com/Constantine3)!)
 - **Team and Customer Saves** - Saving a customer or team no longer rewrites its teams, virtual keys or customer, and a team's virtual keys are charged to its new customer right after the change
 - **Duplicate Provider Configs** - A virtual key naming the same provider twice is refused with a 400
 - **MCP OAuth Consent** - The consent page no longer gets stuck when an expired SSO session is refreshed mid-flow, and abandoned client registrations are kept long enough for clients to retry
