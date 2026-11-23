@@ -350653,6 +350653,114 @@
           }
         }
       ]
+    },
+    {
+      "name": "385. Virtual key rotation returns the new value, with no warning when the key is loaded (vk-rotation-warning)",
+      "description": "Pins the rotation responses. POST /api/governance/virtual-keys/{vk_id}/rotate answers 200 with the new value, and with a warning only when the new value was saved but the in-memory reload failed; POST /api/governance/virtual-keys/rotate reports those keys under warnings. No HTTP request can make the reload fail, so the Go tests (TestRotateVirtualKey_ReloadFailure*, TestRotateVirtualKeys_ReloadFailureCountsAsRotated) pin the warning itself and this case pins that a rotation whose reload succeeds carries neither field, so a client can rely on their absence.\n\nThe case creates a run-scoped virtual key, rotates it alone, rotates it in bulk, and deletes it. No inference request is sent. The case name carries openai only so the openai provider filter selects it. Run with FEATURE=\"vk-rotation-warning\".",
+      "item": [
+        {
+          "name": "openai virtual key rotated alone and in bulk returns a new value each time and no warning - vk-rotation-warning",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "pm.variables.unset('vkRotationWarningId');",
+                  "mgmt('POST', '/api/governance/virtual-keys', JSON.stringify({name: 'harness-vk-rotation-warning-run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9)}), function (err, res) {",
+                  "  var vk = (!err && res.code === 200) ? ((res.json() || {}).virtual_key || {}) : {};",
+                  "  pm.test('setup: created the run-scoped virtual key', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    pm.expect(vk.id, res.text()).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "  pm.variables.set('vkRotationWarningId', vk.id || 'missing');",
+                  "  pm.variables.set('vkRotationWarningValue', vk.value || '');",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var id = pm.variables.get('vkRotationWarningId');",
+                  "var oldValue = pm.variables.get('vkRotationWarningValue');",
+                  "var text = pm.response.text();",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var single = (body.virtual_key || {}).value;",
+                  "pm.test('the rotation returns a new value and no warning', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(single, text).to.be.a('string').and.match(/^sk-bf-/);",
+                  "  pm.expect(single, 'the value must change').to.not.equal(oldValue);",
+                  "  pm.expect(body, text).to.not.have.property('warning');",
+                  "});",
+                  "if (!id || id === 'missing') { return; }",
+                  "mgmt('POST', '/api/governance/virtual-keys/rotate', JSON.stringify({ids: [id]}), function (err, res) {",
+                  "  pm.test('the bulk rotation returns a new value, no warnings and no errors', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var bulk = res.json() || {};",
+                  "    pm.expect(bulk.virtual_keys, res.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(bulk.virtual_keys[0].value, res.text()).to.match(/^sk-bf-/);",
+                  "    pm.expect(bulk.virtual_keys[0].value, 'the value must change again').to.not.equal(single);",
+                  "    pm.expect(bulk, res.text()).to.not.have.property('warnings');",
+                  "    pm.expect(bulk, res.text()).to.not.have.property('errors');",
+                  "  });",
+                  "  mgmt('DELETE', '/api/governance/virtual-keys/' + encodeURIComponent(id), null, function (err2, res2) {",
+                  "    pm.test('cleanup: deleted the run-scoped virtual key', function () {",
+                  "      pm.expect(err2).to.equal(null);",
+                  "      pm.expect(res2.code, res2.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{vkRotationWarningId}}/rotate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkRotationWarningId}}",
+                "rotate"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

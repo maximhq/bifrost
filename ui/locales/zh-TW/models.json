@@ -1329,6 +1329,8 @@
 		"rotateGraceNote": "先前的密鑰在 {{date}} 之前保持有效。",
 		"rotatedBulkPartial": "旋轉 {{count}} 虛擬鍵。 {{failed}} 失敗。 {{graceNote}}",
 		"rotatedBulk": "旋轉{{count}}虛擬按鍵.{{graceNote}}",
+		"rotatedBulkNotLoaded": "已儲存但可能未載入的金鑰：{{notLoaded}} 個。在您重新儲存各金鑰或重新啟動 Bifrost 之前，舊值可能仍然有效。",
+		"rotatedNotLoaded": "虛擬金鑰已輪換，但新值可能未載入。在您重新儲存該金鑰或重新啟動 Bifrost 之前，舊值可能仍然有效。",
 		"filtersApplied": "應用過濾器：",
 		"filterSearch": "搜尋“{{query}}”",
 		"filterCustomer": "客戶過濾器",

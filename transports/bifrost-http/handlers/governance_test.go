@@ -18,6 +18,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -1954,7 +1955,7 @@ func TestRotateVirtualKey_UpdateFailureDoesNotReload(t *testing.T) {
 	}
 }
 
-func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
+func TestRotateVirtualKey_ReloadFailureStillReturnsNewValue(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	store := &mockRotateConfigStore{
@@ -1970,20 +1971,109 @@ func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
 
 	h.rotateVirtualKey(ctx)
 
-	if ctx.Response.StatusCode() != 500 {
-		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if store.updates != 1 {
-		t.Fatalf("expected one update, got %d", store.updates)
+	newValue := store.virtualKeys["vk-1"].Value.GetValue()
+	if store.updates != 1 || newValue == "sk-bf-old" {
+		t.Fatalf("expected one update to a new value, got %d updates, value %q", store.updates, newValue)
 	}
-	if store.virtualKeys["vk-1"].Value.GetValue() == "sk-bf-old" {
-		t.Fatal("expected value to rotate before reload failure")
+	body := string(ctx.Response.Body())
+	if !strings.Contains(body, newValue) {
+		t.Fatalf("expected the new value in the response, got %s", body)
 	}
-	if len(manager.reloadIDs) != 1 || manager.reloadIDs[0] != "vk-1" {
-		t.Fatalf("expected reload for vk-1, got %#v", manager.reloadIDs)
+	if !strings.Contains(body, "in-memory reload failed") {
+		t.Fatalf("expected the reload failure in the message, got %s", body)
 	}
-	if !strings.Contains(string(ctx.Response.Body()), "failed to reload in-memory state") {
-		t.Fatalf("expected reload failure in response, got %s", string(ctx.Response.Body()))
+	changes, _ := ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+	if len(changes) != 1 || changes[0].EventName != "virtual_key.rotated" {
+		t.Fatalf("expected a virtual_key.rotated audit change, got %#v", changes)
+	}
+}
+
+// TestRotateVirtualKey_ReloadFailureReturnsPlaintext runs the save through the encryption hook, which rewrites the row's value in place.
+func TestRotateVirtualKey_ReloadFailureReturnsPlaintext(t *testing.T) {
+	SetLogger(&mockLogger{})
+	encrypt.Init("rotation-reload-test-encryption-key", &mockLogger{})
+	t.Cleanup(func() { encrypt.Init("", &mockLogger{}) })
+	store := setupPricingOverrideHandlerStore(t)
+	bg := context.Background()
+	if err := store.CreateVirtualKey(bg, &configstoreTables.TableVirtualKey{ID: "vk-enc", Name: "enc", Value: *schemas.NewSecretVar("sk-bf-old")}); err != nil {
+		t.Fatalf("create virtual key: %v", err)
+	}
+	scopeID := "vk-enc"
+	if err := store.CreateModelConfig(bg, &configstoreTables.TableModelConfig{
+		ID: "mc-enc", ModelName: configstoreTables.ModelConfigAllModels, Scope: configstoreTables.ModelConfigScopeVirtualKey, ScopeID: &scopeID,
+		Budgets: []configstoreTables.TableBudget{{ID: "budget-enc", MaxLimit: 100, ResetDuration: "1d"}},
+	}); err != nil {
+		t.Fatalf("create model config: %v", err)
+	}
+	h := &GovernanceHandler{configStore: store, governanceManager: &mockRotateGovernanceManager{reloadErr: errors.New("reload failed")}}
+
+	ctx := newTestRequestCtx("")
+	ctx.SetUserValue("vk_id", "vk-enc")
+	h.rotateVirtualKey(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	stored, err := store.GetVirtualKey(bg, "vk-enc")
+	if err != nil {
+		t.Fatalf("read virtual key: %v", err)
+	}
+	if stored.EncryptionStatus != configstoreTables.EncryptionStatusEncrypted {
+		t.Fatalf("encryption status = %q, want the row encrypted", stored.EncryptionStatus)
+	}
+	var resp struct {
+		Warning    string `json:"warning"`
+		VirtualKey struct {
+			Value   string                          `json:"value"`
+			Budgets []configstoreTables.TableBudget `json:"budgets"`
+		} `json:"virtual_key"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.VirtualKey.Value != stored.Value.GetValue() || resp.VirtualKey.Value == "sk-bf-old" || resp.Warning == "" {
+		t.Fatalf("response = %s, want the new plaintext value and a warning", ctx.Response.Body())
+	}
+	if len(resp.VirtualKey.Budgets) != 1 || resp.VirtualKey.Budgets[0].ID != "budget-enc" {
+		t.Fatalf("response = %s, want the key's model config budget", ctx.Response.Body())
+	}
+}
+
+func TestRotateVirtualKeys_ReloadFailureCountsAsRotated(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{
+		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old")},
+		},
+	}
+	manager := &mockRotateGovernanceManager{store: store, reloadErr: errors.New("reload failed")}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody([]byte(`{"ids":["vk-1"]}`))
+	h.rotateVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp struct {
+		VirtualKeys []json.RawMessage `json:"virtual_keys"`
+		Errors      map[string]string `json:"errors"`
+		Warnings    map[string]string `json:"warnings"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.VirtualKeys) != 1 || len(resp.Errors) != 0 || resp.Warnings["vk-1"] == "" {
+		t.Fatalf("expected vk-1 rotated with a warning, got %s", string(ctx.Response.Body()))
+	}
+	changes, _ := ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+	if len(changes) != 1 {
+		t.Fatalf("expected one audit change, got %#v", changes)
 	}
 }
 

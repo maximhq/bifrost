@@ -463,7 +463,13 @@ virtual-keys-rotate-by-id:
         content:
           application/json:
             schema:
-              $ref: "../../schemas/management/governance.yaml#/VirtualKeyResponse"
+              allOf:
+                - $ref: "../../schemas/management/governance.yaml#/VirtualKeyResponse"
+                - type: object
+                  properties:
+                    warning:
+                      type: string
+                      description: Set when the new value was saved but the in-memory reload failed. The old value may still work until the key is saved again or Bifrost restarts
       "404":
         description: Virtual key not found
         content:
@@ -648,6 +654,11 @@ virtual-keys-rotate:
                 errors:
                   type: object
                   description: Map of virtual key ID to failure reason for keys that could not be rotated
+                  additionalProperties:
+                    type: string
+                warnings:
+                  type: object
+                  description: Map of virtual key ID to warning for keys whose new value was saved but whose in-memory reload failed. The old value may still work until the key is saved again or Bifrost restarts
                   additionalProperties:
                     type: string
       "400":
