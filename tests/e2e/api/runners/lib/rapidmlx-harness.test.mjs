@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -67,7 +69,7 @@ test("Rapid-MLX management URL checks inherit dev's genuine setup-token authenti
   // The default harness profile has no dashboard account. Like the Azure
   // endpoint-update rows, these requests authenticate through the collection's
   // injected setup token; adding a separate login would change that contract.
-  const scratch = fs.mkdtempSync("/private/tmp/bifrost-rapidmlx-harness-");
+  const scratch = fs.mkdtempSync(join(tmpdir(), "bifrost-rapidmlx-harness-"));
   try {
     const out = scratch + "/augmented.json";
     execFileSync(process.execPath, [
