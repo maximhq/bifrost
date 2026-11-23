@@ -97,6 +97,37 @@ func ResolveAdminContentLogging(ctx *BifrostContext) (disabled bool, decided boo
 	return false, false
 }
 
+// ContentLoggingLayerCanChange reports whether stamping layer later could still change the resolved
+// decision: no tier above it has decided, and no peer in its own tier already says off. The logging
+// plugin uses it to tell whether a layer stamped after its pre-hooks (the provider key, picked after
+// every PreLLMHook) leaves the decision open.
+func ContentLoggingLayerCanChange(ctx *BifrostContext, layer BifrostContextKey) bool {
+	if ctx == nil {
+		return false
+	}
+	for _, tier := range contentLoggingTiers {
+		inTier := false
+		tierDecided := false
+		peerOff := false
+		for _, l := range tier {
+			if l == layer {
+				inTier = true
+			}
+			if value, ok := ctx.Value(l).(bool); ok {
+				tierDecided = true
+				peerOff = peerOff || value
+			}
+		}
+		if inTier {
+			return !peerOff
+		}
+		if tierDecided {
+			return false
+		}
+	}
+	return false
+}
+
 // MarkCallerContentLoggingResolved records that governance has stamped every caller-side layer it is
 // going to stamp for this request.
 func MarkCallerContentLoggingResolved(ctx *BifrostContext) {
