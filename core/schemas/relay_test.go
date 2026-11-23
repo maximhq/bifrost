@@ -53,15 +53,15 @@ func TestRelayConfigValidate(t *testing.T) {
 		{"unknown model source", &RelayConfig{Usage: &RelayUsageConfig{ModelSource: "header"}}, "model_source: unsupported value"},
 		{"rounding ok", &RelayConfig{Usage: &RelayUsageConfig{UnitsPath: "Text", UnitsSource: RelayUnitsFromRequest, UnitsMeasure: RelayUnitsChars, UnitsBlockSize: Ptr(100.0), UnitsMinimum: Ptr(1.0), CostPerUnit: Ptr(0.01)}}, ""},
 		{"job ok", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "JobId", Poll: RelayJobPoll{Path: "/", Body: `{"JobId":"{{job.id}}"}`}, StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"}, Usage: &RelayUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: Ptr(0.0015)}}}}}, ""},
-		{"job needs id path", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "routes[0].job.id_path"},
-		{"job needs a succeeded status", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s"}}}}, "succeeded"},
-		{"job poll path rooted", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "jobs"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "poll.path"},
-		{"job measure needing a path under an inherited rate", &RelayConfig{Usage: &RelayUsageConfig{UnitsMeasure: RelayUnitsBodyBytes, CostPerUnit: Ptr(0.01)}, Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}, Usage: &RelayUsageConfig{UnitsMeasure: RelayUnitsChars}}}}}, "routes[0].job.usage.units_path is required"},
-		{"job cannot bill request units", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Usage: &RelayUsageConfig{UnitsPath: "Text", UnitsSource: RelayUnitsFromRequest, UnitsMeasure: RelayUnitsChars, CostPerUnit: Ptr(0.001)}, Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "request-side units are not billed at settlement"},
-		{"job route cannot stream", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Stream: Ptr(true), Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "served buffered"},
-		{"job route must be billable", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Billable: Ptr(false), Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must be billable"},
-		{"job on a PUT needs billable true", &RelayConfig{Routes: []RelayRouteConfig{{Method: "PUT", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must set billable: true"},
-		{"job usage validated", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}, Usage: &RelayUsageConfig{CostPerUnit: Ptr(1.0)}}}}}, "routes[0].job.usage.units_path"},
+		{"job needs id path", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "routes[0].job.id_path"},
+		{"job needs a succeeded status", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s"}}}}, "succeeded"},
+		{"job poll path rooted", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "jobs/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "poll.path"},
+		{"job measure needing a path under an inherited rate", &RelayConfig{Usage: &RelayUsageConfig{UnitsMeasure: RelayUnitsBodyBytes, CostPerUnit: Ptr(0.01)}, Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}, Usage: &RelayUsageConfig{UnitsMeasure: RelayUnitsChars}}}}}, "routes[0].job.usage.units_path is required"},
+		{"job cannot bill request units", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Usage: &RelayUsageConfig{UnitsPath: "Text", UnitsSource: RelayUnitsFromRequest, UnitsMeasure: RelayUnitsChars, CostPerUnit: Ptr(0.001)}, Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "request-side units are not billed at settlement"},
+		{"job route cannot stream", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Stream: Ptr(true), Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "served buffered"},
+		{"job route must be billable", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Billable: Ptr(false), Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must be billable"},
+		{"job on a PUT needs billable true", &RelayConfig{Routes: []RelayRouteConfig{{Method: "PUT", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must set billable: true"},
+		{"job usage validated", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}, Usage: &RelayUsageConfig{CostPerUnit: Ptr(1.0)}}}}}, "routes[0].job.usage.units_path"},
 		{"route fee", &RelayConfig{Routes: []RelayRouteConfig{{Method: "GET", Path: "/x", Usage: &RelayUsageConfig{CostPerRequest: Ptr(-0.1)}}}}, "routes[0].usage.cost_per_request"},
 		{"streaming glob", &RelayConfig{Streaming: &RelayStreamingConfig{Paths: []string{"v1/*"}}}, "streaming.paths[0]"},
 		{"full valid", &RelayConfig{
@@ -345,14 +345,57 @@ func TestRelayCloneDoesNotShareSecrets(t *testing.T) {
 	assert.Equal(t, "acme", tenant.GetValue())
 }
 
-func TestRelayRouteJobIsNotConfigurable(t *testing.T) {
+func TestRelayRouteJobRoundTrips(t *testing.T) {
 	var cfg RelayConfig
-	require.NoError(t, Unmarshal([]byte(`{"name":"docs","base_url":"https://docs.example.com","routes":[{"method":"POST","path":"/","job":{"id_path":"JobId","poll":{"path":"/"},"status_path":"s","succeeded":["x"]}}]}`), &cfg))
+	require.NoError(t, Unmarshal([]byte(`{"name":"docs","base_url":"https://docs.example.com","routes":[{"method":"POST","path":"/","job":{"id_path":"JobId","poll":{"path":"/jobs/{{job.id}}","method":"GET"},"status_path":"s","succeeded":["x"],"interval_seconds":10}}]}`), &cfg))
 	require.Len(t, cfg.Routes, 1)
-	assert.Nil(t, cfg.Routes[0].Job, "a job in config.json or an API body is ignored until async jobs are exposed")
-	out, err := Marshal(RelayRouteConfig{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "JobId"}})
+	require.NotNil(t, cfg.Routes[0].Job, "a job in config.json or an API body is read")
+	assert.Equal(t, "/jobs/{{job.id}}", cfg.Routes[0].Job.Poll.Path)
+	assert.Equal(t, 10, cfg.Routes[0].Job.IntervalSeconds)
+	out, err := Marshal(cfg.Routes[0])
 	require.NoError(t, err)
-	assert.NotContains(t, string(out), "job")
+	assert.Contains(t, string(out), `"job":{"id_path":"JobId"`)
+}
+
+func TestRelayJobValidate(t *testing.T) {
+	base := func() *RelayJobConfig {
+		return &RelayJobConfig{IDPath: "JobId", StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"}, Failed: []string{"FAILED"},
+			Poll: RelayJobPoll{Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}, Body: `{"JobId":"{{job.id}}"}`}}
+	}
+	for name, tc := range map[string]struct {
+		edit    func(j *RelayJobConfig)
+		wantErr string
+	}{
+		"valid":                             {func(j *RelayJobConfig) {}, ""},
+		"timeout of a week":                 {func(j *RelayJobConfig) { j.TimeoutSeconds = 7 * 24 * 3600 }, ""},
+		"timeout over a week":               {func(j *RelayJobConfig) { j.TimeoutSeconds = 7*24*3600 + 1 }, "timeout_seconds"},
+		"interval over the timeout":         {func(j *RelayJobConfig) { j.IntervalSeconds, j.TimeoutSeconds = 600, 300 }, "interval_seconds"},
+		"credential header in the poll":     {func(j *RelayJobConfig) { j.Poll.Headers["Authorization"] = "Bearer x" }, "poll.headers"},
+		"functions key header in the poll":  {func(j *RelayJobConfig) { j.Poll.Headers["X-Functions-Key"] = "k" }, "poll.headers"},
+		"api key header in the poll":        {func(j *RelayJobConfig) { j.Poll.Headers["X-Api-Key"] = "k" }, "poll.headers"},
+		"status both succeeded and failed":  {func(j *RelayJobConfig) { j.Failed = append(j.Failed, "succeeded") }, "both succeeded and failed"},
+		"interval over the default timeout": {func(j *RelayJobConfig) { j.IntervalSeconds = 7200 }, "interval_seconds"},
+		"blank succeeded status":            {func(j *RelayJobConfig) { j.Succeeded = []string{""} }, "non-empty"},
+		"padded failed status":              {func(j *RelayJobConfig) { j.Failed = []string{" FAILED "} }, "non-empty"},
+		"poll that names no job":            {func(j *RelayJobConfig) { j.Poll.Body = `{"MaxResults":1}` }, "{{job.id}}"},
+		"job id in a header":                {func(j *RelayJobConfig) { j.Poll.Body = ""; j.Poll.Headers["X-Job"] = "{{job.id}}" }, ""},
+		"credential in the poll query":      {func(j *RelayJobConfig) { j.Poll.Path = "/jobs/{{job.id}}?api_key=k" }, "poll.path"},
+		"plain query in the poll":           {func(j *RelayJobConfig) { j.Poll.Path = "/jobs?id={{job.id}}&verbose=1" }, ""},
+		"azure key header in the poll":      {func(j *RelayJobConfig) { j.Poll.Headers["Ocp-Apim-Subscription-Key"] = "k" }, "poll.headers"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			job := base()
+			tc.edit(job)
+			cfg := &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: job}}}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
 }
 
 func TestRelayMergeRedactedKeepsReferenceChanges(t *testing.T) {
@@ -477,4 +520,23 @@ func bodyOverrideNameRules(node any) []bodyOverrideNameRule {
 		}
 	}
 	return found
+}
+
+// A poll header needs a value: a blank one would make the job's status route match every call.
+func TestRelayJobRefusesABlankPollHeader(t *testing.T) {
+	job := &RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"},
+		Poll: RelayJobPoll{Path: "/jobs/{{job.id}}", Headers: map[string]string{"X-Op": " "}}}
+	require.ErrorContains(t, job.validate("job", RelayRouteConfig{Method: "POST", Path: "/jobs"}, nil, RelayAuthConfig{Type: RelayAuthBearer}), `"X-Op" has no value`)
+}
+
+// A relay can name its own key parameter, which no built-in credential list knows.
+func TestRelayJobRefusesTheRelaysOwnQueryCredential(t *testing.T) {
+	job := &RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"},
+		Poll: RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}?TenantCode=live-key"}}
+	route := RelayRouteConfig{Method: "POST", Path: "/jobs"}
+
+	err := job.validate("job", route, nil, RelayAuthConfig{Type: RelayAuthQuery, QueryParam: "tenantCode"})
+	require.ErrorContains(t, err, "carries a credential")
+
+	require.NoError(t, job.validate("job", route, nil, RelayAuthConfig{Type: RelayAuthBearer}), "the name is only a credential on a query-auth relay")
 }

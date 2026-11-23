@@ -854,6 +854,23 @@ func TestUpsertRefusesJobWhoseStatusChecksAreBilled(t *testing.T) {
 	require.NoError(t, m.Upsert(rest), "a free route for every job id")
 }
 
+// A stored relay that breaks the status check rule (saved before a rule change) keeps serving with a
+// warning at startup and on sync from another node; only a save refuses it.
+func TestStoredRelayWithChargedStatusChecksKeepsServing(t *testing.T) {
+	cfg := bearerConfig("jobs", "https://jobs.example.com")
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/start", Job: &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"}, Poll: schemas.RelayJobPoll{Method: "POST", Path: "/jobs/{{job.id}}"}}},
+		{Method: "POST", Path: "/jobs/**"},
+	}
+	m := NewManager(nil, nil)
+	require.ErrorIs(t, m.Upsert(cfg), ErrInvalidConfig)
+	require.NoError(t, m.Replace([]*schemas.RelayConfig{cfg}))
+	assert.Equal(t, []string{"jobs"}, m.Names(), "startup keeps it serving")
+	m.RemoveRuntime("jobs")
+	require.NoError(t, m.upsert(cfg, false))
+	assert.Equal(t, []string{"jobs"}, m.Names(), "a sync from another node keeps it serving")
+}
+
 func TestServeRequestSideBillingRefusesAmbiguousBody(t *testing.T) {
 	cfg := bearerConfig("translate", "https://example.com")
 	cfg.SkipRouteCheck = true

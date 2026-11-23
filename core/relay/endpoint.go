@@ -39,19 +39,32 @@ type endpoint struct {
 	streamIdle         int // seconds
 }
 
-// newEndpoint validates cfg and compiles it. proxy is the effective proxy (the endpoint's own, or
-// the inherited global one), resolved by the caller.
+// newEndpoint validates cfg and compiles it, refusing a job whose status checks would be charged.
+// proxy is the effective proxy (the endpoint's own, or the inherited global one), resolved by the caller.
 func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoint, error) {
+	e, jobErr, err := buildEndpoint(cfg, proxy)
+	if err != nil {
+		return nil, err
+	}
+	if jobErr != nil {
+		return nil, jobErr
+	}
+	return e, nil
+}
+
+// buildEndpoint is newEndpoint with the status check rule returned apart (jobErr), so a relay that
+// is already stored can keep serving with a warning instead of every call getting a 404.
+func buildEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (e *endpoint, jobErr error, err error) {
 	cfg = cfg.Clone()
 	if cfg.Auth.Type == "" {
 		cfg.Auth.Type = schemas.RelayAuthBearer
 	}
 	if err := cfg.ValidateEndpoint(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	client, err := newHTTPClient(cfg.Network, proxy)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	usage := resolveUsage(cfg.Usage, nil)
 	usage.ignoreUpstreamCost = cfg.IgnoreUpstreamCost
@@ -61,7 +74,7 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 		routes[i].usage.ignoreUpstreamCost = cfg.IgnoreUpstreamCost
 		routes[i].usage.eventPaths = routes[i].usage.collectEventPaths()
 	}
-	e := &endpoint{
+	e = &endpoint{
 		cfg:                cfg,
 		client:             client,
 		streamingClient:    providerUtils.BuildStreamingHTTPClient(client),
@@ -76,14 +89,12 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 	if cfg.Network != nil && cfg.Network.StreamIdleTimeoutInSeconds > 0 {
 		e.streamIdle = cfg.Network.StreamIdleTimeoutInSeconds
 	}
-	if err := e.checkJobStatusRoutes(); err != nil {
-		return nil, err
-	}
+	jobErr = e.checkJobStatusRoutes()
 	if cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && cfg.Credential != nil && cfg.Credential.AWS != nil {
 		e.awsKey = bedrockKeyConfig(cfg.Credential.AWS)
 		e.awsRegion = cfg.Credential.AWS.Region.GetValue()
 	}
-	return e, nil
+	return e, jobErr, nil
 }
 
 // plan is the outcome of matching one request against an endpoint's routes.

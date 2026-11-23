@@ -258,7 +258,9 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 		entry.Path = stripQuery(entry.Path)
 	}
 	if resp != nil && resp.Usage != nil && resp.Usage.Job != nil {
-		p.recordEndpointJob(entry, resp.Usage.Job)
+		// The reply names the relay that started the job; the entry was found by the caller's
+		// x-request-id, which another relay's call in flight may share.
+		p.recordEndpointJob(entry, clampString(resp.RelayName, 64), resp.Usage.Job)
 	}
 	p.storeOrEnqueueRelayEntry(ctx, relayInjectEntry{entry: entry, reconcile: evicted, dropRequestBody: !policy.storeContent})
 	return resp, bifrostErr, nil
@@ -590,16 +592,19 @@ const maxEndpointJobGenerations = 64
 // job runs or after it finished) records nothing new and is billed once. Only a job configured with
 // reused_id_is_new_job treats an id returned after settlement as new work: it takes the next
 // generation slot, so retries of that job dedupe against the same slot.
-func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, job *schemas.RelayJobHandle) {
+func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, relayName string, job *schemas.RelayJobHandle) {
 	if p.batchStore == nil || job == nil || job.ID == "" {
 		return
+	}
+	if relayName == "" {
+		relayName = entry.RelayName
 	}
 	kind := tables.ProviderJobKindRelay
 	var scoped, id string
 	for gen := 1; ; gen++ {
 		if gen > maxEndpointJobGenerations {
 			scoped = schemas.RelayScopedJobID(entry.RequestID, job.ID)
-			id = tables.ProviderJobID(kind, entry.RelayName, scoped)
+			id = tables.ProviderJobID(kind, relayName, scoped)
 			break
 		}
 		prefix := ""
@@ -607,14 +612,14 @@ func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, job *schemas.
 			prefix = "g" + strconv.Itoa(gen)
 		}
 		scoped = schemas.RelayScopedJobID(prefix, job.ID)
-		id = tables.ProviderJobID(kind, entry.RelayName, scoped)
+		id = tables.ProviderJobID(kind, relayName, scoped)
 		existing, err := p.batchStore.GetProviderJob(p.ctx, id)
 		if errors.Is(err, configstore.ErrNotFound) || (err == nil && existing == nil) {
 			break // a free slot
 		}
 		if err != nil {
 			// Recording on a lookup error could open a second row for an idempotent retry.
-			p.logger.Warn("failed to look up relay job endpoint=%s job_id=%s: %v", entry.RelayName, job.ID, err)
+			p.logger.Warn("failed to look up relay job endpoint=%s job_id=%s: %v", relayName, job.ID, err)
 			return
 		}
 		if existing.AccountingStatus != tables.ProviderJobAccountingStatusAccounted && existing.AccountingStatus != tables.ProviderJobAccountingStatusUnpriceable {
@@ -631,7 +636,7 @@ func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, job *schemas.
 	row := &tables.TableProviderJob{
 		ID:             id,
 		Kind:           kind,
-		Provider:       entry.RelayName,
+		Provider:       relayName,
 		JobID:          scoped,
 		Endpoint:       entry.RoutePath,
 		Params:         &params,
@@ -654,7 +659,7 @@ func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, job *schemas.
 		}
 	}
 	if err := p.batchStore.UpsertProviderJob(p.ctx, row); err != nil {
-		p.logger.Warn("failed to record relay job endpoint=%s job_id=%s: %v", entry.RelayName, job.ID, err)
+		p.logger.Warn("failed to record relay job endpoint=%s job_id=%s: %v", relayName, job.ID, err)
 	}
 }
 

@@ -110,6 +110,12 @@ func hasOwnProxy(proxy *schemas.ProxyConfig) bool {
 
 // Upsert validates and compiles cfg and makes it live, replacing an endpoint of the same name.
 func (m *Manager) Upsert(cfg *schemas.RelayConfig) error {
+	return m.upsert(cfg, true)
+}
+
+// upsert is Upsert; with strict off, a stored relay whose status checks would be charged still goes
+// live with a warning (a save already refused it, so this is a row from before the rule changed).
+func (m *Manager) upsert(cfg *schemas.RelayConfig, strict bool) error {
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
 	if cfg == nil {
@@ -119,9 +125,15 @@ func (m *Manager) Upsert(cfg *schemas.RelayConfig) error {
 	if err != nil {
 		return fmt.Errorf("%w: global proxy: %w", ErrInvalidConfig, err)
 	}
-	e, err := newEndpoint(cfg, proxy)
+	e, jobErr, err := buildEndpoint(cfg, proxy)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
+	if jobErr != nil {
+		if strict {
+			return fmt.Errorf("%w: %w", ErrInvalidConfig, jobErr)
+		}
+		m.warnJobRoutes(cfg.Name, jobErr)
 	}
 	old := *m.endpoints.Load()
 	next := make(map[string]*endpoint, len(old)+1)
@@ -167,10 +179,13 @@ func (m *Manager) Replace(cfgs []*schemas.RelayConfig) error {
 			errs = append(errs, fmt.Sprintf("%s: global proxy: %v", cfg.Name, err))
 			continue
 		}
-		e, err := newEndpoint(cfg, proxy)
+		e, jobErr, err := buildEndpoint(cfg, proxy)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", cfg.Name, err))
 			continue
+		}
+		if jobErr != nil {
+			m.warnJobRoutes(cfg.Name, jobErr)
 		}
 		next[cfg.Name] = e
 	}
@@ -270,7 +285,7 @@ func (m *Manager) Update(ctx context.Context, name string, cfg *schemas.RelayCon
 		return nil, err
 	}
 	if err := m.store.UpdateRelay(ctx, cfg, ""); err != nil {
-		if rbErr := m.Upsert(previous); rbErr != nil && m.logger != nil {
+		if rbErr := m.upsert(previous, false); rbErr != nil && m.logger != nil {
 			m.logger.Error("relay %s: save failed and restoring the previous live config also failed: %v", name, rbErr)
 		}
 		return nil, err
@@ -332,10 +347,18 @@ func (m *Manager) ReloadRelay(ctx context.Context, name string) (*schemas.RelayC
 	if err != nil {
 		return nil, err
 	}
-	if err := m.Upsert(stored); err != nil {
+	// The node that saved it already checked it; refusing here would leave the old config serving.
+	if err := m.upsert(stored, false); err != nil {
 		return nil, err
 	}
 	return stored, nil
+}
+
+// warnJobRoutes logs a stored relay that serves although a job's status checks would be charged.
+func (m *Manager) warnJobRoutes(name string, err error) {
+	if m.logger != nil {
+		m.logger.Warn("relay %s: serving, but fix its routes before the next save: %v", name, err)
+	}
 }
 
 // Names lists the live endpoints, sorted.

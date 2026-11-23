@@ -6068,3 +6068,27 @@ func TestMigrationAddModelRoutersTable(t *testing.T) {
 	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger), "it runs once")
 	require.True(t, db.Migrator().HasTable(&tables.TableModelRouter{}))
 }
+
+// A relay job's status and route glob have no length cap, so both columns are widened to TEXT on postgres.
+func TestMigrationWidenProviderJobColumns(t *testing.T) {
+	db, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Skip("postgres not available")
+	}
+	if sqlDB, err := db.DB(); err != nil || sqlDB.Ping() != nil {
+		t.Skip("postgres not available")
+	}
+	require.NoError(t, db.Exec("CREATE SCHEMA IF NOT EXISTS "+pgTestSchema).Error)
+	db.Exec("DROP TABLE IF EXISTS batch_jobs CASCADE")
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS batch_jobs CASCADE") })
+	require.NoError(t, db.Exec(`CREATE TABLE batch_jobs (id VARCHAR(255) PRIMARY KEY, provider_status VARCHAR(50), endpoint VARCHAR(255))`).Error)
+	db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`)
+	db.Exec(`DELETE FROM migrations WHERE id = 'widen_batch_jobs_provider_status_and_endpoint'`)
+
+	long := strings.Repeat("x", 400)
+	insert := `INSERT INTO batch_jobs (id, provider_status, endpoint) VALUES ('a', ?, ?)`
+	require.Error(t, db.Exec(insert, long, long).Error, "the varchar columns refuse it before the migration")
+	require.NoError(t, migrationWidenProviderJobColumns(context.Background(), db, testMigrationLogger))
+	require.NoError(t, db.Exec(insert, long, long).Error)
+	require.NoError(t, migrationWidenProviderJobColumns(context.Background(), db, testMigrationLogger), "running it again is a no-op")
+}

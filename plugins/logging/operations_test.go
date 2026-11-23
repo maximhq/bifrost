@@ -6726,6 +6726,19 @@ func TestRelayLogQueryRedaction(t *testing.T) {
 	require.True(t, strings.HasSuffix(got, "&flag"), "a parameter without a value is kept as is")
 }
 
+// The job row is filed under the relay that served the start call, even when the entry found by a
+// shared x-request-id belongs to another relay's call in flight.
+func TestRelayJobRowTakesTheRelayFromTheReply(t *testing.T) {
+	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.batchStore = store
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-1", RequestID: "shared", RelayName: "slowrelay"}, "textract", &schemas.RelayJobHandle{ID: "j-77", Params: `{"job":{}}`})
+	require.Len(t, store.jobs, 1)
+	for _, row := range store.jobs {
+		require.Equal(t, "textract", row.Provider)
+	}
+}
+
 func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
 	plugin := policyTestPlugin(nil, nil, true)
@@ -6733,7 +6746,7 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	job := &schemas.RelayJobHandle{ID: "j-1", IntervalSeconds: 30, Params: `{"job":{}}`}
 
 	first := &logstore.RelayLog{ID: "req-1", RequestID: "req-1", RelayName: "textract", BudgetIDsParsed: []string{"budget-1"}}
-	plugin.recordEndpointJob(first, job)
+	plugin.recordEndpointJob(first, "", job)
 	require.Len(t, store.jobs, 1)
 	var row *cstables.TableProviderJob
 	for _, r := range store.jobs {
@@ -6745,21 +6758,21 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	require.Equal(t, `["budget-1"]`, *row.BudgetIDs)
 	require.Equal(t, "req-1", *row.SourceLogID)
 
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-2", RequestID: "req-2", RelayName: "textract"}, job)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-2", RequestID: "req-2", RelayName: "textract"}, "", job)
 	require.Len(t, store.jobs, 1, "a retried start while the job is open records nothing new")
 
 	row.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3", RequestID: "req-3", RelayName: "textract"}, job)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3", RequestID: "req-3", RelayName: "textract"}, "", job)
 	require.Len(t, store.jobs, 1, "a start retried after its job was charged is not charged again")
 
 	reusing := &schemas.RelayJobHandle{ID: "j-1", IntervalSeconds: 30, Params: `{"job":{}}`, ReusedIDIsNewJob: true}
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3b", RequestID: "req-3b", RelayName: "textract"}, reusing)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3b", RequestID: "req-3b", RelayName: "textract"}, "", reusing)
 	require.Len(t, store.jobs, 2, "with reused_id_is_new_job an id reused after settlement is a new job")
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-4", RequestID: "req-4", RelayName: "textract"}, reusing)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-4", RequestID: "req-4", RelayName: "textract"}, "", reusing)
 	require.Len(t, store.jobs, 2, "a retried start of the reused job dedupes against its slot")
 
 	store.fail = errors.New("database is down")
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-5", RequestID: "req-5", RelayName: "textract"}, &schemas.RelayJobHandle{ID: "j-2", Params: `{"job":{}}`})
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-5", RequestID: "req-5", RelayName: "textract"}, "", &schemas.RelayJobHandle{ID: "j-2", Params: `{"job":{}}`})
 	require.Len(t, store.jobs, 2, "a lookup error records nothing rather than risk a duplicate row")
 }
 

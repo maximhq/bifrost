@@ -157,9 +157,6 @@ type RelayJobConfig struct {
 	ReusedIDIsNewJob bool              `json:"reused_id_is_new_job,omitempty"` // an id returned again after its job was charged is new work (caller-chosen ids)
 }
 
-// DefaultRelayJobTimeoutSeconds is how long a job is polled when timeout_seconds is unset.
-const DefaultRelayJobTimeoutSeconds = 3600
-
 // RelayJobPoll is the request the sweeper sends to check a job. {{job.id}} in the path, a
 // header value or the body is replaced with the job id.
 type RelayJobPoll struct {
@@ -170,8 +167,35 @@ type RelayJobPoll struct {
 	ContentType string            `json:"content_type,omitempty"` // default application/json when a body is set
 }
 
+// MaxRelayJobTimeoutSeconds bounds how long a job is polled for: 7 days.
+const MaxRelayJobTimeoutSeconds = 7 * 24 * 3600
+
 // JobIDPlaceholder is replaced with the job id in a poll request.
 const JobIDPlaceholder = "{{job.id}}"
+
+// DefaultRelayJobTimeoutSeconds is how long a job is polled when timeout_seconds is unset.
+const DefaultRelayJobTimeoutSeconds = 3600
+
+// credentialQueryParams are query parameter names that carry a credential.
+var credentialQueryParams = map[string]struct{}{
+	"key": {}, "api_key": {}, "apikey": {}, "api-key": {}, "token": {}, "access_token": {}, "auth": {},
+	"secret": {}, "client_secret": {}, "password": {}, "signature": {}, "sig": {}, "code": {},
+	"x-amz-signature": {}, "x-amz-credential": {}, "x-amz-security-token": {},
+}
+
+func isCredentialQueryParam(name string) bool {
+	_, ok := credentialQueryParams[strings.ToLower(strings.TrimSpace(name))]
+	return ok
+}
+
+func headersMention(headers map[string]string, s string) bool {
+	for _, v := range headers {
+		if strings.Contains(v, s) {
+			return true
+		}
+	}
+	return false
+}
 
 // RelayScopedJobID ties an upstream job id to the call that started it, for the job row and its
 // settlement. Some APIs let the caller choose the id and reuse it after a delete (Azure batch
@@ -201,7 +225,7 @@ type RelayRouteConfig struct {
 	Billable             *bool                      `json:"billable,omitempty"`               // false: the call is relayed but not counted or charged
 	Stream               *bool                      `json:"stream,omitempty"`                 // forces the streaming or buffered handler
 	Usage                *RelayUsageConfig          `json:"usage,omitempty"`                  // field-by-field override of the endpoint usage mapping
-	Job                  *RelayJobConfig            `json:"-"`                                // not configurable yet: async jobs are kept for a later release
+	Job                  *RelayJobConfig            `json:"job,omitempty"`                    // the matched call starts an upstream job, billed once when it finishes
 	BodyOverrides        map[string]json.RawMessage `json:"body_overrides,omitempty"`         // request body fields forced on every call: dotted path to JSON value, over the endpoint's
 	InheritBodyOverrides *bool                      `json:"inherit_body_overrides,omitempty"` // false: the relay's body_overrides are not applied here, only the route's own
 }
@@ -468,7 +492,7 @@ func (c *RelayConfig) Validate() error {
 			}
 		}
 		if route.Job != nil {
-			if err := route.Job.validate(fmt.Sprintf("routes[%d].job", i), route, c.Usage); err != nil {
+			if err := route.Job.validate(fmt.Sprintf("routes[%d].job", i), route, c.Usage, c.Auth); err != nil {
 				return err
 			}
 		}
@@ -476,7 +500,7 @@ func (c *RelayConfig) Validate() error {
 	return nil
 }
 
-func (j *RelayJobConfig) validate(field string, route RelayRouteConfig, base *RelayUsageConfig) error {
+func (j *RelayJobConfig) validate(field string, route RelayRouteConfig, base *RelayUsageConfig, auth RelayAuthConfig) error {
 	if strings.TrimSpace(j.IDPath) == "" {
 		return fmt.Errorf("%s.id_path is required", field)
 	}
@@ -489,6 +513,47 @@ func (j *RelayJobConfig) validate(field string, route RelayRouteConfig, base *Re
 	if j.IntervalSeconds < 0 || j.TimeoutSeconds < 0 {
 		return fmt.Errorf("%s: interval_seconds and timeout_seconds must not be negative", field)
 	}
+	if j.TimeoutSeconds > MaxRelayJobTimeoutSeconds {
+		return fmt.Errorf("%s.timeout_seconds must be at most %d (7 days)", field, MaxRelayJobTimeoutSeconds)
+	}
+	// The default timeout counts too: an interval past it means the job is never polled before the deadline.
+	timeout := j.TimeoutSeconds
+	if timeout == 0 {
+		timeout = DefaultRelayJobTimeoutSeconds
+	}
+	if j.IntervalSeconds > timeout {
+		return fmt.Errorf("%s.interval_seconds (%d) must not exceed the job's timeout (%ds), or the job is never polled", field, j.IntervalSeconds, timeout)
+	}
+	// A blank status would match a reply with no status field, and a padded one never matches.
+	for _, list := range [][]string{j.Succeeded, j.Failed} {
+		for _, s := range list {
+			if strings.TrimSpace(s) == "" || strings.TrimSpace(s) != s {
+				return fmt.Errorf("%s: status %q must be non-empty with no surrounding spaces", field, s)
+			}
+		}
+	}
+	if !strings.Contains(j.Poll.Path+j.Poll.Body, JobIDPlaceholder) && !headersMention(j.Poll.Headers, JobIDPlaceholder) {
+		return fmt.Errorf("%s.poll: %s must appear in the path, a header or the body, or every poll asks about no job", field, JobIDPlaceholder)
+	}
+	if _, query, ok := strings.Cut(j.Poll.Path, "?"); ok {
+		values, err := url.ParseQuery(query)
+		if err != nil {
+			return fmt.Errorf("%s.poll.path: invalid query: %v", field, err)
+		}
+		// The poll is stored in plain text; the relay adds its own credential.
+		for name := range values {
+			if isEndpointCredentialHeader(name) || isCredentialQueryParam(name) || (auth.Type == RelayAuthQuery && strings.EqualFold(name, strings.TrimSpace(auth.QueryParam))) {
+				return fmt.Errorf("%s.poll.path: query parameter %q carries a credential; the relay adds its own to every poll", field, name)
+			}
+		}
+	}
+	for _, s := range j.Succeeded {
+		for _, f := range j.Failed {
+			if strings.EqualFold(strings.TrimSpace(s), strings.TrimSpace(f)) {
+				return fmt.Errorf("%s: status %q is listed as both succeeded and failed", field, s)
+			}
+		}
+	}
 	if !strings.HasPrefix(j.Poll.Path, "/") {
 		return fmt.Errorf("%s.poll.path %q must start with /", field, j.Poll.Path)
 	}
@@ -497,9 +562,17 @@ func (j *RelayJobConfig) validate(field string, route RelayRouteConfig, base *Re
 			return fmt.Errorf("%s.poll.method: unsupported method %q", field, j.Poll.Method)
 		}
 	}
-	for name := range j.Poll.Headers {
+	for name, value := range j.Poll.Headers {
 		if !httpguts.ValidHeaderFieldName(name) {
 			return fmt.Errorf("%s.poll.headers: %q is not a valid header name", field, name)
+		}
+		// A blank value is dropped from a route's matchers, so a status route built from it would match every call.
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s.poll.headers: %q has no value", field, name)
+		}
+		// The relay's credential is added to every poll, and poll headers are stored in plain text.
+		if isEndpointCredentialHeader(name) {
+			return fmt.Errorf("%s.poll.headers: %q carries a credential; the relay adds its own to every poll", field, name)
 		}
 	}
 	// The start call's reply carries the job id, which only the buffered relay reads.
