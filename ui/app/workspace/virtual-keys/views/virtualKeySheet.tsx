@@ -1465,6 +1465,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
+				resizeKey="virtual-key"
 				className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4"
 				data-testid="vk-sheet-content"
 				onInteractOutside={(e) => e.preventDefault()}

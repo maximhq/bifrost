@@ -485,6 +485,7 @@ test.describe("LLM Logs", () => {
       await expect(second.handle).not.toHaveAttribute("data-dragging");
       // The width reached before the close is kept, and hovering with no button pressed does not resize.
       await expect.poll(sheetWidth).toBe(draggedWidth);
+      expect(await page.evaluate(() => localStorage.getItem("bifrost.sheet.width.log-details"))).toBe(String(draggedWidth));
       await page.mouse.move(second.x, second.y);
       await page.mouse.move(second.x - 150, second.y, { steps: 4 });
       expect(await sheetWidth()).toBe(draggedWidth);
