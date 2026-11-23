@@ -1,13 +1,16 @@
 package bedrock
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -19,12 +22,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/utils/awsauth"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1119,7 +1124,7 @@ func TestSignAWSRequest_ExcludesVolatileHeadersFromSignature(t *testing.T) {
 
 	// Every other volatile header is restored after signing, so the wire is unchanged.
 	for name, want := range volatile {
-		if strings.HasPrefix(name, internalHeaderPrefix) {
+		if strings.HasPrefix(name, awsauth.InternalHeaderPrefix) {
 			continue
 		}
 		if got := req.Header.Get(name); got != want {
@@ -1135,6 +1140,237 @@ func TestSignAWSRequest_ExcludesVolatileHeadersFromSignature(t *testing.T) {
 	}
 	if !slices.Contains(signedHeaders, "host") {
 		t.Errorf("host must be signed; SignedHeaders=%q", signedHeadersStr)
+	}
+}
+
+// fakeContainerCredentials points the default AWS credential chain at a local container
+// credentials endpoint (the one EKS Pod Identity serves) and counts the fetches it gets.
+func fakeContainerCredentials(t testing.TB) *atomic.Int32 {
+	t.Helper()
+	var fetches atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		expiry := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+		_, _ = w.Write([]byte(`{"AccessKeyId":"ASIAFAKE","SecretAccessKey":"secret","Token":"token","Expiration":"` + expiry + `"}`))
+	}))
+	t.Cleanup(server.Close)
+	dir := t.TempDir()
+	for k, v := range map[string]string{
+		"AWS_ACCESS_KEY_ID":                      "",
+		"AWS_SECRET_ACCESS_KEY":                  "",
+		"AWS_ACCESS_KEY":                         "",
+		"AWS_SECRET_KEY":                         "",
+		"AWS_DEFAULT_PROFILE":                    "",
+		"AWS_SESSION_TOKEN":                      "",
+		"AWS_PROFILE":                            "",
+		"AWS_ROLE_ARN":                           "",
+		"AWS_WEB_IDENTITY_TOKEN_FILE":            "",
+		"AWS_CONFIG_FILE":                        dir + "/config",
+		"AWS_SHARED_CREDENTIALS_FILE":            dir + "/credentials",
+		"AWS_EC2_METADATA_DISABLED":              "true",
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI":     server.URL,
+		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "",
+		"AWS_CONTAINER_AUTHORIZATION_TOKEN":      "pod-identity-token",
+		"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE": "",
+	} {
+		t.Setenv(k, v)
+	}
+	return &fetches
+}
+
+// testRegions numbers the regions testRegion hands out.
+var testRegions atomic.Int32
+
+// testRegion returns a region no earlier test or run has used. The resolved providers are cached
+// per region for the life of the process, so a reused region would answer from a fake endpoint
+// that has since closed (go test -count=2).
+func testRegion(name string) string {
+	return "us-test-" + name + "-" + strconv.Itoa(int(testRegions.Add(1)))
+}
+
+// TestResolveAWSCredentials_DefaultChainFetchesOnce: a key with no access key resolves
+// through the default chain, and the chain's credentials are reused until they near expiry
+// rather than fetched again for every signed request.
+func TestResolveAWSCredentials_DefaultChainFetchesOnce(t *testing.T) {
+	fetches := fakeContainerCredentials(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	region := testRegion("default-chain")
+	for range 20 {
+		creds, bifrostErr := ResolveAWSCredentials(ctx, &schemas.BedrockKeyConfig{}, region)
+		require.Nil(t, bifrostErr)
+		assert.Equal(t, "ASIAFAKE", creds.AccessKeyID)
+	}
+	assert.Equal(t, int32(1), fetches.Load(), "the default chain must be fetched once, not once per request")
+}
+
+// fakeSTS answers STS AssumeRole from a local server. It counts the calls it gets and keeps
+// the form of the last one.
+func fakeSTS(t testing.TB) (*atomic.Int32, *atomic.Value) {
+	t.Helper()
+	var calls atomic.Int32
+	var lastForm atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_ = r.ParseForm()
+		lastForm.Store(r.PostForm)
+		expiry := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+		w.Header().Set("Content-Type", "text/xml")
+		_, _ = w.Write([]byte(`<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><AssumeRoleResult><Credentials><AccessKeyId>ASIAASSUMED</AccessKeyId><SecretAccessKey>secret</SecretAccessKey><SessionToken>token</SessionToken><Expiration>` + expiry + `</Expiration></Credentials><AssumedRoleUser><Arn>arn:aws:sts::123456789012:assumed-role/r/s</Arn><AssumedRoleId>AROA:s</AssumedRoleId></AssumedRoleUser></AssumeRoleResult><ResponseMetadata><RequestId>1</RequestId></ResponseMetadata></AssumeRoleResponse>`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AWS_ENDPOINT_URL_STS", server.URL)
+	return &calls, &lastForm
+}
+
+// TestResolveAWSCredentials_KeySources: a key's credential fields reach the shared resolver —
+// none means the default chain, static keys are used as given, and the role fields reach STS.
+func TestResolveAWSCredentials_KeySources(t *testing.T) {
+	fetches := fakeContainerCredentials(t)
+	stsCalls, stsForm := fakeSTS(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	region := testRegion("sources")
+
+	creds, bifrostErr := ResolveAWSCredentials(ctx, nil, region)
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "ASIAFAKE", creds.AccessKeyID, "a nil key config uses the default chain")
+
+	creds, bifrostErr = ResolveAWSCredentials(ctx, &schemas.BedrockKeyConfig{
+		AccessKey:    *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+		SecretKey:    *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+		SessionToken: schemas.NewSecretVar("session-token"),
+	}, region)
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "AKIAIOSFODNN7EXAMPLE", creds.AccessKeyID)
+	assert.Equal(t, "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", creds.SecretAccessKey)
+	assert.Equal(t, "session-token", creds.SessionToken)
+
+	creds, bifrostErr = ResolveAWSCredentials(ctx, &schemas.BedrockKeyConfig{
+		RoleARN:         schemas.NewSecretVar("arn:aws:iam::123456789012:role/bedrock"),
+		ExternalID:      schemas.NewSecretVar("ext-123"),
+		RoleSessionName: schemas.NewSecretVar("bifrost-bedrock"),
+	}, region)
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "ASIAASSUMED", creds.AccessKeyID)
+	form, _ := stsForm.Load().(url.Values)
+	assert.Equal(t, "arn:aws:iam::123456789012:role/bedrock", form.Get("RoleArn"))
+	assert.Equal(t, "ext-123", form.Get("ExternalId"))
+	assert.Equal(t, "bifrost-bedrock", form.Get("RoleSessionName"))
+
+	assert.Equal(t, int32(1), fetches.Load())
+	assert.Equal(t, int32(1), stsCalls.Load())
+}
+
+// TestResolveAWSCredentials_ErrorMessages: the two failure messages callers and logs match on
+// are unchanged.
+func TestResolveAWSCredentials_ErrorMessages(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("config fails to load", func(t *testing.T) {
+		fakeContainerCredentials(t)
+		t.Setenv("AWS_PROFILE", "missing-profile")
+		_, bifrostErr := ResolveAWSCredentials(ctx, &schemas.BedrockKeyConfig{}, testRegion("errors"))
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, "failed to load aws config", bifrostErr.Error.Message)
+	})
+	t.Run("credentials fail to resolve", func(t *testing.T) {
+		fakeContainerCredentials(t)
+		failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		t.Cleanup(failing.Close)
+		t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", failing.URL)
+		_, bifrostErr := ResolveAWSCredentials(ctx, &schemas.BedrockKeyConfig{}, testRegion("errors"))
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, "failed to retrieve aws credentials", bifrostErr.Error.Message)
+	})
+}
+
+// TestSignAWSRequest_BodyHashAndHeaderDefaults: the payload hash is the body's SHA-256 and the
+// body stays readable; Bedrock requests default to JSON, relayed ones are signed as sent.
+func TestSignAWSRequest_BodyHashAndHeaderDefaults(t *testing.T) {
+	fakeContainerCredentials(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	keyCfg := &schemas.BedrockKeyConfig{
+		AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+		SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+	}
+	body := []byte(`{"messages":[]}`)
+	sum := sha256.Sum256(body)
+	const target = "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse"
+
+	req, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+	require.NoError(t, err)
+	require.Nil(t, signAWSRequest(ctx, req, keyCfg, "us-east-1", bedrockSigningService))
+	assert.Equal(t, hex.EncodeToString(sum[:]), req.Header.Get("X-Amz-Content-Sha256"))
+	assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+	assert.Equal(t, "application/json", req.Header.Get("Accept"))
+	assert.Contains(t, req.Header.Get("Authorization"), "/us-east-1/bedrock/aws4_request")
+	rest, err := io.ReadAll(req.Body)
+	require.NoError(t, err)
+	assert.Equal(t, body, rest)
+
+	req, err = http.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-amz-json-1.1")
+	require.Nil(t, SignAWSRequest(ctx, req, keyCfg, "us-east-1", "textract"))
+	assert.Equal(t, "application/x-amz-json-1.1", req.Header.Get("Content-Type"))
+	assert.Empty(t, req.Header.Get("Accept"), "a relayed request is signed as the caller sent it")
+
+	req, err = http.NewRequest(http.MethodGet, target, nil)
+	require.NoError(t, err)
+	require.Nil(t, SignAWSRequest(ctx, req, keyCfg, "us-east-1", "textract"))
+	assert.Equal(t, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", req.Header.Get("X-Amz-Content-Sha256"))
+}
+
+// BenchmarkResolveAWSCredentials is the per-request credential cost of a SigV4-signed call
+// for each credential source a key can use.
+func BenchmarkResolveAWSCredentials(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	run := func(b *testing.B, keyCfg *schemas.BedrockKeyConfig, region string) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, bifrostErr := ResolveAWSCredentials(ctx, keyCfg, region); bifrostErr != nil {
+				b.Fatal(bifrostErr.Error.Message)
+			}
+		}
+	}
+	b.Run("default_chain", func(b *testing.B) {
+		fakeContainerCredentials(b)
+		run(b, &schemas.BedrockKeyConfig{}, "us-bench-default-chain-1")
+	})
+	b.Run("static", func(b *testing.B) {
+		fakeContainerCredentials(b)
+		run(b, &schemas.BedrockKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+			SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+		}, "us-bench-static-1")
+	})
+	b.Run("assume_role", func(b *testing.B) {
+		fakeContainerCredentials(b)
+		fakeSTS(b)
+		run(b, &schemas.BedrockKeyConfig{RoleARN: schemas.NewSecretVar("arn:aws:iam::123456789012:role/bench")}, "us-bench-assume-role-1")
+	})
+}
+
+// BenchmarkSignAWSRequest is the whole SigV4 cost of one request with static keys: body hash,
+// credential lookup and signature.
+func BenchmarkSignAWSRequest(b *testing.B) {
+	fakeContainerCredentials(b)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	keyCfg := &schemas.BedrockKeyConfig{
+		AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+		SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+	}
+	body := []byte(`{"messages":[{"role":"user","content":[{"text":"hello"}]}]}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse", bytes.NewReader(body))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if bifrostErr := signAWSRequest(ctx, req, keyCfg, "us-east-1", bedrockSigningService); bifrostErr != nil {
+			b.Fatal(bifrostErr.Error.Message)
+		}
 	}
 }
 
