@@ -232,6 +232,9 @@ func TestRapidMLXKeyHashUsesURLSource(t *testing.T) {
 func TestProviderConfigRedactedRapidMLXURL(t *testing.T) {
 	for _, tc := range []struct{ name, raw, want string }{
 		{"plain", "http://localhost:8000/v1", "http://localhost:8000/v1"},
+		{"opaque credentials", "http:user:password@localhost:8000/v1", "redacted"},
+		{"opaque credentials with query", "http:user:password@localhost:8000/v1?token=secret", "redacted"},
+		{"bare query", "http://localhost:8000/v1?token", "http://localhost:8000/v1?token=redacted"},
 		{"credentials", "http://user:password@localhost:8000/v1?api_key=qx9", "http://redacted:redacted@localhost:8000/v1?api_key=redacted"},
 		{"fragment", "http://localhost:8000/v1#qx9", "http://localhost:8000/v1#redacted"},
 		{"encoded fragment", "http://localhost:8000/v1#qx%39", "http://localhost:8000/v1#redacted"},

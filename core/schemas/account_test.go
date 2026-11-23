@@ -10,6 +10,25 @@ import (
 	"testing"
 )
 
+func TestRapidMLXKeyConfigRedacted(t *testing.T) {
+	for _, tc := range []struct{ name, raw, want string }{
+		{"opaque credentials", "http:user:password@localhost:8000/v1", "redacted"},
+		{"opaque credentials with query", "http:user:password@localhost:8000/v1?token=secret", "redacted"},
+		{"bare query", "http://localhost:8000/v1?token", "http://localhost:8000/v1?token=redacted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := &RapidMLXKeyConfig{URL: *NewSecretVar(tc.raw)}
+			got := config.Redacted()
+			if got.URL.GetValue() != tc.want {
+				t.Errorf("redacted URL = %q, want %q", got.URL.GetValue(), tc.want)
+			}
+			if config.URL.GetValue() != tc.raw {
+				t.Fatal("redaction changed the live config")
+			}
+		})
+	}
+}
+
 func TestVertexEndpointAliasRoundTrip(t *testing.T) {
 	for _, method := range []string{"raw_predict", "chat_completions"} {
 		t.Run(method, func(t *testing.T) {

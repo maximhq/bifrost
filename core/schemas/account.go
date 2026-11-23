@@ -1307,7 +1307,8 @@ func (c *RapidMLXKeyConfig) Redacted() *RapidMLXKeyConfig {
 	out := *c
 	raw := c.URL.GetValue()
 	u, err := url.Parse(raw)
-	if err != nil {
+	if err != nil || u.Opaque != "" {
+		// Rootless URLs keep credentials in Opaque instead of User.
 		out.URL.Val = "redacted"
 	} else if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		if u.User != nil {

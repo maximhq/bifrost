@@ -2030,6 +2030,8 @@ func TestRapidMLXKeyURLs(t *testing.T) {
 	}{
 		{"http://localhost:8000/v1", false},
 		{"http://localhost:8000/v1/user@example", false},
+		{"http:user:password@localhost:8000/v1", true},
+		{"http:localhost:8000/v1", true},
 		{"http://user:password@localhost:8000/v1", true},
 		{"http://user@localhost:8000/v1", true},
 		{"http://@localhost:8000/v1", true},
@@ -2061,6 +2063,7 @@ func TestRapidMLXProviderResponsesRedactURLCredentials(t *testing.T) {
 	lib.SetLogger(&mockLogger{})
 	for _, raw := range []string{
 		"http://user:password@localhost:8000/v1?api_key=qx9",
+		"http:user:password@localhost:8000/v1",
 		"http://localhost:8000/v1#qx9",
 		"http://localhost:badport/v1?api_key=qx9",
 	} {
