@@ -1001,12 +1001,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].OllamaKeyConfig = ollamaConfig
 		}
 
-		if key.RapidMLXKeyConfig != nil {
-			rapidmlxConfig := &schemas.RapidMLXKeyConfig{}
-			// The URL is a service address, not a credential — surface it in plaintext.
-			rapidmlxConfig.URL = *key.RapidMLXKeyConfig.URL.RedactedIfSecret()
-			redactedConfig.Keys[i].RapidMLXKeyConfig = rapidmlxConfig
-		}
+		redactedConfig.Keys[i].RapidMLXKeyConfig = key.RapidMLXKeyConfig.Redacted()
 
 		if key.SGLKeyConfig != nil {
 			sglConfig := &schemas.SGLKeyConfig{}

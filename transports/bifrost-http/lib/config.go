@@ -10169,13 +10169,8 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				cfg.URL = *cfg.URL.RedactedIfSecret()
 				configStoreKey.OllamaKeyConfig = &cfg
 			}
-			if key.RapidMLXKeyConfig != nil {
-				cfg := *key.RapidMLXKeyConfig // safe copy
-				// Mask credentials in legacy/file-loaded URLs before masking secret references.
-				cfg.URL.Val = RedactURLCredentials(cfg.URL.GetValue())
-				cfg.URL = *cfg.URL.RedactedIfSecret()
-				configStoreKey.RapidMLXKeyConfig = &cfg
-			}
+			configStoreKey.RapidMLXKeyConfig = key.RapidMLXKeyConfig.Redacted()
+
 			if key.SGLKeyConfig != nil {
 				cfg := *key.SGLKeyConfig // safe copy
 				// The URL is a service address, not a credential — surface it in plaintext.

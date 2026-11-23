@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -2051,5 +2053,67 @@ func TestRapidMLXKeyURLs(t *testing.T) {
 	}
 	if err := validateProviderKeyURL(schemas.RapidMLX, schemas.Key{}); err == nil {
 		t.Fatal("missing URL accepted")
+	}
+}
+
+func TestRapidMLXProviderResponsesRedactURLCredentials(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	for _, raw := range []string{
+		"http://user:password@localhost:8000/v1?api_key=qx9",
+		"http://localhost:8000/v1#qx9",
+		"http://localhost:badport/v1?api_key=qx9",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			original := &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(raw)}
+			store := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.RapidMLX: {Keys: []schemas.Key{{ID: "rapidmlx-key", Name: "rapidmlx-key", RapidMLXKeyConfig: original}}},
+			}}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: lib.NewBaseAccount(store), Logger: bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(client.Shutdown)
+			store.SetBifrostClient(client)
+			h := &ProviderHandler{client: client, inMemoryStore: store, modelsManager: &mockModelsManager{}}
+			// Delete runs last so every read sees the legacy/file-loaded key.
+			for _, route := range []struct {
+				name    string
+				handler func(*fasthttp.RequestCtx)
+			}{
+				{"providers", h.listProviders}, {"provider", h.getProvider},
+				{"keys", h.listProviderKeys}, {"key", h.getProviderKey}, {"delete", h.deleteProviderKey},
+			} {
+				t.Run(route.name, func(t *testing.T) {
+					ctx := newTestRequestCtx("")
+					ctx.SetUserValue("provider", "rapidmlx")
+					ctx.SetUserValue("key_id", "rapidmlx-key")
+					route.handler(ctx)
+					body := string(ctx.Response.Body())
+					if ctx.Response.StatusCode() != fasthttp.StatusOK {
+						t.Fatalf("status %d: %s", ctx.Response.StatusCode(), body)
+					}
+					if !strings.Contains(body, "rapidmlx") {
+						t.Fatalf("missing provider or key: %s", body)
+					}
+					for _, secret := range []string{"qx9", "user:password", "badport"} {
+						if strings.Contains(body, secret) {
+							t.Errorf("response leaks %q: %s", secret, body)
+						}
+						if route.name == "delete" {
+							requireNoSecret(t, requireSingleAuditChange(t, ctx, "provider_key.deleted"), secret)
+						}
+					}
+					if original.URL.GetValue() != raw {
+						t.Fatal("live URL was modified")
+					}
+				})
+			}
+			if len(store.Providers[schemas.RapidMLX].Keys) != 0 {
+				t.Fatal("key was not deleted")
+			}
+		})
 	}
 }

@@ -28224,7 +28224,7 @@ func TestGetAllKeys_RedactsRapidMLXURLCredentials(t *testing.T) {
 	const credential = "qx9"
 	const rawURL = "http://user:password@localhost:8000/v1?api_key=" + credential
 	t.Setenv("RAPID_MLX_REDACTION_URL", rawURL)
-	for _, raw := range []string{"http://localhost:8000/v1", rawURL, "env.RAPID_MLX_REDACTION_URL"} {
+	for _, raw := range []string{"http://localhost:8000/v1", rawURL, "env.RAPID_MLX_REDACTION_URL", "http://localhost:8000/v1#qx9", "http://localhost:badport/v1?api_key=qx9"} {
 		t.Run(raw, func(t *testing.T) {
 			original := &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(raw)}
 			stored := original.URL.GetValue()
@@ -28244,6 +28244,10 @@ func TestGetAllKeys_RedactsRapidMLXURLCredentials(t *testing.T) {
 				assert.Equal(t, raw, keys[0].RapidMLXKeyConfig.URL.GetValue())
 			} else if strings.HasPrefix(raw, "env.") {
 				assert.Equal(t, raw, keys[0].RapidMLXKeyConfig.URL.GetRawRef())
+			} else if strings.Contains(raw, "badport") {
+				assert.Equal(t, "redacted", keys[0].RapidMLXKeyConfig.URL.GetValue())
+			} else if strings.Contains(raw, "#") {
+				assert.Equal(t, "http://localhost:8000/v1#redacted", keys[0].RapidMLXKeyConfig.URL.GetValue())
 			} else {
 				assert.Equal(t, "http://redacted:redacted@localhost:8000/v1?api_key=redacted", keys[0].RapidMLXKeyConfig.URL.GetValue())
 			}
