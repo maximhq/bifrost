@@ -1290,7 +1290,32 @@ func (gs *LocalGovernanceStore) ResolvePermits(ctx *schemas.BifrostContext) ([]s
 		return nil, "", nil, ""
 	}
 	StampVirtualKeyScope(ctx, virtualKey)
+	if virtualKey.TeamID != nil {
+		gs.StampTeamContentLogging(ctx, *virtualKey.TeamID)
+	}
 	return []schemas.Permit{gs.permitForVirtualKey(ctx, virtualKey)}, "", nil, ""
+}
+
+// StampTeamContentLogging stamps the team's own content-logging decision for the request. The team
+// is read from the live team map, not off a key's team pointer: that pointer is only rebuilt when
+// the whole store is, so a team edit would otherwise not reach requests until the next rebuild. A
+// team that inherits stamps nothing.
+//
+// Exported because a store that resolves callers other than keys (a user in several teams) stamps
+// every team it resolves the same way.
+func (gs *LocalGovernanceStore) StampTeamContentLogging(ctx *schemas.BifrostContext, teamID string) {
+	if ctx == nil || teamID == "" {
+		return
+	}
+	value, ok := gs.teams.Load(teamID)
+	if !ok || value == nil {
+		return
+	}
+	team, ok := value.(*configstoreTables.TableTeam)
+	if !ok || team == nil || team.DisableContentLogging == nil {
+		return
+	}
+	schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyTeamDisableContentLogging, *team.DisableContentLogging)
 }
 
 // PresentedVirtualKey is the virtual key the request presented, read off the identity the
@@ -1300,13 +1325,17 @@ func (gs *LocalGovernanceStore) ResolvePermits(ctx *schemas.BifrostContext) ([]s
 // Exported because a store that resolves permits from something other than a key still resolves
 // keys, and which key a request presented is the same question either way.
 func PresentedVirtualKey(ctx *schemas.BifrostContext) string {
-	if identity := ctx.Grant().Identity(); identity != nil {
-		if credential := identity.Credential(); credential.Kind == string(grant.CredentialVirtualKey) {
-			return credential.Value
+	// A context built without a grant (an MCP connect, an internal probe) settled nothing, so it falls
+	// through to the key it carries under the key's own name.
+	if g := ctx.Grant(); g != nil {
+		if identity := g.Identity(); identity != nil {
+			if credential := identity.Credential(); credential.Kind == string(grant.CredentialVirtualKey) {
+				return credential.Value
+			}
+			// An identity was settled and it is not a key: whatever the context also carries under the
+			// key's own name did not authenticate this request.
+			return ""
 		}
-		// An identity was settled and it is not a key: whatever the context also carries under the
-		// key's own name did not authenticate this request.
-		return ""
 	}
 	virtualKeyValue, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
 	return virtualKeyValue
@@ -1352,10 +1381,9 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 // Only a decision is stamped: a key that inherits leaves the context alone, so the plugin falls
 // through to the client setting instead of reading a false it would have to treat as a choice.
 //
-// A key that turns content off is also marked on the request's root span. Observability
-// connectors are handed the finished trace without the request context, so the span is the only
-// place they can read the decision from. The mark is one-directional: a key that keeps content on
-// says nothing to a connector, whose own disable_content_logging stays in charge.
+// The stamp goes through schemas.StampContentLoggingDecision, which also keeps the request's root
+// span marked when the layers resolve to off: observability connectors are handed the finished
+// trace without the request context, so the span is the only place they can read the decision from.
 //
 // A project the request is scoped to can override the key's decision once it is admitted, on the
 // context and on the span alike.
@@ -1363,10 +1391,7 @@ func stampVirtualKeyContentLogging(ctx *schemas.BifrostContext, virtualKey *conf
 	if ctx == nil || virtualKey == nil || virtualKey.DisableContentLogging == nil {
 		return
 	}
-	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, *virtualKey.DisableContentLogging)
-	if *virtualKey.DisableContentLogging {
-		ctx.SetTraceAttribute(schemas.AttrBifrostContentLoggingDisabled, true)
-	}
+	schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyGovernanceDisableContentLogging, *virtualKey.DisableContentLogging)
 }
 
 // VirtualKeyMetadataContextKey carries the resolved virtual key's own metadata (map[string]string,

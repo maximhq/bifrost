@@ -35,6 +35,7 @@ Warp answers questions only when all of the following are in place:
 | A vector store | Holds the embedding index used for semantic log search. Warp cannot be enabled without one. | [Vector store](/architecture/framework/vector-store) |
 | A provider for the agent model | Runs Warp's agent loop. It must already be configured in Bifrost. | [Provider configuration](/quickstart/gateway/provider-configuration) |
 | A provider for the embedding model | Embeds logs for semantic search. It can be the same provider as the agent model. | [Provider configuration](/quickstart/gateway/provider-configuration) |
+| A virtual key for Warp, only when inference auth is enforced | With `enforce_auth_on_inference` on, a model call needs a credential, and the local admin's dashboard sign-in is not one. Without Warp's own key, the local admin (and anyone on a deployment without an identity provider) gets `virtual key is required`. Signed-in users don't need it. | [Warp's virtual key](#warps-virtual-key) |
 
 ---
 
@@ -188,6 +189,7 @@ Omit the section to manage Warp entirely from the dashboard. The `warp` feature 
 | `enabled` | Enable Warp | `false` | Requires a connected vector store | Shows Warp in the dashboard. |
 | `provider`, `model` | Default model | - | Required when enabled. Must be a known provider. | The model that runs Warp's agent loop. |
 | `api_key_id` | API key | Any key | ID of one of the provider's configured keys | Pins Warp to one key. Leave it empty to load-balance, or for a provider that needs no key. Warp stores a reference to the key, never the secret itself. |
+| `virtual_key_id` | Virtual key | None | ID of an existing, active virtual key. Checked when the value changes. | The key Warp's model calls present when the person asking has no user identity. See [Warp's virtual key](#warps-virtual-key). Omitted keeps the stored value; `""` clears it. |
 | `additional_models` | Model N | `[]` | Up to 20, each with `provider` and `model`, no duplicates | Extra models people can switch to in the chat panel. Each entry takes an optional `api_key_id`. |
 | `max_iterations` | Max iterations | `8` | `0` (default) or `2`–`20` | How many tool-call rounds Warp may run before it must answer. The last round is reserved for answering, so `1` is rejected. |
 | `request_timeout_seconds` | Request timeout (seconds) | `120` | Not negative | Deadline for each call to Warp's model. Raise it for slow self-hosted models. |
@@ -369,6 +371,18 @@ Naming a scope in the question ("for the payments team") always overrides the de
 Warp's model calls go through the full Bifrost pipeline, so they appear on the **Logs** page with the app name **Warp** and the user agent `bifrost-warp/1`. Calls from one conversation share a session ID equal to the conversation ID. MCP tools are never attached to Warp's calls.
 
 Warp's traffic is subject to the same governance as any other request. If a budget, rate limit, or model restriction applies to the person asking, Warp reports that its model call was refused and why (`budget_exceeded`, `rate_limited`, or `model_blocked`).
+
+### Warp's virtual key
+
+Warp's model calls go out as the person asking. When that person has no user identity of their own, there is nothing to send: the local admin signs in with the admin password, which is not an inference credential, and on a deployment without an identity provider no session names a user. With [inference auth enforced](/deployment-guides/how-to/security-best-practices), those calls are refused with `virtual key is required`.
+
+Set **Virtual key** in Warp's settings (`virtual_key_id`) to give Warp a key of its own for that case:
+
+- **Who uses it:** only a caller with no user identity. A signed-in user is always governed as themselves, by their own access, and never uses Warp's key. A request that already carries a virtual key goes by that key.
+- **What applies:** the key's allowed providers and models, budgets and rate limits. Warp's spend from those calls is attributed to the key on the **Logs** page, so a budget on the key caps it.
+- **What does not change:** which logs Warp can read. That still follows the person asking (see [What data Warp reads](#what-data-warp-reads)).
+
+If the key is deleted later, Warp refuses to start a turn for such a caller until an administrator chooses another. If it is switched off, the model call is refused with `virtual key is inactive`.
 
 Embedding calls made while indexing skip the plugin pipeline, so they do not appear on the **Logs** page and are not subject to governance. A backfill reports the embedding tokens and cost it used in its status.
 
