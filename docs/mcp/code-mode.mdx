@@ -408,8 +408,15 @@ any of their tools:
   requests, in `instructions` on Responses requests, and in the `/mcp` `initialize` response.
 
   ```
-  MCP servers available through code mode (start with listToolFiles to use them): grafana, zoom.
+  MCP servers available through code mode: grafana, zoom. Each one is a server: find its tools with listToolFiles and readToolFile, then call them from executeToolCode as <server>.<tool>(...).
   ```
+
+If a model still calls a code mode server as if it were a tool (`grafana`, `grafana.search`, or one
+of the server's tools directly), or calls a code mode tool in the wrong case (`ListToolFiles`), the
+agent loop answers the call with how to reach it, for example "grafana is an MCP server available
+through code mode, so it is not called as a tool. Find its tools with listToolFiles and readToolFile,
+then call one from executeToolCode", and the model carries on. A tool your request defines under
+that name is left alone and returned to you as before.
 
 Both are built per caller, from the same visibility rules as the tools: a server a virtual key,
 `x-bf-mcp-include-clients` or a Virtual MCP does not grant is never named, and `server_type_on_slug`

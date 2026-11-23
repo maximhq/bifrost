@@ -140,7 +140,7 @@ func TestCodeModeCatalogue_Rendering(t *testing.T) {
 			names[i] = servers[i].name
 		}
 		assert.True(t, strings.HasSuffix(codeModeCatalogue(servers), "\n- ...and 3 more; listToolFiles lists every server."))
-		assert.True(t, strings.HasSuffix(codeModePointer(names), ", and 3 more."))
+		assert.Contains(t, codeModePointer(names), ", and 3 more."+codeModePointerUsage)
 		assert.NotContains(t, codeModePointer(names), fmt.Sprintf("s%02d", codeModeCatalogueMaxServers))
 	})
 }
@@ -166,7 +166,7 @@ func TestCodeModeCatalogue_SkipsServersWithOnlyAppTools(t *testing.T) {
 
 func TestCodeModePointer(t *testing.T) {
 	pointer := func(names string) string {
-		return "MCP servers available through code mode (start with listToolFiles to use them): " + names + "."
+		return codeModePointerPrefix + names + "." + codeModePointerUsage
 	}
 
 	t.Run("follows the blocks and the caller's reach", func(t *testing.T) {

@@ -411,6 +411,137 @@ func TestExecuteAgentForChatRequest_WithNonAutoExecutableTools(t *testing.T) {
 	}
 }
 
+// codeModeAgentClients serves one code mode client, tavily, with one tool.
+type codeModeAgentClients struct{ MockClientManager }
+
+func (m *codeModeAgentClients) GetToolPerClient(context.Context) map[string][]schemas.ChatTool {
+	return map[string][]schemas.ChatTool{"tavily": {{Type: "function", Function: &schemas.ChatToolFunction{Name: "tavily-tavily_search"}}}}
+}
+
+func (m *codeModeAgentClients) GetClientByName(name string) *schemas.MCPClientState {
+	if name != "tavily" {
+		return nil
+	}
+	return &schemas.MCPClientState{ExecutionConfig: &schemas.MCPClientConfig{Name: "tavily", IsCodeModeClient: true}}
+}
+
+func chatToolCallResponse(name string) *schemas.BifrostChatResponse {
+	return &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{
+		FinishReason: schemas.Ptr("tool_calls"),
+		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant,
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+				ID: schemas.Ptr("call_1"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr(name), Arguments: `{}`},
+			}}},
+		}},
+	}}}
+}
+
+// A model that calls a code mode server, or a code mode tool in the wrong case, under a name the
+// request never offered used to end the loop with the call unexecuted and no answer for the user.
+// It now gets a tool result saying how to reach what it meant, and the loop goes on. A tool the
+// caller offered under that name is still the caller's to run.
+func TestExecuteAgentForChatRequest_AnswersCallsThatPointAtCodeMode(t *testing.T) {
+	answer := &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{
+		FinishReason: schemas.Ptr("stop"),
+		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("done")},
+		}},
+	}}}
+	for _, tc := range []struct {
+		name, call   string
+		offered      []string
+		wantContinue bool
+		wantHint     string
+	}{
+		{name: "server called as a tool", call: "tavily", wantContinue: true, wantHint: "tavily is an MCP server available through code mode"},
+		{name: "server and tool joined", call: "tavily.search", wantContinue: true, wantHint: "result = tavily.tavily_search(...)"},
+		{name: "server tool called directly", call: "tavily_search", wantContinue: true, wantHint: "result = tavily.tavily_search(...)"},
+		{name: "code mode tool in the wrong case", call: "ListToolFiles", wantContinue: true, wantHint: "call listToolFiles instead"},
+		{name: "the caller offered that name", call: "tavily", offered: []string{"tavily"}},
+		{name: "a name that points at nothing", call: "send_email"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sent []*schemas.BifrostChatRequest
+			llm := &MockLLMCaller{chatResponses: []*schemas.BifrostChatResponse{answer}}
+			makeReq := func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+				sent = append(sent, req)
+				return llm.ChatCompletionRequest(ctx, req)
+			}
+			req := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4", Params: &schemas.ChatParameters{},
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("search the web")}}}}
+			for _, name := range tc.offered {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: "function", Function: &schemas.ChatToolFunction{Name: name}})
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			executor := &AgentModeExecutor{logger: &MockLogger{}}
+			result, err := executor.ExecuteAgentForChatRequest(ctx, 10, req, chatToolCallResponse(tc.call), makeReq, nil, nil, &codeModeAgentClients{})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !tc.wantContinue {
+				if len(sent) != 0 {
+					t.Fatalf("expected the call handed back without another model call, got %d calls", len(sent))
+				}
+				return
+			}
+			if len(sent) != 1 || result != answer {
+				t.Fatalf("expected the loop to continue to the model's answer, got %d calls", len(sent))
+			}
+			var toolResult *schemas.ChatMessage
+			for i := range sent[0].Input {
+				if sent[0].Input[i].Role == schemas.ChatMessageRoleTool {
+					toolResult = &sent[0].Input[i]
+				}
+			}
+			if toolResult == nil || toolResult.ChatToolMessage == nil || toolResult.ChatToolMessage.ToolCallID == nil || *toolResult.ChatToolMessage.ToolCallID != "call_1" {
+				t.Fatalf("expected a tool result for call_1, got %+v", sent[0].Input)
+			}
+			if toolResult.ChatToolMessage.IsError == nil || !*toolResult.ChatToolMessage.IsError {
+				t.Error("expected the tool result to be marked as an error")
+			}
+			if content := *toolResult.Content.ContentStr; !strings.Contains(content, tc.wantHint) {
+				t.Errorf("tool result %q does not contain %q", content, tc.wantHint)
+			}
+		})
+	}
+}
+
+// The Responses API runs the same loop: the hint goes back as the call's output.
+func TestExecuteAgentForResponsesRequest_AnswersCallsThatPointAtCodeMode(t *testing.T) {
+	call := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		Role:                 schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("tavily"), Arguments: schemas.Ptr(`{}`)},
+	}}}
+	answer := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("done")},
+	}}}
+	var sent []*schemas.BifrostResponsesRequest
+	llm := &MockLLMCaller{responsesResponses: []*schemas.BifrostResponsesResponse{answer}}
+	makeReq := func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		sent = append(sent, req)
+		return llm.ResponsesRequest(ctx, req)
+	}
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4", Input: []schemas.ResponsesMessage{{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("search the web")},
+	}}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	executor := &AgentModeExecutor{logger: &MockLogger{}}
+	if _, err := executor.ExecuteAgentForResponsesRequest(ctx, 10, req, call, makeReq, nil, nil, &codeModeAgentClients{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("expected the loop to continue to the model's answer, got %d calls", len(sent))
+	}
+	body, _ := json.Marshal(sent[0].Input)
+	if !strings.Contains(string(body), "tavily is an MCP server available through code mode") {
+		t.Errorf("the next turn does not carry the hint: %s", body)
+	}
+}
+
 func TestHasToolCallsForResponsesResponse(t *testing.T) {
 	// Test nil response
 	if hasToolCallsForResponsesResponse(nil) {

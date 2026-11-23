@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -97,6 +98,14 @@ func codeModeCatalogue(servers []codeModeServer) string {
 	return b.String()
 }
 
+const (
+	// codeModePointerPrefix opens the pointer line; the server names follow it.
+	codeModePointerPrefix = "MCP servers available through code mode: "
+	// codeModePointerUsage follows the names. It says what the names are and how their tools are
+	// reached, because a model that reads a bare list of names may call a server as if it were a tool.
+	codeModePointerUsage = " Each one is a server: find its tools with listToolFiles and readToolFile, then call them from executeToolCode as <server>.<tool>(...)."
+)
+
 // codeModePointer renders the one line the server instructions carry about code mode servers,
 // "" for none. names must be sorted.
 func codeModePointer(names []string) string {
@@ -107,11 +116,102 @@ func codeModePointer(names []string) string {
 	if len(listed) > codeModeCatalogueMaxServers {
 		listed = listed[:codeModeCatalogueMaxServers]
 	}
-	pointer := "MCP servers available through code mode (start with listToolFiles to use them): " + strings.Join(listed, ", ")
+	pointer := codeModePointerPrefix + strings.Join(listed, ", ")
 	if more := len(names) - len(listed); more > 0 {
 		pointer += fmt.Sprintf(", and %d more", more)
 	}
-	return pointer + "."
+	return pointer + "." + codeModePointerUsage
+}
+
+// codeModeCallHint is the tool result for a call to a name the request never offered, when the
+// name points at code mode: a code mode tool in the wrong case (ListToolFiles), a code mode server
+// called as a tool (tavily, tavily.search, tavily-search), or one of a server's tools called
+// directly (tavily_search). servers are the code mode servers the caller reaches. It returns "" for
+// any other name, which the agent loop hands back to the client as before.
+//
+// Without it the loop has no tool to run for the call and ends the turn with the call unexecuted,
+// so the user gets no answer; with it the model learns how to reach what it was looking for.
+func codeModeCallHint(name string, servers []codeModeServer) string {
+	if len(servers) == 0 {
+		return "" // not a code mode request
+	}
+	for _, tool := range []string{ToolTypeListToolFiles, ToolTypeReadToolFile, ToolTypeGetToolDocs, ToolTypeExecuteToolCode} {
+		if name != tool && strings.EqualFold(name, tool) {
+			return fmt.Sprintf("There is no tool named %s. The code mode tool with that name is %s: call %s instead.", name, tool, tool)
+		}
+	}
+	for _, server := range servers {
+		tool, ok := serverOfCall(name, server)
+		if !ok {
+			continue
+		}
+		if tool == "" {
+			tool = firstModelVisibleTool(server)
+		}
+		return fmt.Sprintf("%s is an MCP server available through code mode, so it is not called as a tool. "+
+			"Find its tools with listToolFiles and readToolFile, then call one from executeToolCode, for example: result = %s.%s(...)",
+			server.name, server.name, tool)
+	}
+	return ""
+}
+
+// serverOfCall reports whether name points at server: the server's own name, the server name
+// followed by ".", "-" or "/" and a tool, or one of the server's tools by its code mode name. It
+// returns the server's tool that was named, "" when the name points at the server but at none of
+// its tools. Matching ignores case, as a model's spelling of a name it read in prose often does.
+func serverOfCall(name string, server codeModeServer) (string, bool) {
+	if strings.EqualFold(name, server.name) {
+		return "", true
+	}
+	if len(name) > len(server.name)+1 && strings.EqualFold(name[:len(server.name)], server.name) && strings.ContainsRune(".-/", rune(name[len(server.name)])) {
+		return toolOfServer(name[len(server.name)+1:], server), true
+	}
+	if tool := toolOfServer(name, server); tool != "" {
+		return tool, true
+	}
+	return "", false
+}
+
+// toolOfServer returns the code mode name of server's tool called name, ignoring case; "" when it
+// has none.
+func toolOfServer(name string, server codeModeServer) string {
+	for _, tool := range server.tools {
+		if !tool.MCP.ModelVisible() {
+			continue
+		}
+		if canonical := parseToolName(StripClientPrefix(tool.Function.Name, server.name)); strings.EqualFold(name, canonical) || strings.EqualFold(parseToolName(name), canonical) {
+			return canonical
+		}
+	}
+	return ""
+}
+
+// codeModeServersFor lists the code mode servers the caller on ctx reaches, sorted by name, the
+// same set the catalogue names.
+func codeModeServersFor(ctx context.Context, clientManager ClientManager) []codeModeServer {
+	var servers []codeModeServer
+	for clientName, tools := range clientManager.GetToolPerClient(ctx) {
+		client := clientManager.GetClientByName(clientName)
+		if client == nil {
+			continue
+		}
+		if _, codeMode := codeModeListing(ctx, client.ExecutionConfig); codeMode && modelVisibleTools(tools) > 0 {
+			servers = append(servers, codeModeServer{name: clientName, description: client.ExecutionConfig.Description, tools: tools})
+		}
+	}
+	slices.SortFunc(servers, func(a, b codeModeServer) int { return strings.Compare(a.name, b.name) })
+	return servers
+}
+
+// firstModelVisibleTool is the first tool code mode can call on server, by its code mode name, or
+// "tool_name" when there is none to show.
+func firstModelVisibleTool(server codeModeServer) string {
+	for _, tool := range server.tools {
+		if tool.MCP.ModelVisible() {
+			return parseToolName(StripClientPrefix(tool.Function.Name, server.name))
+		}
+	}
+	return "tool_name"
 }
 
 // aggregateWithCodeModePointer renders the instruction blocks and the code mode pointer within one

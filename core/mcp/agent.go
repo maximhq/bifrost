@@ -3,6 +3,7 @@ package mcp
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -183,6 +184,12 @@ func (a *AgentModeExecutor) executeAgent(
 		// Separate tools into auto-executable and non-auto-executable groups
 		var autoExecutableTools []schemas.ChatAssistantMessageToolCall
 		var nonAutoExecutableTools []schemas.ChatAssistantMessageToolCall
+		// Calls that point at code mode under a name the request never offered (a server called as a
+		// tool, ListToolFiles for listToolFiles): answered with how to reach it, so the loop goes on.
+		var guidedTools []schemas.ChatAssistantMessageToolCall
+		var guidedResults []*schemas.ChatMessage
+		var offered map[string]bool
+		var codeModeServers []codeModeServer
 
 		for _, toolCall := range toolCalls {
 			if toolCall.Function.Name == nil {
@@ -271,6 +278,21 @@ func (a *AgentModeExecutor) executeAgent(
 					}
 					continue
 				}
+				// A name the request never offered that points at code mode: the model misread a server
+				// or a code mode tool. Tell it how to reach it rather than ending the turn on a call
+				// nothing can run. A tool the caller offered under that name is still the caller's.
+				if offered == nil {
+					offered = offeredToolNames(adapter.getOriginalRequest())
+					codeModeServers = codeModeServersFor(ctx, clientManager)
+				}
+				if !offered[toolName] {
+					if hint := codeModeCallHint(toolName, codeModeServers); hint != "" {
+						a.logger.Debug("%s Tool %s points at code mode, answering with how to reach it", CodeModeLogPrefix, toolName)
+						guidedTools = append(guidedTools, toolCall)
+						guidedResults = append(guidedResults, createToolResultMessage(toolCall, "", errors.New(hint)))
+						continue
+					}
+				}
 				// Else, if client not found, treat as non-auto-executable (can be a manually passed tool)
 				a.logger.Debug("Client not found for tool %s, treating as non-auto-executable", toolName)
 				nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
@@ -292,7 +314,7 @@ func (a *AgentModeExecutor) executeAgent(
 
 		// Execute auto-executable tools first
 		var executedToolResults []*schemas.ChatMessage
-		if len(autoExecutableTools) > 0 {
+		if len(autoExecutableTools) > 0 || len(guidedTools) > 0 {
 			// Add assistant message with auto-executable tool calls to conversation
 			conversationHistory = adapter.addAssistantMessage(conversationHistory, currentResponse)
 
@@ -362,14 +384,16 @@ func (a *AgentModeExecutor) executeAgent(
 			}
 
 			// Collect tool results
-			executedToolResults = make([]*schemas.ChatMessage, 0, len(autoExecutableTools))
+			executedToolResults = make([]*schemas.ChatMessage, 0, len(autoExecutableTools)+len(guidedResults))
 			for toolResult := range channelToolResults {
 				executedToolResults = append(executedToolResults, toolResult)
 			}
+			executedToolResults = append(executedToolResults, guidedResults...)
 
 			// Track executed tool results and calls across all iterations
 			allExecutedToolResults = append(allExecutedToolResults, executedToolResults...)
 			allExecutedToolCalls = append(allExecutedToolCalls, autoExecutableTools...)
+			allExecutedToolCalls = append(allExecutedToolCalls, guidedTools...)
 
 			// Add tool results to conversation history
 			conversationHistory = adapter.addToolResults(conversationHistory, executedToolResults)
@@ -385,7 +409,7 @@ func (a *AgentModeExecutor) executeAgent(
 			// Apply accumulated usage before building the final response
 			adapter.applyUsage(currentResponse, accumulatedUsage)
 			// The synthesized response replaces this turn too, so its text and reasoning are carried.
-			adapter.carryForward(currentResponse, autoExecutableTools)
+			adapter.carryForward(currentResponse, answeredToolCalls(autoExecutableTools, guidedTools))
 			// Create response with all executed tool results from all iterations, and non-auto-executable tool calls
 			finalResponse := adapter.createResponseWithExecutedTools(currentResponse, allExecutedToolResults, allExecutedToolCalls, nonAutoExecutableTools)
 			adapter.applyCarriedContent(finalResponse)
@@ -393,7 +417,7 @@ func (a *AgentModeExecutor) executeAgent(
 		}
 
 		// This turn is about to be superseded by the next one; keep what it said and thought.
-		adapter.carryForward(currentResponse, autoExecutableTools)
+		adapter.carryForward(currentResponse, answeredToolCalls(autoExecutableTools, guidedTools))
 
 		// Create new request with updated conversation history
 		newReq := adapter.createNewRequest(conversationHistory)
@@ -447,6 +471,40 @@ func extractToolCalls(response *schemas.BifrostChatResponse) []schemas.ChatAssis
 	}
 
 	return toolCalls
+}
+
+// answeredToolCalls is every call this turn has a result for: the ones executed and the ones
+// answered with how to reach code mode.
+func answeredToolCalls(executed, guided []schemas.ChatAssistantMessageToolCall) []schemas.ChatAssistantMessageToolCall {
+	if len(guided) == 0 {
+		return executed
+	}
+	return append(slices.Clone(executed), guided...)
+}
+
+// offeredToolNames is the set of tool names the request declared (the caller's own tools and the
+// ones Bifrost added), for the chat and Responses requests the agent loop runs.
+func offeredToolNames(request interface{}) map[string]bool {
+	names := make(map[string]bool)
+	switch req := request.(type) {
+	case *schemas.BifrostChatRequest:
+		if req != nil && req.Params != nil {
+			for _, tool := range req.Params.Tools {
+				if tool.Function != nil {
+					names[tool.Function.Name] = true
+				}
+			}
+		}
+	case *schemas.BifrostResponsesRequest:
+		if req != nil && req.Params != nil {
+			for _, tool := range req.Params.Tools {
+				if tool.Name != nil {
+					names[*tool.Name] = true
+				}
+			}
+		}
+	}
+	return names
 }
 
 // createToolResultMessage creates a tool result message from tool execution.

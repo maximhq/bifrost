@@ -2256,7 +2256,7 @@ func TestMCPGateway_ServerTypeOnSlug(t *testing.T) {
 func TestMCPGateway_CodeModeCatalogue(t *testing.T) {
 	ctx := context.Background()
 	baseURL := startGateway(t, newCodeModeGateway(t, true, ""))
-	pointer := "MCP servers available through code mode (start with listToolFiles to use them): github."
+	pointer := "MCP servers available through code mode: github. Each one is a server: find its tools with listToolFiles and readToolFile, then call them from executeToolCode as <server>.<tool>(...)."
 
 	for path, want := range map[string]struct{ catalogue, instructions bool }{
 		"/mcp":        {catalogue: true, instructions: true},

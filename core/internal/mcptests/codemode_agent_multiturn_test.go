@@ -261,8 +261,10 @@ else:
 	require.Nil(t, agentErr)
 	require.NotNil(t, result)
 
-	// Agent should make 2 total LLM calls
-	assert.Equal(t, 2, mocker.GetChatCallCount(), "should make 2 total LLM calls")
+	// Turn 2 calls get_temperature directly, a tool that only code mode serves: the loop answers it
+	// with how to call it from executeToolCode and goes on. Turn 3's code calls echo, which is not
+	// auto-executable, so the loop stops there: 3 LLM calls.
+	assert.Equal(t, 3, mocker.GetChatCallCount(), "should make 3 total LLM calls")
 
 	// The finish reason could be either "stop" (if it completes) or "tool_calls" (if pending approval)
 	finishReason := *result.Choices[0].FinishReason

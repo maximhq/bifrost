@@ -187,7 +187,7 @@ are only named, on one line after the blocks, so the model knows they exist (see
 [What the model knows up front](/mcp/code-mode#what-the-model-knows-up-front)):
 
 ```
-MCP servers available through code mode (start with listToolFiles to use them): grafana, zoom.
+MCP servers available through code mode: grafana, zoom. Each one is a server: find its tools with listToolFiles and readToolFile, then call them from executeToolCode as <server>.<tool>(...).
 ```
 
 Each upstream's text is wrapped in a tagged block naming the server it came from:
