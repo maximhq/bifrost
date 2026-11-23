@@ -66,6 +66,10 @@ func (s *fakeAccountingStore) UpsertProviderJob(ctx context.Context, job *cstabl
 		s.jobs[job.ID] = &copied
 		return nil
 	}
+	if existing.Kind == cstables.ProviderJobKindRelay &&
+		(existing.AccountingStatus == cstables.ProviderJobAccountingStatusAccounted || existing.AccountingStatus == cstables.ProviderJobAccountingStatusUnpriceable) {
+		return nil
+	}
 	if job.ProviderStatus != "" {
 		existing.ProviderStatus = job.ProviderStatus
 	}

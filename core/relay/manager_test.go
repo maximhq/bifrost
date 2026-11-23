@@ -807,7 +807,51 @@ func TestServeJobRouteHandsBackJob(t *testing.T) {
 	status := snap.Status(poll.Body)
 	done, succeeded := snap.Outcome(status)
 	assert.True(t, done && succeeded)
-	assert.InDelta(t, 3*0.05, snap.Price(poll.ContentType, poll.Body).Cost, 1e-12, "the route fee was charged on the start call, not again at settlement")
+	priced, ok := snap.Price(poll.ContentType, poll.Body)
+	require.True(t, ok)
+	assert.InDelta(t, 3*0.05, priced.Cost, 1e-12, "the route fee was charged on the start call, not again at settlement")
+}
+
+// A job settles once, so the status checks a caller makes for it must not be charged too: a job
+// whose poll request would match a billable route (or the method default) is refused.
+func TestUpsertRefusesJobWhoseStatusChecksAreBilled(t *testing.T) {
+	textract := func(routes ...schemas.RelayRouteConfig) *schemas.RelayConfig {
+		cfg := bearerConfig("textract", "https://textract.example.com")
+		start := schemas.RelayRouteConfig{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Start*"}, Job: &schemas.RelayJobConfig{
+			IDPath: "JobId", StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"},
+			Poll: schemas.RelayJobPoll{Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}, Body: `{"JobId":"{{job.id}}"}`},
+		}}
+		cfg.Routes = append([]schemas.RelayRouteConfig{start}, routes...)
+		return cfg
+	}
+	m := NewManager(nil, nil)
+	err := m.Upsert(textract(schemas.RelayRouteConfig{Method: "POST", Path: "/"}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "routes[1]")
+	assert.Contains(t, err.Error(), "billable: false")
+
+	skip := textract()
+	skip.SkipRouteCheck = true
+	require.Error(t, m.Upsert(skip), "an unmatched POST is billable by default")
+
+	require.NoError(t, m.Upsert(textract(
+		schemas.RelayRouteConfig{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}, Billable: schemas.Ptr(false)},
+		schemas.RelayRouteConfig{Method: "POST", Path: "/"},
+	)), "a free status route ahead of the catch-all")
+	require.NoError(t, m.Upsert(textract()), "no route for status checks: callers are refused, never charged")
+
+	// A free route that matches only one literal id does not make real ids' checks free.
+	rest := bearerConfig("jobs", "https://jobs.example.com")
+	rest.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/start", Job: &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"}, Poll: schemas.RelayJobPoll{Method: "POST", Path: "/jobs/{{job.id}}"}}},
+		{Method: "POST", Path: "/jobs/job-id", Billable: schemas.Ptr(false)},
+		{Method: "POST", Path: "/jobs/**"},
+	}
+	err = m.Upsert(rest)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "routes[2], which is billable")
+	rest.Routes[1].Path = "/jobs/**"
+	require.NoError(t, m.Upsert(rest), "a free route for every job id")
 }
 
 func TestServeRequestSideBillingRefusesAmbiguousBody(t *testing.T) {

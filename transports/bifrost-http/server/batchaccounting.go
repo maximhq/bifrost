@@ -99,6 +99,9 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	if s == nil || s.Client == nil || s.Config == nil {
 		return
 	}
+	// Relay jobs settle on their own sweeper, restarted before the logging check so a governance
+	// reload reaches it. Only the logging plugin records relay jobs, so with logging off it has none.
+	s.startEndpointJobSweeper(s.endpointUsageReporter())
 	loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName)
 	if err != nil || loggerPlugin == nil {
 		logger.Warn("batch accounting sweeper not wired: logging plugin not found (err=%v)", err)

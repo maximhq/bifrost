@@ -96,14 +96,19 @@ func (s *VideoSettler) SupportsProvider(provider schemas.ModelProvider) bool {
 // to five minutes, so the batch ladder would leave a finished job unsettled — and
 // its assets unreadable — for a quarter of an hour after it was ready.
 func (s *VideoSettler) Backoff(attempts int, interval time.Duration) time.Duration {
-	delay := interval
+	return slowAfterManyPolls(attempts, interval)
+}
+
+// slowAfterManyPolls spaces a long-running job's polls out: 2 minutes apart after 20 polls, 5 after
+// 40. Video and relay jobs share it.
+func slowAfterManyPolls(attempts int, interval time.Duration) time.Duration {
 	switch {
 	case attempts >= 40:
-		delay = maxDuration(delay, 5*time.Minute)
+		return maxDuration(interval, 5*time.Minute)
 	case attempts >= 20:
-		delay = maxDuration(delay, 2*time.Minute)
+		return maxDuration(interval, 2*time.Minute)
 	}
-	return delay
+	return interval
 }
 
 func (s *VideoSettler) Poll(ctx context.Context, job *cstables.TableProviderJob) (*PollResult, error) {

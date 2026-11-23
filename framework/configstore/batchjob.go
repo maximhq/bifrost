@@ -83,9 +83,9 @@ func (s *RDBConfigStore) UpsertProviderJob(ctx context.Context, job *tables.Tabl
 	}
 
 	update := db.Model(&tables.TableProviderJob{}).Where("id = ?", job.ID)
-	if job.Kind == tables.ProviderJobKindInteraction {
-		// A read can load an interaction while it is pending and land its upsert after the run was
-		// settled; the condition sits in the UPDATE so no interleaving rewrites a settled row.
+	if job.Kind == tables.ProviderJobKindInteraction || job.Kind == tables.ProviderJobKindRelay {
+		// A read or an unclaimed poll can land its upsert after the job was settled; the condition
+		// sits in the UPDATE so no interleaving rewrites a settled row.
 		update = update.Where("accounting_status NOT IN ?", []string{
 			tables.ProviderJobAccountingStatusAccounted,
 			tables.ProviderJobAccountingStatusUnpriceable,

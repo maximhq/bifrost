@@ -384,6 +384,8 @@ type BifrostHTTPServer struct {
 	// the management handler a clustered server replays relay changes through.
 	relays                 *relay.Manager
 	RelaysHandler          *handlers.RelaysHandler
+	endpointSweeperCancel  context.CancelFunc
+	endpointSweeperMu      sync.Mutex // serializes sweeper restarts from concurrent plugin reloads
 	agentGatewayGRPCServer *handlers.AgentGatewayGRPCServer
 }
 
@@ -2812,6 +2814,10 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	// 2. Update Bifrost client
 	if err := s.Client.RemovePlugin(name, InferPluginTypes(plugin)); err != nil {
 		logger.Warn("failed to reload bifrost config after plugin removal: %v", err)
+	}
+	// The relay sweeper holds the governance reporter, so it restarts without the removed plugin.
+	if s.Ctx != nil && name == s.getGovernancePluginName() {
+		s.startEndpointJobSweeper(s.endpointUsageReporter())
 	}
 
 	// 2a. Routing's captured request vectors have no owner without it. After

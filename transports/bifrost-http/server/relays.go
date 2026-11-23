@@ -3,10 +3,14 @@ package server
 import (
 	"context"
 	"errors"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
+	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
@@ -49,6 +53,47 @@ func (s *BifrostHTTPServer) InitializeRelays(ctx context.Context, relayManager h
 	if names := manager.Names(); len(names) > 0 {
 		logger.Info("relays initialized: %d endpoint(s)", len(names))
 	}
+	// Bootstrap wires the other accounting sweepers before this manager exists, so this one starts
+	// here; reloads restart it from WireBatchAccountingSweeper.
+	s.startEndpointJobSweeper(s.endpointUsageReporter())
+}
+
+// startEndpointJobSweeper (re)starts the sweeper that settles async jobs relay
+// routes started. It runs on every reload so the reporter tracks the live governance plugin.
+// It ticks every 10s, so a job's interval_seconds below 30 is honoured; each tick is one indexed
+// query for due relay jobs.
+func (s *BifrostHTTPServer) startEndpointJobSweeper(reporter jobaccounting.RelayUsageReporter) {
+	s.endpointSweeperMu.Lock()
+	defer s.endpointSweeperMu.Unlock()
+	if s.endpointSweeperCancel != nil {
+		s.endpointSweeperCancel()
+		s.endpointSweeperCancel = nil
+	}
+	if s.relays == nil || s.Config == nil || s.Config.LogsStore == nil {
+		return
+	}
+	store, ok := s.Config.ConfigStore.(jobaccounting.SweepStore)
+	if !ok {
+		return
+	}
+	var base context.Context = context.Background()
+	if s.Ctx != nil {
+		base = s.Ctx
+	}
+	sweepCtx, cancel := context.WithCancel(base)
+	s.endpointSweeperCancel = cancel
+	// Named per node, as the batch and video sweepers are, so claims show the relay kind and survive reloads.
+	nodeID := ""
+	if loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName); err == nil && loggerPlugin != nil {
+		nodeID = loggerPlugin.ClusterNodeID()
+	}
+	config := jobaccounting.SweeperConfig{Interval: 10 * time.Second, Logger: logger, ClaimedBy: jobaccounting.RunnerID("relay-sweeper", nodeID)}
+	// Assigned only when set: a nil *kvstore.Store in the interface would not compare as nil.
+	if s.Config.KVStore != nil {
+		config.KVStore = s.Config.KVStore
+	}
+	sweeper := jobaccounting.NewRelayJobSweeper(store, s.relays, s.Config.LogsStore, reporter, config)
+	go sweeper.Run(sweepCtx)
 }
 
 // rebuildRelays recompiles every endpoint after the global proxy changes, through the
@@ -60,6 +105,17 @@ func (s *BifrostHTTPServer) rebuildRelays(ctx context.Context) {
 	if err := s.RelaysHandler.ReloadFromStore(ctx); err != nil {
 		logger.Warn("failed to reload relays after a proxy change: %v", err)
 	}
+}
+
+// endpointUsageReporter returns the live governance plugin as the job settlement reporter, nil when
+// governance is not loaded.
+func (s *BifrostHTTPServer) endpointUsageReporter() jobaccounting.RelayUsageReporter {
+	plugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
+	if err != nil || plugin == nil {
+		return nil
+	}
+	reporter, _ := plugin.(jobaccounting.RelayUsageReporter)
+	return reporter
 }
 
 var errRelaysNotInitialized = errors.New("relays are not initialized")

@@ -487,3 +487,25 @@ func TestGetProviderJobsByJobIDSuffixesMatchTheLastSegmentWhole(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, jobs, 2, "several suffixes are matched in one query, duplicates and empties ignored")
 }
+
+// Relay polls hold no claim, so a late upsert must not put a settled job back on the schedule.
+func TestUpsertProviderJobLeavesSettledRelayJobsAlone(t *testing.T) {
+	ctx := context.Background()
+	for _, finish := range []string{tables.ProviderJobAccountingStatusAccounted, tables.ProviderJobAccountingStatusUnpriceable} {
+		t.Run(finish, func(t *testing.T) {
+			store := setupBatchJobTestStore(t)
+			id := tables.ProviderJobID(tables.ProviderJobKindRelay, "textract", "j-1")
+			job := &tables.TableProviderJob{ID: id, Kind: tables.ProviderJobKindRelay, Provider: "textract", JobID: "j-1", ProviderStatus: "SUCCEEDED"}
+			require.NoError(t, store.UpsertProviderJob(ctx, job))
+			require.NoError(t, store.DB().Model(&tables.TableProviderJob{}).Where("id = ?", id).Update("accounting_status", finish).Error)
+
+			next := time.Now().UTC().Add(time.Hour)
+			require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{ID: id, Kind: tables.ProviderJobKindRelay, Provider: "textract", JobID: "j-1", ProviderStatus: "IN_PROGRESS", NextCheckAt: &next, PollAttempts: 9}))
+
+			persisted := getBatchJob(t, store, id)
+			assert.Nil(t, persisted.NextCheckAt)
+			assert.Equal(t, "SUCCEEDED", persisted.ProviderStatus)
+			assert.Zero(t, persisted.PollAttempts)
+		})
+	}
+}

@@ -61,9 +61,10 @@ type RelayUsage struct {
 // RelayJobHandle is a job a route started: the upstream id, the seconds until the first poll and
 // the settlement snapshot the sweeper prices it with.
 type RelayJobHandle struct {
-	ID              string `json:"id"`
-	IntervalSeconds int    `json:"interval_seconds"`
-	Params          string `json:"params"`
+	ID               string `json:"id"`
+	IntervalSeconds  int    `json:"interval_seconds"`
+	Params           string `json:"params"`
+	ReusedIDIsNewJob bool   `json:"reused_id_is_new_job,omitempty"` // the job config's reused_id_is_new_job
 }
 
 // RelayPluginShortCircuit is a pre-hook's decision to answer without calling the upstream.
