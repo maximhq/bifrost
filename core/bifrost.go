@@ -8642,6 +8642,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						heldBackError.Store(true)
 						return nil, err
 					}
+					// The stream the client received ends here, on its provider goroutine: record
+					// how, before plugins can rewrite it. A startup error is the retry loop's, and
+					// the worker records the chain it ends. Reads only values fixed for this
+					// request, never the pooled req.
+					if recordHealth && IsFinalChunk(ctx) && !startup.IsStartupError(err) {
+						bifrost.recordUpstreamStreamEnd(provider.GetProviderKey(), originalModelRequested, err)
+					}
 					if err != nil {
 						streamusage.Estimate(ctx, &schemas.BifrostRequest{ChatRequest: attemptChat, ResponsesRequest: attemptResponses, TextCompletionRequest: attemptText}, attemptResolvedModel, err)
 					}
@@ -8739,7 +8746,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		// Record what this provider's attempt chain says about the provider serving the model:
 		// a refusal that survived the key walk puts the pair in cooldown, a success clears it.
-		if recordHealth {
+		// A stream that started is recorded when it ends, by its postHookRunner.
+		if recordHealth && (bifrostError != nil || !IsStreamRequestType(req.RequestType)) {
 			bifrost.recordUpstreamOutcome(req.Context, provider.GetProviderKey(), model, bifrostError)
 		}
 

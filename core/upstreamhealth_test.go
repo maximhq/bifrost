@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -229,4 +230,69 @@ func TestUpstreamHealthRecordsOnlySharedPoolChains(t *testing.T) {
 			t.Fatalf("expected the shared pool's refusal to cool the pair down, got %+v", h)
 		}
 	})
+}
+
+// A stream records how it ended, not only that it started: one that fails after reaching the
+// client counts as a failure (without a cooldown, since no other key could take over by then),
+// a startup failure is recorded once, and a stream that completes clears the pair.
+func TestUpstreamHealthRecordsStreamOutcome(t *testing.T) {
+	const (
+		midStreamFailure = iota + 1
+		startupRateLimit
+		completes
+	)
+	var phase atomic.Int32
+	client := newUpstreamHealthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch phase.Load() {
+		case midStreamFailure:
+			sseHandler(
+				`{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"he"}}]}`,
+				`{"error":{"message":"The server had an error while processing your request","type":"server_error"}}`,
+			)(w, r)
+		case startupRateLimit:
+			sseHandler(`{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}`)(w, r)
+		default:
+			sseHandler(
+				`{"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}`,
+				`{"id":"c2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`,
+			)(w, r)
+		}
+	})
+	stream := func() (string, []string, *schemas.BifrostError) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+		ch, err := client.ChatCompletionStreamRequest(ctx, upstreamHealthChatRequest())
+		if ch == nil {
+			return "", nil, err
+		}
+		content, errs := drainChatStream(ch)
+		return content, errs, err
+	}
+	pair := func() schemas.UpstreamHealth {
+		return findUpstreamHealth(t, client.UpstreamHealthSnapshot(time.Now()), schemas.OpenAI, "gpt-4o-mini")
+	}
+
+	phase.Store(midStreamFailure)
+	if content, errs, err := stream(); err != nil || content != "he" || len(errs) != 1 {
+		t.Fatalf("expected a stream that fails after its first chunk, got content=%q errs=%v err=%v", content, errs, err)
+	}
+	if h := pair(); !h.Available || h.Status != schemas.UpstreamHealthDegraded || h.FailureClass != schemas.FailureClassTransient ||
+		h.ConsecutiveFailures != 1 || h.RecentFailures != 1 {
+		t.Fatalf("expected the failed stream to leave the pair degraded but available, got %+v", h)
+	}
+
+	phase.Store(startupRateLimit)
+	if _, _, err := stream(); err == nil {
+		t.Fatal("expected the rate-limited stream to fail before it started")
+	}
+	if h := pair(); h.Available || h.Status != schemas.UpstreamHealthCoolingDown || h.ConsecutiveFailures != 2 || h.RecentFailures != 2 || h.RecentRateLimits != 1 {
+		t.Fatalf("expected the startup refusal recorded once and cooling the pair down, got %+v", h)
+	}
+
+	phase.Store(completes)
+	if content, errs, err := stream(); err != nil || content != "hello" || len(errs) != 0 {
+		t.Fatalf("expected a completed stream, got content=%q errs=%v err=%v", content, errs, err)
+	}
+	if h := pair(); !h.Available || h.Status != schemas.UpstreamHealthAvailable || h.ConsecutiveFailures != 0 || h.LastSuccessAt == nil {
+		t.Fatalf("expected the completed stream to clear the pair, got %+v", h)
+	}
 }

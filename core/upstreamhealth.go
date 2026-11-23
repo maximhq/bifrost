@@ -17,6 +17,9 @@ import (
 // rate limit or quota refusal that survives the walk is the provider's, not one key's. The
 // tracker keeps that verdict per provider/model pair with a cooldown, so a client choosing
 // between routes can skip a pair Bifrost knows will be refused before it spends a request on it.
+//
+// A streamed chain ends when its stream does: a stream that fails after reaching the client
+// counts as a failure but starts no cooldown, since no other key could take over by then.
 
 const (
 	// upstreamRateLimitCooldown is the cooldown after a rate limit the provider gave no
@@ -148,8 +151,11 @@ func (t *upstreamHealthTracker) recordSuccess(provider schemas.ModelProvider, mo
 	st.mu.Unlock()
 }
 
-// recordFailure records the final failure of one provider attempt chain.
-func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, model string, class schemas.FailureClass, statusCode *int, retryAfterMs int64, now time.Time) {
+// recordFailure records the final failure of one provider attempt chain. accepted reports that
+// the upstream had accepted the request before failing it (a stream that failed after reaching
+// the client): that counts as a failure, but no other key could have taken over and the upstream
+// did serve the pair, so it ends any cooldown instead of starting one.
+func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, model string, class schemas.FailureClass, statusCode *int, retryAfterMs int64, accepted bool, now time.Time) {
 	if model == "" || !recordsUpstreamFailure(class) {
 		return
 	}
@@ -199,6 +205,10 @@ func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, mo
 	bucket.failures++
 	if class == schemas.FailureClassRateLimit || class == schemas.FailureClassQuota {
 		bucket.rateLimits++
+	}
+	if accepted {
+		st.cooldownUntil = time.Time{}
+		return
 	}
 	if d, ok := upstreamCooldown(class, retryAfterMs, st.consecutiveFailures); ok {
 		if until := now.Add(d); until.After(st.cooldownUntil) {
@@ -323,5 +333,17 @@ func (bifrost *Bifrost) recordUpstreamOutcome(ctx *schemas.BifrostContext, provi
 		return
 	}
 	class, statusCode, retryAfter := upstreamFinalFailure(ctx, err)
-	bifrost.upstreamHealth.recordFailure(provider, model, class, statusCode, retryAfter, now)
+	bifrost.upstreamHealth.recordFailure(provider, model, class, statusCode, retryAfter, false, now)
+}
+
+// recordUpstreamStreamEnd records how a stream that reached the client ended. A failure counts
+// toward the pair's failures but starts no cooldown: once the client had the stream no other
+// key could take over, and the upstream had served the pair.
+func (bifrost *Bifrost) recordUpstreamStreamEnd(provider schemas.ModelProvider, model string, err *schemas.BifrostError) {
+	now := time.Now()
+	if err == nil {
+		bifrost.upstreamHealth.recordSuccess(provider, model, now)
+		return
+	}
+	bifrost.upstreamHealth.recordFailure(provider, model, ClassifyFailure(err), err.StatusCode, 0, true, now)
 }
