@@ -463,9 +463,6 @@ type OpenAIChatRequest struct {
 	// (e.g. preserving cache_control for OpenRouter). Not serialized to wire.
 	Provider schemas.ModelProvider `json:"-"`
 
-	effortNormalized  bool // effort already went through the row's rename table
-	reasoningDisabled bool // reasoning-off request whose effort was dropped as unsupported
-
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
@@ -1512,7 +1509,8 @@ type OpenAIResponsesRequest struct {
 	// keepDeferLoading lets tool defer_loading reach the wire. Set by
 	// ToOpenAIResponsesRequest when the target supports tool search; without it
 	// every deferred tool loads eagerly and the model never searches.
-	keepDeferLoading bool
+	keepDeferLoading    bool
+	omitReasoningEffort bool // row rejects reasoning_effort; the key is deleted from the encoded body
 }
 
 // MarshalJSON implements custom JSON marshalling for OpenAIResponsesRequest.
@@ -1627,8 +1625,18 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 	}
 
 	data, err := providerUtils.MarshalSorted(aux)
-	if err != nil || resp.Provider != schemas.BytePlus || resp.Reasoning == nil {
+	if err != nil || resp.Reasoning == nil {
 		return data, err
+	}
+	if resp.omitReasoningEffort {
+		// Effort has no omitempty, and an upstream that rejects reasoning_effort
+		// may reject the key even when it is null.
+		if data, err = providerUtils.DeleteJSONField(data, "reasoning.effort"); err != nil {
+			return nil, err
+		}
+	}
+	if resp.Provider != schemas.BytePlus {
+		return data, nil
 	}
 	// Ark's Responses decoder rejects reasoning.summary as an unknown field, even when it is null,
 	// and Summary has no omitempty, so the key is removed from the encoded body instead.

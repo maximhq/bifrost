@@ -11,6 +11,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestToOpenAIResponsesRequest_PreservesNamedOutputWithoutCallID(t *testing.T) {
@@ -5965,6 +5966,20 @@ func TestToOpenAIResponsesRequest_UnsupportedEffortRowDropsEffort(t *testing.T) 
 		require.NotNil(t, out)
 		require.NotNil(t, out.ResponsesParameters.Reasoning)
 		require.NotNil(t, out.ResponsesParameters.Reasoning.Effort)
+	})
+
+	t.Run("a requested summary survives without the effort", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(ctx, newReq("no-effort-model", &schemas.ResponsesParametersReasoning{
+			Effort:  schemas.Ptr("high"),
+			Summary: schemas.Ptr("auto"),
+		}))
+		require.NotNil(t, out)
+		require.NotNil(t, out.ResponsesParameters.Reasoning, "the summary request is still something to send")
+		require.Nil(t, out.ResponsesParameters.Reasoning.Effort)
+		body, err := sonic.Marshal(out)
+		require.NoError(t, err)
+		require.Equal(t, "auto", gjson.GetBytes(body, "reasoning.summary").String(), "wire body: %s", body)
+		require.False(t, gjson.GetBytes(body, "reasoning.effort").Exists(), "reasoning.effort must be absent, not null: %s", body)
 	})
 }
 

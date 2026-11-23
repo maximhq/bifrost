@@ -352431,7 +352431,7 @@
 ,
     {
       "name": "379. Custom provider reasoning effort renames reach the wire (#10261) (custom effort renames)",
-      "description": "PR #10261: capability lookups in the chat and Responses converters resolve the request's own provider first, so a custom provider's datasheet row (reasoning_effort_renames, reasoning_effort_levels, default_reasoning_effort) applies to its requests again. The openai_effnone provider in tests/integrations/python/config.json points at real OpenAI like the folder-92 customs, and its config.json datasheet_overrides row (is_custom, mode chat - a custom entry requires a pricing mode, and params patches apply to every route of the model) renames reasoning effort \"none\" to \"off\" over the levels off|low|medium|high. The renamed value \"off\" is not one OpenAI accepts: both custom cases expect the effort-validation contract - HTTP 400 with the Invalid value: 'off' signature - proving the renamed bytes left the gateway, while extra_fields.raw_request (x-bf-send-back-raw-request) pins the exact serialized effort on each route. The control sends the same effort \"none\" to the bare openai provider and asserts it stays \"none\" with a 200, pinning that the rename is scoped to the custom provider's own row. Pre-fix, the custom row was never consulted: both custom cases return 200 with reasoning_effort \"none\" and fail loudly. No cleanup needed: the provider and its override row are registered at boot from config.json and inert unless a case names them.",
+      "description": "PR #10261: capability lookups in the chat and Responses converters resolve the request's own provider first, so a custom provider's datasheet row (reasoning_effort_renames, reasoning_effort_levels, default_reasoning_effort) applies to its requests again. The openai_effnone provider in tests/integrations/python/config.json points at real OpenAI like the folder-92 customs, and its config.json datasheet_overrides row (is_custom, mode chat - a custom entry requires a pricing mode, and params patches apply to every route of the model) renames reasoning effort \"none\" to \"off\" over the levels off|low|medium|high. The renamed value \"off\" is not one OpenAI accepts: both custom cases expect the effort-validation contract - HTTP 400 with the Invalid value: 'off' signature - proving the renamed bytes left the gateway, while extra_fields.raw_request (x-bf-send-back-raw-request) pins the exact serialized effort on each route. The control sends the same effort \"none\" to the bare openai provider and asserts it stays \"none\" with a 200, pinning that the rename is scoped to the custom provider's own row. The budget case sends reasoning.max_tokens 3500 with no output cap: the custom row sets only levels and renames, so the estimate must read max_output_tokens from the inherited openai/gpt-5.4-mini row (low) - a sparse custom row returned whole falls back to 4096 and estimates high. Pre-fix, the custom row was never consulted: both custom cases return 200 with reasoning_effort \"none\" and fail loudly. No cleanup needed: the provider and its override row are registered at boot from config.json and inert unless a case names them.",
       "item": [
         {
           "name": "[EXPECT-400] openai_effnone/gpt-5.4-mini chat reasoning_effort none serializes as off - #10261",
@@ -352586,6 +352586,61 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_tokens\": 48,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say ok.\" }\n  ],\n  \"reasoning_effort\": \"none\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai_effnone/gpt-5.4-mini chat reasoning budget estimates against the inherited base row - #10261",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('the request succeeds (200; auth failures, rate limits and any 5xx fail loudly)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('a 3500-token budget estimates as low against the base row max output, not high against the 4096 fallback a sparse custom row gives', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning_effort, 'wire body: ' + JSON.stringify(rr)).to.eql('low');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_effnone/gpt-5.4-mini\",\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say ok.\" }\n  ],\n  \"reasoning\": { \"max_tokens\": 3500 }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",

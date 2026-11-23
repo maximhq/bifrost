@@ -1206,11 +1206,18 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.Reasoning = nil
 			}
 
-			if rejectsEffort {
-				// A row that rejects reasoning_effort gets no reasoning object: the
-				// effort field has no omitempty, so a nil value would serialize as null.
-				// Applied last, after the summary/context passes above read it.
-				req.ResponsesParameters.Reasoning = nil
+			// A row that rejects reasoning_effort gets no effort. Applied last, after
+			// the summary/context passes above read it. The effort field has no
+			// omitempty, so the key is deleted from the encoded body instead of going
+			// out as null; an object left with nothing else to say is dropped whole.
+			if rejectsEffort && req.ResponsesParameters.Reasoning != nil {
+				r := req.ResponsesParameters.Reasoning
+				r.Effort = nil
+				if r.Summary == nil && r.GenerateSummary == nil && r.Context == nil && r.Mode == nil {
+					req.ResponsesParameters.Reasoning = nil
+				} else {
+					req.omitReasoningEffort = true
+				}
 			}
 		}
 
@@ -1341,8 +1348,11 @@ func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort strin
 	effortIsNone := effort == schemas.ReasoningEffortNone || (effort == "" && !omittedEffortReasons(caps, model))
 	// A row can rename the disabled label (none -> off): normalization already
 	// translated it, and only a row that can disable reasoning means it as off.
-	if !effortIsNone && effort != "" && caps.CanDisableReasoning(defaultCanDisableReasoning(model)) {
-		if label, ok := caps.EffortLabelFor(schemas.ReasoningEffortNone); ok && label == effort {
+	// The rename map is checked first: the name-based default parses the model
+	// string, and this runs once per sampling field on every request.
+	if !effortIsNone && effort != "" {
+		if label, ok := caps.EffortLabelFor(schemas.ReasoningEffortNone); ok && label == effort &&
+			caps.CanDisableReasoning(defaultCanDisableReasoning(model)) {
 			effortIsNone = true
 		}
 	}

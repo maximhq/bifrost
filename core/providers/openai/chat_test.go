@@ -4028,6 +4028,95 @@ func TestToOpenAIChatRequest_CustomProviderRespectsUnsupportedEffortField(t *tes
 	})
 }
 
+// TestToOpenAIChatRequest_SparseCustomRowInheritsBaseOutputLimit pins that a
+// custom provider's own row, holding only the fields its override patched,
+// still reads every other field from the base row: a budget estimate on a row
+// that sets only levels and renames must use the base row's max output, not
+// the 4096 fallback. Mirrors harness folder 379's budget case.
+func TestToOpenAIChatRequest_SparseCustomRowInheritsBaseOutputLimit(t *testing.T) {
+	customRow := &schemas.ModelCapabilities{
+		ReasoningEffortLevels:  []string{"off", "low", "medium", "high"},
+		ReasoningEffortRenames: map[string]string{"none": "off"},
+	}
+	baseRow := &schemas.ModelCapabilities{MaxOutputTokens: schemas.Ptr(128000)}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		switch {
+		case p == "openai_effnone" && m == "gpt-5.4-mini":
+			return customRow
+		case p == schemas.OpenAI && m == "gpt-5.4-mini":
+			return baseRow
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	req := &schemas.BifrostChatRequest{
+		Provider: "openai_effnone",
+		Model:    "gpt-5.4-mini",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(3500)}},
+	}
+	out := ToOpenAIChatRequest(customProviderContext(schemas.OpenAI), req)
+	require.NotNil(t, out)
+	require.NotNil(t, out.Reasoning)
+	require.NotNil(t, out.Reasoning.Effort)
+	require.Equal(t, "low", *out.Reasoning.Effort, "3500 of 128000 is low; against a 4096 fallback it would be high")
+}
+
+// TestToOpenAIChatRequest_UnsupportedEffortRowKeepsThinkingDisabled pins that a
+// MiniMax or BytePlus row rejecting reasoning_effort still turns effort "none"
+// into thinking:disabled. The effort is dropped before the compat pass runs, so
+// the pass must read the recorded disabled state, not the effort field; without
+// it the request goes out with no effort and no thinking, and the model reasons.
+func TestToOpenAIChatRequest_UnsupportedEffortRowKeepsThinkingDisabled(t *testing.T) {
+	rows := map[string]*schemas.ModelCapabilities{
+		"flag":  {SupportsReasoningEffort: schemas.Ptr(false)},
+		"field": {UnsupportedFields: map[string]bool{schemas.FieldReasoningEffort: true}},
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.MiniMax, schemas.BytePlus} {
+		for rowName, row := range rows {
+			t.Run(string(provider)+"/"+rowName, func(t *testing.T) {
+				schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+					if p == provider && m == "m2-model" {
+						return row
+					}
+					return nil
+				})
+				t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+				newReq := func(effort string) *schemas.BifrostChatRequest {
+					return &schemas.BifrostChatRequest{
+						Provider: provider,
+						Model:    "m2-model",
+						Input: []schemas.ChatMessage{{
+							Role:    schemas.ChatMessageRoleUser,
+							Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+						}},
+						Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(effort)}},
+					}
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+				out := ToOpenAIChatRequest(ctx, newReq("none"))
+				require.NotNil(t, out)
+				require.Equal(t, map[string]interface{}{"type": "disabled"}, out.ExtraParams["thinking"], "effort none must still disable thinking")
+				body, err := sonic.Marshal(out)
+				require.NoError(t, err)
+				require.NotContains(t, string(body), `"reasoning_effort"`, "the row rejects reasoning_effort: %s", body)
+
+				// An active effort is dropped as unsupported but never disables thinking.
+				out = ToOpenAIChatRequest(ctx, newReq("high"))
+				require.NotNil(t, out)
+				_, hasThinking := out.ExtraParams["thinking"]
+				require.False(t, hasThinking, "an active effort must not disable thinking")
+			})
+		}
+	}
+}
+
 // TestToOpenAIChatRequest_CustomProviderBudgetEffortFollowsDatasheet pins that
 // an effort estimated from a reasoning token budget is normalized against the
 // row too — the custom early-return path never reaches the generic filter.

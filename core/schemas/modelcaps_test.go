@@ -31,10 +31,8 @@ func TestResolveModelCapsForRequest(t *testing.T) {
 	plainCtx := NewBifrostContext(context.Background(), NoDeadline)
 
 	t.Run("custom provider row wins over base family", func(t *testing.T) {
+		// Both rows set renames, so the layered record carries the wire row's.
 		caps := ResolveModelCapsForRequest(customCtx, "commandcode", "deepseek-v4.1-flash")
-		if got := caps.Record(); got != wireRow {
-			t.Fatalf("expected the wire provider's row, got %v", got)
-		}
 		if renamed := caps.NormalizeReasoningEffort("none", nil); renamed != "off" {
 			t.Fatalf("expected wire row renames to apply, got %q", renamed)
 		}
@@ -76,4 +74,97 @@ func TestResolveModelCapsForRequest(t *testing.T) {
 			t.Fatalf("expected the wire provider's row without a ctx, got %v", got)
 		}
 	})
+}
+
+// TestResolveModelCapsForRequest_CustomRowLayersOverBase pins that a custom
+// provider's own row, which a params override builds from its patch alone,
+// adds to the base family's row instead of replacing it: the custom row wins
+// on the fields it sets, and every field it leaves out still answers from the
+// base row.
+func TestResolveModelCapsForRequest_CustomRowLayersOverBase(t *testing.T) {
+	customRow := &ModelCapabilities{
+		ReasoningEffortLevels:  []string{"off", "low", "medium", "high"},
+		ReasoningEffortRenames: map[string]string{"none": "off"},
+	}
+	baseRow := &ModelCapabilities{
+		ReasoningEffortLevels:          []string{"none", "low", "medium", "high", "xhigh"},
+		MaxOutputTokens:                Ptr(128000),
+		SupportsReasoning:              Ptr(true),
+		ConditionallyUnsupportedFields: map[string]string{"temperature": "when_effort_not_none"},
+	}
+	SetCapabilityResolver(func(p ModelProvider, m string) *ModelCapabilities {
+		switch {
+		case p == "openai_effnone" && m == "gpt-5.4-mini":
+			return customRow
+		case p == OpenAI && m == "gpt-5.4-mini":
+			return baseRow
+		}
+		return nil
+	})
+	t.Cleanup(func() { SetCapabilityResolver(nil) })
+
+	ctx := NewBifrostContextWithValue(context.Background(), NoDeadline, BifrostContextKeyBaseProviderType, OpenAI)
+	caps := ResolveModelCapsForRequest(ctx, "openai_effnone", "gpt-5.4-mini")
+
+	if got := caps.NormalizeReasoningEffort("none", nil); got != "off" {
+		t.Fatalf("custom renames must win, got %q", got)
+	}
+	if got := caps.ReasoningEffortLevels(nil); len(got) != 4 || got[0] != "off" {
+		t.Fatalf("custom levels must win, got %v", got)
+	}
+	if got := caps.MaxOutputTokens(4096); got != 128000 {
+		t.Fatalf("max output tokens must come from the base row, got %d", got)
+	}
+	if !caps.SupportsReasoning(false) {
+		t.Fatalf("supports_reasoning must come from the base row")
+	}
+	if rec := caps.Record(); rec == nil || rec.ConditionallyUnsupportedFields["temperature"] != "when_effort_not_none" {
+		t.Fatalf("conditional field restrictions must come from the base row, got %v", rec)
+	}
+	// Neither source record is mutated by the layering.
+	if customRow.MaxOutputTokens != nil || baseRow.ReasoningEffortRenames != nil {
+		t.Fatalf("layering must not write into the source records")
+	}
+	// The layered record is reused for the same pair of source records, so a
+	// request pays a map read, not a rebuild.
+	if again := ResolveModelCapsForRequest(ctx, "openai_effnone", "gpt-5.4-mini"); again.Record() != caps.Record() {
+		t.Fatalf("expected the cached layered record to be reused")
+	}
+}
+
+// BenchmarkResolveModelCapsForRequest measures the per-request resolution cost
+// for a standard provider, a custom provider inheriting the base row, and a
+// custom provider whose own row is layered over the base row.
+func BenchmarkResolveModelCapsForRequest(b *testing.B) {
+	customRow := &ModelCapabilities{ReasoningEffortRenames: map[string]string{"none": "off"}}
+	baseRow := &ModelCapabilities{MaxOutputTokens: Ptr(128000)}
+	SetCapabilityResolver(func(p ModelProvider, m string) *ModelCapabilities {
+		switch {
+		case p == "withrow":
+			return customRow
+		case p == OpenAI:
+			return baseRow
+		}
+		return nil
+	})
+	b.Cleanup(func() { SetCapabilityResolver(nil) })
+	plain := NewBifrostContext(context.Background(), NoDeadline)
+	custom := NewBifrostContextWithValue(context.Background(), NoDeadline, BifrostContextKeyBaseProviderType, OpenAI)
+	cases := []struct {
+		name     string
+		ctx      *BifrostContext
+		provider ModelProvider
+	}{
+		{"standard", plain, OpenAI},
+		{"custom_inherits", custom, "norow"},
+		{"custom_layered", custom, "withrow"},
+	}
+	for _, c := range cases {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = ResolveModelCapsForRequest(c.ctx, c.provider, "gpt-5.4-mini")
+			}
+		})
+	}
 }

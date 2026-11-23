@@ -1,8 +1,10 @@
 package schemas
 
 import (
+	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -80,23 +82,87 @@ func ResolveModelCaps(provider ModelProvider, model string) ModelCaps {
 	}
 }
 
-// ResolveModelCapsForRequest resolves the capability record for a request:
-// the row keyed by the request's own provider first, then the base provider
-// backing it when a custom provider publishes no row of its own. Custom
-// providers' datasheet rows (effort renames, levels, defaults) are keyed by
-// their own name and must outrank the base family's; the fallback keeps the
-// base-family inheritance from #8884 for providers without their own row.
+// ResolveModelCapsForRequest resolves the capability record for a request.
+// A standard provider resolves exactly as ResolveModelCaps. A custom provider
+// layers the row keyed by its own name over the base provider's row: its own
+// row wins on every field it sets (effort renames, levels, defaults), and every
+// field it leaves out answers from the base family, keeping the inheritance
+// from #8884. Its own row is often sparse — a params override is built from
+// the patch alone — so returning it whole would drop the base family's limits,
+// field restrictions and support flags. The layered record is cached per pair
+// of source records, so the per-request cost is a map read.
 func ResolveModelCapsForRequest(ctx *BifrostContext, provider ModelProvider, model string) ModelCaps {
 	caps := ResolveModelCaps(provider, model)
-	if caps.record != nil {
+	base := ResolveBaseProvider(ctx, provider)
+	if base == "" || base == provider {
 		return caps
 	}
-	if base := ResolveBaseProvider(ctx, provider); base != "" && base != provider {
-		// caps.model is already normalized against the wire provider; the raw
-		// model could keep the wire prefix and miss the base row.
-		return ResolveModelCaps(base, caps.model)
+	// caps.model is already normalized against the wire provider; the raw
+	// model could keep the wire prefix and miss the base row.
+	baseCaps := ResolveModelCaps(base, caps.model)
+	switch {
+	case caps.record == nil:
+		return baseCaps
+	case baseCaps.record == nil:
+		return caps
 	}
+	caps.record = layeredCapabilities(caps.record, baseCaps.record)
 	return caps
+}
+
+// layeredCapsKey identifies a layered record by its two source records. The
+// catalog replaces records wholesale on every sheet apply, so a pointer pair
+// never describes stale data.
+type layeredCapsKey struct{ own, base *ModelCapabilities }
+
+// maxLayeredCaps bounds the layered-record cache: a deployment's custom
+// provider × model working set is small, and each sheet apply mints new source
+// pointers, so the map is cleared when it fills rather than growing forever.
+const maxLayeredCaps = 1024
+
+var (
+	layeredCapsMu sync.RWMutex
+	layeredCaps   = make(map[layeredCapsKey]*ModelCapabilities)
+)
+
+// layeredCapabilities returns own laid over base, built once per pair of
+// source records. Neither source record is modified.
+func layeredCapabilities(own, base *ModelCapabilities) *ModelCapabilities {
+	key := layeredCapsKey{own: own, base: base}
+	layeredCapsMu.RLock()
+	merged, ok := layeredCaps[key]
+	layeredCapsMu.RUnlock()
+	if ok {
+		return merged
+	}
+	merged = overlayCapabilities(own, base)
+	layeredCapsMu.Lock()
+	if existing, ok := layeredCaps[key]; ok {
+		merged = existing
+	} else {
+		if len(layeredCaps) >= maxLayeredCaps {
+			clear(layeredCaps)
+		}
+		layeredCaps[key] = merged
+	}
+	layeredCapsMu.Unlock()
+	return merged
+}
+
+// overlayCapabilities copies base and replaces every field own sets. Fields
+// are taken whole — a map or slice from own replaces base's rather than
+// merging into it — so a row's ladder or rename table is never a blend of two
+// sources.
+func overlayCapabilities(own, base *ModelCapabilities) *ModelCapabilities {
+	merged := *base
+	src := reflect.ValueOf(own).Elem()
+	dst := reflect.ValueOf(&merged).Elem()
+	for i := 0; i < src.NumField(); i++ {
+		if f := src.Field(i); !f.IsZero() && dst.Field(i).CanSet() {
+			dst.Field(i).Set(f)
+		}
+	}
+	return &merged
 }
 
 // Provider returns the provider the capabilities were resolved for.
@@ -195,21 +261,6 @@ func (c ModelCaps) FieldUnsupported(field string, fallback bool) bool {
 		}
 	}
 	return fallback
-}
-
-// RowRestrictsField reports whether the row publishes any restriction for the
-// field — an outright unsupported_fields entry or a conditional one. Callers
-// that gate a strip on a provider family use this to still honor an explicit
-// row restriction outside that family.
-func (c ModelCaps) RowRestrictsField(field string) bool {
-	if c.record == nil {
-		return false
-	}
-	if _, ok := c.record.UnsupportedFields[field]; ok {
-		return true
-	}
-	_, ok := c.record.ConditionallyUnsupportedFields[field]
-	return ok
 }
 
 // FieldName resolves the wire name a model expects for a logical field, from the

@@ -206,12 +206,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.applyMistralCompatibility(caps)
 		return openaiReq
 	case schemas.MiniMax:
-		openaiReq.filterOpenAISpecificParameters(caps)
-		openaiReq.applyMiniMaxCompatibility(capModel)
+		droppedDisabled := openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applyMiniMaxCompatibility(capModel, droppedDisabled)
 		return openaiReq
 	case schemas.BytePlus:
-		openaiReq.filterOpenAISpecificParameters(caps)
-		openaiReq.applyBytePlusCompatibility()
+		droppedDisabled := openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applyBytePlusCompatibility(droppedDisabled)
 		return openaiReq
 	case schemas.Baseten:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -316,11 +316,13 @@ func serviceTierForModel(caps schemas.ModelCaps, tier *schemas.BifrostServiceTie
 	return tier
 }
 
-// Filter OpenAI Specific Parameters
-func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelCaps) {
+// filterOpenAISpecificParameters strips OpenAI-only fields for compat providers.
+// It returns normalizeReasoningEffort's droppedDisabled, which the MiniMax and
+// BytePlus passes need to emit thinking:disabled.
+func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelCaps) (droppedDisabled bool) {
 	// Handle reasoning parameter: OpenAI uses effort-based reasoning
 	// Priority: effort (native) > max_tokens (estimated)
-	req.normalizeReasoningEffort(caps)
+	droppedDisabled = req.normalizeReasoningEffort(caps)
 
 	// OpenAI-native passthrough params. Compat providers reject them, so the
 	// fallback strips; a datasheet row can opt an individual model back in.
@@ -342,16 +344,19 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelC
 	if caps.FieldUnsupported(schemas.FieldWebSearchOptions, true) {
 		req.ChatParameters.WebSearchOptions = nil
 	}
+	return droppedDisabled
 }
 
 // normalizeReasoningEffort renames an effort onto the row's ladder and estimates
-// one from a token budget. A row that rejects reasoning_effort gets no effort:
-// the disabled state is recorded for the compat pass, then the field is dropped.
-func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
+// one from a token budget. A row that rejects reasoning_effort gets no effort;
+// droppedDisabled reports that the dropped effort was the disabled state, so a
+// compat pass can still turn it into thinking:disabled. It is returned rather
+// than stored on the request: OpenAIChatRequest sits at the top of a size class,
+// and one more field would add 64 B to every chat request.
+func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) (droppedDisabled bool) {
 	if req.ChatParameters.Reasoning != nil {
 		reasoningCopy := *req.ChatParameters.Reasoning
 		req.ChatParameters.Reasoning = &reasoningCopy
-		req.effortNormalized = true
 		// A row that rejects reasoning_effort still gets a budget-and-effort
 		// request normalized, but never gains an estimate from a token budget.
 		rejectsEffort := reasoningEffortUnsupported(caps)
@@ -380,28 +385,30 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 			!caps.CanDisableReasoning(defaultCanDisableReasoning(caps.Model())) {
 			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(req.Provider, caps.Model())))
 		}
-		// A row that rejects reasoning_effort must not carry one. Record the
+		// A row that rejects reasoning_effort must not carry one. Report the
 		// disabled state first: the MiniMax/BytePlus pass still translates it
 		// into thinking:disabled, and a row can spell "none" in its own dialect.
 		if rejectsEffort {
 			if e := req.ChatParameters.Reasoning.Effort; e != nil {
-				req.reasoningDisabled = *e == schemas.ReasoningEffortNone
-				if !req.reasoningDisabled && caps.CanDisableReasoning(defaultCanDisableReasoning(caps.Model())) {
-					if label, ok := caps.EffortLabelFor(schemas.ReasoningEffortNone); ok && label == *e {
-						req.reasoningDisabled = true
+				droppedDisabled = *e == schemas.ReasoningEffortNone
+				if !droppedDisabled {
+					if label, ok := caps.EffortLabelFor(schemas.ReasoningEffortNone); ok && label == *e &&
+						caps.CanDisableReasoning(defaultCanDisableReasoning(caps.Model())) {
+						droppedDisabled = true
 					}
 				}
 				req.ChatParameters.Reasoning.Effort = nil
 			}
 		}
 	}
+	return droppedDisabled
 }
 
-// isReasoningDisabled reports whether reasoning was explicitly turned off,
-// including when the row's unsupported reasoning_effort entry made
-// normalizeReasoningEffort drop the field.
-func (req *OpenAIChatRequest) isReasoningDisabled() bool {
-	if req.reasoningDisabled {
+// isReasoningDisabled reports whether reasoning was explicitly turned off: the
+// effort is "none", or normalizeReasoningEffort dropped a disabled effort the
+// row does not accept (droppedDisabled).
+func (req *OpenAIChatRequest) isReasoningDisabled(droppedDisabled bool) bool {
+	if droppedDisabled {
 		return true
 	}
 	return req.Reasoning != nil && req.Reasoning.Effort != nil && *req.Reasoning.Effort == schemas.ReasoningEffortNone
@@ -462,8 +469,10 @@ func (req *OpenAIChatRequest) applyMistralCompatibility(caps schemas.ModelCaps) 
 
 // applyMiniMaxCompatibility turns reasoning effort "none", which MiniMax rejects, into thinking:disabled.
 // M3.1 always thinks and rejects disabled too, so there the effort is only dropped.
-func (req *OpenAIChatRequest) applyMiniMaxCompatibility(model string) {
-	if req.Reasoning == nil || req.Reasoning.Effort == nil || *req.Reasoning.Effort != schemas.ReasoningEffortNone {
+// It reads isReasoningDisabled, not the effort field: a row that rejects
+// reasoning_effort has already dropped the effort by the time this runs.
+func (req *OpenAIChatRequest) applyMiniMaxCompatibility(model string, droppedDisabled bool) {
+	if req.Reasoning == nil || !req.isReasoningDisabled(droppedDisabled) {
 		return
 	}
 	req.Reasoning = nil
@@ -483,17 +492,20 @@ func (req *OpenAIChatRequest) applyMiniMaxCompatibility(model string) {
 // becomes thinking:disabled, any effort is dropped once thinking is disabled, and "none" is dropped
 // without touching a thinking type the caller already set. The params map
 // is copied only when thinking is added, so requests without reasoning pay nothing.
-func (req *OpenAIChatRequest) applyBytePlusCompatibility() {
-	if req.Reasoning == nil || req.Reasoning.Effort == nil {
+func (req *OpenAIChatRequest) applyBytePlusCompatibility(droppedDisabled bool) {
+	// isReasoningDisabled also covers a "none" that a row rejecting
+	// reasoning_effort already dropped from the effort field.
+	disabled := req.isReasoningDisabled(droppedDisabled)
+	if req.Reasoning == nil || (req.Reasoning.Effort == nil && !disabled) {
 		return
 	}
 	if thinking, ok := req.ExtraParams["thinking"].(map[string]interface{}); ok {
-		if thinking["type"] == "disabled" || *req.Reasoning.Effort == schemas.ReasoningEffortNone {
+		if thinking["type"] == "disabled" || disabled {
 			req.Reasoning = nil
 		}
 		return
 	}
-	if *req.Reasoning.Effort != schemas.ReasoningEffortNone {
+	if !disabled {
 		return
 	}
 	req.Reasoning = nil

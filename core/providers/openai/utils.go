@@ -173,10 +173,9 @@ func omittedEffortReasons(caps schemas.ModelCaps, model string) bool {
 	// omitted effort then agrees with an explicit disabled label. Only on a
 	// model that can disable reasoning — an always-reasoning row maps "none"
 	// onto its lowest rung, which is not the disabled state.
-	if caps.CanDisableReasoning(defaultCanDisableReasoning(model)) {
-		if label, ok := caps.EffortLabelFor(schemas.ReasoningEffortNone); ok && label == effort {
-			return false
-		}
+	if label, ok := caps.EffortLabelFor(schemas.ReasoningEffortNone); ok && label == effort &&
+		caps.CanDisableReasoning(defaultCanDisableReasoning(model)) {
+		return false
 	}
 	return true
 }
