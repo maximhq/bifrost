@@ -827,6 +827,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 		}
 		redactedConfig.Keys[i].Value = *key.Value.Redacted()
+		// Carried as is: nil is inherit, so it must not be defaulted like the flags below.
+		redactedConfig.Keys[i].DisableContentLogging = key.DisableContentLogging
 		// Add back use for batch api
 		if key.UseForBatchAPI != nil {
 			redactedConfig.Keys[i].UseForBatchAPI = key.UseForBatchAPI
@@ -1581,6 +1583,15 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	if key.Enabled != nil && *key.Enabled {
 		hash.Write([]byte("enabled:true"))
 	}
+	// Hash DisableContentLogging only when the key says something, so every key that predates the
+	// field keeps the hash it already has and config sync sees no drift on upgrade.
+	if key.DisableContentLogging != nil {
+		if *key.DisableContentLogging {
+			hash.Write([]byte("disableContentLogging:true"))
+		} else {
+			hash.Write([]byte("disableContentLogging:false"))
+		}
+	}
 	// Hash UseForBatchAPI (nil = default false for new keys)
 	useForBatchAPI := false
 	if key.UseForBatchAPI != nil {
@@ -1998,6 +2009,15 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 	// Only when set, so a team declaring none keeps the hash it had before the field existed.
 	if t.AccessProfile != "" {
 		hash.Write([]byte("accessProfile:" + t.AccessProfile))
+	}
+	// Hash DisableContentLogging only when the team says something, so every team that predates
+	// the column keeps the hash it already has and config sync sees no drift on upgrade.
+	if t.DisableContentLogging != nil {
+		if *t.DisableContentLogging {
+			hash.Write([]byte("disableContentLogging:true"))
+		} else {
+			hash.Write([]byte("disableContentLogging:false"))
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

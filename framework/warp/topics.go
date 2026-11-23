@@ -1204,7 +1204,8 @@ func fitsToolResult(result any) bool {
 // Sidekiq runner. Only clustering pages vectors out of the vector store;
 // discovery and upkeep read the log store, so they are registered without one.
 // An upkeep that finished is routine, and is kept out of the jobs listing
-// unless it failed.
+// unless it failed. Upkeep queues a new job every interval, so its finished
+// jobs are deleted after topicUpkeepRetention.
 //
 // They are bound whether or not there is a log reader yet: a deployment that
 // turns logging on after startup gets its reader later, through SetLogReader,
@@ -1223,6 +1224,7 @@ func (s *Service) RegisterTopics(runner *sidekiq.Runner) {
 	runner.Register(TopicUpkeepJobKind, s.RunTopicUpkeepJob)
 	runner.RegisterSummarizer(TopicUpkeepJobKind, SummarizeTopicUpkeepMeta)
 	runner.RegisterQuietOnSuccess(TopicUpkeepJobKind)
+	runner.RegisterRetention(TopicUpkeepJobKind, topicUpkeepRetention)
 	s.mu.Lock()
 	s.topicJobs = runner
 	s.mu.Unlock()
