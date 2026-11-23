@@ -361426,6 +361426,143 @@
           }
         }
       ]
+    },
+    {
+      "name": "379. Function call replay carrying reasoning fields (function call summary)",
+      "description": "A Responses input item that is not a reasoning item can still decode Bifrost's embedded reasoning fields: Codex replays function_call items with encrypted_content (and summary), which allocate ResponsesReasoning on the item. ResponsesMessage.MarshalJSON then re-emitted summary on the function_call (null, or [] here) and OpenAI rejected the request with 400 \"Unknown parameter: 'input[N].summary'\". The fix omits an empty summary on every non-reasoning item. These cases replay a function_call carrying summary:[] with its matching function_call_output; summary:[] reaches the same path as Codex's encrypted_content without needing an OpenAI-minted token, so the case is deterministic. Pinned on /v1/responses (unary and streamed) and on the /openai/v1/responses drop-in route Codex uses.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /v1/responses function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'response not completed: ' + body).to.equal('completed');",
+                  "  pm.expect(j.output, 'no output returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"stream\":false,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/responses stream function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'stream did not reach response.completed: ' + body).to.include('response.completed');",
+                  "  pm.expect(body, 'stream carried an error event: ' + body).to.not.include('\"type\":\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /openai/v1/responses stream function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'stream did not reach response.completed: ' + body).to.include('response.completed');",
+                  "  pm.expect(body, 'stream carried an error event: ' + body).to.not.include('\"type\":\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

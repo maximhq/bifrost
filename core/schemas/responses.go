@@ -1880,21 +1880,22 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 		return MarshalSorted(aux)
 	}
 
-	// summary is a reasoning-item field; OpenAI rejects it on a message item.
-	if m.ResponsesReasoning != nil && len(m.ResponsesReasoning.Summary) == 0 && m.Type != nil && *m.Type == ResponsesMessageTypeMessage {
-		return MarshalSorted(&struct {
-			Summary json.RawMessage `json:"summary,omitempty"`
-			*Alias
-		}{
-			Alias: (*Alias)(&m),
-		})
-	}
-
 	aux := &struct {
 		Arguments json.RawMessage `json:"arguments,omitempty"`
+		Summary   json.RawMessage `json:"summary,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(&m),
+	}
+
+	// summary is a reasoning-item field; OpenAI rejects an empty one on any other item type.
+	if m.ResponsesReasoning != nil &&
+		(len(m.ResponsesReasoning.Summary) > 0 || m.Type == nil || *m.Type == ResponsesMessageTypeReasoning) {
+		encoded, err := Marshal(m.ResponsesReasoning.Summary)
+		if err != nil {
+			return nil, err
+		}
+		aux.Summary = encoded
 	}
 
 	if m.ResponsesToolMessage != nil && m.Arguments != nil {
