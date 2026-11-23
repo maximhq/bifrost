@@ -291,6 +291,9 @@ type GovernanceHandler struct {
 	sidekiq           *sidekiq.Runner
 	notify            schemas.NotificationPublisher
 	expiryCleanupStop context.CancelFunc
+	// upstreamHealth reports the gateway's per provider/model upstream health for the quota
+	// endpoint. Set by SetUpstreamHealthSource; nil reports none.
+	upstreamHealth UpstreamHealthSource
 	// now is the clock, overridden in tests.
 	now func() time.Time
 }
@@ -5991,6 +5994,11 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	upstreamHealth := []schemas.UpstreamHealth{}
+	if source := h.upstreamHealth; source != nil {
+		upstreamHealth = vkUpstreamHealth(source(time.Now()), vk.ProviderConfigs)
+	}
+
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_key_name": vk.Name,
 		"is_active":        vk.IsActiveValue(),
@@ -5999,5 +6007,11 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"rate_limits":      rateLimits,
 		"provider_configs": vk.ProviderConfigs,
 		"model_configs":    models,
+		// What the gateway itself has recently seen from each upstream provider/model pair
+		// this key can reach: a pair whose whole key pool was refused (rate limit, quota,
+		// credential, model access) is cooling_down with available=false until cooldown_until.
+		// Pairs that have only succeeded are absent and available.
+		"upstream_health":                upstreamHealth,
+		"upstream_health_window_seconds": int64(schemas.UpstreamHealthWindow / time.Second),
 	})
 }

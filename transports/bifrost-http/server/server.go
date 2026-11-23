@@ -3140,6 +3140,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		if s.SidekiqRunner != nil && s.Config != nil && s.Config.ConfigStore != nil {
 			governanceHandler.SetExpiryCleanupBackend(s.SidekiqRunner, s.notificationPublisher())
 		}
+		governanceHandler.SetUpstreamHealthSource(func(now time.Time) []schemas.UpstreamHealth {
+			if s.Client == nil {
+				return nil
+			}
+			return s.Client.UpstreamHealthSnapshot(now)
+		})
 		s.GovernanceHandler = governanceHandler
 	}
 	// Routing rules and the complexity analyzer config live in the config store, so these

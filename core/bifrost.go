@@ -168,6 +168,7 @@ type Bifrost struct {
 	keyPoolFilter              schemas.KeyPoolFilter                 // optional hook to veto keys before selection (nil = all eligible)
 	kvStore                    schemas.KVStore                       // optional KV store for session stickiness (nil = disabled)
 	sessionAffinity            schemas.SessionAffinity               // decides which key a session stays on; never nil after Init
+	upstreamHealth             upstreamHealthTracker                 // per provider/model upstream outcomes behind UpstreamHealthSnapshot
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -8730,6 +8731,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					result, bifrostError = fallback, nil
 				}
 			}
+		}
+
+		// Record what this provider's attempt chain says about the provider serving the model:
+		// a refusal that survived the key walk puts the pair in cooldown, a success clears it.
+		if model != "" && req.RequestType != schemas.ListModelsRequest {
+			bifrost.recordUpstreamOutcome(req.Context, provider.GetProviderKey(), model, bifrostError)
 		}
 
 		// For streaming with an error, route release through the LAST attempt's
