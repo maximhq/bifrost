@@ -51,10 +51,16 @@ const petstoreSpecYAML = "openapi: 3.0.3\ninfo:\n  title: Petstore YAML\n  versi
 // the runtime would have synthesized from.
 type openAPIRecordingManager struct {
 	MCPManager
-	added     []*schemas.MCPClientConfig
-	updated   []*schemas.MCPClientConfig
-	refreshed []string
-	updateErr error // when set, UpdateMCPClient fails with it and records nothing
+	added       []*schemas.MCPClientConfig
+	updated     []*schemas.MCPClientConfig
+	refreshed   []string
+	reconnected []*schemas.MCPClientConfig
+	updateErr   error // when set, UpdateMCPClient fails with it and records nothing
+}
+
+func (m *openAPIRecordingManager) UpdateMCPClientCredentials(_ context.Context, _ string, c *schemas.MCPClientConfig) error {
+	m.reconnected = append(m.reconnected, c)
+	return nil
 }
 
 func (m *openAPIRecordingManager) RefreshMCPClientTools(_ context.Context, id string) (int, error) {
@@ -339,6 +345,26 @@ func TestAddMCPClient_OpenAPI_CreatesClientFromSpec(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, stored.OpenAPIConfig)
 	assert.JSONEq(t, petstoreSpecJSON, stored.OpenAPIConfig.Spec, "the row carries the document")
+}
+
+// TestAddMCPClient_OpenAPI_AWSSigV4: an OpenAPI client may sign its upstream API
+// calls with aws_sigv4 (API Gateway with IAM auth); the block reaches the manager.
+func TestAddMCPClient_OpenAPI_AWSSigV4(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	payload := map[string]any{
+		"name":             "iam_api",
+		"connection_type":  "openapi",
+		"auth_type":        "aws_sigv4",
+		"aws_sigv4":        map[string]string{"region": "us-east-1", "service": "execute-api"},
+		"tools_to_execute": []string{"*"},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://abc123.execute-api.us-east-1.amazonaws.com/prod"},
+	}
+	body, _ := json.Marshal(payload)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	require.NotNil(t, mgr.added[0].AWSSigV4)
+	assert.Equal(t, "execute-api", mgr.added[0].AWSSigV4.Service)
 }
 
 func TestAddMCPClient_OpenAPI_SpecURLIsInlinedOnCreate(t *testing.T) {
@@ -1086,6 +1112,20 @@ func TestUpdateMCPClient_OpenAPI_AuthBypassedRetargetCannotReuseStoredSecrets(t 
 			"openapi_config": map[string]any{"spec": spec}})
 		status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, retarget, id, true)
 		assert.Equal(t, fasthttp.StatusForbidden, status, respBody)
+	})
+	t.Run("aws_sigv4", func(t *testing.T) {
+		// Created by an admin; nothing is stored but the identity it signs with.
+		h, mgr := newOpenAPITestHandler(t)
+		createBody, _ := json.Marshal(map[string]any{"name": "petstore", "connection_type": "openapi", "auth_type": "aws_sigv4", "tools_to_execute": []string{"listPets"},
+			"aws_sigv4": map[string]any{"region": "us-east-1", "service": "execute-api"}, "openapi_config": map[string]any{"spec": spec}})
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+		require.Equal(t, fasthttp.StatusOK, status, respBody)
+		h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{mgr.added[0]}
+		status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, retarget, mgr.added[0].ID, true)
+		assert.Equal(t, fasthttp.StatusForbidden, status, respBody)
+		assert.Contains(t, respBody, "signed with Bifrost's own AWS identity")
+		status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, retarget, mgr.added[0].ID, false)
+		assert.Equal(t, fasthttp.StatusOK, status, "an authenticated admin may retarget it: "+respBody)
 	})
 	t.Run("credentials replaced", func(t *testing.T) {
 		h, id := setup(t, nil)

@@ -1918,6 +1918,136 @@ func TestUpdateMCPClient_ClientCredentials(t *testing.T) {
 	assert.Empty(t, row.ClientCredentials.Scopes, "the refused block is not stored")
 }
 
+// TestAddMCPClient_AWSSigV4 pins create for aws_sigv4: the block is stored and
+// handed to the manager, and an invalid or misplaced block, a header the signer
+// owns, STDIO, or a caller with no credential check is refused with nothing stored.
+func TestAddMCPClient_AWSSigV4(t *testing.T) {
+	const gateway = "https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
+	body := func(name, extra string) string {
+		return `{"name":"` + name + `","connection_type":"http","connection_string":"` + gateway + `","auth_type":"aws_sigv4"` + extra + `}`
+	}
+
+	t.Run("stores the block", func(t *testing.T) {
+		h, mgr := newOpenAPITestHandler(t)
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost,
+			body("sigv4_ok", `,"aws_sigv4":{"region":"us-east-1","role_arn":"arn:aws:iam::123456789012:role/gateway","external_id":"ext"}`), "", false)
+		require.Equal(t, fasthttp.StatusOK, status, respBody)
+		require.Len(t, mgr.added, 1)
+		require.NotNil(t, mgr.added[0].AWSSigV4)
+		assert.Equal(t, "us-east-1", mgr.added[0].AWSSigV4.Region.GetValue())
+		stored, err := h.store.ConfigStore.GetMCPClientByName(context.Background(), "sigv4_ok")
+		require.NoError(t, err)
+		require.NotNil(t, stored.AWSSigV4)
+		assert.Equal(t, "arn:aws:iam::123456789012:role/gateway", stored.AWSSigV4.RoleARN.GetValue())
+		assert.Equal(t, "ext", stored.AWSSigV4.ExternalID.GetValue())
+	})
+	for name, tc := range map[string]struct {
+		body, want string
+	}{
+		"missing block":                 {body("sigv4_none", ""), "aws_sigv4 is required for aws_sigv4 auth type"},
+		"service outside the allowlist": {body("sigv4_s3", `,"aws_sigv4":{"region":"us-east-1","service":"s3"}`), "aws_sigv4.service must be one of"},
+		"bad region":                    {body("sigv4_region", `,"aws_sigv4":{"region":"east"}`), "aws_sigv4.region must be an AWS region"},
+		"authorization header":          {body("sigv4_hdr", `,"aws_sigv4":{"region":"us-east-1"},"headers":{"Authorization":"Bearer x"}`), "is set by the SigV4 signer and cannot be configured"},
+		"forwarded x-amz header":        {body("sigv4_extra", `,"aws_sigv4":{"region":"us-east-1"},"allowed_extra_headers":["X-Amz-Target"]`), "it is set by the SigV4 signer"},
+		"block on another type":         {`{"name":"hdr","connection_type":"http","connection_string":"` + gateway + `","auth_type":"headers","aws_sigv4":{"region":"us-east-1"}}`, "aws_sigv4 can only be set for aws_sigv4 clients"},
+		"block on a per-user type":      {`{"name":"puh","connection_type":"http","connection_string":"` + gateway + `","auth_type":"per_user_headers","per_user_header_keys":["x-key"],"user_headers":{"x-key":"v"},"aws_sigv4":{"region":"us-east-1"}}`, "aws_sigv4 can only be set for aws_sigv4 clients"},
+		"stdio":                         {`{"name":"sigv4_stdio","connection_type":"stdio","stdio_config":{"command":"server"},"auth_type":"aws_sigv4","aws_sigv4":{"region":"us-east-1"}}`, "is not supported for connection_type 'stdio'"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, mgr := newOpenAPITestHandler(t)
+			status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, tc.body, "", false)
+			require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+			assert.Contains(t, respBody, tc.want)
+			assert.Empty(t, mgr.added)
+		})
+	}
+	t.Run("a caller with no credential check is refused", func(t *testing.T) {
+		h, mgr := newOpenAPITestHandler(t)
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, body("sigv4_open", `,"aws_sigv4":{"region":"us-east-1"}`), "", true)
+		require.Equal(t, fasthttp.StatusForbidden, status, respBody)
+		assert.Contains(t, respBody, "requires an authenticated admin session")
+		assert.Empty(t, mgr.added)
+	})
+}
+
+// TestUpdateMCPClient_AWSSigV4 pins update for aws_sigv4: a changed block is
+// stored, a masked secret reference keeps the stored one, the signer's headers
+// cannot be added later, the block is refused on other clients, and a caller with
+// no credential check cannot change it.
+func TestUpdateMCPClient_AWSSigV4(t *testing.T) {
+	t.Setenv("SIGV4_TEST_ROLE", "arn:aws:iam::123456789012:role/from-env")
+	h, mgr := newOpenAPITestHandler(t)
+	ctx := context.Background()
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost,
+		`{"name":"sigv4_upd","connection_type":"http","connection_string":"https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp","auth_type":"aws_sigv4","aws_sigv4":{"region":"us-east-1","role_arn":"env.SIGV4_TEST_ROLE"}}`, "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	status, respBody = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost,
+		`{"name":"plain_hdr","connection_type":"http","connection_string":"https://mcp.example.com/mcp","auth_type":"headers"}`, "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	h.store.MCPConfig.ClientConfigs = mgr.added
+	id, otherID := mgr.added[0].ID, mgr.added[1].ID
+	stored := func() *schemas.MCPAWSSigV4Config {
+		row, err := h.store.ConfigStore.GetMCPClientByID(ctx, id)
+		require.NoError(t, err)
+		return row.AWSSigV4
+	}
+	update := func(body string, bypassed bool) (int, string) {
+		return doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, body, id, bypassed)
+	}
+	masked := stored().RoleARN.Redacted().GetValue()
+
+	status, respBody = update(`{"aws_sigv4":{"region":"us-west-2","role_arn":"`+masked+`"}}`, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	assert.Equal(t, "us-west-2", stored().Region.GetValue())
+	assert.True(t, stored().RoleARN.IsFromEnv(), "a masked role_arn keeps the stored env reference")
+	require.Len(t, mgr.reconnected, 1, "a changed block reconnects the live client")
+	require.NotNil(t, mgr.reconnected[0].AWSSigV4)
+	assert.Equal(t, "us-west-2", mgr.reconnected[0].AWSSigV4.Region.GetValue())
+
+	// The recording manager leaves the live config alone; mirror what a real reconnect stores.
+	h.store.MCPConfig.ClientConfigs[0].AWSSigV4 = stored()
+	status, respBody = update(`{"aws_sigv4":{"region":"us-west-2","role_arn":"`+masked+`"}}`, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	assert.Len(t, mgr.reconnected, 1, "an unchanged block does not reconnect")
+
+	// A header the live connection sends is applied by reconnecting, without the unsigned pre-flight.
+	status, respBody = update(`{"headers":{"X-Api-Key":"new"}}`, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.reconnected, 2, "a header edit reconnects the live client")
+	apiKey := mgr.reconnected[1].Headers["X-Api-Key"]
+	assert.Equal(t, "new", apiKey.GetValue())
+	h.store.MCPConfig.ClientConfigs[0].Headers = mgr.reconnected[1].Headers
+	status, respBody = update(`{"headers":{"X-Api-Key":"new"}}`, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	assert.Len(t, mgr.reconnected, 2, "unchanged headers do not reconnect")
+
+	status, respBody = update(`{"aws_sigv4":{"region":"us-west-2","service":"s3"}}`, false)
+	require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "aws_sigv4.service must be one of")
+
+	status, respBody = update(`{"headers":{"X-Amz-Security-Token":"forged"}}`, false)
+	require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "X-Amz-Security-Token")
+	assert.Contains(t, respBody, "is set by the SigV4 signer and cannot be configured")
+
+	status, respBody = update(`{"aws_sigv4":{"region":"eu-west-1"}}`, true)
+	require.Equal(t, fasthttp.StatusForbidden, status, respBody)
+	assert.Equal(t, "us-west-2", stored().Region.GetValue(), "a refused update changes nothing")
+
+	status, respBody = update(`{"tls_config":{"insecure_skip_verify":true}}`, true)
+	require.Equal(t, fasthttp.StatusForbidden, status, "a caller with no credential check cannot weaken TLS: "+respBody)
+	assert.Contains(t, respBody, "Changing the TLS settings of an aws_sigv4 MCP client")
+	row, err := h.store.ConfigStore.GetMCPClientByID(ctx, id)
+	require.NoError(t, err)
+	assert.Nil(t, row.TLSConfig, "a refused TLS edit changes nothing")
+	status, respBody = update(`{"tls_config":{"insecure_skip_verify":true}}`, false)
+	require.Equal(t, fasthttp.StatusOK, status, "an admin may change it: "+respBody)
+
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"aws_sigv4":{"region":"us-east-1"}}`, otherID, false)
+	require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "aws_sigv4 can only be set for aws_sigv4 clients")
+}
+
 // TestAddMCPClient_OmittedAuthTypeRunsAsStored pins that a client created
 // without an auth_type reaches the runtime with the auth_type its stored row
 // carries, headers, so it connects the same way before and after a restart. The

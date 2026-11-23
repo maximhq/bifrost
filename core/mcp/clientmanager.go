@@ -66,7 +66,9 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 // through it too, so a credential its upstream rejects is refreshed there as well.
 func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), string, error) {
 	conn, release, instructions, err := m.dialClientConn(ctx, state)
-	if err == nil || !isAuthRequiredError(err) || !refreshesOnConnectRejection(m.credStore, state.ExecutionConfig) {
+	// An aws_sigv4 signer reports a 401/403 as its own error, which mcp-go never sees.
+	_, sigv4Rejected := errors.AsType[*utils.AWSSigV4RejectedError](err)
+	if err == nil || !(isAuthRequiredError(err) || sigv4Rejected) || !refreshesOnConnectRejection(m.credStore, state.ExecutionConfig) {
 		return conn, release, instructions, err
 	}
 	if refreshErr := m.credStore.ForceRefresh(ctx, state.ExecutionConfig); refreshErr != nil {
@@ -83,7 +85,7 @@ func refreshesOnConnectRejection(credStore schemas.MCPCredentialStore, config *s
 		return false
 	}
 	switch config.AuthType {
-	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange, schemas.MCPAuthTypeOauth, schemas.MCPAuthTypeClientCredentials:
+	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange, schemas.MCPAuthTypeOauth, schemas.MCPAuthTypeClientCredentials, schemas.MCPAuthTypeAWSSigV4:
 		return true
 	}
 	return false
@@ -339,6 +341,7 @@ type perCallConn struct {
 	insecureSkipVerify  bool
 	caCertPEM           string
 	requirePublicTarget bool
+	awsSigV4            *schemas.MCPAWSSigV4Config // the signer's settings; nil when requests are not signed
 
 	httpClient *http.Client
 	negotiated atomic.Pointer[negotiatedVersion]
@@ -352,7 +355,16 @@ type negotiatedVersion struct {
 
 func newPerCallConn(config *schemas.MCPClientConfig, httpClient *http.Client) *perCallConn {
 	insecure, caPEM := perCallTLSSettings(config)
-	return &perCallConn{insecureSkipVerify: insecure, caCertPEM: caPEM, requirePublicTarget: config.RequirePublicTarget, httpClient: httpClient}
+	return &perCallConn{insecureSkipVerify: insecure, caCertPEM: caPEM, requirePublicTarget: config.RequirePublicTarget, awsSigV4: perCallAWSSigV4(config), httpClient: httpClient}
+}
+
+// perCallAWSSigV4 is a copy of the aws_sigv4 block config's requests are signed with, or nil.
+func perCallAWSSigV4(config *schemas.MCPClientConfig) *schemas.MCPAWSSigV4Config {
+	if config.AuthType != schemas.MCPAuthTypeAWSSigV4 || config.AWSSigV4 == nil {
+		return nil
+	}
+	cfg := *config.AWSSigV4
+	return &cfg
 }
 
 func perCallTLSSettings(config *schemas.MCPClientConfig) (insecure bool, caPEM string) {
@@ -365,7 +377,8 @@ func perCallTLSSettings(config *schemas.MCPClientConfig) (insecure bool, caPEM s
 // builtFrom reports whether p's HTTP client matches the settings config asks for.
 func (p *perCallConn) builtFrom(config *schemas.MCPClientConfig) bool {
 	insecure, caPEM := perCallTLSSettings(config)
-	return p.insecureSkipVerify == insecure && p.caCertPEM == caPEM && p.requirePublicTarget == config.RequirePublicTarget
+	return p.insecureSkipVerify == insecure && p.caCertPEM == caPEM && p.requirePublicTarget == config.RequirePublicTarget &&
+		p.awsSigV4.Equal(perCallAWSSigV4(config))
 }
 
 // knownVersion returns the version the upstream at url last negotiated, or "".
@@ -1687,7 +1700,8 @@ func (m *MCPManager) discoverWithHeaders(ctx context.Context, config *schemas.MC
 			return nil, fmt.Errorf("admin credential resolved no access token")
 		}
 		return m.verifyPerUserOAuthConnection(ctx, config, accessToken, eachList)
-	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone:
+	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone, schemas.MCPAuthTypeAWSSigV4:
+		// aws_sigv4 resolves no headers: the HTTP client signs each request.
 		userHeaders := make(map[string]string, len(headers))
 		for k := range headers {
 			userHeaders[k] = headers.Get(k)
@@ -2233,6 +2247,16 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		if err := validateMCPTLSConfig(updatedConfig); err != nil {
 			return fmt.Errorf("invalid MCP client configuration: %w", err)
 		}
+		// The signing block and headers are checked as at create, so an update cannot
+		// sign for a service outside the allowlist.
+		if client.ExecutionConfig.AuthType == schemas.MCPAuthTypeAWSSigV4 {
+			if err := updatedConfig.AWSSigV4.Validate(); err != nil {
+				return fmt.Errorf("invalid MCP client configuration: %w", err)
+			}
+			if err := schemas.CheckAWSSigV4Headers(updatedConfig.Headers, updatedConfig.AllowedExtraHeaders); err != nil {
+				return fmt.Errorf("invalid MCP client configuration: %w", err)
+			}
+		}
 
 		if updatedConfig.ConnectionType != "" && updatedConfig.ConnectionType != client.ExecutionConfig.ConnectionType {
 			return fmt.Errorf("connection type cannot be updated for client %s", id)
@@ -2382,12 +2406,13 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			PendingOAuthConfig:    updatedConfig.PendingOAuthConfig,
 			TokenExchange:         updatedConfig.TokenExchange,
 			ClientCredentials:     updatedConfig.ClientCredentials,
+			AWSSigV4:              updatedConfig.AWSSigV4,
 			OpenAPIConfig:         openAPIConfig,
 		}
 
 		// The resolver and guarded HTTP client handed to the factory are built
-		// from the headers, extras allow-list, per-user keys and TLS settings at
-		// connect time, so an edit to any of them is also a rebuild.
+		// from the headers, extras allow-list, per-user keys, TLS settings and
+		// aws_sigv4 block at connect time, so an edit to any of them is also a rebuild.
 		if newConfig.ConnectionType == schemas.MCPConnectionTypeOpenAPI && openAPIConnectionInputsChanged(client.ExecutionConfig, newConfig) {
 			rebuildOpenAPI = true
 		}
@@ -2732,7 +2757,8 @@ func openAPIConnectionInputsChanged(oldCfg, newCfg *schemas.MCPClientConfig) boo
 	if oldCfg.TLSConfig != nil && (oldCfg.TLSConfig.InsecureSkipVerify != newCfg.TLSConfig.InsecureSkipVerify || !oldCfg.TLSConfig.CACertPEM.Equals(newCfg.TLSConfig.CACertPEM)) {
 		return true
 	}
-	return false
+	// The guarded HTTP client signs with the block it was built from.
+	return !oldCfg.AWSSigV4.Equal(newCfg.AWSSigV4)
 }
 
 func derefString(s *string) string {
@@ -2767,6 +2793,11 @@ func derefString(s *string) string {
 func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPClientConfig) (retErr error) {
 	if newConfig == nil {
 		return fmt.Errorf("newConfig must not be nil")
+	}
+	if newConfig.AWSSigV4 != nil {
+		if err := newConfig.AWSSigV4.Validate(); err != nil {
+			return fmt.Errorf("invalid MCP client configuration: %w", err)
+		}
 	}
 	// Hold the per-client reconnect guard for the entire read + long reconnect so
 	// UpdateClient/DisableClient cannot mutate ExecutionConfig while a failed reconnect
@@ -2889,13 +2920,24 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 		isDisabled := client.State == schemas.MCPConnectionStateDisabled
 		m.mu.RUnlock()
 		switch newConfig.AuthType {
-		case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone, schemas.MCPAuthTypeClientCredentials:
+		case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone, schemas.MCPAuthTypeClientCredentials, schemas.MCPAuthTypeAWSSigV4:
 			if isDisabled {
 				return fmt.Errorf("client uses per-call connections; there is no persistent connection to update: %w", schemas.ErrMCPReconnectNotApplicable)
 			}
 			discovery, discErr := m.performAdminToolDiscovery(m.ctx, newConfig, 0)
 			if discErr != nil {
 				return fmt.Errorf("credentials updated but tool discovery with them failed for MCP client %s: %w", newConfig.Name, discErr)
+			}
+			// Install the signing block as the sticky branch does; the per-call HTTP
+			// client is rebuilt from it on the next call.
+			if newConfig.AWSSigV4 != nil {
+				m.mu.Lock()
+				if cs, exists := m.clientMap[id]; exists && cs.ExecutionConfig != nil {
+					merged := *cs.ExecutionConfig
+					merged.AWSSigV4 = newConfig.AWSSigV4
+					cs.ExecutionConfig = &merged
+				}
+				m.mu.Unlock()
 			}
 			m.SetClientDiscovery(id, discovery)
 			return nil
@@ -2919,6 +2961,9 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 	}
 	if newConfig.ClientCredentials != nil {
 		mergedConfig.ClientCredentials = newConfig.ClientCredentials
+	}
+	if newConfig.AWSSigV4 != nil {
+		mergedConfig.AWSSigV4 = newConfig.AWSSigV4
 	}
 	// PendingOAuthConfig and PendingVerification are taken verbatim, not
 	// merged: completing the admin step clears both. Carrying the old values
@@ -3851,7 +3896,23 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 // client's life, must resolve to a public address. The registration-time
 // check in the HTTP handler only sees one DNS answer; this is what holds when
 // the name later resolves somewhere else.
+//
+// An aws_sigv4 client's requests are SigV4-signed on top of all of the above
+// (utils.NewAWSSigV4Client); buildUnsignedTLSHTTPClient is the same client
+// without signing, for fetches that must not carry Bifrost's AWS identity.
 func (m *MCPManager) buildTLSHTTPClient(config *schemas.MCPClientConfig) (*http.Client, error) {
+	httpClient, err := m.buildUnsignedTLSHTTPClient(config)
+	if err != nil || config.AuthType != schemas.MCPAuthTypeAWSSigV4 {
+		return httpClient, err
+	}
+	if config.AWSSigV4 == nil {
+		return nil, misconfiguredError{fmt.Errorf("aws_sigv4 is required for aws_sigv4 auth type in client '%s'", config.Name)}
+	}
+	return utils.NewAWSSigV4Client(httpClient, config.AWSSigV4, config.ConnectionType != schemas.MCPConnectionTypeOpenAPI), nil
+}
+
+// buildUnsignedTLSHTTPClient is buildTLSHTTPClient without SigV4 signing.
+func (m *MCPManager) buildUnsignedTLSHTTPClient(config *schemas.MCPClientConfig) (*http.Client, error) {
 	return m.buildTLSHTTPClientWithProxy(config, network.DefaultProxyFunc(network.ClientPurposeAPI))
 }
 
@@ -4194,10 +4255,18 @@ func (m *MCPManager) createOpenAPIConnection(ctx context.Context, config *schema
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build HTTP client for OpenAPI upstream: %w", err)
 	}
+	// The spec URL is not the upstream API, so a signing client fetches it unsigned.
+	specClient := httpClient
+	if config.AuthType == schemas.MCPAuthTypeAWSSigV4 {
+		if specClient, err = m.buildUnsignedTLSHTTPClient(config); err != nil {
+			return nil, nil, fmt.Errorf("failed to build HTTP client for the OpenAPI spec: %w", err)
+		}
+	}
 	srv, err := factory(ctx, config, schemas.InProcessServerDeps{
-		HTTPClient: httpClient,
-		Headers:    m.openAPIHeaderResolver(config, staticHeaders),
-		Logger:     m.logger,
+		HTTPClient:     httpClient,
+		SpecHTTPClient: specClient,
+		Headers:        m.openAPIHeaderResolver(config, staticHeaders),
+		Logger:         m.logger,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to synthesize MCP server from OpenAPI spec: %w", err)

@@ -2509,6 +2509,17 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		hash.Write(data)
 	}
 
+	// Same for the aws_sigv4 block.
+	if m.AWSSigV4JSON != nil && *m.AWSSigV4JSON != "" {
+		hash.Write([]byte(*m.AWSSigV4JSON))
+	} else if m.AWSSigV4 != nil {
+		data, err := json.Marshal(m.AWSSigV4)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash openapi_config so a changed spec, upstream, credential set or option
 	// in config.json drifts the hash and triggers reconciliation. The spec is
 	// hashed by content (or by its file reference when the content was not

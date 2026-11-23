@@ -105,6 +105,11 @@ type TableMCPClient struct {
 	// so it is encrypted at rest.
 	ClientCredentialsJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPClientCredentialsConfig
 
+	// SigV4 signing configuration for auth_type='aws_sigv4'. NULL for all
+	// other auth types. Holds no AWS secret, but is encrypted like the other
+	// auth blocks: the role ARN names the account.
+	AWSSigV4JSON *string `gorm:"column:aws_sigv4_json;type:text" json:"-"` // JSON serialized schemas.MCPAWSSigV4Config
+
 	// AllowByDefault opens the client to every caller not assigned it explicitly. The column keeps the
 	// name the flag was introduced under; only the wire name moved.
 	AllowByDefault bool `gorm:"column:allow_on_all_virtual_keys;default:false" json:"allow_by_default"`
@@ -156,6 +161,7 @@ type TableMCPClient struct {
 	PerUserHeaderKeys   []string                            `gorm:"-" json:"per_user_header_keys"`
 	TokenExchange       *schemas.MCPTokenExchangeConfig     `gorm:"-" json:"token_exchange,omitempty"`     // Runtime mirror of TokenExchangeJSON
 	ClientCredentials   *schemas.MCPClientCredentialsConfig `gorm:"-" json:"client_credentials,omitempty"` // Runtime mirror of ClientCredentialsJSON
+	AWSSigV4            *schemas.MCPAWSSigV4Config          `gorm:"-" json:"aws_sigv4,omitempty"`          // Runtime mirror of AWSSigV4JSON
 	PendingOAuthConfig  *schemas.OAuth2Config               `gorm:"-" json:"oauth_config,omitempty"`       // Runtime mirror of PendingOAuthConfigJSON
 	OpenAPIConfig       *schemas.MCPOpenAPIConfig           `gorm:"-" json:"openapi_config,omitempty"`     // Runtime mirror of OpenAPISpec + OpenAPIConfigJSON
 
@@ -370,6 +376,17 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.ClientCredentialsJSON = nil
 	}
 
+	if c.AWSSigV4 != nil {
+		data, err := json.Marshal(c.AWSSigV4)
+		if err != nil {
+			return err
+		}
+		s := string(data)
+		c.AWSSigV4JSON = &s
+	} else {
+		c.AWSSigV4JSON = nil
+	}
+
 	// Persist the inline `oauth_config` block. Rehydrated by AfterFind so
 	// the initiate-verification endpoint can feed it to InitiateOAuthFlow
 	// the same way the UI Create handler does.
@@ -437,6 +454,13 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 				return fmt.Errorf("failed to encrypt mcp client credentials config: %w", err)
 			}
 			c.ClientCredentialsJSON = &enc
+		}
+		if c.AWSSigV4JSON != nil && *c.AWSSigV4JSON != "" {
+			enc, err := encrypt.Encrypt(*c.AWSSigV4JSON)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp aws_sigv4 config: %w", err)
+			}
+			c.AWSSigV4JSON = &enc
 		}
 		// openapi_config carries the upstream API credentials.
 		if c.OpenAPIConfigJSON != nil && *c.OpenAPIConfigJSON != "" {
@@ -536,6 +560,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 				return fmt.Errorf("failed to decrypt mcp client credentials config: %w", err)
 			}
 			c.ClientCredentialsJSON = &decrypted
+		}
+		if c.AWSSigV4JSON != nil && *c.AWSSigV4JSON != "" {
+			decrypted, err := encrypt.Decrypt(*c.AWSSigV4JSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp aws_sigv4 config: %w", err)
+			}
+			c.AWSSigV4JSON = &decrypted
 		}
 		if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
 			decrypted, err := encrypt.Decrypt(*c.PendingOAuthConfigJSON)
@@ -647,6 +678,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		c.ClientCredentials = &cfg
+	}
+	if c.AWSSigV4JSON != nil && *c.AWSSigV4JSON != "" {
+		var cfg schemas.MCPAWSSigV4Config
+		if err := sonic.Unmarshal([]byte(*c.AWSSigV4JSON), &cfg); err != nil {
+			return err
+		}
+		c.AWSSigV4 = &cfg
 	}
 	if c.PendingOAuthConfigJSON != nil && *c.PendingOAuthConfigJSON != "" {
 		var cfg schemas.OAuth2Config

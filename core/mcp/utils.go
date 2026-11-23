@@ -1867,6 +1867,11 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 			return fmt.Errorf("oauth_config_id must not be set for client_credentials auth type in client '%s'", config.Name)
 		}
 	}
+	if config.AuthType == schemas.MCPAuthTypeAWSSigV4 {
+		if err := validateAWSSigV4ClientConfig(config); err != nil {
+			return err
+		}
+	}
 	if config.AuthType == schemas.MCPAuthTypeTokenExchange {
 		if config.TokenExchange == nil || strings.TrimSpace(config.TokenExchange.Audience) == "" {
 			return fmt.Errorf("token_exchange.audience is required (non-empty) for token_exchange auth type in client '%s'", config.Name)
@@ -1880,6 +1885,26 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		if err := config.TokenExchange.ValidateProfile(); err != nil {
 			return fmt.Errorf("%w in client '%s'", err, config.Name)
 		}
+	}
+	return nil
+}
+
+// validateAWSSigV4ClientConfig checks an aws_sigv4 client: an HTTP-reachable server,
+// a valid aws_sigv4 block, and no configured or forwardable header the signer owns.
+func validateAWSSigV4ClientConfig(config *schemas.MCPClientConfig) error {
+	switch config.ConnectionType {
+	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE, schemas.MCPConnectionTypeOpenAPI:
+	default:
+		return fmt.Errorf("aws_sigv4 auth type needs connection_type http, sse or openapi in client '%s'", config.Name)
+	}
+	if err := config.AWSSigV4.Validate(); err != nil {
+		return fmt.Errorf("%w in client '%s'", err, config.Name)
+	}
+	if config.OauthConfigID != nil && *config.OauthConfigID != "" {
+		return fmt.Errorf("oauth_config_id must not be set for aws_sigv4 auth type in client '%s'", config.Name)
+	}
+	if err := schemas.CheckAWSSigV4Headers(config.Headers, config.AllowedExtraHeaders); err != nil {
+		return fmt.Errorf("%w in client '%s'", err, config.Name)
 	}
 	return nil
 }
@@ -1910,9 +1935,9 @@ func validateOpenAPIClientConfig(config *schemas.MCPClientConfig) error {
 		return fmt.Errorf("openapi_config.max_response_bytes must not be negative in client '%s'", config.Name)
 	}
 	switch config.AuthType {
-	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders:
+	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeAWSSigV4:
 	default:
-		return fmt.Errorf("auth_type %q is not supported for openapi connection type in client '%s' (use none, headers or per_user_headers)", config.AuthType, config.Name)
+		return fmt.Errorf("auth_type %q is not supported for openapi connection type in client '%s' (use none, headers, per_user_headers or aws_sigv4)", config.AuthType, config.Name)
 	}
 	return nil
 }

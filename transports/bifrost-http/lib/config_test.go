@@ -4232,6 +4232,30 @@ func TestMCPClientConfigToTable_CarriesClientCredentials(t *testing.T) {
 	assert.True(t, row.ClientCredentials.Equal(cc))
 }
 
+// TestMCPClientConfigToTable_CarriesAWSSigV4: the config.json row keeps the
+// aws_sigv4 block, so it is hashed and stored on sync.
+func TestMCPClientConfigToTable_CarriesAWSSigV4(t *testing.T) {
+	cfg := &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-east-1"), RoleARN: schemas.NewSecretVar("arn:aws:iam::123456789012:role/r")}
+	row, err := mcpClientConfigToTable(&schemas.MCPClientConfig{Name: "gateway", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeAWSSigV4, AWSSigV4: cfg})
+	require.NoError(t, err)
+	require.NotNil(t, row.AWSSigV4)
+	assert.True(t, row.AWSSigV4.Equal(cfg))
+}
+
+// TestResolveMCPClientAuthType_AWSSigV4: aws_sigv4 signs an HTTP request, so it is
+// accepted for http, sse and openapi, and refused for STDIO.
+func TestResolveMCPClientAuthType_AWSSigV4(t *testing.T) {
+	for _, connectionType := range []schemas.MCPConnectionType{schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE, schemas.MCPConnectionTypeOpenAPI} {
+		got, err := ResolveMCPClientAuthType(schemas.MCPAuthTypeAWSSigV4, connectionType)
+		require.NoError(t, err, connectionType)
+		assert.Equal(t, schemas.MCPAuthTypeAWSSigV4, got)
+	}
+	_, err := ResolveMCPClientAuthType(schemas.MCPAuthTypeAWSSigV4, schemas.MCPConnectionTypeSTDIO)
+	require.ErrorContains(t, err, `auth_type "aws_sigv4" is not supported for connection_type 'stdio'`)
+	_, err = ResolveMCPClientAuthType("aws_iam", schemas.MCPConnectionTypeHTTP)
+	require.ErrorContains(t, err, "client_credentials, aws_sigv4")
+}
+
 // TestLoadMCPConfig_OmittedAuthTypeLoadsAsHeaders pins that a config.json client
 // without an auth_type loads as headers, the value the store saves and later boots
 // read back, so it connects the same way on its first boot as on every boot after.
@@ -24729,6 +24753,27 @@ func TestPinMCPClientImmutableFields_MaxProtocolVersion(t *testing.T) {
 }
 
 // TestLoadMCPConfig_FileReloadKeepsSavedMaxProtocolVersion: a cap saved through the UI or API survives a
+// TestPinMCPClientImmutableFields_AWSSigV4: a file entry that omits an aws_sigv4 client's signing block
+// keeps the stored one, which the client cannot run without; a declared block wins.
+func TestPinMCPClientImmutableFields_AWSSigV4(t *testing.T) {
+	initTestLogger()
+	stored := &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-east-1")}
+	declared := &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-gov-west-1")}
+	for _, tc := range []struct {
+		name       string
+		file, want *schemas.MCPAWSSigV4Config
+	}{
+		{"omitted keeps the stored block", nil, stored},
+		{"declared wins", declared, declared},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := &schemas.MCPClientConfig{Name: "gateway", AuthType: schemas.MCPAuthTypeAWSSigV4, AWSSigV4: tc.file}
+			pinMCPClientImmutableFields(file, &schemas.MCPClientConfig{Name: "gateway", AuthType: schemas.MCPAuthTypeAWSSigV4, AWSSigV4: stored})
+			assert.Same(t, tc.want, file.AWSSigV4)
+		})
+	}
+}
+
 // TestPinMCPClientImmutableFields_ExposeLists: a file entry that omits an allow-list keeps the stored one
 // (omitted would otherwise expose everything); a declared list wins.
 func TestPinMCPClientImmutableFields_ExposeLists(t *testing.T) {
@@ -24784,6 +24829,50 @@ func TestLoadMCPConfig_FileReloadKeepsSavedExposeLists(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, schemas.WhiteList{}, stored.PromptsToExpose, "stored row keeps expose-none")
 	assert.Equal(t, schemas.WhiteList{"file:///handbook.md"}, stored.ResourcesToExpose)
+}
+
+// TestLoadMCPConfig_FileReloadKeepsStoredAWSSigV4: a file entry that omits an aws_sigv4 client's
+// signing block keeps the stored one in the stored row, not only in the running config, and a
+// changed block is stored.
+func TestLoadMCPConfig_FileReloadKeepsStoredAWSSigV4(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func(tools schemas.WhiteList, block *schemas.MCPAWSSigV4Config) *schemas.MCPConfig {
+		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name:             "gateway",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"),
+			AuthType:         schemas.MCPAuthTypeAWSSigV4,
+			AWSSigV4:         block,
+			ToolsToExecute:   tools,
+		}}}
+	}
+	region := func(r string) *schemas.MCPAWSSigV4Config {
+		return &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar(r)}
+	}
+	storedRegion := func(t *testing.T, store configstore.ConfigStore, id string) string {
+		t.Helper()
+		row, err := store.GetMCPClientByID(ctx, id)
+		require.NoError(t, err)
+		require.NotNil(t, row.AWSSigV4, "the stored row must keep a signing block")
+		return row.AWSSigV4.Region.GetValue()
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(schemas.WhiteList{"*"}, region("us-east-1"))})
+	require.Len(t, first.MCPConfig.ClientConfigs, 1)
+	id := first.MCPConfig.ClientConfigs[0].ID
+
+	omitted := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, omitted, &ConfigData{MCP: fileMCP(schemas.WhiteList{"search"}, nil)})
+	require.Len(t, omitted.MCPConfig.ClientConfigs, 1)
+	require.NotNil(t, omitted.MCPConfig.ClientConfigs[0].AWSSigV4)
+	assert.Equal(t, "us-east-1", omitted.MCPConfig.ClientConfigs[0].AWSSigV4.Region.GetValue(), "running config keeps the block")
+	assert.Equal(t, "us-east-1", storedRegion(t, store, id), "stored row keeps the block")
+
+	changed := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, changed, &ConfigData{MCP: fileMCP(schemas.WhiteList{"*"}, region("us-west-2"))})
+	assert.Equal(t, "us-west-2", storedRegion(t, store, id), "a changed block is stored")
 }
 
 // staleMCPReadStore answers GetMCPConfig with what a node read before a peer's insert committed.

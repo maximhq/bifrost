@@ -454,9 +454,10 @@ func openAPITargetChanged(existing, merged *schemas.MCPOpenAPIConfig) bool {
 // openAPIRetargetCarriesStoredSecrets reports whether a retargeted OpenAPI
 // client would send secrets stored for its old target to the new one: a
 // security credential or static header kept from storage (omitted or sent
-// back redacted), or the per-user tokens of a per_user_headers client.
+// back redacted), the per-user tokens of a per_user_headers client, or the
+// AWS identity an aws_sigv4 client signs with.
 func openAPIRetargetCarriesStoredSecrets(existing *schemas.MCPClientConfig, merged *schemas.MCPOpenAPIConfig, headers map[string]schemas.SecretVar) bool {
-	if existing.AuthType == schemas.MCPAuthTypePerUserHeaders {
+	if existing.AuthType == schemas.MCPAuthTypePerUserHeaders || existing.AuthType == schemas.MCPAuthTypeAWSSigV4 {
 		return true
 	}
 	for name, stored := range existing.Headers {

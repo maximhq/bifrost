@@ -132,6 +132,10 @@ type Auth struct {
 	// access token that server issued, or one of the Bearer tokens above;
 	// RequireHeaders, IdentityHeader and Require no longer apply.
 	OAuth *OAuthConfig `json:"oauth,omitempty"`
+
+	// SigV4, when set, makes every MCP and REST request need an AWS SigV4
+	// signature by its credential (see sigv4.go); nothing else above applies.
+	SigV4 *SigV4Auth `json:"sigv4,omitempty"`
 }
 
 // authState guards Auth for concurrent control-API writes.

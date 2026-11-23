@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -399,9 +400,10 @@ var ErrMCPOpenAPIConfigInvalid = errors.New("openapi client configuration cannot
 // synthesized server's tool handlers reach the upstream the same way core's own
 // transports would.
 type InProcessServerDeps struct {
-	HTTPClient *http.Client                                   // TLS, proxy and public-target rules of the client already applied
-	Headers    func(ctx context.Context) (http.Header, error) // Static config headers + resolved credentials + allow-listed per-request extras
-	Logger     Logger
+	HTTPClient     *http.Client                                   // TLS, proxy and public-target rules of the client already applied
+	SpecHTTPClient *http.Client                                   // fetches spec_url: HTTPClient without request signing; nil means HTTPClient
+	Headers        func(ctx context.Context) (http.Header, error) // Static config headers + resolved credentials + allow-listed per-request extras
+	Logger         Logger
 }
 
 // InProcessServerFactory synthesizes an in-process MCP server for config. ctx is
@@ -685,6 +687,7 @@ const (
 	MCPAuthTypePerUserOauth      MCPAuthType = "per_user_oauth"     // Per-user OAuth 2.0 authentication (each user authenticates individually)
 	MCPAuthTypePerUserHeaders    MCPAuthType = "per_user_headers"   // Per-user header authentication (each user submits API keys / signed tokens; admin declares the required key names via PerUserHeaderKeys)
 	MCPAuthTypeClientCredentials MCPAuthType = "client_credentials" // Shared OAuth client_credentials grant with pre-registered credentials (MCP OAuth Client Credentials extension)
+	MCPAuthTypeAWSSigV4          MCPAuthType = "aws_sigv4"          // Every request signed with AWS SigV4 using Bifrost's own AWS identity (default chain, optionally an assumed role)
 	MCPAuthTypeTokenExchange     MCPAuthType = "token_exchange"     // Delegated token exchange: the caller's identity-provider token is exchanged for a short-lived upstream token scoped to this server's audience; requires user-identity authentication to be available
 )
 
@@ -1045,6 +1048,143 @@ func (c *MCPClientCredentialsConfig) TargetChangedFrom(existing *MCPClientCreden
 		strings.TrimSpace(c.AssertionAudience) != strings.TrimSpace(existing.AssertionAudience)
 }
 
+// DefaultAWSSigV4Service is the SigV4 signing name of Amazon Bedrock AgentCore, used
+// when an aws_sigv4 block names no service.
+const DefaultAWSSigV4Service = "bedrock-agentcore"
+
+// AllowedAWSSigV4Services are the signing names an aws_sigv4 MCP client may sign for:
+// the AWS services that host MCP servers or HTTP APIs. Any other service would let
+// whoever registers an MCP client call that AWS API as Bifrost's own identity.
+var AllowedAWSSigV4Services = []string{DefaultAWSSigV4Service, "aws-mcp", "lambda", "execute-api"}
+
+var (
+	awsRegionPattern      = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]+$`)
+	awsRoleARNPattern     = regexp.MustCompile(`^arn:aws[a-z-]*:iam::[0-9]{12}:role/[\w+=,.@/-]+$`)
+	awsSessionNamePattern = regexp.MustCompile(`^[\w+=,.@-]{2,64}$`)
+)
+
+// MCPAWSSigV4Config configures auth_type aws_sigv4: Bifrost signs every request to
+// the MCP server with SigV4, using the AWS identity it runs as (environment, Pod
+// Identity, IRSA, instance profile), optionally assuming RoleARN first.
+type MCPAWSSigV4Config struct {
+	Region      *SecretVar `json:"region"`                 // signing region, required
+	Service     string     `json:"service,omitempty"`      // signing name; empty: bedrock-agentcore
+	RoleARN     *SecretVar `json:"role_arn,omitempty"`     // role to assume before signing
+	ExternalID  *SecretVar `json:"external_id,omitempty"`  // sts:ExternalId of the AssumeRole call
+	SessionName *SecretVar `json:"session_name,omitempty"` // role session name; empty: bifrost-session
+}
+
+// SigningService returns the service requests are signed for.
+func (c *MCPAWSSigV4Config) SigningService() string {
+	if service := strings.TrimSpace(c.Service); service != "" {
+		return service
+	}
+	return DefaultAWSSigV4Service
+}
+
+// Validate checks the block without network access. A value held in a secret reference
+// is checked as it resolves.
+func (c *MCPAWSSigV4Config) Validate() error {
+	if c == nil {
+		return fmt.Errorf("aws_sigv4 is required for aws_sigv4 auth type")
+	}
+	if !awsRegionPattern.MatchString(strings.TrimSpace(c.Region.GetValue())) {
+		if c.Region.IsFromSecret() {
+			return fmt.Errorf("aws_sigv4.region references %s, which does not resolve to an AWS region", c.Region.GetRawRef())
+		}
+		return fmt.Errorf("aws_sigv4.region must be an AWS region such as us-east-1")
+	}
+	if !slices.Contains(AllowedAWSSigV4Services, c.SigningService()) {
+		return fmt.Errorf("aws_sigv4.service must be one of %s", strings.Join(AllowedAWSSigV4Services, ", "))
+	}
+	hasRole := c.RoleARN.IsSet()
+	if hasRole && !awsRoleARNPattern.MatchString(strings.TrimSpace(c.RoleARN.GetValue())) {
+		if c.RoleARN.IsFromSecret() {
+			return fmt.Errorf("aws_sigv4.role_arn references %s, which does not resolve to an IAM role ARN", c.RoleARN.GetRawRef())
+		}
+		return fmt.Errorf("aws_sigv4.role_arn must be an IAM role ARN such as arn:aws:iam::123456789012:role/name")
+	}
+	if c.ExternalID.IsSet() && !hasRole {
+		return fmt.Errorf("aws_sigv4.external_id requires role_arn")
+	}
+	if c.SessionName.IsSet() {
+		if !hasRole {
+			return fmt.Errorf("aws_sigv4.session_name requires role_arn")
+		}
+		if !awsSessionNamePattern.MatchString(strings.TrimSpace(c.SessionName.GetValue())) {
+			return fmt.Errorf("aws_sigv4.session_name must be 2 to 64 letters, digits or +=,.@_- characters")
+		}
+	}
+	return nil
+}
+
+// Equal reports whether c and o hold the same settings.
+func (c *MCPAWSSigV4Config) Equal(o *MCPAWSSigV4Config) bool {
+	if c == nil || o == nil {
+		return c == o
+	}
+	return c.Region.Equals(o.Region) && c.SigningService() == o.SigningService() && c.RoleARN.Equals(o.RoleARN) &&
+		c.ExternalID.Equals(o.ExternalID) && c.SessionName.Equals(o.SessionName)
+}
+
+// Redacted returns a copy for an API response. The external ID is always masked; the
+// other fields are identifiers and read back as set unless held in an env or vault
+// reference.
+func (c *MCPAWSSigV4Config) Redacted() *MCPAWSSigV4Config {
+	if c == nil {
+		return nil
+	}
+	cfg := *c
+	cfg.Region = c.Region.RedactedIfSecret()
+	cfg.RoleARN = c.RoleARN.RedactedIfSecret()
+	cfg.ExternalID = c.ExternalID.Redacted()
+	cfg.SessionName = c.SessionName.RedactedIfSecret()
+	return &cfg
+}
+
+// KeepMaskedFrom replaces each masked value in c with existing's stored one, so an
+// update that sends back what a read returned keeps the stored references.
+func (c *MCPAWSSigV4Config) KeepMaskedFrom(existing *MCPAWSSigV4Config) {
+	if c == nil || existing == nil {
+		return
+	}
+	if c.Region.IsMaskedPlaceholder() {
+		c.Region = existing.Region
+	}
+	if c.RoleARN.IsMaskedPlaceholder() {
+		c.RoleARN = existing.RoleARN
+	}
+	if c.ExternalID.IsMaskedPlaceholder() {
+		c.ExternalID = existing.ExternalID
+	}
+	if c.SessionName.IsMaskedPlaceholder() {
+		c.SessionName = existing.SessionName
+	}
+}
+
+// CheckAWSSigV4Headers refuses a configured header, or a header callers may
+// forward, that the SigV4 signer sets on an aws_sigv4 client.
+func CheckAWSSigV4Headers(headers map[string]SecretVar, allowedExtraHeaders WhiteList) error {
+	for name := range headers {
+		if IsAWSSigV4ReservedHeader(name) {
+			return fmt.Errorf("header %q is set by the SigV4 signer and cannot be configured", name)
+		}
+	}
+	for _, name := range allowedExtraHeaders {
+		if IsAWSSigV4ReservedHeader(name) {
+			return fmt.Errorf("allowed_extra_headers cannot include %q: it is set by the SigV4 signer", name)
+		}
+	}
+	return nil
+}
+
+// IsAWSSigV4ReservedHeader reports whether a header is set by the SigV4 signer, so an
+// aws_sigv4 client may neither configure it nor accept it from a caller.
+func IsAWSSigV4ReservedHeader(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return lower == "authorization" || strings.HasPrefix(lower, "x-amz-")
+}
+
 // IsHTTPSOrLoopbackURL reports whether raw is an https URL, or plain http on a
 // loopback host for local testing. It checks only the URL: whether the host may
 // be dialed is decided by the OAuth client's private-target guard.
@@ -1152,10 +1292,13 @@ type MCPClientConfig struct {
 	TokenExchange *MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
 	// ClientCredentials configures the client_credentials grant. Required when
 	// AuthType == client_credentials; ignored otherwise.
-	ClientCredentials   *MCPClientCredentialsConfig `json:"client_credentials,omitempty"`
-	AllowedExtraHeaders WhiteList                   `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
-	InProcessServer     *server.MCPServer           `json:"-"`                               // MCP server instance for in-process connections (Go package only)
-	ToolsToExecute      WhiteList                   `json:"tools_to_execute,omitempty"`      // Include-only list.
+	ClientCredentials *MCPClientCredentialsConfig `json:"client_credentials,omitempty"`
+	// AWSSigV4 configures SigV4 request signing. Required when AuthType ==
+	// aws_sigv4; ignored otherwise.
+	AWSSigV4            *MCPAWSSigV4Config `json:"aws_sigv4,omitempty"`
+	AllowedExtraHeaders WhiteList          `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
+	InProcessServer     *server.MCPServer  `json:"-"`                               // MCP server instance for in-process connections (Go package only)
+	ToolsToExecute      WhiteList          `json:"tools_to_execute,omitempty"`      // Include-only list.
 	// ToolsToExecute semantics:
 	// - ["*"] => all tools are included
 	// - []    => no tools are included (deny-by-default)

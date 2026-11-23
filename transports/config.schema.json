@@ -10786,9 +10786,48 @@
             "per_user_oauth",
             "per_user_headers",
             "token_exchange",
-            "client_credentials"
+            "client_credentials",
+            "aws_sigv4"
           ],
           "description": "Authentication type for MCP connection"
+        },
+        "aws_sigv4": {
+          "type": "object",
+          "description": "AWS SigV4 signing for auth_type 'aws_sigv4': Bifrost signs every request to the MCP server (or, for connection_type 'openapi', to the upstream API) with its own AWS identity from the default credential chain (environment, Pod Identity, IRSA, instance profile), optionally assuming role_arn first. For Amazon Bedrock AgentCore Gateway and other AWS-hosted MCP servers that require IAM.",
+          "properties": {
+            "region": {
+              "type": "string",
+              "pattern": "^([a-z]{2}(-[a-z]+)+-[0-9]+|env\\..+|vault\\..+)$",
+              "description": "AWS region requests are signed for, such as us-east-1 or us-gov-west-1. Can use env. or vault. prefix."
+            },
+            "service": {
+              "type": "string",
+              "enum": ["", "bedrock-agentcore", "aws-mcp", "lambda", "execute-api"],
+              "description": "SigV4 signing name. Empty (default): bedrock-agentcore. aws-mcp for the AWS MCP Server, lambda for Lambda function URLs, execute-api for API Gateway."
+            },
+            "role_arn": {
+              "type": "string",
+              "pattern": "^(arn:aws[a-z-]*:iam::[0-9]{12}:role/[\\w+=,.@/-]+|env\\..+|vault\\..+)$",
+              "description": "IAM role to assume before signing. Omitted: sign with Bifrost's own identity. Can use env. or vault. prefix."
+            },
+            "external_id": {
+              "type": "string",
+              "description": "External ID for the AssumeRole call, when the role's trust policy requires one. Requires role_arn. Can use env. or vault. prefix."
+            },
+            "session_name": {
+              "type": "string",
+              "pattern": "^(|[\\w+=,.@-]{2,64}|env\\..+|vault\\..+)$",
+              "description": "Role session name. Empty (default): bifrost-session. Requires role_arn. Can use env. or vault. prefix."
+            }
+          },
+          "required": [
+            "region"
+          ],
+          "dependentRequired": {
+            "external_id": ["role_arn"],
+            "session_name": ["role_arn"]
+          },
+          "additionalProperties": false
         },
         "client_credentials": {
           "type": "object",
@@ -11250,7 +11289,8 @@
                   "none",
                   "headers",
                   "oauth",
-                  "client_credentials"
+                  "client_credentials",
+                  "aws_sigv4"
                 ]
               }
             }
@@ -11371,6 +11411,31 @@
           }
         },
         {
+          "$comment": "aws_sigv4 requires its signing block (region), and the block only applies to that auth type; forbid it elsewhere so a misplaced declaration fails validation instead of being silently ignored.",
+          "if": {
+            "properties": {
+              "auth_type": {
+                "const": "aws_sigv4"
+              }
+            },
+            "required": [
+              "auth_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "aws_sigv4"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "aws_sigv4"
+              ]
+            }
+          }
+        },
+        {
           "$comment": "openapi_config only applies to connection_type 'openapi'; forbid it elsewhere so a misplaced block fails validation instead of being silently ignored.",
           "if": {
             "not": {
@@ -11393,7 +11458,7 @@
           }
         },
         {
-          "$comment": "A synthesized OpenAPI server has no remote MCP handshake to authenticate: only none, headers and per_user_headers apply. OAuth-flavored and token-exchange auth types are refused.",
+          "$comment": "A synthesized OpenAPI server has no remote MCP handshake to authenticate: only none, headers, per_user_headers and aws_sigv4 (each upstream API request is signed) apply. OAuth-flavored and token-exchange auth types are refused.",
           "if": {
             "properties": {
               "connection_type": {
@@ -11410,7 +11475,8 @@
                 "enum": [
                   "none",
                   "headers",
-                  "per_user_headers"
+                  "per_user_headers",
+                  "aws_sigv4"
                 ]
               }
             }

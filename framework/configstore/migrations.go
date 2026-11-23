@@ -611,6 +611,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_key_service_tier_column"}, run: migrationAddKeyServiceTierColumn},
 	{IDs: []string{"widen_batch_jobs_provider_status_and_endpoint"}, run: migrationWidenProviderJobColumns},
 	{IDs: []string{"add_mcp_client_client_credentials_json_column"}, run: migrationAddMCPClientClientCredentialsJSONColumn},
+	{IDs: []string{"add_mcp_client_aws_sigv4_json_column"}, run: migrationAddMCPClientAWSSigV4JSONColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17812,6 +17813,42 @@ func migrationAddMCPClientClientCredentialsJSONColumn(ctx context.Context, db *g
 			tx = tx.WithContext(ctx)
 			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "client_credentials_json"); err != nil {
 				return fmt.Errorf("failed to drop client_credentials_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientAWSSigV4JSONColumn adds the aws_sigv4_json column to
+// config_mcp_clients: the encrypted SigV4 signing block for auth_type='aws_sigv4'
+// clients. NULL for every existing client.
+func migrationAddMCPClientAWSSigV4JSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_aws_sigv4_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "AWSSigV4JSON"); err != nil {
+				return fmt.Errorf("failed to add aws_sigv4_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "aws_sigv4_json"); err != nil {
+				return fmt.Errorf("failed to drop aws_sigv4_json column: %w", err)
 			}
 			return nil
 		},

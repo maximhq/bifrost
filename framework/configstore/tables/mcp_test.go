@@ -108,6 +108,37 @@ func TestTableMCPClient_ClientCredentialsRoundTripsEncrypted(t *testing.T) {
 	assert.Equal(t, "", *loaded.ClientCredentials.Resource, "an explicitly empty resource survives the round trip")
 }
 
+// TestTableMCPClient_AWSSigV4RoundTripsEncrypted: the aws_sigv4 block is
+// ciphertext at rest and loads back whole.
+func TestTableMCPClient_AWSSigV4RoundTripsEncrypted(t *testing.T) {
+	db := setupTestDB(t)
+	row := &TableMCPClient{
+		ClientID:       "sigv4-1",
+		Name:           "web_search",
+		ConnectionType: string(schemas.MCPConnectionTypeHTTP),
+		AuthType:       string(schemas.MCPAuthTypeAWSSigV4),
+		AWSSigV4: &schemas.MCPAWSSigV4Config{
+			Region:      schemas.NewSecretVar("us-gov-west-1"),
+			Service:     "bedrock-agentcore",
+			RoleARN:     schemas.NewSecretVar("arn:aws-us-gov:iam::123456789012:role/gateway"),
+			ExternalID:  schemas.NewSecretVar("literal-external-id"),
+			SessionName: schemas.NewSecretVar("bifrost"),
+		},
+	}
+	require.NoError(t, db.Create(row).Error)
+
+	raw := rawRow(t, db, "config_mcp_clients", row.ID)
+	stored, _ := raw["aws_sigv4_json"].(string)
+	require.NotEmpty(t, stored)
+	assert.NotContains(t, stored, "123456789012", "the role ARN is encrypted at rest")
+	assert.NotContains(t, stored, "literal-external-id", "the whole block is ciphertext")
+
+	var loaded TableMCPClient
+	require.NoError(t, db.First(&loaded, row.ID).Error)
+	require.NotNil(t, loaded.AWSSigV4)
+	assert.True(t, loaded.AWSSigV4.Equal(row.AWSSigV4), "loaded %+v", loaded.AWSSigV4)
+}
+
 // TestTableMCPClient_NonOpenAPIClientLeavesOpenAPIColumnsEmpty confirms the two
 // new columns stay NULL/empty for every other connection type and that a row
 // without them loads with a nil OpenAPIConfig.

@@ -237,11 +237,11 @@ var narrowedEnumPaths = map[string]struct {
 		reason:   "global proxy rejects socks5/tcp at load (lib/configproxy.go) and on the API; only http is supported today",
 	},
 	"/properties/agents/items/properties/discovery_auth/properties/type": {
-		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange", "client_credentials"},
+		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange", "client_credentials", "aws_sigv4"},
 		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
 	},
 	"/properties/agents/items/properties/runtime_auth/properties/type": {
-		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange", "client_credentials"},
+		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange", "client_credentials", "aws_sigv4"},
 		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
 	},
 	"/properties/governance/properties/providers/items/properties/custom_provider_config/properties/base_provider_type": {

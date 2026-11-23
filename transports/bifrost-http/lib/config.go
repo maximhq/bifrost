@@ -2473,9 +2473,9 @@ func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string, 
 		return fmt.Errorf("connection_type 'openapi' requires openapi_config")
 	}
 	switch c.AuthType {
-	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders:
+	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeAWSSigV4:
 	default:
-		return fmt.Errorf("auth_type %q is not supported for connection_type 'openapi' (use none, headers or per_user_headers)", c.AuthType)
+		return fmt.Errorf("auth_type %q is not supported for connection_type 'openapi' (use none, headers, per_user_headers or aws_sigv4)", c.AuthType)
 	}
 	oc := c.OpenAPIConfig
 	if strings.TrimSpace(oc.Spec) == "" && oc.SpecFile != nil && strings.TrimSpace(*oc.SpecFile) != "" {
@@ -2519,13 +2519,19 @@ func ResolveMCPClientAuthType(authType schemas.MCPAuthType, connectionType schem
 			return "", fmt.Errorf("auth_type %q is not supported for connection_type '%s' (use connection_type 'http' or 'sse')", authType, connectionType)
 		}
 		return authType, nil
+	case schemas.MCPAuthTypeAWSSigV4:
+		// The signature goes on an HTTP request: the MCP server's, or an openapi upstream's.
+		if connectionType == schemas.MCPConnectionTypeSTDIO {
+			return "", fmt.Errorf("auth_type %q is not supported for connection_type '%s' (use connection_type 'http', 'sse' or 'openapi')", authType, connectionType)
+		}
+		return authType, nil
 	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
 		if connectionType == schemas.MCPConnectionTypeSSE || connectionType == schemas.MCPConnectionTypeSTDIO {
 			return "", fmt.Errorf("auth_type %q is not supported for connection_type '%s' (use connection_type 'http')", authType, connectionType)
 		}
 		return authType, nil
 	default:
-		return "", fmt.Errorf("Invalid auth_type %q: must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange, client_credentials", authType)
+		return "", fmt.Errorf("Invalid auth_type %q: must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange, client_credentials, aws_sigv4", authType)
 	}
 }
 
@@ -2838,6 +2844,10 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 		logger.Warn("client_credentials cannot be emptied for MCP client %q (auth_type 'client_credentials'); keeping the stored block", existing.Name)
 		fileClient.ClientCredentials = existing.ClientCredentials
 	}
+	if fileClient.AuthType == schemas.MCPAuthTypeAWSSigV4 && fileClient.AWSSigV4 == nil && existing.AWSSigV4 != nil {
+		logger.Warn("aws_sigv4 cannot be emptied for MCP client %q (auth_type 'aws_sigv4'); keeping the stored block", existing.Name)
+		fileClient.AWSSigV4 = existing.AWSSigV4
+	}
 
 	fileClient.OauthConfigID = existing.OauthConfigID
 	if len(fileClient.DiscoveredTools) == 0 {
@@ -3133,6 +3143,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.PerUserHeaderKeys = mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys)
 	row.TokenExchange = clientConfig.TokenExchange
 	row.ClientCredentials = clientConfig.ClientCredentials
+	row.AWSSigV4 = clientConfig.AWSSigV4
 	row.OauthConfigID = clientConfig.OauthConfigID
 	row.DiscoveredTools = clientConfig.DiscoveredTools
 	row.DiscoveredInstructions = clientConfig.DiscoveredInstructions
@@ -3523,6 +3534,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		PerUserHeaderKeys:      mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
 		TokenExchange:          clientConfig.TokenExchange,
 		ClientCredentials:      clientConfig.ClientCredentials,
+		AWSSigV4:               clientConfig.AWSSigV4,
 		PendingOAuthConfig:     clientConfig.PendingOAuthConfig,
 		OpenAPIConfig:          clientConfig.OpenAPIConfig,
 		ConfigHash:             clientConfig.ConfigHash,
@@ -10749,6 +10761,7 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 		configCopy.TokenExchange = &exchangeCopy
 	}
 	configCopy.ClientCredentials = config.ClientCredentials.Redacted()
+	configCopy.AWSSigV4 = config.AWSSigV4.Redacted()
 
 	// Redact credentials inside the inline `oauth_config` bootstrap block.
 	// Copy the struct first — configCopy shares the pointer with the live

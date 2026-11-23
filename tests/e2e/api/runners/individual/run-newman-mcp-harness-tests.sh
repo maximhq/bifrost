@@ -354,6 +354,12 @@ start_bifrost() {
     # SET-23 reads a header value from this variable; MCP_E2E_UNSET_KEY stays unset.
     # The admin password and setup token are well-known test values, so the server must not
     # inherit a wider BIFROST_HOST (such as 0.0.0.0) from the caller's environment.
+    # AUTH-67: the default AWS credential chain is the fleet's fake account (Pod Identity and STS), never the caller's.
+    AWS_ACCESS_KEY_ID="" AWS_SECRET_ACCESS_KEY="" AWS_ACCESS_KEY="" AWS_SECRET_KEY="" AWS_SESSION_TOKEN="" AWS_PROFILE="" AWS_ROLE_ARN="" AWS_WEB_IDENTITY_TOKEN_FILE="" \
+    AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true \
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI="" AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE="" \
+    AWS_CONTAINER_CREDENTIALS_FULL_URI="http://127.0.0.1:$CHAOS_PORT/aws/credentials" AWS_CONTAINER_AUTHORIZATION_TOKEN="chaos-pod-identity" \
+    AWS_ENDPOINT_URL_STS="http://127.0.0.1:$CHAOS_PORT/aws/sts" AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=false \
     MCP_E2E_HEADER_KEY="mcp-e2e-header-key" BIFROST_SETUP_TOKEN="$SETUP_TOKEN" BIFROST_HARNESS_CLIENT_METADATA_PRIVATE_ALLOWLIST="127.0.0.1" "$BIFROST_BINARY" --app-dir "$SERVER_DIR" --host 127.0.0.1 --port "$PORT" --log-level info > "$log" 2>&1 &
     SERVER_PID=$!
     local elapsed=0

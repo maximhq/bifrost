@@ -6025,6 +6025,21 @@ func TestMigrationAddMCPClientClientCredentialsJSONColumn(t *testing.T) {
 	require.NoError(t, migrationAddMCPClientClientCredentialsJSONColumn(ctx, db, testMigrationLogger), "a replay with the column present must not fail")
 }
 
+func TestMigrationAddMCPClientAWSSigV4JSONColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	const column = "aws_sigv4_json"
+
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPClient{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableMCPClient{}, column))
+	require.False(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column), "precondition: the column must be absent")
+
+	require.NoError(t, migrationAddMCPClientAWSSigV4JSONColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column))
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_client_aws_sigv4_json_column").Error)
+	require.NoError(t, migrationAddMCPClientAWSSigV4JSONColumn(ctx, db, testMigrationLogger), "a replay with the column present must not fail")
+}
+
 // Postgres silently truncates identifiers past 63 bytes, so a longer column is
 // created under a different name than GORM reads and writes.
 func TestTableModelPricing_ColumnNamesFitPostgresLimit(t *testing.T) {
