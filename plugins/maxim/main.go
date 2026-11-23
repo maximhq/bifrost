@@ -133,6 +133,7 @@ func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumula
 			Latency:             accResult.Latency,
 			TimeToFirstToken:    accResult.TimeToFirstToken,
 			OutputMessage:       accResult.OutputMessage,
+			OutputChoices:       accResult.OutputChoices,
 			OutputMessages:      accResult.OutputMessages,
 			TokenUsage:          accResult.TokenUsage,
 			Cost:                accResult.Cost,

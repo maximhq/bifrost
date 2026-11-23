@@ -31,8 +31,8 @@ type AccumulatedData struct {
 	StartTimestamp   time.Time
 	EndTimestamp     time.Time
 	OutputMessage    *schemas.ChatMessage
-	OutputChoices    []ChatChoiceOutput         // Every choice of a chat/text stream with n>1, by index; nil otherwise
-	OutputMessages   []schemas.ResponsesMessage // For responses API
+	OutputChoices    []schemas.StreamChoiceOutput // Every choice of a chat/text stream with n>1, by index; nil otherwise
+	OutputMessages   []schemas.ResponsesMessage   // For responses API
 	ToolCalls        []schemas.ChatAssistantMessageToolCall
 	ErrorDetails     *schemas.BifrostError
 	TokenUsage       *schemas.BifrostLLMUsage
@@ -94,14 +94,6 @@ type ChatStreamChunk struct {
 	ExtraChoices       []ChatStreamChunk                      // Further choices carried by the same event, if any
 	RawResponse        *string                                // Raw response if available
 	RawResponseFormat  schemas.RawResponseFormat              // Declared format of RawResponse, if any
-}
-
-// ChatChoiceOutput is the accumulated output of one choice in a chat or text stream.
-type ChatChoiceOutput struct {
-	Index        int
-	Message      *schemas.ChatMessage
-	FinishReason *string
-	LogProbs     *schemas.BifrostLogProbs
 }
 
 // ResponsesStreamChunk represents a single responses streaming chunk
@@ -345,9 +337,9 @@ type ProcessedStreamResponse struct {
 
 // responseChoices converts the accumulated choices of a chat or text stream into response choices. A single-choice
 // stream has no OutputChoices and yields one choice from the top-level output.
-func (d *AccumulatedData) responseChoices(toResponseChoice func(ChatChoiceOutput) schemas.BifrostResponseChoice) []schemas.BifrostResponseChoice {
+func (d *AccumulatedData) responseChoices(toResponseChoice func(schemas.StreamChoiceOutput) schemas.BifrostResponseChoice) []schemas.BifrostResponseChoice {
 	if len(d.OutputChoices) == 0 {
-		return []schemas.BifrostResponseChoice{toResponseChoice(ChatChoiceOutput{
+		return []schemas.BifrostResponseChoice{toResponseChoice(schemas.StreamChoiceOutput{
 			Message:      d.OutputMessage,
 			FinishReason: d.FinishReason,
 			LogProbs:     d.LogProbs,
@@ -361,7 +353,7 @@ func (d *AccumulatedData) responseChoices(toResponseChoice func(ChatChoiceOutput
 }
 
 // textResponseChoice converts one accumulated choice into a text completion choice.
-func textResponseChoice(choice ChatChoiceOutput) schemas.BifrostResponseChoice {
+func textResponseChoice(choice schemas.StreamChoiceOutput) schemas.BifrostResponseChoice {
 	text := ""
 	if choice.Message != nil && choice.Message.Content != nil && choice.Message.Content.ContentStr != nil {
 		text = *choice.Message.Content.ContentStr
@@ -377,7 +369,7 @@ func textResponseChoice(choice ChatChoiceOutput) schemas.BifrostResponseChoice {
 }
 
 // chatResponseChoice converts one accumulated choice into a non-streaming chat choice.
-func chatResponseChoice(choice ChatChoiceOutput) schemas.BifrostResponseChoice {
+func chatResponseChoice(choice schemas.StreamChoiceOutput) schemas.BifrostResponseChoice {
 	var message *schemas.ChatMessage
 	if choice.Message != nil {
 		message = &schemas.ChatMessage{

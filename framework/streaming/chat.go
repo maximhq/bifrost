@@ -197,7 +197,7 @@ func hasMultipleChoices(chunks []*ChatStreamChunk) bool {
 
 // buildChatChoiceOutputs assembles every choice of an n>1 stream on its own, in index order, so the content, tool
 // calls, finish reason and logprobs of one choice never mix with another's.
-func buildChatChoiceOutputs(chunks []*ChatStreamChunk) []ChatChoiceOutput {
+func buildChatChoiceOutputs(chunks []*ChatStreamChunk) []schemas.StreamChoiceOutput {
 	chunksByChoice := make(map[int][]*ChatStreamChunk)
 	for _, chunk := range chunks {
 		chunksByChoice[chunk.ChoiceIndex] = append(chunksByChoice[chunk.ChoiceIndex], chunk)
@@ -206,11 +206,11 @@ func buildChatChoiceOutputs(chunks []*ChatStreamChunk) []ChatChoiceOutput {
 			chunksByChoice[extra.ChoiceIndex] = append(chunksByChoice[extra.ChoiceIndex], extra)
 		}
 	}
-	outputs := make([]ChatChoiceOutput, 0, len(chunksByChoice))
+	outputs := make([]schemas.StreamChoiceOutput, 0, len(chunksByChoice))
 	for _, index := range slices.Sorted(maps.Keys(chunksByChoice)) {
 		choiceChunks := chunksByChoice[index]
 		message := BuildChatMessageFromChunks(choiceChunks) // sorts choiceChunks by ChunkIndex
-		outputs = append(outputs, ChatChoiceOutput{
+		outputs = append(outputs, schemas.StreamChoiceOutput{
 			Index:        index,
 			Message:      message,
 			FinishReason: latestChatFinishReason(choiceChunks),

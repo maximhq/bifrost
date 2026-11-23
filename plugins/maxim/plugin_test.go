@@ -260,3 +260,35 @@ func TestPluginName(t *testing.T) {
 		t.Errorf("Expected PluginName constant to be 'maxim', got '%s'", PluginName)
 	}
 }
+
+// TestConvertAccResultKeepsEveryChoice verifies the response Maxim rebuilds from an accumulated stream carries all the
+// choices of an n>1 stream, and still yields one choice when the stream had none recorded per choice.
+func TestConvertAccResultKeepsEveryChoice(t *testing.T) {
+	message := func(text string) *schemas.ChatMessage {
+		return &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &text}}
+	}
+
+	multi := convertAccResultToProcessedStreamResponse(&schemas.StreamAccumulatorResult{
+		OutputMessage: message("Hello world"),
+		OutputChoices: []schemas.StreamChoiceOutput{
+			{Index: 0, Message: message("Hello world")},
+			{Index: 1, Message: message("SECRET PASSWORD")},
+		},
+	}).ToBifrostResponse()
+	choices := multi.ChatResponse.Choices
+	if len(choices) != 2 {
+		t.Fatalf("expected 2 choices, got %d", len(choices))
+	}
+	for i, want := range []string{"Hello world", "SECRET PASSWORD"} {
+		if choices[i].Index != i || *choices[i].Message.Content.ContentStr != want {
+			t.Fatalf("choice %d = index %d, content %q; want %q", i, choices[i].Index, *choices[i].Message.Content.ContentStr, want)
+		}
+	}
+
+	single := convertAccResultToProcessedStreamResponse(&schemas.StreamAccumulatorResult{
+		OutputMessage: message("only"),
+	}).ToBifrostResponse()
+	if len(single.ChatResponse.Choices) != 1 || *single.ChatResponse.Choices[0].Message.Content.ContentStr != "only" {
+		t.Fatalf("expected the single-choice fallback, got %+v", single.ChatResponse.Choices)
+	}
+}
