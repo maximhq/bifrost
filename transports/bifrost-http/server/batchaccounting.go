@@ -125,9 +125,6 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	// Stored interactions (Gemini Deep Research runs) settle once, from their final read; this
 	// sweeper reads the runs no client read to the end.
 	loggerPlugin.StartInteractionAccountingSweeper(&bifrostInteractionPoller{client: s.Client}, time.Minute, s.Config.KVStore)
-	// Relay jobs settle on their own sweeper: they bill to the Relay Logs and
-	// the overall budgets, not through the model catalog.
-	s.startEndpointJobSweeper(s.endpointUsageReporter())
 }
 
 // setSettlementTracer gives the logging plugin the tracer for emitSettlementSpan.

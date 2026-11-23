@@ -384,8 +384,6 @@ type BifrostHTTPServer struct {
 	// the management handler a clustered server replays relay changes through.
 	relays                 *relay.Manager
 	RelaysHandler          *handlers.RelaysHandler
-	endpointSweeperCancel  context.CancelFunc
-	endpointSweeperMu      sync.Mutex // serializes sweeper restarts from concurrent plugin reloads
 	agentGatewayGRPCServer *handlers.AgentGatewayGRPCServer
 }
 
