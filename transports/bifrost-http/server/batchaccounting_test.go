@@ -13,6 +13,7 @@ import (
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -172,4 +173,58 @@ func TestInteractionPollerReadsTheRunWithTheCreatingKey(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, http.StatusNotFound, jobaccounting.ProviderCallStatus(err), "a 404 answered as a passthrough response becomes a provider call error")
 	assert.Equal(t, jobaccounting.ProviderCallGone, jobaccounting.ClassifyProviderCall(err))
+}
+
+// A governance reload must replace the relay sweeper's reporter even with the logging plugin off.
+func TestWireBatchAccountingRestartsRelaySweeperWithoutLogging(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer bifrostCtx.Cancel()
+	s := &BifrostHTTPServer{Ctx: bifrostCtx, Config: &lib.Config{}, Client: &bifrost.Bifrost{}}
+	running, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.endpointSweeperCancel = cancel
+
+	s.WireBatchAccountingSweeper()
+
+	assert.ErrorIs(t, running.Err(), context.Canceled, "the sweeper holding the old reporter is stopped")
+}
+
+// Embeds the interface so it counts as governance; only these methods are ever called.
+type removableGovernancePlugin struct {
+	governance.BaseGovernancePlugin
+}
+
+func (removableGovernancePlugin) GetName() string { return governance.PluginName }
+func (removableGovernancePlugin) Cleanup() error  { return nil }
+func (removableGovernancePlugin) ReportRelayUsage(context.Context, jobaccounting.RelayUsageReport) error {
+	return nil
+}
+
+// Removing governance must not leave the relay sweeper charging through the removed plugin.
+func TestRemoveGovernanceRestartsRelaySweeper(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+	ctx := context.Background()
+	cfg := &lib.Config{}
+	cfg.BasePlugins.Store(&[]schemas.BasePlugin{removableGovernancePlugin{}})
+	cfg.UpdatePluginOverallStatus(governance.PluginName, governance.PluginName, schemas.PluginStatusActive, nil, nil)
+	client, err := bifrost.Init(ctx, schemas.BifrostConfig{Account: lib.NewBaseAccount(cfg), Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	defer bifrostCtx.Cancel()
+	s := &BifrostHTTPServer{Ctx: bifrostCtx, Config: cfg, Client: client}
+	running, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.endpointSweeperCancel = cancel
+	require.NotNil(t, s.endpointUsageReporter(), "governance reports usage before it is removed")
+
+	require.NoError(t, s.RemovePlugin(ctx, governance.PluginName))
+
+	assert.ErrorIs(t, running.Err(), context.Canceled, "the sweeper holding the removed plugin is stopped")
+	assert.Nil(t, s.endpointUsageReporter(), "and no reporter is left for a new one")
 }

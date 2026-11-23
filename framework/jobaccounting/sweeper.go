@@ -81,6 +81,19 @@ func newSweeper(store SweepStore, recorder LogsRecorder, pricing PricingManager,
 // sharing the same database. Random rather than PID-based: sweepers on different
 // hosts can share a PID, and this value is what keeps their claims apart. Exported
 // so a kind can build its own runner-id prefix.
+// processID tells this process apart when no cluster node id is set: stable across reloads, new on
+// a restart, whose claims are recovered through the staleness path.
+var processID = newInstanceID()
+
+// RunnerID is a worker's claim identity: prefix plus the cluster node id, or this process's id. Every
+// job kind's workers use it, so claims name the kind and stay apart across replicas.
+func RunnerID(prefix, nodeID string) string {
+	if nodeID != "" {
+		return prefix + ":" + nodeID
+	}
+	return prefix + ":" + processID
+}
+
 func newInstanceID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {

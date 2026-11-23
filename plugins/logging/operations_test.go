@@ -6750,8 +6750,12 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 
 	row.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
 	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3", RequestID: "req-3", RelayName: "textract"}, job)
-	require.Len(t, store.jobs, 2, "an id reused after settlement is a new job")
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-4", RequestID: "req-4", RelayName: "textract"}, job)
+	require.Len(t, store.jobs, 1, "a start retried after its job was charged is not charged again")
+
+	reusing := &schemas.RelayJobHandle{ID: "j-1", IntervalSeconds: 30, Params: `{"job":{}}`, ReusedIDIsNewJob: true}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3b", RequestID: "req-3b", RelayName: "textract"}, reusing)
+	require.Len(t, store.jobs, 2, "with reused_id_is_new_job an id reused after settlement is a new job")
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-4", RequestID: "req-4", RelayName: "textract"}, reusing)
 	require.Len(t, store.jobs, 2, "a retried start of the reused job dedupes against its slot")
 
 	store.fail = errors.New("database is down")

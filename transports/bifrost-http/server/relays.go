@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
@@ -59,6 +60,8 @@ func (s *BifrostHTTPServer) InitializeRelays(ctx context.Context, relayManager h
 
 // startEndpointJobSweeper (re)starts the sweeper that settles async jobs relay
 // routes started. It runs on every reload so the reporter tracks the live governance plugin.
+// It ticks every 10s, so a job's interval_seconds below 30 is honoured; each tick is one indexed
+// query for due relay jobs.
 func (s *BifrostHTTPServer) startEndpointJobSweeper(reporter jobaccounting.RelayUsageReporter) {
 	s.endpointSweeperMu.Lock()
 	defer s.endpointSweeperMu.Unlock()
@@ -79,7 +82,17 @@ func (s *BifrostHTTPServer) startEndpointJobSweeper(reporter jobaccounting.Relay
 	}
 	sweepCtx, cancel := context.WithCancel(base)
 	s.endpointSweeperCancel = cancel
-	sweeper := jobaccounting.NewRelayJobSweeper(store, s.relays, s.Config.LogsStore, reporter, jobaccounting.RelayJobSweeperConfig{Interval: 30 * time.Second, Logger: logger})
+	// Named per node, as the batch and video sweepers are, so claims show the relay kind and survive reloads.
+	nodeID := ""
+	if loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName); err == nil && loggerPlugin != nil {
+		nodeID = loggerPlugin.ClusterNodeID()
+	}
+	config := jobaccounting.SweeperConfig{Interval: 10 * time.Second, Logger: logger, ClaimedBy: jobaccounting.RunnerID("relay-sweeper", nodeID)}
+	// Assigned only when set: a nil *kvstore.Store in the interface would not compare as nil.
+	if s.Config.KVStore != nil {
+		config.KVStore = s.Config.KVStore
+	}
+	sweeper := jobaccounting.NewRelayJobSweeper(store, s.relays, s.Config.LogsStore, reporter, config)
 	go sweeper.Run(sweepCtx)
 }
 

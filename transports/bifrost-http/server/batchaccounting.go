@@ -99,6 +99,9 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	if s == nil || s.Client == nil || s.Config == nil {
 		return
 	}
+	// Relay jobs settle on their own sweeper, restarted before the logging check so a governance
+	// reload reaches it. Only the logging plugin records relay jobs, so with logging off it has none.
+	s.startEndpointJobSweeper(s.endpointUsageReporter())
 	loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName)
 	if err != nil || loggerPlugin == nil {
 		logger.Warn("batch accounting sweeper not wired: logging plugin not found (err=%v)", err)
@@ -125,9 +128,6 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	// Stored interactions (Gemini Deep Research runs) settle once, from their final read; this
 	// sweeper reads the runs no client read to the end.
 	loggerPlugin.StartInteractionAccountingSweeper(&bifrostInteractionPoller{client: s.Client}, time.Minute, s.Config.KVStore)
-	// Relay jobs settle on their own sweeper: they bill to the Relay Logs and
-	// the overall budgets, not through the model catalog.
-	s.startEndpointJobSweeper(s.endpointUsageReporter())
 }
 
 // setSettlementTracer gives the logging plugin the tracer for emitSettlementSpan.
