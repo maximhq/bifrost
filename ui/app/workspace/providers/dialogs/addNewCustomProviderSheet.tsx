@@ -363,7 +363,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 export default function AddCustomProviderSheet(props: Props) {
 	return (
 		<Sheet open={props.show} onOpenChange={(open) => !open && props.onClose()}>
-			<SheetContent data-testid="custom-provider-sheet" className="p-0 pt-4">
+			<SheetContent resizeKey="custom-provider" data-testid="custom-provider-sheet" className="p-0 pt-4">
 				<AddCustomProviderSheetContent {...props} />
 			</SheetContent>
 		</Sheet>

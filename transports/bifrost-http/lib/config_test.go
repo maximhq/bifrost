@@ -2103,6 +2103,11 @@ func (m *MockConfigStore) FailSidekiqJob(ctx context.Context, id, runnerID, meta
 	return nil
 }
 
+// DeleteTerminalSidekiqJobs is a no-op for the mock store.
+func (m *MockConfigStore) DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error) {
+	return 0, nil
+}
+
 func (m *MockConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
 	return nil, nil
 }
@@ -21906,6 +21911,68 @@ func (m *mockConfigStoreAddProvider) AddProvider(ctx context.Context, provider s
 	return m.MockConfigStore.AddProvider(ctx, provider, config, tx...)
 }
 
+func TestProviderPrefixRegistration_ConfigLifecycle(t *testing.T) {
+	initTestLogger()
+	const provider schemas.ModelProvider = "Config Prefix Registration"
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(provider) })
+	cfg := &Config{Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig)}
+	ctx := context.Background()
+	model := string(provider) + "/namespace/model"
+	if err := cfg.AddProvider(ctx, provider, configstore.ProviderConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	parsedProvider, parsedModel := schemas.ParseModelString(model, "")
+	if parsedProvider != provider || parsedModel != "namespace/model" {
+		t.Fatalf("configured prefix was not recognized: provider=%q model=%q", parsedProvider, parsedModel)
+	}
+
+	cfg.ConfigStore = &mockConfigStoreDeleteProvider{
+		MockConfigStore:   *NewMockConfigStore(),
+		deleteProviderErr: errors.New("delete failed"),
+	}
+	if err := cfg.RemoveProvider(ctx, provider); err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if !schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("failed removal unregistered the retained configuration")
+	}
+	cfg.ConfigStore = nil
+	if err := cfg.RemoveProvider(ctx, provider); err != nil {
+		t.Fatal(err)
+	}
+	if schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("removed configuration left a registered prefix")
+	}
+
+	cfg.ConfigStore = &mockConfigStoreAddProvider{
+		MockConfigStore: *NewMockConfigStore(),
+		addProviderErr:  errors.New("add failed"),
+	}
+	if err := cfg.AddProvider(ctx, provider, configstore.ProviderConfig{}); err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("failed creation registered a prefix")
+	}
+}
+
+func BenchmarkProviderPrefixRegistration(b *testing.B) {
+	initTestLogger()
+	const provider schemas.ModelProvider = "benchmark-prefix-registration"
+	b.Cleanup(func() { schemas.UnregisterKnownProvider(provider) })
+	cfg := &Config{Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig)}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := cfg.AddProvider(ctx, provider, configstore.ProviderConfig{}); err != nil {
+			b.Fatal(err)
+		}
+		if err := cfg.RemoveProvider(ctx, provider); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestAddProvider_Success(t *testing.T) {
 	initTestLogger()
 	cfg := &Config{
@@ -21944,6 +22011,8 @@ func TestAddProvider_AlreadyExistsInMemory(t *testing.T) {
 
 func TestAddProvider_AlreadyExistsInDB_SyncsToMemory(t *testing.T) {
 	initTestLogger()
+	schemas.UnregisterKnownProvider("test-provider")
+	t.Cleanup(func() { schemas.UnregisterKnownProvider("test-provider") })
 	// Simulate: provider exists in DB but not in the in-memory map.
 	// This can happen when a previous AddProvider wrote to DB but the process failed
 	// before syncing the in-memory state (e.g., UpdateProviderConfig failed after AddProvider).
@@ -21973,6 +22042,9 @@ func TestAddProvider_AlreadyExistsInDB_SyncsToMemory(t *testing.T) {
 	// so that subsequent UpdateProviderConfig calls can succeed
 	if _, exists := cfg.Providers["test-provider"]; !exists {
 		t.Fatal("provider should be synced to in-memory map when DB returns already exists")
+	}
+	if !schemas.IsKnownProvider("test-provider") {
+		t.Fatal("synced configuration should register its provider prefix")
 	}
 }
 

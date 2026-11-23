@@ -3200,6 +3200,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		VirtualKeyAssignees:  s.VirtualKeyAssigneeResolver,
 		UserGovernance:       s.WarpUserGovernanceReader,
 		CallerRestriction:    s.WarpCallerRestrictionResolver,
+		VirtualKeys:          s.virtualKeyCache,
 	})
 	if loggingHandler != nil {
 		loggingHandler.SetTopicLister(s.WarpHandler.Service())

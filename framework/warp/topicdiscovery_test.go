@@ -1150,6 +1150,11 @@ func TestRegisterTopicsBindsTheUpkeepJob(t *testing.T) {
 	_, summarized := runner.Summarize(TopicUpkeepJobKind, "{}")
 	require.True(t, summarized)
 	require.Equal(t, []string{TopicUpkeepJobKind}, runner.QuietOnSuccessKinds())
+	keep, ok := runner.Retention(TopicUpkeepJobKind)
+	require.True(t, ok, "upkeep queues a job every interval, so its finished rows need a retention")
+	require.Equal(t, topicUpkeepRetention, keep)
+	_, ok = runner.Retention(TopicDiscoveryJobKind)
+	require.False(t, ok, "only upkeep is given a retention")
 	require.NotContains(t, TopicsJobKinds, TopicUpkeepJobKind, "a waiting upkeep must not refuse a seed run")
 }
 

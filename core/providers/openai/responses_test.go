@@ -5853,3 +5853,48 @@ func TestToOpenAIResponsesRequest_SubqDowngradesForcedToolChoice(t *testing.T) {
 	require.NotNil(t, none.ToolChoice.ResponsesToolChoiceStr)
 	require.Equal(t, string(schemas.ResponsesToolChoiceTypeNone), *none.ToolChoice.ResponsesToolChoiceStr)
 }
+
+// Codex replays function_call items carrying encrypted_content, which decodes into the
+// embedded ResponsesReasoning; the request then went out with summary:null and OpenAI
+// rejected it with "Unknown parameter: 'input[N].summary'".
+func TestToOpenAIResponsesRequest_FunctionCallItemWithEncryptedContent(t *testing.T) {
+	const output = `{"type":"function_call_output","call_id":"call_1","output":"done"}`
+	tests := []struct {
+		name          string
+		call          string
+		wantEncrypted string
+	}{
+		{name: "codex replay with encrypted_content and summary null", call: `{"type":"function_call","id":"fc_keep","status":"completed","call_id":"call_1","name":"spawn_agent","namespace":"collaboration","arguments":"{\"task_name\":\"reader\"}","summary":null,"encrypted_content":"gAAAA-call"}`, wantEncrypted: `"gAAAA-call"`},
+		{name: "empty summary array without encrypted_content", call: `{"type":"function_call","id":"fc_keep","status":"completed","call_id":"call_1","name":"spawn_agent","arguments":"{\"task_name\":\"reader\"}","summary":[]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"model":"gpt-5-mini","input":[{"role":"user","content":"hi"},` + tt.call + `,` + output + `]}`
+			var request OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(body), &request))
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, bifrostRequest))
+			require.NoError(t, err)
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+
+			var item map[string]json.RawMessage
+			for _, in := range payload.Input {
+				if string(in["type"]) == `"function_call"` {
+					item = in
+				}
+			}
+			require.NotNil(t, item, "function_call must not be dropped: %s", wire)
+			require.NotContains(t, item, "summary", "OpenAI rejects summary on a function_call item: %s", wire)
+			if tt.wantEncrypted != "" {
+				require.JSONEq(t, tt.wantEncrypted, string(item["encrypted_content"]), "encrypted_content must survive: %s", wire)
+			}
+			require.JSONEq(t, `"call_1"`, string(item["call_id"]))
+			require.JSONEq(t, `"{\"task_name\":\"reader\"}"`, string(item["arguments"]))
+		})
+	}
+}

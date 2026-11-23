@@ -33,6 +33,17 @@ func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	}
 }
 
+// chatToolImagesSupported reports whether a tool's images may move into user
+// content for this destination. The datasheet's supports_vision decides when the
+// model has a record. Without one, only OpenAI and Azure OpenAI (and custom
+// providers built on them) default to yes: every other OpenAI-compatible host
+// serves text-only models that reject an image_url part with a 400, so they keep
+// the placeholder.
+func chatToolImagesSupported(ctx *schemas.BifrostContext, caps schemas.ModelCaps, provider schemas.ModelProvider) bool {
+	base := schemas.ResolveBaseProvider(ctx, provider)
+	return caps.SupportsVision(base == schemas.OpenAI || base == schemas.Azure)
+}
+
 // ToOpenAIChatRequest converts a Bifrost chat completion request to OpenAI format
 func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
@@ -44,7 +55,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
-		Messages: ConvertBifrostMessagesToOpenAIMessages(bifrostReq.Input),
+		Messages: convertBifrostMessagesToOpenAIMessages(bifrostReq.Input, chatToolImagesSupported(ctx, caps, bifrostReq.Provider)),
 		Provider: bifrostReq.Provider,
 	}
 
