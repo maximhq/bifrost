@@ -47,8 +47,7 @@
 
 ## 🐞 Fixed
 
-- [fix]: reject chat messages with missing, null or empty roles with HTTP 400 invalid_request_error
-
+- **Custom Provider Prefixes on Create** - A provider created through the API resolves by its `name/model` prefix as soon as its configuration is stored, so requests sent during the post-create reload and model discovery are no longer load balanced to another provider. A create that is rolled back also stops any workers such a request started
 - **Mid-Conversation System Reminders** - Claude Code's trailing system reminder now keeps one form (native or `<system-reminder>`) across turns, decided from the messages actually sent. On Bedrock InvokeModel the changing form had invalidated the prompt cache every turn, cutting cached input and raising cost. The `<system-reminder>` envelope also drops its trailing newline, and the cache breakpoint stays on the marked block. Native placement is now controlled by the `supports_native_mid_conversation_system` datasheet field
 - **Vertex Prompt Cache Misses** - Vertex Claude request bodies always end with `tools`, `system`, `messages`, so turn-to-turn cache reads no longer miss when a client sends `messages` first
 - **Cached Tokens Counted Twice** - Anthropic streaming usage, on chat and Responses streams and on the passthrough route, counts each cached prompt token once, including upstreams such as kimi-code that report the cache split on `message_delta` (thanks [@is911](https://github.com/is911) and [@wangkanai](https://github.com/wangkanai)!)
@@ -104,6 +103,8 @@
   The allowlist is empty by default, so no plugin URL is fetched until its host is listed. Set `BIFROST_PLUGIN_URL_ALLOWLIST` (comma-separated hosts, `*.example.com` or `*`) before upgrading if you load plugins from a URL.
   </Warning>
 - **Dashboard** - Log headers and the date picker fit on mobile, the upgrading screen appears only when the server confirms a chunk is gone, and the datasheet editor hides entries without a provider
+
+- [fix]: reject chat messages with missing, null or empty roles with HTTP 400 invalid_request_error
 
 ## 🔧 Maintenance
 

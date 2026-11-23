@@ -14,6 +14,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -22,8 +23,32 @@ import (
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+func TestDocumentCitationsConverseRouteRoundTrip(t *testing.T) {
+	for _, route := range []RouteConfig{
+		createBedrockConverseRouteConfig("/bedrock", &mockHandlerStore{}),
+		createBedrockConverseStreamRouteConfig("/bedrock", &mockHandlerStore{}),
+	} {
+		t.Run(route.Path, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			in := &bedrock.BedrockConverseRequest{ModelID: "global.anthropic.claude-haiku-5-5"}
+			require.NoError(t, sonic.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"name":"pack","source":{"content":[{"text":"Budget: $4.2M."}]},"citations":{"enabled":true}}},{"text":"Cite it."}]}]}`), in))
+			req, err := route.RequestConverter(ctx, in)
+			require.NoError(t, err)
+			req.ResponsesRequest.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")}
+			req.ResponsesRequest.Params.MaxOutputTokens = schemas.Ptr(128)
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, req.ResponsesRequest)
+			require.NoError(t, err)
+			wire, err := providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			require.Equal(t, "Budget: $4.2M.", gjson.GetBytes(wire, "messages.0.content.0.document.source.content.0.text").Str)
+			require.True(t, gjson.GetBytes(wire, "messages.0.content.0.document.citations.enabled").Bool())
+		})
+	}
+}
 
 // mockHandlerStore implements lib.HandlerStore for testing
 type mockHandlerStore struct {

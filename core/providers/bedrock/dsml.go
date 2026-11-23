@@ -227,6 +227,11 @@ func (f *DSMLStreamFilter) FilterChatChunk(resp *schemas.BifrostChatResponse) {
 // Held text waits across contentBlockStop, which neither converter acts on; the text block
 // stays open until the next start or messageStop. A toolUse start confirms the leak and
 // drops it; any other event means it was the answer, so it goes out ahead of that event.
+// isHolding reports whether text is held back awaiting the next event; nil-safe.
+func (f *DSMLStreamFilter) isHolding() bool {
+	return f != nil && f.holding
+}
+
 func (f *DSMLStreamFilter) filterConverseEvent(ev *BedrockStreamEvent) *BedrockStreamEvent {
 	if f == nil {
 		return nil
