@@ -8,8 +8,10 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/warp"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -26,7 +28,7 @@ import (
 //
 // If you add anything to this function, add it here rather than reading ctx
 // inside the goroutine.
-func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (context.Context, context.CancelFunc, error) {
+func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration, warpVirtualKey string) (context.Context, context.CancelFunc, error) {
 	base := context.Background()
 
 	// Fail closed, but only when a scope was actually set and could not be
@@ -51,7 +53,7 @@ func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (conte
 			base = context.WithValue(base, key, value)
 		}
 	}
-	base = warp.WithGrant(base, warpGrantSettler(ctx))
+	base = warp.WithGrant(base, warpGrantSettler(ctx, warpVirtualKey))
 	base = warpManagementCaller(base, ctx)
 	snapshot, cancel := context.WithTimeout(base, timeout)
 	return snapshot, cancel, nil
@@ -66,7 +68,10 @@ func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (conte
 // user who asked. The values are read now, because the settler runs after
 // fasthttp has recycled the RequestCtx; each grant is built on a background
 // context, since it outlives the request and only the values are wanted.
-func warpGrantSettler(ctx *fasthttp.RequestCtx) func() schemas.Grant {
+//
+// warpVirtualKey is Warp's own virtual key, from its settings, or empty. It is
+// presented only for a caller nothing else identifies (see warpVirtualKey).
+func warpGrantSettler(ctx *fasthttp.RequestCtx, warpVirtualKey string) func() schemas.Grant {
 	values := map[any]any{}
 	for _, key := range []any{
 		schemas.BifrostContextKeyUserID,
@@ -81,6 +86,9 @@ func warpGrantSettler(ctx *fasthttp.RequestCtx) func() schemas.Grant {
 	// The virtual key is a header, never a user value.
 	if virtualKey := virtualKeyFromHeaders(ctx); virtualKey != "" {
 		values[schemas.BifrostContextKeyVirtualKey] = virtualKey
+	} else if warpVirtualKey != "" {
+		// Decided by warpVirtualKey, which hands over a key only for a caller with no identity.
+		values[schemas.BifrostContextKeyVirtualKey] = warpVirtualKey
 	}
 	return func() schemas.Grant {
 		settle := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -91,6 +99,67 @@ func warpGrantSettler(ctx *fasthttp.RequestCtx) func() schemas.Grant {
 		lib.SettleIdentity(settle)
 		return settle.Grant()
 	}
+}
+
+// errWarpVirtualKeyMissing is a Warp virtual key setting that names a key that
+// no longer exists.
+var errWarpVirtualKeyMissing = errors.New("warp's virtual key no longer exists")
+
+// warpVirtualKeyLookupTimeout bounds warpVirtualKey's store read, including the
+// wait for a pooled connection; a var so a test can shorten it.
+var warpVirtualKeyLookupTimeout = 5 * time.Second
+
+// warpVirtualKey resolves the virtual key Warp's settings name (id) to the value
+// its model calls present, or "" when there is nothing to present: no key set,
+// or a caller who brings an identity of their own (see warpCallerIdentified).
+// Such a caller is governed as themselves; the key is for the local admin and
+// for a deployment without an identity provider, whose sessions name nobody.
+//
+// Looked up once per turn, from governance's in-memory store when one is wired
+// (a map load) and the config store otherwise. The store read runs on a
+// background context: the key is the deployment's own setting, not something
+// the asker's data scope should hide. That context carries its own deadline,
+// since nothing from the request (which has none, and is not cancelled by a
+// disconnect) would bound it. An inactive key is still presented, so
+// governance refuses it with its own reason.
+func (h *WarpHandler) warpVirtualKey(ctx *fasthttp.RequestCtx, id string) (string, error) {
+	if id == "" || warpCallerIdentified(ctx) {
+		return "", nil
+	}
+	if h.virtualKeyCache != nil {
+		if cache := h.virtualKeyCache(); cache != nil {
+			if vk, ok := cache.GetVirtualKeyByID(ctx, id); ok && vk != nil {
+				return vk.Value.GetValue(), nil
+			}
+		}
+	}
+	if h.virtualKeyStore == nil {
+		return "", errWarpVirtualKeyMissing
+	}
+	lookupCtx, cancel := context.WithTimeout(context.Background(), warpVirtualKeyLookupTimeout)
+	defer cancel()
+	vk, err := h.virtualKeyStore.GetVirtualKey(lookupCtx, id)
+	if errors.Is(err, configstore.ErrNotFound) || (err == nil && vk == nil) {
+		return "", errWarpVirtualKeyMissing
+	}
+	if err != nil {
+		return "", err
+	}
+	return vk.Value.GetValue(), nil
+}
+
+// warpCallerIdentified reports whether the dashboard request carries an identity
+// of its own. It settles the caller's grant with the same settler Warp's model
+// calls use and asks governance's own question of it, so "who counts as
+// identified" is decided in one place: the mandatory-credential check that
+// would otherwise refuse the call.
+func warpCallerIdentified(ctx *fasthttp.RequestCtx) bool {
+	settled := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer settled.Cancel()
+	if g := warpGrantSettler(ctx, "")(); g != nil {
+		settled.SetGrant(g)
+	}
+	return governance.PresentedAnyCredential(settled)
 }
 
 // chat is the agent endpoint.
@@ -147,7 +216,19 @@ func (h *WarpHandler) chat(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	agentCtx, cancel, scopeErr := snapshotWarpContext(ctx, turn.Budget)
+	presented, keyErr := h.warpVirtualKey(ctx, turn.VirtualKeyID())
+	if keyErr != nil {
+		// The turn never runs, so it returns its lease on the management catalog here.
+		turn.Release()
+		if errors.Is(keyErr, errWarpVirtualKeyMissing) {
+			SendError(ctx, fasthttp.StatusConflict, "Warp's virtual key no longer exists. An administrator can choose another one in Settings > Warp.")
+			return
+		}
+		logger.Warn("failed to load warp's virtual key: %v", keyErr)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Warp could not load its virtual key. Try again.")
+		return
+	}
+	agentCtx, cancel, scopeErr := snapshotWarpContext(ctx, turn.Budget, presented)
 	if scopeErr != nil {
 		cancel()
 		// The turn never runs, so it returns its lease on the management catalog here.

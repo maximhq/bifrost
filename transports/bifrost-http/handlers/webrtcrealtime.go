@@ -801,6 +801,12 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 			relayCtx.SetValue(key, value)
 		}
 	}
+	// Turns are logged on the relay, so it resolves content from the same layers the request did.
+	for _, key := range schemas.ContentLoggingContextKeys() {
+		if value := requestCtx.Value(key); value != nil {
+			relayCtx.SetValue(key, value)
+		}
+	}
 
 	applyRealtimeMiddlewareValues(relayCtx, mergeRealtimeTurnValues(nil, requestCtx))
 
