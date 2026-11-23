@@ -348568,6 +348568,193 @@
           }
         }
       ]
+    },
+    {
+      "name": "379. Bedrock thinking display omitted (thinking display omitted) (#9526)",
+      "description": "Regression for #9526. On /bedrock/model/{id}/invoke, /invoke-with-response-stream and /converse, BedrockConverseRequest.ToBifrostResponsesRequest read only thinking.type, budget_tokens and output_config.effort, so thinking.display was lost. Both egress builders (InvokeModel via the shared Anthropic builder, Converse via ToBedrockResponsesRequest) derive display from Reasoning.Summary and default adaptive-only models to \"summarized\", so an explicit display:\"omitted\" was answered with summary thinking text where Bedrock itself returns signature-only thinking blocks. Fix: the ingress maps display:\"omitted\" to Summary \"none\", which both egress builders map back to \"omitted\" (as the /anthropic ingress already does). Case 1 pins InvokeModel, case 2 the InvokeModel stream, case 3 the Converse route. display:\"updates\" (#9860) and the unset-display default (#5185) are out of scope.",
+      "item": [
+        {
+          "name": "Bedrock invoke: global.anthropic.claude-sonnet-5 adaptive thinking display omitted returns no thinking text - #9526",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// #9526: the /bedrock ingress converter dropped thinking.display, and the egress then defaulted",
+                  "// adaptive-only models to display:\"summarized\", so an explicit \"omitted\" came back with summary text.",
+                  "// Red before the fix (non-empty thinking text), green after (signature-only thinking).",
+                  "// Adaptive thinking may skip thinking on a given run; the prompt and effort:high make thinking near-certain,",
+                  "// and every thinking block that does appear must carry no text.",
+                  "pm.test('Bedrock invoke display omitted (Sonnet 5) - #9526: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('Bedrock invoke display omitted (Sonnet 5) - #9526: thinking blocks carry a signature and no text', function () {",
+                  "  var blocks = Array.isArray(body.content) ? body.content : [];",
+                  "  pm.expect(blocks.length, 'no content blocks: ' + txt.slice(0, 400)).to.be.above(0);",
+                  "  blocks.filter(function (b) { return b && b.type === 'thinking'; }).forEach(function (b) {",
+                  "    pm.expect(b.thinking || '', 'display:\"omitted\" was replaced by summarized (thinking text returned): ' + JSON.stringify(b).slice(0, 400)).to.eql('');",
+                  "    pm.expect(b.signature, 'omitted thinking block must keep its signature: ' + JSON.stringify(b).slice(0, 400)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Is 9991 prime? Reason carefully, then answer yes or no.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"display\": \"omitted\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock invoke-with-response-stream: global.anthropic.claude-sonnet-5 adaptive thinking display omitted streams no thinking text - #9526",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var rawText = pm.response.text() || '';",
+                  "",
+                  "// #9526: the /bedrock ingress converter dropped thinking.display, and the egress then defaulted",
+                  "// adaptive-only models to display:\"summarized\", so an explicit \"omitted\" came back with summary text.",
+                  "// Red before the fix (non-empty thinking text), green after (signature-only thinking).",
+                  "// Adaptive thinking may skip thinking on a given run; the prompt and effort:high make thinking near-certain,",
+                  "// and every thinking block that does appear must carry no text.",
+                  "pm.test('Bedrock invoke-with-response-stream display omitted (Sonnet 5) - #9526: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + rawText.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('Bedrock invoke-with-response-stream display omitted (Sonnet 5) - #9526: no thinking_delta text streamed', function () {",
+                  "  var b64Matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(b64Matches.length, 'expected at least one invoke-stream chunk event: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var events = b64Matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  pm.expect(events.some(function (e) { return e.type === 'message_stop'; }), 'stream did not complete: ' + JSON.stringify(events).slice(0, 400)).to.eql(true);",
+                  "  var thinkingText = events.filter(function (e) { return e.type === 'content_block_delta' && e.delta && e.delta.type === 'thinking_delta'; })",
+                  "    .map(function (e) { return e.delta.thinking || ''; }).join('');",
+                  "  pm.expect(thinkingText, 'display:\"omitted\" was replaced by summarized (thinking_delta text streamed): ' + thinkingText.slice(0, 300)).to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Is 9991 prime? Reason carefully, then answer yes or no.\"\n    }\n  ],\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"display\": \"omitted\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke-with-response-stream"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock converse: global.anthropic.claude-sonnet-5 adaptive thinking display omitted returns no reasoning text - #9526",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// #9526: the /bedrock ingress converter dropped thinking.display, and the egress then defaulted",
+                  "// adaptive-only models to display:\"summarized\", so an explicit \"omitted\" came back with summary text.",
+                  "// Red before the fix (non-empty thinking text), green after (signature-only thinking).",
+                  "// Adaptive thinking may skip thinking on a given run; the prompt and effort:high make thinking near-certain,",
+                  "// and every thinking block that does appear must carry no text.",
+                  "pm.test('Bedrock converse display omitted (Sonnet 5) - #9526: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('Bedrock converse display omitted (Sonnet 5) - #9526: reasoningContent carries no reasoning text', function () {",
+                  "  var content = (((body.output || {}).message || {}).content) || [];",
+                  "  pm.expect(content.length, 'no output.message.content: ' + txt.slice(0, 400)).to.be.above(0);",
+                  "  var reasoningText = content.filter(function (b) { return b && b.reasoningContent; })",
+                  "    .map(function (b) { return ((b.reasoningContent.reasoningText || {}).text) || ''; }).join('');",
+                  "  pm.expect(reasoningText, 'display:\"omitted\" was replaced by summarized (reasoning text returned): ' + reasoningText.slice(0, 300)).to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Is 9991 prime? Reason carefully, then answer yes or no.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 2048\n  },\n  \"additionalModelRequestFields\": {\n    \"thinking\": {\n      \"type\": \"adaptive\",\n      \"display\": \"omitted\"\n    },\n    \"output_config\": {\n      \"effort\": \"high\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "converse"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
