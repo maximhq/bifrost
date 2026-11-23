@@ -8539,6 +8539,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		var heldBackError atomic.Bool
 		// Set once the current attempt's provider goroutine has ended the stream for plugins.
 		var streamEnded atomic.Bool
+		// Whether this provider's attempt chain speaks for the provider/model pair every reader
+		// of the upstream health tracker sees: only one on the shared key pool does.
+		recordHealth := model != "" && req.RequestType != schemas.ListModelsRequest &&
+			upstreamPoolShared(req.Context, baseProvider, req.RequestType)
 
 		// Execute request with retries. For streaming, the plugin pipeline,
 		// postHookRunner, and finalizer are allocated per-attempt inside the
@@ -8735,7 +8739,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		// Record what this provider's attempt chain says about the provider serving the model:
 		// a refusal that survived the key walk puts the pair in cooldown, a success clears it.
-		if model != "" && req.RequestType != schemas.ListModelsRequest {
+		if recordHealth {
 			bifrost.recordUpstreamOutcome(req.Context, provider.GetProviderKey(), model, bifrostError)
 		}
 

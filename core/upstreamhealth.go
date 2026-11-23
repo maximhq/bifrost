@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -285,6 +286,33 @@ func (t *upstreamHealthTracker) snapshot(now time.Time) []schemas.UpstreamHealth
 // ever succeeded are omitted; an absent pair is available.
 func (bifrost *Bifrost) UpstreamHealthSnapshot(now time.Time) []schemas.UpstreamHealth {
 	return bifrost.upstreamHealth.snapshot(now)
+}
+
+// upstreamPoolShared reports whether a provider attempt chain runs on the provider's shared key
+// pool, the keys any request for the pair can be served from. It does not when the request
+// brings its own credential (a direct key, or its own token with key selection skipped), is
+// pinned to one key by ID or name (by the caller, a routing rule or a fallback), or is limited
+// by governance to some of the keys. Every reader sees the same tracker, so only a chain on the
+// shared pool is recorded: a request-scoped pool being refused says nothing about the keys
+// other requests are served from.
+func upstreamPoolShared(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider, requestType schemas.RequestType) bool {
+	if ctx == nil {
+		return true
+	}
+	if _, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+		return false
+	}
+	if skip, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); skip && isKeySkippingAllowed(baseProvider, requestType) {
+		return false
+	}
+	if id, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); strings.TrimSpace(id) != "" {
+		return false
+	}
+	if name, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); strings.TrimSpace(name) != "" {
+		return false
+	}
+	_, restricted := ctx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys).([]string)
+	return !restricted
 }
 
 // recordUpstreamOutcome records the outcome of one provider attempt chain.

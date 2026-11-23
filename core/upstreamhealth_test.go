@@ -2,6 +2,9 @@ package bifrost
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -151,4 +154,79 @@ func TestUpstreamHealthCountsEveryFailureInWindow(t *testing.T) {
 	if past := findUpstreamHealth(t, b.UpstreamHealthSnapshot(now.Add(schemas.UpstreamHealthWindow+2*time.Second)), schemas.Anthropic, "claude-x"); past.RecentFailures != 0 || past.RecentRateLimits != 0 {
 		t.Fatalf("expected no failures once the window has passed, got %+v", past)
 	}
+}
+
+// newUpstreamHealthTestClient serves two OpenAI keys, key-a and key-b, from handler.
+func newUpstreamHealthTestClient(t *testing.T, handler http.HandlerFunc) *Bifrost {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 4, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "key-a", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 100},
+		{ID: "key-b", Name: "key-b", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	return newStreamTestClient(t, account)
+}
+
+func rateLimitedHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	fmt.Fprint(w, `{"error":{"message":"Rate limit reached","type":"rate_limit_error","code":"rate_limit_exceeded"}}`)
+}
+
+func upstreamHealthChatRequest() *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	}
+}
+
+// A chain on a request-scoped pool (a key the caller pinned or brought, or the keys governance
+// limits the request to) says nothing about the keys other requests are served from, so its
+// refusal must not cool the pair down for every reader. A chain on the shared pool still does.
+func TestUpstreamHealthRecordsOnlySharedPoolChains(t *testing.T) {
+	scoped := []struct {
+		name  string
+		scope func(ctx *schemas.BifrostContext)
+	}{
+		{"key id", func(ctx *schemas.BifrostContext) { ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "key-a") }},
+		{"key name", func(ctx *schemas.BifrostContext) { ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "key-a") }},
+		{"direct key", func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct", Value: *schemas.NewSecretVar("sk-direct")})
+		}},
+		{"governance key restriction", func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, []string{"key-a"})
+		}},
+	}
+	for _, tc := range scoped {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newUpstreamHealthTestClient(t, rateLimitedHandler)
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+			tc.scope(ctx)
+			if _, err := client.ChatCompletionRequest(ctx, upstreamHealthChatRequest()); err == nil {
+				t.Fatal("expected the rate-limited upstream to fail the request")
+			}
+			if snap := client.UpstreamHealthSnapshot(time.Now()); len(snap) != 0 {
+				t.Fatalf("a request-scoped pool's refusal must not be recorded for every reader, got %+v", snap)
+			}
+		})
+	}
+
+	t.Run("shared pool", func(t *testing.T) {
+		client := newUpstreamHealthTestClient(t, rateLimitedHandler)
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+		if _, err := client.ChatCompletionRequest(ctx, upstreamHealthChatRequest()); err == nil {
+			t.Fatal("expected the rate-limited upstream to fail the request")
+		}
+		h := findUpstreamHealth(t, client.UpstreamHealthSnapshot(time.Now()), schemas.OpenAI, "gpt-4o-mini")
+		if h.Available || h.Status != schemas.UpstreamHealthCoolingDown || h.FailureClass != schemas.FailureClassRateLimit {
+			t.Fatalf("expected the shared pool's refusal to cool the pair down, got %+v", h)
+		}
+	})
 }
