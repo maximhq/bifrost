@@ -15,6 +15,7 @@ func TestImageInputUnmarshalJSON(t *testing.T) {
 		{name: "bare string url", body: `"https://example.com/teapot.jpg"`, wantURL: "https://example.com/teapot.jpg"},
 		{name: "bare string data uri", body: `"data:image/png;base64,aGVsbG8="`, wantURL: "data:image/png;base64,aGVsbG8="},
 		{name: "object url", body: `{"url":"https://example.com/teapot.jpg"}`, wantURL: "https://example.com/teapot.jpg"},
+		{name: "object image_url (OpenAI JSON edit shape)", body: `{"image_url":"https://example.com/teapot.jpg"}`, wantURL: "https://example.com/teapot.jpg"},
 		{name: "object base64 bytes", body: `{"image":"aGVsbG8="}`, wantImg: "hello"},
 		{name: "null clears both arms", body: `null`},
 		{name: "number is neither form", body: `42`, wantErr: true},
