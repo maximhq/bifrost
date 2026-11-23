@@ -1397,7 +1397,7 @@
 			"titleAdd": "Aggiungi route",
 			"titleEdit": "Modifica route",
 			"pathLabel": "Percorso (obbligatorio)",
-			"pathInfo": "* corrisponde all'interno di un solo segmento; un /** finale corrisponde a tutto ciò che sta sotto.",
+			"pathInfo": "* corrisponde all'interno di un solo segmento; un /** finale corrisponde a tutto ciò che sta sotto; un /**/ centrale corrisponde a uno o più segmenti.",
 			"headersLabel": "Corrispondenza header (facoltativo)",
 			"headersInfo": "Header della richiesta che devono corrispondere, come X-Amz-Target per le API JSON di AWS. I valori sono glob.",
 			"bodyOverridesLabel": "Campi del body imposti (facoltativo)",

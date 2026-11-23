@@ -7,6 +7,9 @@ const T = { ns: "config" } as const;
 // (/api/relay-logs). They mirror core/schemas/relay.go and
 // framework/logstore/relaylogs.go.
 
+/** Where a poll request puts the job id (schemas.JobIDPlaceholder in Go). */
+export const JOB_ID_PLACEHOLDER = "{{job.id}}";
+
 export type RelayAuthType = "bearer" | "header" | "query" | "basic" | "aws_sigv4" | "none";
 export type RelayModelSource = "body" | "query";
 export type RelayUnitsSource = "response" | "request";
@@ -165,6 +168,8 @@ export interface Relay {
 	body_overrides?: Record<string, unknown>;
 	/** Read-only: the path callers use, /relay/{name}. */
 	url?: string;
+	/** Route indices in the order the gateway tries them, reported by the API. */
+	match_order?: number[];
 }
 
 export interface GetRelaysParams {

@@ -1402,7 +1402,7 @@
 			"titleAdd": "Agregar ruta",
 			"titleEdit": "Editar ruta",
 			"pathLabel": "Ruta (obligatoria)",
-			"pathInfo": "* coincide dentro de un segmento; un /** final coincide con todo lo que queda debajo.",
+			"pathInfo": "* coincide dentro de un segmento; un /** final coincide con todo lo que queda debajo; un /**/ intermedio coincide con uno o más segmentos.",
 			"headersLabel": "Coincidencias de encabezados (opcional)",
 			"headersInfo": "Encabezados de la solicitud que también deben coincidir, como X-Amz-Target en las API JSON de AWS. Los valores son globs.",
 			"bodyOverridesLabel": "Campos del cuerpo forzados (opcional)",

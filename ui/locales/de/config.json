@@ -1426,7 +1426,7 @@
 			"titleAdd": "Route hinzufügen",
 			"titleEdit": "Route bearbeiten",
 			"pathLabel": "Pfad (Erforderlich)",
-			"pathInfo": "* passt innerhalb eines Segments; ein abschließendes /** passt auf alles darunter.",
+			"pathInfo": "* passt innerhalb eines Segments; ein abschließendes /** passt auf alles darunter; ein mittleres /**/ passt auf ein oder mehrere Segmente.",
 			"headersLabel": "Header-Matcher (Optional)",
 			"headersInfo": "Anfrage-Header, die zusätzlich übereinstimmen müssen, etwa X-Amz-Target bei AWS-JSON-APIs. Werte sind Globs.",
 			"bodyOverridesLabel": "Erzwungene Body-Felder (optional)",

@@ -1422,7 +1422,7 @@
 			"titleAdd": "ルートを追加",
 			"titleEdit": "ルートを編集",
 			"pathLabel": "パス（必須）",
-			"pathInfo": "* は 1 セグメント内に一致し、末尾の /** はその配下のすべてに一致します。",
+			"pathInfo": "* は 1 セグメント内に一致し、末尾の /** はその配下のすべてに、途中の /**/ は 1 つ以上のセグメントに一致します。",
 			"headersLabel": "ヘッダーマッチャー（任意）",
 			"headersInfo": "AWS JSON API の X-Amz-Target など、一致する必要があるリクエストヘッダーです。値は glob です。",
 			"bodyOverridesLabel": "強制するボディフィールド（任意）",

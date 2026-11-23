@@ -87,13 +87,14 @@ describe("relay form validation", () => {
 		expect(relay([{ name: "options", value: "{}" }], [{ name: "options.depth", value: "1" }], false), "route opted out").toEqual([]);
 	});
 
-	it("accepts the gateway's segment globs and rejects ** before the last segment", () => {
+	it("accepts the gateway's segment globs and rejects a second **", () => {
 		expect(route("/v1/*/status").success).toBe(true);
 		expect(route("/jobs/**").success).toBe(true);
 		expect(route("/**").success).toBe(true);
-		const bad = route("/jobs/**/status");
+		expect(route("/jobs/**/status").success).toBe(true);
+		const bad = route("/jobs/**/status/**");
 		expect(bad.success).toBe(false);
-		expect(bad.error?.issues[0]?.message).toBe("** is only allowed as the last segment");
+		expect(bad.error?.issues[0]?.message).toBe("** is only allowed once in a path");
 		expect(route("jobs").success).toBe(false);
 	});
 
@@ -102,10 +103,10 @@ describe("relay form validation", () => {
 			...emptyRelayForm(),
 			base_url: "https://api.example.com",
 			credential_value: { value: "k" },
-			streaming: { paths: ["/v1/stream/**", "/a/**/b"] },
+			streaming: { paths: ["/v1/stream/**", "/a/**/b/**"] },
 		});
 		expect(res.success).toBe(false);
-		expect(res.error?.issues.find((i) => i.path[0] === "streaming")?.message).toBe("Line 2: ** is only allowed as the last segment");
+		expect(res.error?.issues.find((i) => i.path[0] === "streaming")?.message).toBe("Line 2: ** is only allowed once in a path");
 	});
 
 	it("rejects a base URL with user info, as the gateway does", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Relay } from "@/lib/types/relays";
-import { withRoutes } from "./routes.utils";
+import { withRoutes, type RouteForm } from "./routes.utils";
 import { toRelayForm } from "@/lib/utils/relayForm";
 
 // A browser without JSON.rawJSON: big numbers are read rounded.
@@ -27,5 +27,18 @@ describe("withRoutes in a browser that rounds big numbers", () => {
 	});
 	it("lets the route holding it be deleted, since nothing is written back", () => {
 		expect(withRoutes(relay, [formRoutes[1]]).routes).toHaveLength(1);
+	});
+});
+
+describe("withRoutes with a repeated route", () => {
+	const relay = {
+		name: "r",
+		base_url: "https://api.example.com",
+		auth: { type: "none" },
+		routes: [{ method: "GET", path: "/a" }],
+	} as unknown as Relay;
+	it("refuses a route repeating another's method, path and headers", () => {
+		const [route] = toRelayForm(relay).routes;
+		expect(() => withRoutes(relay, [route, { ...route, method: "get" as RouteForm["method"] }])).toThrow();
 	});
 });

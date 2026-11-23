@@ -3,6 +3,7 @@ import { KnownProvidersNames } from "@/lib/constants/logs";
 import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import i18n from "@/lib/i18n";
 import { msg } from "@/lib/i18n/validationMessage";
+import { JOB_ID_PLACEHOLDER } from "@/lib/types/relays";
 import { isRedacted } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -2491,13 +2492,20 @@ export const relayUsageSchema = relayUsageBaseSchema.superRefine((usage, ctx) =>
 // anything else is refused on the field rather than as a fetch error.
 export const relayOpenAPISpecUrlSchema = z.string().trim().refine(isHttpUrl, msg("validation.relays.absoluteUrl"));
 
-// Mirrors the gateway's rule for a route or streaming path: rooted, and ** only as the last segment.
+// Mirrors the gateway's rule for a route or streaming path: rooted, and at most one **.
 const relayGlob = z
 	.string()
 	.trim()
 	.min(1, msg("validation.relays.pathRequired"))
 	.refine((p) => p.startsWith("/"), msg("validation.relays.pathMustStartWithSlash"))
-	.refine((p) => !p.slice(1).split("/").slice(0, -1).includes("**"), msg("validation.relays.doubleStarLast"));
+	.refine(
+		(p) =>
+			p
+				.slice(1)
+				.split("/")
+				.filter((s) => s === "**").length <= 1,
+		msg("validation.relays.doubleStarOnce"),
+	);
 
 export const relayAuthSchema = z
 	.object({
@@ -2730,7 +2738,9 @@ export const relayJobSchema = z
 				.string()
 				.trim()
 				.min(1, msg("validation.relays.pollPathRequired"))
-				.refine((p) => p.startsWith("/"), { error: () => i18n.t("validation.relays.pollPathRooted", { example: "/jobs/{{job.id}}" }) }),
+				.refine((p) => p.startsWith("/"), {
+					error: () => i18n.t("validation.relays.pollPathRooted", { example: `/jobs/${JOB_ID_PLACEHOLDER}` }),
+				}),
 			headers: z.record(z.string(), z.string()).optional(),
 			body: z.string().optional(),
 			content_type: z.string().optional(),
@@ -2750,7 +2760,7 @@ export const relayJobSchema = z
 		reused_id_is_new_job: z.boolean().optional(),
 	})
 	.superRefine((job, ctx) => {
-		const token = "{{job.id}}";
+		const token = JOB_ID_PLACEHOLDER;
 		// With a body the gateway sends its own Content-Type, so a header row of that name is not sent.
 		const sentHeaders = Object.entries(job.poll.headers ?? {}).filter(
 			([name]) => !job.poll.body || name.trim().toLowerCase() !== "content-type",
@@ -2958,6 +2968,7 @@ export const relayFormSchema = z
 	});
 
 export type RelayFormValues = z.infer<typeof relayFormSchema>;
+export type RelayRouteForm = RelayFormValues["routes"][number];
 
 // The sample call the Test tab sends to the usage preview; the path mirrors the relay's own guard.
 export const relayPreviewSampleSchema = z.object({

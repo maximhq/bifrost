@@ -1397,7 +1397,7 @@
 			"titleAdd": "Adicionar rota",
 			"titleEdit": "Editar rota",
 			"pathLabel": "Caminho (obrigatório)",
-			"pathInfo": "* corresponde dentro de um segmento; um /** final corresponde a tudo o que está abaixo.",
+			"pathInfo": "* corresponde dentro de um segmento; um /** final corresponde a tudo o que está abaixo; um /**/ intermediário corresponde a um ou mais segmentos.",
 			"headersLabel": "Correspondência de cabeçalhos (opcional)",
 			"headersInfo": "Cabeçalhos do pedido que também têm de corresponder, como X-Amz-Target para APIs JSON da AWS. Os valores são globs.",
 			"bodyOverridesLabel": "Campos do corpo impostos (opcional)",

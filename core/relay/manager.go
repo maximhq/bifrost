@@ -211,6 +211,9 @@ func (m *Manager) Create(ctx context.Context, cfg *schemas.RelayConfig) (*schema
 	if err := cfg.ValidateEndpoint(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
+	if err := cfg.RepeatedRoute(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
 	m.mutations.Lock()
 	defer m.mutations.Unlock()
 	if err := m.store.CreateRelay(ctx, cfg, ""); err != nil {
@@ -264,6 +267,9 @@ func (m *Manager) Update(ctx context.Context, name string, cfg *schemas.RelayCon
 	cfg.Name = name
 	cfg.MergeRedacted(previous)
 	if err := cfg.ValidateEndpoint(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
+	if err := cfg.RepeatedRoute(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 	if err := m.Upsert(cfg); err != nil {

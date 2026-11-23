@@ -161,15 +161,9 @@ describe("openapiImport", () => {
 		await expect(parseOpenAPIText("{not: [valid")).rejects.toThrow();
 	});
 
-	it("orders literal paths before the parameter globs that cover them", () => {
+	it("lists imported routes A to Z, since the gateway ranks them itself", () => {
 		const doc = { paths: { "/files/{id}": { get: {} }, "/files/latest": { get: {} }, "/files": { post: {} } } };
-		expect(importOpenAPI(doc).routes.map((r) => r.path)).toEqual(["/files", "/files/latest", "/files/*"]);
-		// A total order: /models/*:predict still lands before /models/* with an unrelated glob between them.
-		const mixed = { paths: { "/models/{m}": { post: {} }, "/a/b/{c}": { post: {} }, "/models/{m}:predict": { post: {} } } };
-		const order = importOpenAPI(mixed).routes.map((r) => r.path);
-		expect(order.indexOf("/models/*:predict")).toBeLessThan(order.indexOf("/models/*"));
-		const vertex = { paths: { "/models/{model}": { post: {} }, "/models/{model}:predict": { post: {} } } };
-		expect(importOpenAPI(vertex).routes.map((r) => r.path)).toEqual(["/models/*:predict", "/models/*"]);
+		expect(importOpenAPI(doc).routes.map((r) => r.path)).toEqual(["/files", "/files/*", "/files/latest"]);
 	});
 
 	it("maps the scheme the document requires, and leaves auth alone when it cannot tell", () => {

@@ -1433,7 +1433,7 @@
 			"titleAdd": "新增路由",
 			"titleEdit": "編輯路由",
 			"pathLabel": "路徑（必填）",
-			"pathInfo": "* 可比對單一區段；結尾的 /** 可比對其下所有內容。",
+			"pathInfo": "* 可比對單一區段；結尾的 /** 可比對其下所有內容；中間的 /**/ 可比對一個或多個區段。",
 			"headersLabel": "標頭比對條件（選填）",
 			"headersInfo": "請求中也必須符合的標頭，例如 AWS JSON API 使用的 X-Amz-Target。值為萬用字元模式。",
 			"bodyOverridesLabel": "強制請求本文欄位（選填）",

@@ -111,19 +111,32 @@ const (
 	streamOff                    // buffered: a route that sets stream: false, or one that starts a job
 )
 
-func (e *endpoint) plan(method, path string, headers map[string]string) plan {
+// selectRoute is the route a call takes, shared by plan and the usage preview. Many upstreams read
+// /a/b/ and /a//b as /a/b, so a disabled route that takes the tidied path refuses the call too; only
+// a path with a trailing or doubled slash pays for the second match.
+func (e *endpoint) selectRoute(method, path string, headers map[string]string) *compiledRoute {
 	route := e.matchRoute(method, path, headers)
+	if tidy := tidyPath(path); tidy != path && (route == nil || !route.disabled) {
+		if alt := e.matchRoute(method, tidy, headers); alt != nil && alt.disabled {
+			return alt
+		}
+	}
+	return route
+}
+
+func (e *endpoint) plan(method, path string, headers map[string]string) plan {
+	route := e.selectRoute(method, path, headers)
 	// A disabled route still matches, so its requests are refused instead of reaching a broader route
 	// (or the relay-any-path fallback) priced differently.
 	p := plan{allowed: (e.cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled), route: route, index: -1, usage: e.usage, billing: billableByDefault(method, nil), body: e.bodyOverrides}
+	// A path with a dot segment (also ..;x) matches no ** route, so it must not slip past a disabled
+	// one to the relay-any-path fallback; an upstream could resolve it to another path.
+	if route == nil && p.allowed && hasDotSegment(path) {
+		p.allowed = false
+	}
 	if route != nil {
 		p.usage, p.billing, p.body = route.usage, route.billable, route.bodyOverrides
-		for i := range e.routes {
-			if &e.routes[i] == route {
-				p.index = i
-				break
-			}
-		}
+		p.index = route.configIndex
 	}
 	p.stream = e.streamMode(route, path)
 	return p
