@@ -2300,6 +2300,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
+					DisableContentLogging:  dbKey.DisableContentLogging,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
@@ -2394,6 +2395,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
+					DisableContentLogging:  dbKey.DisableContentLogging,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v", dbKey.Name, provider, err)
@@ -9746,6 +9748,7 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 			if errors.Is(err, configstore.ErrAlreadyExists) {
 				// Provider already exists in DB but not in memory - sync and return
 				c.Providers[provider] = config
+				schemas.RegisterKnownProvider(provider)
 				logger.Info("provider %s already exists in DB, synced to memory", provider)
 				return fmt.Errorf("provider/provider key name %s: %w", provider, ErrAlreadyExists)
 			}
@@ -9753,6 +9756,8 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 		}
 	}
 	c.Providers[provider] = config
+	// Recognize the prefix before discovery or inference lazily initializes core.
+	schemas.RegisterKnownProvider(provider)
 	logger.Info("added provider: %s", provider)
 	return nil
 }
@@ -10060,6 +10065,7 @@ func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvi
 		return nil
 	}
 	delete(c.Providers, provider)
+	schemas.UnregisterKnownProvider(provider)
 	logger.Info("Removed provider: %s", provider)
 	return nil
 }

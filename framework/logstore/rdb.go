@@ -50,6 +50,11 @@ const (
 
 var terminalLogStatuses = []string{"success", "error", "cancelled"}
 
+// maxRankingPairFilter is the most (model, provider) pairs a previous-period
+// ranking query filters on term by term; beyond it the query reads every
+// pair, well inside SQLite's 1,000-deep expression limit.
+const maxRankingPairFilter = 200
+
 // applyRankingLimit caps a ranking query at the caller-requested number of rows,
 // falling back to defaultMaxRankingsLimit. The query is left unbounded when the
 // caller explicitly asked for every ranked entity (RankingLimit <= 0), which is
@@ -3235,8 +3240,11 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 
 		// Only fetch previous-period data for (model, provider) pairs that
 		// appear in the current ranking so trend computation is accurate even
-		// when the previous period has more groups than the limit.
-		if len(currentResults) > 0 {
+		// when the previous period has more groups than the limit. Each pair is
+		// one OR term, and SQLite rejects an expression deeper than 1,000, so
+		// past maxRankingPairFilter pairs the filter is dropped: previous rows
+		// are matched to current ones by pair below, so extra rows are ignored.
+		if len(currentResults) > 0 && len(currentResults) <= maxRankingPairFilter {
 			pairConditions := make([]string, len(currentResults))
 			pairArgs := make([]interface{}, 0, len(currentResults)*2)
 			for i, r := range currentResults {

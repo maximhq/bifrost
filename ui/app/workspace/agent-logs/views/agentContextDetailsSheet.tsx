@@ -578,7 +578,10 @@ export function AgentContextDetailsSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden overflow-y-auto p-4 pb-0 sm:max-w-[60%] md:p-8 md:pb-0">
+			<SheetContent
+				resizeKey="agent-context-details"
+				className="flex w-full flex-col gap-4 overflow-x-hidden overflow-y-auto p-4 pb-0 sm:max-w-[60%] md:p-8 md:pb-0"
+			>
 				<SheetHeader className="flex min-w-0 flex-col items-start px-0" headerClassName="bg-card sticky -top-4 z-20 mb-0 py-4 md:-top-8">
 					<SheetTitle>{t("agentLogs.contextSheet.agentSession")}</SheetTitle>
 					{contextId && (
