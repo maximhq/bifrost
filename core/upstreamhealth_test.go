@@ -130,3 +130,25 @@ func TestUpstreamHealthFailureHoldsTrackerUntilPairLocked(t *testing.T) {
 		t.Fatalf("expected both failures on the tracked pair, got %+v", h)
 	}
 }
+
+// Every failure inside the reporting window is counted, however many there are, and none
+// outside it.
+func TestUpstreamHealthCountsEveryFailureInWindow(t *testing.T) {
+	b := &Bifrost{}
+	const failures = 40
+	for range failures {
+		b.recordUpstreamOutcome(nil, schemas.Anthropic, "claude-x", upstreamError(429, "rate_limit_error", 0))
+	}
+
+	now := time.Now()
+	h := findUpstreamHealth(t, b.UpstreamHealthSnapshot(now), schemas.Anthropic, "claude-x")
+	if h.RecentFailures != failures || h.RecentRateLimits != failures || h.ConsecutiveFailures != failures {
+		t.Fatalf("expected all %d failures counted, got recent=%d rate_limits=%d consecutive=%d", failures, h.RecentFailures, h.RecentRateLimits, h.ConsecutiveFailures)
+	}
+	if later := findUpstreamHealth(t, b.UpstreamHealthSnapshot(now.Add(schemas.UpstreamHealthWindow-10*time.Second)), schemas.Anthropic, "claude-x"); later.RecentFailures != failures {
+		t.Fatalf("expected all %d failures still inside the window, got %d", failures, later.RecentFailures)
+	}
+	if past := findUpstreamHealth(t, b.UpstreamHealthSnapshot(now.Add(schemas.UpstreamHealthWindow+2*time.Second)), schemas.Anthropic, "claude-x"); past.RecentFailures != 0 || past.RecentRateLimits != 0 {
+		t.Fatalf("expected no failures once the window has passed, got %+v", past)
+	}
+}

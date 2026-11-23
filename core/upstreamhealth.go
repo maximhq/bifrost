@@ -33,8 +33,9 @@ const (
 	// upstreamHealthIdleTTL is how long a pair with no new failure is kept once its cooldown
 	// has passed.
 	upstreamHealthIdleTTL = time.Hour
-	// upstreamRecentFailureSlots is the ring of failure timestamps kept per pair.
-	upstreamRecentFailureSlots = 32
+	// upstreamFailureBuckets is the number of one-second failure counters kept per pair, one for
+	// each second of the reporting window, so every failure inside the window is counted.
+	upstreamFailureBuckets = int64(schemas.UpstreamHealthWindow / time.Second)
 )
 
 type upstreamHealthKey struct {
@@ -42,9 +43,11 @@ type upstreamHealthKey struct {
 	model    string
 }
 
-type upstreamFailureMark struct {
-	at        time.Time
-	rateLimit bool
+// upstreamFailureBucket counts the failures a pair saw in one second.
+type upstreamFailureBucket struct {
+	second     int64 // Unix second the counts belong to
+	failures   int32
+	rateLimits int32
 }
 
 type upstreamHealthState struct {
@@ -55,8 +58,7 @@ type upstreamHealthState struct {
 	lastFailureAt       time.Time
 	lastSuccessAt       time.Time
 	consecutiveFailures int
-	recent              [upstreamRecentFailureSlots]upstreamFailureMark
-	recentNext          int
+	recent              [upstreamFailureBuckets]upstreamFailureBucket
 }
 
 // upstreamHealthTracker records per provider/model upstream outcomes. The zero value is ready.
@@ -188,11 +190,15 @@ func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, mo
 		st.statusCode = nil
 	}
 	st.lastFailureAt = now
-	st.recent[st.recentNext] = upstreamFailureMark{
-		at:        now,
-		rateLimit: class == schemas.FailureClassRateLimit || class == schemas.FailureClassQuota,
+	sec := now.Unix()
+	bucket := &st.recent[sec%upstreamFailureBuckets]
+	if bucket.second != sec {
+		*bucket = upstreamFailureBucket{second: sec}
 	}
-	st.recentNext = (st.recentNext + 1) % upstreamRecentFailureSlots
+	bucket.failures++
+	if class == schemas.FailureClassRateLimit || class == schemas.FailureClassQuota {
+		bucket.rateLimits++
+	}
 	if d, ok := upstreamCooldown(class, retryAfterMs, st.consecutiveFailures); ok {
 		if until := now.Add(d); until.After(st.cooldownUntil) {
 			st.cooldownUntil = until
@@ -216,6 +222,7 @@ func (t *upstreamHealthTracker) pruneLocked(now time.Time) {
 // snapshot returns every tracked pair, sorted by provider then model. EffectiveRemainingFraction
 // reflects only the upstream state (0 or 1); callers fold their own static limits into it.
 func (t *upstreamHealthTracker) snapshot(now time.Time) []schemas.UpstreamHealth {
+	nowSec := now.Unix()
 	t.mu.RLock()
 	out := make([]schemas.UpstreamHealth, 0, len(t.entries))
 	for key, st := range t.entries {
@@ -240,12 +247,10 @@ func (t *upstreamHealthTracker) snapshot(now time.Time) []schemas.UpstreamHealth
 			at := st.lastSuccessAt
 			h.LastSuccessAt = &at
 		}
-		for _, m := range st.recent {
-			if !m.at.IsZero() && now.Sub(m.at) <= schemas.UpstreamHealthWindow {
-				h.RecentFailures++
-				if m.rateLimit {
-					h.RecentRateLimits++
-				}
+		for i := range st.recent {
+			if bucket := &st.recent[i]; bucket.second <= nowSec && nowSec-bucket.second < upstreamFailureBuckets {
+				h.RecentFailures += int(bucket.failures)
+				h.RecentRateLimits += int(bucket.rateLimits)
 			}
 		}
 		switch {
