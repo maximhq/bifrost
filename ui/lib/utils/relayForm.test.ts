@@ -1,22 +1,27 @@
+import { readFileSync } from "node:fs";
+import { MAX_GAP_SEGMENTS, SAMPLE_JOB_IDS } from "@/lib/utils/relayAsyncJob";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Relay, RelayRouteConfig } from "@/lib/types/relays";
 import { relayAuthSchema, relayFormSchema, relayNetworkFormSchema, relayUsageBaseSchema } from "@/lib/types/schemas";
 import {
 	cleanJob,
 	cleanUsage,
-	compareRoutes,
+	comparePathRank,
 	describePricing,
 	emptyNetworkForm,
 	emptyRelayForm,
 	emptyUsageForm,
 	locateRoute,
+	matchOrder,
 	mergeUsage,
 	routeKey,
+	saveOrder,
 	toBodyOverridePairs,
 	toBodyOverrides,
 	toRelayConfig,
 	toRelayForm,
 	relayGatewayPath,
+	globMatch,
 } from "./relayForm";
 
 const stored: Relay = {
@@ -161,16 +166,14 @@ describe("relay form", () => {
 			["poll", "*"],
 			["Textract.Analyze*", "*"],
 			["a*b*", "a*"],
-			["foo*", "*foo*"],
 			["v?", "v*"],
 			["?", "*"],
-			["v[12]", "v[0-9]"],
-			["v[0-9]", "v?"],
+			["v[12]", "v*"],
 		];
 		const route = (value: string): RelayRouteConfig => ({ method: "POST", path: "/", headers: { "X-Kind": value } });
 		for (const [narrow, broad] of pairs) {
-			expect(compareRoutes(route(narrow), route(broad)), `${narrow} before ${broad}`).toBeLessThan(0);
-			expect(compareRoutes(route(broad), route(narrow)), `${narrow} before ${broad}`).toBeGreaterThan(0);
+			expect(matchOrder([route(broad), route(narrow)]), `${narrow} before ${broad}`).toEqual([1, 0]);
+			expect(matchOrder([route(narrow), route(broad)]), `${narrow} before ${broad}`).toEqual([0, 1]);
 		}
 	});
 
@@ -194,10 +197,12 @@ describe("relay form", () => {
 			["/files/a\\*", "/files/a*"],
 		];
 		for (const [narrow, broad] of pairs) {
-			expect(compareRoutes({ method: "GET", path: narrow }, { method: "GET", path: broad }), `${narrow} before ${broad}`).toBeLessThan(0);
-			expect(compareRoutes({ method: "GET", path: broad }, { method: "GET", path: narrow }), `${narrow} before ${broad}`).toBeGreaterThan(
-				0,
-			);
+			const [n, b] = [
+				{ method: "GET", path: narrow },
+				{ method: "GET", path: broad },
+			] as RelayRouteConfig[];
+			expect(matchOrder([b, n]), `${narrow} before ${broad}`).toEqual([1, 0]);
+			expect(matchOrder([n, b]), `${narrow} before ${broad}`).toEqual([0, 1]);
 		}
 	});
 
@@ -415,5 +420,52 @@ describe("locateRoute", () => {
 		const start = { ...r("/"), headers: [{ name: "X-Target", value: "Start" }] };
 		const get = { ...r("/"), headers: [{ name: "x-target", value: "Get" }] };
 		expect(locateRoute([get, start], 0, routeKey(start))).toBe(1);
+	});
+});
+
+describe("globMatch", () => {
+	it("follows path.Match", () => {
+		expect(globMatch("Textract.Get*", "Textract.GetDocumentAnalysis")).toBe(true);
+		expect(globMatch("*", "a/b")).toBe(false);
+		expect(globMatch("v[12]", "v2")).toBe(true);
+		expect(globMatch("v[^12]", "v2")).toBe(false);
+		expect(globMatch("a?c", "abc")).toBe(true);
+		expect(globMatch("a\\*", "a*")).toBe(true);
+		expect(globMatch("a\\*", "ab")).toBe(false);
+		expect(globMatch("[a", "a")).toBe(false);
+		for (const malformed of ["[a-]", "[-x]", "[]a]", "[a-b-c]", "[a\\", "a\\"]) expect(globMatch(malformed, "a"), malformed).toBe(false);
+		expect(globMatch("[a-c]", "b")).toBe(true);
+		expect(globMatch("[\\-x]", "-")).toBe(true);
+		expect(globMatch("?", "😀")).toBe(true);
+		expect(globMatch("[😀]", "😀")).toBe(true);
+	});
+});
+
+describe("saveOrder with escaped paths", () => {
+	it("keeps an escaped path in its saved place beside the plain path it also matches", () => {
+		const r = (path: string) => ({ method: "GET" as const, path, headers: {} });
+		expect(saveOrder([r("/jobs/\\status"), r("/jobs/status")])).toEqual([0, 1]);
+		expect(saveOrder([r("/jobs/status"), r("/jobs/\\status")])).toEqual([0, 1]);
+		// Other literal paths still sort A to Z.
+		expect(saveOrder([r("/b"), r("/a")])).toEqual([1, 0]);
+	});
+});
+
+describe("comparePathRank against the gateway", () => {
+	it("agrees on the cases shared with core/relay", () => {
+		const file = JSON.parse(readFileSync(new URL("../../../core/relay/testdata/routeorder.json", import.meta.url), "utf8"));
+		expect(MAX_GAP_SEGMENTS).toBe(file.max_gap_segments);
+		expect(SAMPLE_JOB_IDS).toEqual(file.job_status_sample_ids);
+		for (const [narrow, broad] of file.narrow_before_broad as [string, string][]) {
+			expect(comparePathRank(narrow, broad), `${narrow} before ${broad}`).toBeLessThan(0);
+			expect(comparePathRank(broad, narrow), `${narrow} before ${broad}`).toBeGreaterThan(0);
+		}
+		for (const c of file.match_order as { name: string; routes: RelayRouteConfig[]; order: number[] }[]) {
+			expect(matchOrder(c.routes), c.name).toEqual(c.order);
+			// Once ordered, a list stays as it is, so a save never changes who wins.
+			const ordered = c.order.map((i) => c.routes[i]);
+			expect(matchOrder(ordered), c.name).toEqual(ordered.map((_, i) => i));
+			expect(saveOrder(ordered), c.name).toEqual(ordered.map((_, i) => i));
+		}
 	});
 });

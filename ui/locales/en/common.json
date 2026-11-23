@@ -329,7 +329,7 @@
 			"absoluteUrl": "Enter an absolute http(s) URL",
 			"pathRequired": "Path is required",
 			"pathMustStartWithSlash": "Path must start with /",
-			"doubleStarLast": "** is only allowed as the last segment",
+			"doubleStarOnce": "** is only allowed once in a path",
 			"headerNameRequired": "Header name is required for header auth",
 			"queryParamRequired": "Query parameter is required for query auth",
 			"awsServiceRequired": "AWS service is required for SigV4 auth",

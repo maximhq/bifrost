@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { RelayFormValues } from "@/lib/types/schemas";
-import { applyAsyncJob, globMatch, pairStatusRoutes, relayHeadersForPlan, statusCheckTarget, statusRouteFor } from "./relayAsyncJob";
-
-type RouteForm = RelayFormValues["routes"][number];
+import type { RelayRouteForm as RouteForm } from "@/lib/types/schemas";
+import { applyAsyncJob, pairStatusRoutes, relayHeadersForPlan, statusCheckTarget, statusRouteFor } from "./relayAsyncJob";
 type JobForm = NonNullable<RouteForm["job"]>;
 
 const textractJob: JobForm = {
@@ -26,20 +24,14 @@ const textractStart: RouteForm & { job: JobForm } = {
 const restJob: JobForm = { id_path: "id", poll: { method: "GET", path: "/jobs/{{job.id}}" }, status_path: "status", succeeded: ["done"] };
 const restStart: RouteForm & { job: JobForm } = { method: "POST", path: "/jobs", headers: [], job: restJob };
 
-describe("globMatch", () => {
-	it("follows path.Match", () => {
-		expect(globMatch("Textract.Get*", "Textract.GetDocumentAnalysis")).toBe(true);
-		expect(globMatch("*", "a/b")).toBe(false);
-		expect(globMatch("v[12]", "v2")).toBe(true);
-		expect(globMatch("v[^12]", "v2")).toBe(false);
-		expect(globMatch("a?c", "abc")).toBe(true);
-		expect(globMatch("a\\*", "a*")).toBe(true);
-		expect(globMatch("a\\*", "ab")).toBe(false);
-		expect(globMatch("[a", "a")).toBe(false);
-	});
-});
-
 describe("statusRouteFor", () => {
+	it("escapes glob characters in the fixed text, so the route matches its own job's checks", () => {
+		expect(statusRouteFor({ ...restJob, poll: { method: "GET", path: "/v1/jobs[x]/{{job.id}}" } }).path).toBe("/v1/jobs\\[x\\]/**");
+		expect(statusRouteFor({ ...restJob, poll: { method: "GET", path: "/v1/a*b/status", body: "{{job.id}}" } }).path).toBe(
+			"/v1/a\\*b/status",
+		);
+	});
+
 	it("matches the poll's headers on its path", () => {
 		expect(statusRouteFor(textractJob)).toEqual({
 			method: "POST",
@@ -52,13 +44,28 @@ describe("statusRouteFor", () => {
 
 	it("ends in /** where the id starts, since an id may hold a slash", () => {
 		expect(statusRouteFor(restJob)).toMatchObject({ method: "GET", path: "/jobs/**", headers: [] });
-		expect(statusRouteFor({ ...restJob, poll: { method: "GET", path: "/v1/jobs/{{job.id}}/status?full=1" } }).path).toBe("/v1/jobs/**");
+		expect(statusRouteFor({ ...restJob, poll: { method: "GET", path: "/v1/jobs/{{job.id}}/status?full=1" } }).path).toBe(
+			"/v1/jobs/**/status",
+		);
 		// A GET route is free by default, so it carries no billable flag.
 		expect(statusRouteFor(restJob).billable).toBeUndefined();
 	});
 });
 
 describe("applyAsyncJob", () => {
+	it("tells apart start routes whose header values hold spaces and colons", () => {
+		const existing: RouteForm = { method: "POST", path: "/", headers: [{ name: "X", value: "a y: b" }], billable: true };
+		const start = {
+			...restStart,
+			path: "/",
+			headers: [
+				{ name: "X", value: "a" },
+				{ name: "Y", value: "b" },
+			],
+		};
+		expect(applyAsyncJob([existing], -1, start).plan.kind).not.toBe("duplicateStart");
+	});
+
 	it("adds a free status route when none takes the status check", () => {
 		const { routes, plan } = applyAsyncJob([], -1, textractStart);
 		expect(plan.kind).toBe("add");
@@ -132,6 +139,40 @@ describe("applyAsyncJob", () => {
 		expect(applyAsyncJob(existing, -1, restStart).plan.kind).toBe("add");
 	});
 
+	it("keeps other calls charged when the status path has text after the id", () => {
+		const job: JobForm = { ...restJob, poll: { method: "GET", path: "/jobs/{{job.id}}/status" } };
+		const start = { ...restStart, job };
+		const charged: RouteForm = { method: "GET", path: "/**", headers: [], billable: true };
+		const { routes, plan } = applyAsyncJob([charged], -1, start);
+		expect(plan).toMatchObject({ kind: "add", route: { path: "/jobs/**/status" } });
+		expect(statusCheckTarget(routes, job).kind).toBe("free");
+		const metrics: JobForm = { ...job, poll: { method: "GET", path: "/jobs/metrics" } };
+		expect(statusCheckTarget(routes, metrics).kind).toBe("billed");
+	});
+
+	it("refuses a generated route that would pass a deeper charged catch-all", () => {
+		const job: JobForm = { ...restJob, poll: { method: "GET", path: "/jobs/{{job.id}}/status" } };
+		const start = { ...restStart, job };
+		const charged: RouteForm = { method: "GET", path: "/**", headers: [], billable: true };
+		const premium: RouteForm = { method: "GET", path: "/jobs/premium/**", headers: [], billable: true };
+		expect(applyAsyncJob([charged, premium], -1, start).plan).toMatchObject({ kind: "blocked", route: { path: "/jobs/premium/**" } });
+		expect(applyAsyncJob([charged, { ...premium, billable: false }], -1, start).plan).toMatchObject({
+			kind: "add",
+			route: { path: "/jobs/**/status" },
+		});
+	});
+
+	it("pairs a status route in the order the gateway tries stored routes", () => {
+		const job: JobForm = { ...restJob, poll: { method: "GET", path: "/a" } };
+		const stored: RouteForm[] = [
+			{ method: "POST", path: "/start", headers: [], job },
+			{ method: "GET", path: "/[ac]", headers: [], enabled: false },
+			{ method: "GET", path: "/[ab]", headers: [], billable: false },
+		];
+		expect(pairStatusRoutes(stored).size).toBe(0);
+		expect(pairStatusRoutes([stored[0], stored[2], stored[1]]).get(1)).toBe(0);
+	});
+
 	it("refuses a start route that an identical route would shadow", () => {
 		const existing: RouteForm = { method: "POST", path: "/jobs", headers: [], billable: true };
 		expect(applyAsyncJob([existing], -1, restStart).plan).toEqual({ kind: "duplicateStart", index: 0 });
@@ -145,7 +186,7 @@ describe("applyAsyncJob", () => {
 		const job = { ...restJob, poll: { ...restJob.poll, headers: { "X-Mode": "[draft]", "X-Job": "id-{{job.id}}" } } };
 		const route = statusRouteFor(job);
 		expect(route.headers).toEqual([
-			{ name: "X-Mode", value: "\\[draft]" },
+			{ name: "X-Mode", value: "\\[draft\\]" },
 			{ name: "X-Job", value: "id-*" },
 		]);
 		expect(applyAsyncJob([{ method: "GET", path: "/**", headers: [], billable: true }], -1, { ...restStart, job }).plan.kind).toBe("add");

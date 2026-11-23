@@ -132,12 +132,7 @@ func (e *endpoint) plan(method, path string, headers map[string]string) plan {
 	p := plan{allowed: (e.cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled), route: route, index: -1, usage: e.usage, billing: billableByDefault(method, nil), body: e.bodyOverrides}
 	if route != nil {
 		p.usage, p.billing, p.body = route.usage, route.billable, route.bodyOverrides
-		for i := range e.routes {
-			if &e.routes[i] == route {
-				p.index = i
-				break
-			}
-		}
+		p.index = route.configIndex
 	}
 	p.stream = e.streamMode(route, path)
 	return p

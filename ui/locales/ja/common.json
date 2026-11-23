@@ -539,7 +539,7 @@
 			"absoluteUrl": "絶対 http(s) URL を入力してください",
 			"pathRequired": "パスは必須です",
 			"pathMustStartWithSlash": "パスは / で始まる必要があります",
-			"doubleStarLast": "** は最後のセグメントでのみ使用できます",
+			"doubleStarOnce": "** はパス内で 1 回のみ使用できます",
 			"headerNameRequired": "ヘッダー認証にはヘッダー名が必要です",
 			"queryParamRequired": "クエリ認証にはクエリパラメーターが必要です",
 			"awsServiceRequired": "SigV4 認証には AWS サービスが必要です",

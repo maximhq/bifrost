@@ -305,6 +305,9 @@ func (e *endpoint) checkJobStatusRoutes() error {
 		for _, id := range jobStatusSampleIDs {
 			poll := (&JobSnapshot{Job: *job}).PollRequest(id)
 			p := e.plan(poll.Method, poll.Path, poll.Headers)
+			if p.route != nil && p.route.disabled {
+				return fmt.Errorf("routes[%d].job: a caller's status check (%s %s) matches routes[%d], which is disabled, so it would get a 404; enable or replace that route, or add a more specific enabled route with billable: false", e.routes[i].configIndex, poll.Method, job.Poll.Path, p.index)
+			}
 			if !p.allowed || !p.billing {
 				continue
 			}
@@ -312,12 +315,12 @@ func (e *endpoint) checkJobStatusRoutes() error {
 			if p.index >= 0 {
 				matched = fmt.Sprintf("it matches routes[%d], which is billable", p.index)
 			}
-			return fmt.Errorf("routes[%d].job: a caller's status check (%s %s) would be charged on every call as well as the job: %s; add a route for it with billable: false ahead of that route", i, poll.Method, job.Poll.Path, matched)
+			return fmt.Errorf("routes[%d].job: a caller's status check (%s %s) would be charged on every call as well as the job: %s; add a more specific route for it with billable: false", e.routes[i].configIndex, poll.Method, job.Poll.Path, matched)
 		}
 	}
 	return nil
 }
 
 // jobStatusSampleIDs are the job ids a status check is tried with: a word, a UUID, a long hex id
-// and one with a slash, as upstreams return.
-var jobStatusSampleIDs = []string{"job-id", "0f3c9a1e-7b2d-4c8e-9f10-2a4b6c8d0e1f", "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b", "jobs/1"}
+// and ids with slashes, as upstreams return.
+var jobStatusSampleIDs = []string{"job-id", "0f3c9a1e-7b2d-4c8e-9f10-2a4b6c8d0e1f", "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b", "jobs/1", "a/b/c"}

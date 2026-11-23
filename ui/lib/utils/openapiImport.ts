@@ -1,6 +1,6 @@
 import i18n from "@/lib/i18n";
 import type { RelayAuthConfig, RelayRouteConfig, RelayRouteMethod } from "@/lib/types/relays";
-import { compareRoutes } from "@/lib/utils/relayForm";
+import { escapeGlob, orderRoutes } from "@/lib/utils/relayForm";
 
 // What an OpenAPI or Swagger document resolves into for a relay: the
 // operations as routes, the first security scheme as an auth suggestion, and the first server as
@@ -54,7 +54,6 @@ export async function parseOpenAPIText(text: string): Promise<Doc> {
 
 // Characters the relay's segment matcher (Go path.Match) treats specially; a literal one in a
 // template must be escaped or the route matches something else, or nothing.
-const GLOB_META = /[*?[\]\\]/g;
 
 // decodeLiteral percent-decodes literal path text; malformed sequences are left untouched.
 function decodeLiteral(literal: string): string {
@@ -75,9 +74,9 @@ export function templateToGlob(template: string): string {
 		.map((segment) => {
 			// Literal text is matched against the decoded request path, so a percent-encoded template
 			// (/files/hello%20world) is decoded first; text that is not valid encoding is kept as is.
-			const literals = segment.split(/\{[^}]*\}/).map((literal) => decodeLiteral(literal).replace(GLOB_META, "\\$&"));
+			const literals = segment.split(/\{[^}]*\}/).map((literal) => escapeGlob(decodeLiteral(literal)));
 			// Adjacent parameters ({name}{ext}) leave an empty literal between them; dropping it makes
-			// them one *, since a ** would be refused mid-path and match every path below at the end.
+			// them one *, since a ** would match across segments.
 			return literals.filter((literal, i) => i === 0 || i === literals.length - 1 || literal !== "").join("*");
 		})
 		.join("/");
@@ -253,8 +252,10 @@ export function importOpenAPI(doc: Doc, documentUrl?: string): OpenAPIImport {
 				if (!Array.isArray(effective) || !(effective.length === 0 || effective.some(isEmptyRequirement))) requirements.push(effective);
 			}
 		}
-		// The relay takes the first route that matches; compareRoutes is the order every save uses.
-		result.routes.sort(compareRoutes);
+		// A document has no saved order to keep, so ties are A to Z before the order every save uses.
+		const byName = (r: { method: string; path: string }) => `${r.path} ${r.method}`;
+		result.routes.sort((a, b) => (byName(a) < byName(b) ? -1 : byName(a) > byName(b) ? 1 : 0));
+		result.routes = orderRoutes(result.routes);
 		if (referenced.length > 0) {
 			result.partial = true;
 			result.warnings.push(i18n.t("relays.openapiImport.warn.refPaths", { ...T, count: referenced.length, paths: referenced.join(", ") }));

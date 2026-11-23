@@ -129,11 +129,7 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	out := &UsagePreview{RouteAllowed: (cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled)}
 	if route != nil {
 		usage, billable, forced = route.usage, route.billable, route.bodyOverrides
-		for i := range e.routes {
-			if &e.routes[i] == route {
-				out.RouteIndex = schemas.Ptr(i)
-			}
-		}
+		out.RouteIndex = schemas.Ptr(route.configIndex)
 	}
 	reqBody, respBody := []byte(in.RequestBody), []byte(in.ResponseBody)
 	out.Billable = billable

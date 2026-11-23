@@ -6,7 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { RelayRouteMethods, type RelayUsageConfig } from "@/lib/types/relays";
 import { relayAsyncJobFormSchema, relayUsageUnitsPathError, type RelayAsyncJobForm } from "@/lib/types/schemas";
-import { applyAsyncJob, JOB_ID_PLACEHOLDER, type RelayHeaders, type StatusRoutePlan } from "@/lib/utils/relayAsyncJob";
+import { JOB_ID_PLACEHOLDER } from "@/lib/types/relays";
+import { applyAsyncJob, type RelayHeaders, type StatusRoutePlan } from "@/lib/utils/relayAsyncJob";
 import { mergeUsage, routeBillableByDefault } from "@/lib/utils/relayForm";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useState, type ReactNode } from "react";

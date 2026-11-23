@@ -539,7 +539,7 @@
 			"absoluteUrl": "Gib eine absolute http(s)-URL ein",
 			"pathRequired": "Pfad ist erforderlich",
 			"pathMustStartWithSlash": "Der Pfad muss mit / beginnen",
-			"doubleStarLast": "** ist nur als letztes Segment erlaubt",
+			"doubleStarOnce": "** ist in einem Pfad nur einmal erlaubt",
 			"headerNameRequired": "Für die Header-Authentifizierung ist ein Header-Name erforderlich",
 			"queryParamRequired": "Für die Query-Authentifizierung ist ein Query-Parameter erforderlich",
 			"awsServiceRequired": "Für die SigV4-Authentifizierung ist ein AWS-Dienst erforderlich",

@@ -539,7 +539,7 @@
 			"absoluteUrl": "절대 http(s) URL을 입력하세요",
 			"pathRequired": "경로는 필수입니다",
 			"pathMustStartWithSlash": "경로는 /로 시작해야 합니다",
-			"doubleStarLast": "**는 마지막 세그먼트로만 사용할 수 있습니다",
+			"doubleStarOnce": "**는 경로에서 한 번만 사용할 수 있습니다",
 			"headerNameRequired": "헤더 인증에는 헤더 이름이 필요합니다",
 			"queryParamRequired": "쿼리 인증에는 쿼리 매개변수가 필요합니다",
 			"awsServiceRequired": "SigV4 인증에는 AWS 서비스가 필요합니다",

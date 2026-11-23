@@ -1397,7 +1397,7 @@
 			"titleAdd": "添加路由",
 			"titleEdit": "编辑路由",
 			"pathLabel": "路径（必填）",
-			"pathInfo": "* 匹配单个路径段内的内容；末尾的 /** 匹配其下的所有内容。",
+			"pathInfo": "* 匹配单个路径段内的内容；末尾的 /** 匹配其下的所有内容；中间的 /**/ 匹配一个或多个路径段。",
 			"headersLabel": "请求头匹配器（可选）",
 			"headersInfo": "还必须匹配的请求头，例如 AWS JSON API 的 X-Amz-Target。值为 glob 模式。",
 			"bodyOverridesLabel": "强制请求体字段（可选）",

@@ -1,6 +1,10 @@
 package relay
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -289,4 +293,116 @@ func BenchmarkRouteHeaders(b *testing.B) {
 	for b.Loop() {
 		_ = e.routeHeaders(headers, nil)
 	}
+}
+
+func TestRouteGlobMiddleDoubleStar(t *testing.T) {
+	glob := compileGlob("/jobs/**/status")
+	for _, p := range []string{"/jobs/1/status", "/jobs/a/b/c/status", "/jobs/x;y/status"} {
+		assert.True(t, glob.match(p), p)
+	}
+	for _, p := range []string{"/jobs/status", "/jobs/metrics", "/jobs/1/status/", "/jobs//status", "/jobs/./status", "/jobs/../status", "/jobs/..;x/status", "/jobs/a/../status", "/other/1/status"} {
+		assert.False(t, glob.match(p), p)
+	}
+	assert.True(t, glob.match("/jobs/"+strings.Repeat("a/", maxGapSegments)+"status"), "up to the longest job id")
+	assert.False(t, glob.match("/jobs/"+strings.Repeat("a/", maxGapSegments+1)+"status"), "and no further")
+	assert.True(t, compileGlob("/**/status").match("/a/b/status"))
+	assert.False(t, compileGlob("/**/status").match("/status"))
+}
+
+func BenchmarkMatchRouteMiddleDoubleStar(b *testing.B) {
+	cfg := &schemas.RelayConfig{}
+	for i := 0; i < 50; i++ {
+		cfg.Routes = append(cfg.Routes, schemas.RelayRouteConfig{Method: "POST", Path: fmt.Sprintf("/v1/op%d/**/status", i)})
+	}
+	e := &endpoint{cfg: cfg, routes: compileRoutes(cfg)}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = e.matchRoute("POST", "/v1/op49/a/b/status", nil)
+	}
+}
+
+// The UI's comparePathRank reads the same file, so the two orders cannot drift apart.
+func TestCompareRoutePathsSharedCases(t *testing.T) {
+	raw, err := os.ReadFile("testdata/routeorder.json")
+	require.NoError(t, err)
+	var file struct {
+		MaxGapSegments int         `json:"max_gap_segments"`
+		SampleIDs      []string    `json:"job_status_sample_ids"`
+		Cases          [][2]string `json:"narrow_before_broad"`
+		Order          []struct {
+			Name   string                     `json:"name"`
+			Routes []schemas.RelayRouteConfig `json:"routes"`
+			Order  []int                      `json:"order"`
+		} `json:"match_order"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &file))
+	// The UI copies these, so the file pins both sides.
+	assert.Equal(t, maxGapSegments, file.MaxGapSegments)
+	assert.Equal(t, jobStatusSampleIDs, file.SampleIDs)
+	require.NotEmpty(t, file.Cases)
+	for _, c := range file.Cases {
+		assert.Negative(t, compareRoutePaths(c[0], c[1]), "%s before %s", c[0], c[1])
+		assert.Positive(t, compareRoutePaths(c[1], c[0]), "%s before %s", c[0], c[1])
+	}
+	require.NotEmpty(t, file.Order)
+	for _, c := range file.Order {
+		assert.Equal(t, c.Order, routeMatchOrder(c.Routes), c.Name)
+		// Once ordered, a list stays as it is, so a save never changes who wins.
+		ordered := make([]schemas.RelayRouteConfig, len(c.Routes))
+		for k, i := range c.Order {
+			ordered[k] = c.Routes[i]
+		}
+		again := routeMatchOrder(ordered)
+		for k := range again {
+			assert.Equal(t, k, again[k], c.Name)
+		}
+	}
+}
+
+func TestMatchRouteTriesSpecificRoutesFirstAndKeepsConfigIndex(t *testing.T) {
+	cfg := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{
+		{Method: "GET", Path: "/**", Enabled: schemas.Ptr(false)},
+		{Method: "GET", Path: "/jobs/**"},
+		{Method: "GET", Path: "/jobs/metrics"},
+	}}
+	e := &endpoint{cfg: cfg, routes: compileRoutes(cfg)}
+	assert.Equal(t, 2, e.plan("GET", "/jobs/metrics", nil).index)
+	assert.Equal(t, 1, e.plan("GET", "/jobs/1", nil).index)
+	other := e.plan("GET", "/other", nil)
+	assert.Equal(t, 0, other.index)
+	assert.False(t, other.allowed, "a disabled wildcard still refuses what nothing narrower takes")
+}
+
+func TestMatchRouteKeepsSavedOrderOnOnePath(t *testing.T) {
+	cfg := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/", Headers: map[string]string{"X-Target": "Analyze"}},
+		{Method: "POST", Path: "/", Headers: map[string]string{"X-Target": "*", "Content-Type": "*"}},
+	}}
+	e := &endpoint{cfg: cfg, routes: compileRoutes(cfg)}
+	headers := map[string]string{"x-target": "Analyze", "content-type": "application/json"}
+	assert.Equal(t, 0, e.plan("POST", "/", headers).index)
+}
+
+func TestJobStatusCheckOnADisabledRouteIsRefused(t *testing.T) {
+	job := &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"}, Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}}
+	cfg := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/jobs", Job: job},
+		{Method: "GET", Path: "/jobs/**", Enabled: schemas.Ptr(false)},
+	}}
+	e := &endpoint{cfg: cfg, routes: compileRoutes(cfg)}
+	err := e.checkJobStatusRoutes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "routes[0].job")
+	assert.Contains(t, err.Error(), "routes[1], which is disabled")
+}
+
+// A trailing ** refuses dot segments, as the middle one does: an upstream may resolve /jobs/..;/admin
+// to /admin, which a free status route was never meant to reach.
+func TestTrailingDoubleStarRefusesDotSegments(t *testing.T) {
+	glob := compileGlob("/jobs/**")
+	assert.True(t, glob.match("/jobs/a/b"))
+	assert.True(t, glob.match("/jobs/"), "a trailing slash is still taken")
+	assert.False(t, glob.match("/jobs/..;/admin/export"))
+	assert.False(t, glob.match("/jobs/a/..;x/b"))
+	assert.False(t, glob.match("/jobs/./status"))
 }

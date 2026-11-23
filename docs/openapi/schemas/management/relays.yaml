@@ -172,7 +172,7 @@ RelayStreamingConfig:
 RelayRouteConfig:
   type: object
   description: >
-    One upstream operation. Routes are matched in order, first match wins. Without `skip_route_check`,
+    One upstream operation. The most specific matching route wins, and listed order only breaks ties. Without `skip_route_check`,
     a request matching no route is refused with 404.
   properties:
     method:
@@ -180,7 +180,7 @@ RelayRouteConfig:
       enum: [GET, POST, PUT, PATCH, DELETE, HEAD]
     path:
       type: string
-      description: Segment glob below the endpoint, for example `/v1/search` or `/jobs/*`. A trailing `/**` matches the prefix and everything below it.
+      description: Segment glob below the endpoint, for example `/v1/search` or `/jobs/*`. A trailing `/**` matches the prefix and everything below it, and one middle `/**/` matches 1 to 80 segments. Neither takes a `.` or `..` segment, with or without `;params`, and a middle `/**/` never takes an empty one.
     headers:
       type: object
       additionalProperties:

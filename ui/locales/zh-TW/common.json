@@ -329,7 +329,7 @@
 			"absoluteUrl": "請輸入絕對 http(s) URL",
 			"pathRequired": "路徑為必填",
 			"pathMustStartWithSlash": "路徑必須以 / 開頭",
-			"doubleStarLast": "** 只能用作最後一段",
+			"doubleStarOnce": "** 在路徑中只能使用一次",
 			"headerNameRequired": "標頭認證需要標頭名稱",
 			"queryParamRequired": "查詢參數認證需要查詢參數",
 			"awsServiceRequired": "SigV4 認證需要 AWS 服務",

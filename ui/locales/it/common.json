@@ -539,7 +539,7 @@
 			"absoluteUrl": "Inserisci un URL http(s) assoluto",
 			"pathRequired": "Il percorso è obbligatorio",
 			"pathMustStartWithSlash": "Il percorso deve iniziare con /",
-			"doubleStarLast": "** è consentito solo come ultimo segmento",
+			"doubleStarOnce": "** è consentito una sola volta in un percorso",
 			"headerNameRequired": "Per l'autenticazione tramite header è richiesto il nome dell'header",
 			"queryParamRequired": "Per l'autenticazione tramite query è richiesto il parametro di query",
 			"awsServiceRequired": "Per l'autenticazione SigV4 è richiesto il servizio AWS",

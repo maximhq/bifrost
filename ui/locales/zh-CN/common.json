@@ -539,7 +539,7 @@
 			"absoluteUrl": "请输入绝对 http(s) URL",
 			"pathRequired": "路径为必填项",
 			"pathMustStartWithSlash": "路径必须以 / 开头",
-			"doubleStarLast": "** 只能用作最后一段",
+			"doubleStarOnce": "** 在路径中只能使用一次",
 			"headerNameRequired": "请求头认证需要请求头名称",
 			"queryParamRequired": "查询参数认证需要查询参数",
 			"awsServiceRequired": "SigV4 认证需要 AWS 服务",

@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import type { OpenAPIImport } from "@/lib/utils/openapiImport";
 import { cleanUsage, describePricing, locateRoute, mergeUsage, routeBillableByDefault, routeKey, toRelayForm } from "@/lib/utils/relayForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { pairStatusRoutes, relayHeadersForPlan } from "@/lib/utils/relayAsyncJob";
+import { liveOrder, pairStatusRoutes, relayHeadersForPlan } from "@/lib/utils/relayAsyncJob";
 import {
 	CornerDownRightIcon,
 	EllipsisIcon,
@@ -98,7 +98,6 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 	const [pendingImport, setPendingImport] = useState<{ routes: RouteForm[]; dropped: string[] } | null>(null);
 	// The start route of the async job being edited, or -1 for a new one.
 	const [jobEditing, setJobEditing] = useState<{ index: number; key: string } | null>(null);
-	// Shown in saved order, which is the order requests are matched in; every save writes compareRoutes order.
 	const routes = toRelayForm(endpoint).routes;
 	const endpointUsage = cleanUsage(endpoint.usage, false);
 	const opened = (index: number) => ({ index, key: routeKey(routes[index]) });
@@ -107,7 +106,8 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 	// The free route that takes a job's status checks is listed under the job's start route.
 	const relayHeaders = useMemo(() => relayHeadersForPlan(endpoint.extra_headers), [endpoint.extra_headers]);
 	const statusOf = useMemo(() => pairStatusRoutes(routes, relayHeaders), [endpoint, relayHeaders]); // eslint-disable-line react-hooks/exhaustive-deps
-	const displayOrder = routes.flatMap((_, i) => {
+	// Listed in the order the gateway tries them, specific routes first.
+	const displayOrder = liveOrder(routes).flatMap((i) => {
 		if (statusOf.has(i)) return [];
 		const status = [...statusOf].filter(([, start]) => start === i).map(([s]) => s);
 		return [i, ...status];
