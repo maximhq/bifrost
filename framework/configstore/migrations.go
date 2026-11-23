@@ -610,6 +610,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
 	{IDs: []string{"add_virtual_mcp_config_issues_column"}, run: migrationAddVirtualMCPConfigIssuesColumn},
 	{IDs: []string{"add_disable_content_logging_columns"}, run: migrationAddDisableContentLoggingColumns},
+	{IDs: []string{"add_key_disable_content_logging_column"}, run: migrationAddKeyDisableContentLoggingColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -8536,6 +8537,15 @@ func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB, logger
 }
 
 // migrationAddOllamaSGLConfigColumns adds ollama_url and sgl_url columns to the key table
+// ollamaSGLBackfillKeyColumns are the config_keys columns the ollama/sgl URL backfill writes, all of
+// which exist when that step runs. Columns added by later steps are left out on purpose.
+// encryption_status must stay listed: BeforeSave encrypts the URL and marks the row, and a row
+// written without the mark would hold ciphertext flagged as plain text.
+var ollamaSGLBackfillKeyColumns = []string{
+	"name", "provider_id", "provider", "key_id", "value", "description", "models_json", "blacklisted_models_json",
+	"weight", "enabled", "ollama_url", "sgl_url", "config_hash", "encryption_status", "created_at", "updated_at",
+}
+
 func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_ollama_sgl_config_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -8598,7 +8608,9 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 					return fmt.Errorf("failed to generate hash for new key on provider %s: %w", p.Name, err)
 				}
 				newKey.ConfigHash = hash
-				if err := tx.Create(&newKey).Error; err != nil {
+				// Insert only the columns this step writes. A database that still needs this step lacks
+				// every config_keys column a later step adds, and a full-struct insert would name them all.
+				if err := tx.Select(ollamaSGLBackfillKeyColumns).Create(&newKey).Error; err != nil {
 					return fmt.Errorf("failed to create key for provider %s: %w", p.Name, err)
 				}
 				logger.Info("[Migration] Created key '%s' for provider '%s' from network_config.base_url", newKey.Name, p.Name)
@@ -15234,6 +15246,38 @@ func migrationAddDisableContentLoggingColumns(ctx context.Context, db *gorm.DB, 
 // it would silently start logging content for every row that had turned it off.
 func rollbackDisableContentLoggingColumns(context.Context, *gorm.DB, schemas.Logger) error {
 	return fmt.Errorf("add_disable_content_logging_columns is non-rollbackable: dropping disable_content_logging would permanently delete every content-logging decision and silently revert content-off rows to logging content; the columns are additive and older binaries safely ignore them")
+}
+
+// migrationAddKeyDisableContentLoggingColumn adds the provider key's disable_content_logging column.
+// It has an ID of its own rather than joining disableContentLoggingTables: a database that already
+// recorded add_disable_content_logging_columns skips that step's body, so a table added to it later
+// would never gain its column there. Nullable with no default, so every existing key inherits.
+func migrationAddKeyDisableContentLoggingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_key_disable_content_logging_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "disable_content_logging"); err != nil {
+				return fmt.Errorf("failed to add disable_content_logging column to config_keys: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackKeyDisableContentLoggingColumn(ctx, tx, logger)
+		},
+	})
+}
+
+// rollbackKeyDisableContentLoggingColumn refuses, for the reason rollbackDisableContentLoggingColumns
+// does: the column is the only home for a provider key's decision, and NULL reads as inherit.
+func rollbackKeyDisableContentLoggingColumn(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_key_disable_content_logging_column is non-rollbackable: dropping disable_content_logging would permanently delete every provider key's content-logging decision and silently revert content-off keys to logging content; the column is additive and older binaries safely ignore it")
 }
 
 // migrationAddTTFTTimeoutMsColumnToRoutingTargets adds the nullable ttft_timeout_ms
