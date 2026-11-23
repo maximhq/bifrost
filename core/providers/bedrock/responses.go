@@ -2844,6 +2844,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 				continue
 			}
+			if isAnthropicClientTool(tool.Type) {
+				// Claude takes these through InvokeModel; Converse cannot carry them.
+				modelDroppedTools = append(modelDroppedTools, string(tool.Type))
+				continue
+			}
 			if tool.ResponsesToolFunction != nil {
 				// Create the complete schema object that Bedrock expects
 				var schemaObject interface{}

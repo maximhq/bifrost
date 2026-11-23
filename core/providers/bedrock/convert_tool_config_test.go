@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -225,6 +226,39 @@ func TestToBedrockChatCompletionRequest_DropsUnsupportedToolsSignaled(t *testing
 		if !wantDropped[d] {
 			t.Errorf("unexpected dropped tool %q", d)
 		}
+	}
+}
+
+// Converse has no slot for Claude's client tools (computer, bash, text editor). A
+// Responses request that reaches Converse with one (a non-Claude model) must report
+// it as dropped rather than send a request without it unannounced (#9522).
+func TestToBedrockResponsesRequest_ClientToolsDropSignaled(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	role := schemas.ResponsesInputMessageRoleUser
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "amazon.nova-pro-v1:0",
+		Input:    []schemas.ResponsesMessage{{Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")}}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeComputerUsePreview, ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768}},
+				{Type: schemas.ResponsesToolTypeLocalShell},
+				{Type: schemas.ResponsesToolType("text_editor_20250728"), Name: schemas.Ptr("str_replace_based_edit_tool")},
+			},
+		},
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bedrockReq.ToolConfig != nil {
+		t.Fatalf("expected no Converse tools, got %+v", bedrockReq.ToolConfig.Tools)
+	}
+	dropped, _ := ctx.Value(schemas.BifrostContextKeyDroppedUnsupportedTools).([]string)
+	want := []string{"computer_use_preview", "local_shell", "text_editor_20250728"}
+	if !slices.Equal(dropped, want) {
+		t.Fatalf("expected dropped tools %v, got %v", want, dropped)
 	}
 }
 

@@ -4622,6 +4622,18 @@ func toolNeedsAnthropicInvokePath(toolType string, deferLoading *bool) bool {
 	return deferLoading != nil && *deferLoading
 }
 
+// isAnthropicClientTool reports whether a neutral Responses tool is one of
+// Claude's client tools: computer, bash (local_shell) or a text_editor_* version.
+// Converse has no slot for them, so on Claude they force InvokeModel, where the
+// Anthropic converters emit the native tool; on any other model Converse drops them.
+func isAnthropicClientTool(toolType schemas.ResponsesToolType) bool {
+	switch toolType {
+	case schemas.ResponsesToolTypeComputer, schemas.ResponsesToolTypeComputerUsePreview, schemas.ResponsesToolTypeLocalShell:
+		return true
+	}
+	return strings.HasPrefix(string(toolType), "text_editor_")
+}
+
 // safeguardsSurviveStrip reports whether the shared Anthropic strip gate would
 // keep safeguards for this model. Only supported requests need InvokeModel,
 // where the native field and its required beta are assembled together.
@@ -4696,7 +4708,7 @@ func responsesParamsNeedAnthropicInvokePath(ctx *schemas.BifrostContext, model s
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
 			return true
 		}
-		if tool.Type == schemas.ResponsesToolTypeComputer || tool.Type == schemas.ResponsesToolTypeComputerUsePreview {
+		if isAnthropicClientTool(tool.Type) {
 			return true
 		}
 	}

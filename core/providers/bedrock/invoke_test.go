@@ -1446,11 +1446,19 @@ func TestUsesAnthropicInvokePath_ToolSearch(t *testing.T) {
 	})
 }
 
-// Converse drops Claude's computer tools, so a Claude Responses request that
-// carries one must take InvokeModel. Nova has no computer tool and stays on Converse.
+// Converse drops Claude's client tools (computer, bash, text editor), so a Claude
+// Responses request that carries one must take InvokeModel. Nova has none of them
+// and stays on Converse.
 func TestUsesAnthropicInvokePath_ComputerTools(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
-	for _, toolType := range []schemas.ResponsesToolType{schemas.ResponsesToolTypeComputer, schemas.ResponsesToolTypeComputerUsePreview} {
+	for _, toolType := range []schemas.ResponsesToolType{
+		schemas.ResponsesToolTypeComputer,
+		schemas.ResponsesToolTypeComputerUsePreview,
+		schemas.ResponsesToolTypeLocalShell,
+		schemas.ResponsesToolType(anthropic.AnthropicToolTypeTextEditor20250124),
+		schemas.ResponsesToolType(anthropic.AnthropicToolTypeTextEditor20250429),
+		schemas.ResponsesToolType(anthropic.AnthropicToolTypeTextEditor20250728),
+	} {
 		t.Run(string(toolType)+" on claude routes to invoke", func(t *testing.T) {
 			req := &schemas.BifrostResponsesRequest{Model: "us.anthropic.claude-opus-5-5", Params: &schemas.ResponsesParameters{
 				Tools: []schemas.ResponsesTool{{Type: toolType}},
