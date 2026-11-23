@@ -1348,15 +1348,14 @@ func applySubqResponsesToolChoice(req *OpenAIResponsesRequest) {
 			return
 		}
 	}
-	if tc.ResponsesToolChoiceStruct != nil {
-		switch tc.ResponsesToolChoiceStruct.Type {
-		case schemas.ResponsesToolChoiceTypeNone, schemas.ResponsesToolChoiceTypeAuto:
-			return
-		default:
-			req.ToolChoice = &schemas.ResponsesToolChoice{
-				ResponsesToolChoiceStr: schemas.Ptr(string(schemas.ResponsesToolChoiceTypeAuto)),
-			}
+	if s := tc.ResponsesToolChoiceStruct; s != nil {
+		choice := schemas.ResponsesToolChoiceTypeAuto
+		switch {
+		case s.Type == schemas.ResponsesToolChoiceTypeNone,
+			s.Mode != nil && *s.Mode == string(schemas.ResponsesToolChoiceTypeNone):
+			choice = schemas.ResponsesToolChoiceTypeNone
 		}
+		req.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr(string(choice))}
 	}
 }
 

@@ -282258,7 +282258,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"subq/subq-savant-1.4\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"subq/subq-savant-1.4\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ],\n  \"max_tokens\": 1024\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -282285,7 +282285,13 @@
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
                   "  var body = pm.response.text();",
                   "  pm.expect(body, 'missing SSE data').to.include('data:');",
-                  "  pm.expect(body, 'missing finish').to.match(/finish_reason|response.completed|done/i);",
+                  "  var events = body.split('\\n').filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); });",
+                  "  pm.expect(events[events.length - 1], 'stream must end with [DONE]: ' + body).to.eql('[DONE]');",
+                  "  var chunks = events.filter(function (e) { return e !== '[DONE]'; }).map(function (e) { return JSON.parse(e); });",
+                  "  var finished = chunks.some(function (c) { return (c.choices || []).some(function (ch) { return ch.finish_reason; }); });",
+                  "  pm.expect(finished, 'no chunk carried a non-null finish_reason: ' + body).to.eql(true);",
+                  "  var content = chunks.map(function (c) { return (c.choices || []).map(function (ch) { return (ch.delta && ch.delta.content) || ''; }).join(''); }).join('');",
+                  "  pm.expect(content.length, 'stream carried no content: ' + body).to.be.above(0);",
                   "});"
                 ]
               }
@@ -282301,7 +282307,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"subq/subq-savant-1.4\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+              "raw": "{\n  \"model\": \"subq/subq-savant-1.4\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"max_tokens\": 1024,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -282344,7 +282350,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"subq/subq-savant-1.4\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"temperature\": 0.2\n}"
+              "raw": "{\n  \"model\": \"subq/subq-savant-1.4\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"temperature\": 0.2,\n  \"max_tokens\": 1024\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -282387,7 +282393,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"subq/subq-savant-1.4\",\n  \"input\": \"Name one primary color.\"\n}"
+              "raw": "{\n  \"model\": \"subq/subq-savant-1.4\",\n  \"input\": \"Name one primary color.\",\n  \"max_output_tokens\": 1024\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",

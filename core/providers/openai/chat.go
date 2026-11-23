@@ -41,7 +41,7 @@ func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 // the placeholder.
 func chatToolImagesSupported(ctx *schemas.BifrostContext, caps schemas.ModelCaps, provider schemas.ModelProvider) bool {
 	base := schemas.ResolveBaseProvider(ctx, provider)
-	return caps.SupportsVision(base == schemas.OpenAI || base == schemas.Azure)
+	return caps.SupportsVision(base == schemas.OpenAI || base == schemas.Azure || base == schemas.Subq)
 }
 
 // ToOpenAIChatRequest converts a Bifrost chat completion request to OpenAI format
@@ -546,12 +546,11 @@ func (req *OpenAIChatRequest) applySubqCompatibility() {
 		}
 	}
 	if req.ToolChoice.ChatToolChoiceStruct != nil {
-		switch req.ToolChoice.ChatToolChoiceStruct.Type {
-		case schemas.ChatToolChoiceTypeNone, schemas.ChatToolChoiceTypeAuto:
-			return
-		default:
-			req.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeAuto))}
+		choice := schemas.ChatToolChoiceTypeAuto
+		if req.ToolChoice.ChatToolChoiceStruct.Type == schemas.ChatToolChoiceTypeNone {
+			choice = schemas.ChatToolChoiceTypeNone
 		}
+		req.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(string(choice))}
 	}
 }
 

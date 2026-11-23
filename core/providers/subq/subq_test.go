@@ -320,8 +320,10 @@ func toolOutputImageInput() []schemas.ResponsesMessage {
 
 func TestSubqResponsesToolOutputImageFallsBackToChat(t *testing.T) {
 	var gotPath string
+	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		gotBody, _ = io.ReadAll(r.Body)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": "chatcmpl_1", "object": "chat.completion", "model": "subq-savant-1.4",
 			"choices": []map[string]any{{"index": 0, "finish_reason": "stop", "message": map[string]any{"role": "assistant", "content": "ok"}}},
@@ -338,6 +340,9 @@ func TestSubqResponsesToolOutputImageFallsBackToChat(t *testing.T) {
 	}
 	if gotPath != "/v1/chat/completions" {
 		t.Fatalf("expected chat fallback, got path %q", gotPath)
+	}
+	if !strings.Contains(string(gotBody), "data:image/png;base64,iVBORw0KGgo=") {
+		t.Fatalf("expected tool-output image in chat body, got %s", gotBody)
 	}
 }
 

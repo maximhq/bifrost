@@ -3932,4 +3932,15 @@ func TestToOpenAIChatRequest_SubqCompatibility(t *testing.T) {
 	if kept.ToolChoice == nil || kept.ToolChoice.ChatToolChoiceStr == nil || *kept.ToolChoice.ChatToolChoiceStr != string(schemas.ChatToolChoiceTypeNone) {
 		t.Fatalf("expected tool_choice none kept, got %#v", kept.ToolChoice)
 	}
+
+	for _, choice := range []schemas.ChatToolChoiceType{schemas.ChatToolChoiceTypeNone, schemas.ChatToolChoiceTypeAuto} {
+		bifrostReq.Params.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{Type: choice}}
+		wire, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq).ToolChoice)
+		if err != nil {
+			t.Fatalf("marshal tool_choice: %v", err)
+		}
+		if string(wire) != `"`+string(choice)+`"` {
+			t.Fatalf("expected structured %s serialized as a string, got %s", choice, wire)
+		}
+	}
 }

@@ -5852,6 +5852,31 @@ func TestToOpenAIResponsesRequest_SubqDowngradesForcedToolChoice(t *testing.T) {
 	require.NotNil(t, none.ToolChoice)
 	require.NotNil(t, none.ToolChoice.ResponsesToolChoiceStr)
 	require.Equal(t, string(schemas.ResponsesToolChoiceTypeNone), *none.ToolChoice.ResponsesToolChoiceStr)
+
+	for _, tc := range []struct {
+		name   string
+		choice schemas.ResponsesToolChoiceStruct
+		want   string
+	}{
+		{"mode-only none", schemas.ResponsesToolChoiceStruct{Mode: schemas.Ptr("none")}, `"none"`},
+		{"structured none", schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeNone}, `"none"`},
+		{"structured auto", schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeAuto}, `"auto"`},
+		{"mode-only required", schemas.ResponsesToolChoiceStruct{Mode: schemas.Ptr("required")}, `"auto"`},
+	} {
+		choice := tc.choice
+		out := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Provider: schemas.Subq,
+			Model:    "subq-savant-1.4",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("ping")},
+			}},
+			Params: &schemas.ResponsesParameters{ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &choice}},
+		})
+		wire, err := sonic.Marshal(out.ToolChoice)
+		require.NoError(t, err, tc.name)
+		require.Equal(t, tc.want, string(wire), tc.name)
+	}
 }
 
 // Codex replays function_call items carrying encrypted_content, which decodes into the
