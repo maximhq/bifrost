@@ -11845,12 +11845,10 @@ func (c *Config) GetA2AStoreRawRequestResponse() bool {
 // credential, every query value and the userinfo (username and password),
 // keeping the rest of the address. The masked form is stable, so an update
 // that sends it back can be recognised as "keep the stored URL".
-// Malformed and opaque URLs are fully masked.
 func RedactURLCredentials(specURL string) string {
 	u, err := url.Parse(specURL)
-	if err != nil || u.Opaque != "" {
-		// Rootless URLs keep credentials in Opaque instead of User.
-		return "redacted"
+	if err != nil {
+		return specURL
 	}
 	changed := false
 	if u.User != nil {

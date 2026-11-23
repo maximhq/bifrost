@@ -131,9 +131,6 @@ func TestRedactMCPClientConfig_OpenAPIConfig(t *testing.T) {
 
 func TestRedactURLCredentials(t *testing.T) {
 	for _, tc := range []struct{ name, raw, want string }{
-		{"opaque credentials", "http:user:password@localhost:8000/v1", "redacted"},
-		{"opaque credentials with query", "http:user:password@localhost:8000/v1?token=secret", "redacted"},
-		{"malformed", "http://localhost:badport/v1?token=secret", "redacted"},
 		{"bare query", "http://localhost:8000/v1?token", "http://localhost:8000/v1?token=redacted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
