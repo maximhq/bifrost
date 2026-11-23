@@ -2907,7 +2907,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				var schemaObject interface{}
 				if parameters := tool.ResponsesToolFunction.Parameters; parameters != nil {
 					// Claude rejects oneOf/anyOf/allOf at the input_schema root.
-					if (len(parameters.OneOf) > 0 || len(parameters.AnyOf) > 0 || len(parameters.AllOf) > 0) && schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+					if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) && parameters.HasRootComposition() {
 						var err error
 						if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
 							return nil, err

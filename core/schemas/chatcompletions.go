@@ -721,8 +721,10 @@ func (t *ToolFunctionParameters) HasRawJSON() bool {
 
 // IsExplicitEmptyObject reports whether the parameters were explicitly supplied
 // as an empty JSON object. It inspects raw parameters without decoding them.
+// A {} that the caller filled in afterwards is not empty: MarshalJSON emits the
+// typed fields, so this check follows them too.
 func (t *ToolFunctionParameters) IsExplicitEmptyObject() bool {
-	if t == nil {
+	if t == nil || t.hasDefinedSchemaFields() {
 		return false
 	}
 	if len(t.rawJSON) == 0 {
@@ -734,6 +736,39 @@ func (t *ToolFunctionParameters) IsExplicitEmptyObject() bool {
 		trimmed[0] == '{' &&
 		trimmed[len(trimmed)-1] == '}' &&
 		len(bytes.TrimSpace(trimmed[1:len(trimmed)-1])) == 0
+}
+
+// HasRootComposition reports whether the schema has oneOf, anyOf or allOf at
+// its root. As in MarshalJSON, typed fields win once they are set; otherwise raw
+// parameters are checked with top-level lookups, without decoding them.
+func (t *ToolFunctionParameters) HasRootComposition() bool {
+	if t == nil {
+		return false
+	}
+	if len(t.OneOf) > 0 || len(t.AnyOf) > 0 || len(t.AllOf) > 0 {
+		return true
+	}
+	if len(t.rawJSON) == 0 || t.hasDefinedSchemaFields() {
+		return false
+	}
+	return gjson.GetBytes(t.rawJSON, "oneOf").Exists() ||
+		gjson.GetBytes(t.rawJSON, "anyOf").Exists() ||
+		gjson.GetBytes(t.rawJSON, "allOf").Exists()
+}
+
+// Materialize returns parameters whose typed fields describe the schema. Raw
+// parameters are decoded into a new value; any other value is returned as is.
+// Decoding gives up the raw passthrough, so callers use it only for a schema
+// they must rewrite.
+func (t *ToolFunctionParameters) Materialize() (*ToolFunctionParameters, error) {
+	if t == nil || len(t.rawJSON) == 0 || t.hasDefinedSchemaFields() {
+		return t, nil
+	}
+	var typed ToolFunctionParameters
+	if err := Unmarshal(t.rawJSON, &typed); err != nil {
+		return nil, err
+	}
+	return &typed, nil
 }
 
 // MarshalJSON serializes ToolFunctionParameters while preserving the original

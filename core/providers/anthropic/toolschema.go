@@ -27,15 +27,24 @@ type anthropicSchemaBranch struct {
 // compositions into an object schema accepted by Anthropic. Anthropic accepts
 // composition inside properties, but rejects oneOf, anyOf, and allOf directly
 // on a custom tool's input_schema. Schemas without a root composition take a
-// zero-allocation fast path. Rewrites use a new root and property map while
-// sharing immutable nested definitions, so the caller-owned request is not
-// mutated and large $defs trees are not copied twice before normalization.
+// zero-allocation fast path; raw parameters are checked without decoding them
+// and are decoded only when they need the rewrite. Rewrites use a new root and
+// property map while sharing immutable nested definitions, so the caller-owned
+// request is not mutated and large $defs trees are not copied twice before
+// normalization.
 func NormalizeAnthropicToolInputSchema(input *schemas.ToolFunctionParameters) (*schemas.ToolFunctionParameters, error) {
 	if input == nil {
 		return nil, nil
 	}
-	if len(input.OneOf) == 0 && len(input.AnyOf) == 0 && len(input.AllOf) == 0 {
+	if !input.HasRootComposition() {
 		return input, nil
+	}
+	if input.HasRawJSON() {
+		materialized, err := input.Materialize()
+		if err != nil {
+			return nil, providerUtils.InvalidRequestErrorf("anthropic tool input schema is not valid: %v", err)
+		}
+		input = materialized
 	}
 
 	out := new(*input)

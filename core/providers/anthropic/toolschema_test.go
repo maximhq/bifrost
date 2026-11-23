@@ -68,6 +68,74 @@ func TestNormalizeAnthropicToolInputSchemaOtherRootCompositions(t *testing.T) {
 	}
 }
 
+// TestNormalizeAnthropicToolInputSchemaRawRootCompositions verifies that raw
+// parameters keep root compositions only in their bytes, so the normalizer must
+// decode and rewrite them, while raw schemas without one still pass through.
+func TestNormalizeAnthropicToolInputSchemaRawRootCompositions(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		raw          string
+		wantRequired []string
+	}{
+		{
+			name:         "oneOf",
+			raw:          `{"type":"object","oneOf":[{"type":"object","properties":{"mode":{"type":"string"},"left":{"type":"string"}},"required":["mode","left"]},{"type":"object","properties":{"mode":{"type":"string"},"right":{"type":"string"}},"required":["mode","right"]}]}`,
+			wantRequired: []string{"mode"},
+		},
+		{
+			name:         "anyOf",
+			raw:          `{"type":"object","anyOf":[{"type":"object","properties":{"mode":{"type":"string"},"left":{"type":"string"}},"required":["mode","left"]},{"type":"object","properties":{"mode":{"type":"string"},"right":{"type":"string"}},"required":["mode","right"]}]}`,
+			wantRequired: []string{"mode"},
+		},
+		{
+			name:         "allOf",
+			raw:          `{"type":"object","allOf":[{"type":"object","properties":{"left":{"type":"string"}},"required":["left"]},{"type":"object","properties":{"right":{"type":"string"}},"required":["right"]}]}`,
+			wantRequired: []string{"left", "right"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			params, err := schemas.NewRawToolFunctionParameters([]byte(test.raw))
+			if err != nil {
+				t.Fatalf("create raw tool parameters: %v", err)
+			}
+			normalized, err := NormalizeAnthropicToolInputSchema(params)
+			if err != nil {
+				t.Fatalf("normalize schema: %v", err)
+			}
+			marshaled, err := schemas.Marshal(normalized)
+			if err != nil {
+				t.Fatalf("marshal normalized schema: %v", err)
+			}
+			var root map[string]interface{}
+			if err := schemas.Unmarshal(marshaled, &root); err != nil {
+				t.Fatalf("unmarshal normalized schema: %v", err)
+			}
+			for _, key := range []string{"oneOf", "anyOf", "allOf"} {
+				if _, ok := root[key]; ok {
+					t.Fatalf("root %s reached the Anthropic input_schema: %s", key, marshaled)
+				}
+			}
+			if !equalStringSlices(normalized.Required, test.wantRequired) {
+				t.Fatalf("required = %v, want %v", normalized.Required, test.wantRequired)
+			}
+		})
+	}
+
+	t.Run("raw schema without a root composition stays raw", func(t *testing.T) {
+		params, err := schemas.NewRawToolFunctionParameters([]byte(`{"type":"object","properties":{"note":{"anyOf":[{"type":"string"},{"type":"null"}]}}}`))
+		if err != nil {
+			t.Fatalf("create raw tool parameters: %v", err)
+		}
+		normalized, err := NormalizeAnthropicToolInputSchema(params)
+		if err != nil {
+			t.Fatalf("normalize schema: %v", err)
+		}
+		if normalized != params {
+			t.Fatal("expected the raw schema to pass through without being decoded")
+		}
+	})
+}
+
 // TestNormalizeAnthropicToolInputSchemaRootOneOf verifies that root
 // alternatives are merged without removing accepted nested composition.
 func TestNormalizeAnthropicToolInputSchemaRootOneOf(t *testing.T) {

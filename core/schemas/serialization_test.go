@@ -1095,6 +1095,18 @@ func TestToolFunctionParameters_IsExplicitEmptyObject(t *testing.T) {
 	var decodedEmpty ToolFunctionParameters
 	require.NoError(t, Unmarshal([]byte(`{}`), &decodedEmpty))
 
+	// A caller may decode or wrap {} and fill in the schema afterwards.
+	// MarshalJSON then emits the typed fields, so the schema is no longer empty.
+	var decodedEdited ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{}`), &decodedEdited))
+	rawEdited, err := NewRawToolFunctionParameters([]byte(`{}`))
+	require.NoError(t, err)
+	for _, params := range []*ToolFunctionParameters{&decodedEdited, rawEdited} {
+		params.Type = "object"
+		params.Properties = NewOrderedMapFromPairs(KV("query", map[string]interface{}{"type": "string"}))
+		params.Required = []string{"query"}
+	}
+
 	tests := []struct {
 		name   string
 		params *ToolFunctionParameters
@@ -1106,6 +1118,8 @@ func TestToolFunctionParameters_IsExplicitEmptyObject(t *testing.T) {
 		{name: "raw empty", params: rawEmpty, want: true},
 		{name: "raw populated", params: rawPopulated},
 		{name: "typed populated", params: &ToolFunctionParameters{Type: "object"}},
+		{name: "decoded empty with later typed fields", params: &decodedEdited},
+		{name: "raw empty with later typed fields", params: rawEdited},
 	}
 
 	for _, tt := range tests {
@@ -1127,6 +1141,96 @@ func TestToolFunctionParameters_RawJSONDeepCopy(t *testing.T) {
 	marshaled, err := Marshal(copied)
 	require.NoError(t, err)
 	assert.Equal(t, `{"type":"object"}`, string(marshaled))
+}
+
+func TestToolFunctionParameters_HasRootComposition(t *testing.T) {
+	newRaw := func(raw string) *ToolFunctionParameters {
+		t.Helper()
+		params, err := NewRawToolFunctionParameters([]byte(raw))
+		require.NoError(t, err)
+		return params
+	}
+	rawWithTypedFields := newRaw(`{"anyOf":[{"type":"object"}]}`)
+	rawWithTypedFields.Type = "object"
+
+	tests := []struct {
+		name   string
+		params *ToolFunctionParameters
+		want   bool
+	}{
+		{name: "nil", params: nil},
+		{name: "typed without composition", params: &ToolFunctionParameters{Type: "object"}},
+		{name: "typed anyOf", params: &ToolFunctionParameters{AnyOf: []OrderedMap{*NewOrderedMap()}}, want: true},
+		{name: "raw oneOf", params: newRaw(`{"oneOf":[{"type":"object"}]}`), want: true},
+		{name: "raw anyOf", params: newRaw(`{"type":"object","anyOf":[{"type":"object"}]}`), want: true},
+		{name: "raw allOf", params: newRaw(`{"allOf":[{"type":"object"}]}`), want: true},
+		{name: "raw nested anyOf only", params: newRaw(`{"type":"object","properties":{"note":{"anyOf":[{"type":"string"},{"type":"null"}]}}}`)},
+		{name: "raw without composition", params: newRaw(`{"type":"object","properties":{}}`)},
+		{name: "typed fields win over raw anyOf", params: rawWithTypedFields},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.params.HasRootComposition())
+		})
+	}
+}
+
+func TestToolFunctionParameters_Materialize(t *testing.T) {
+	t.Run("raw parameters are decoded into a new value", func(t *testing.T) {
+		raw, err := NewRawToolFunctionParameters([]byte(`{"type":"object","properties":{"query":{"type":"string"}},"anyOf":[{"required":["query"]}]}`))
+		require.NoError(t, err)
+
+		typed, err := raw.Materialize()
+		require.NoError(t, err)
+		require.NotSame(t, raw, typed)
+		assert.False(t, typed.HasRawJSON())
+		assert.Equal(t, "object", typed.Type)
+		require.NotNil(t, typed.Properties)
+		assert.Equal(t, 1, typed.Properties.Len())
+		assert.Len(t, typed.AnyOf, 1)
+		assert.True(t, raw.HasRawJSON(), "the raw value must not be changed")
+	})
+
+	t.Run("typed parameters are returned as is", func(t *testing.T) {
+		typed := &ToolFunctionParameters{Type: "object"}
+		got, err := typed.Materialize()
+		require.NoError(t, err)
+		assert.Same(t, typed, got)
+	})
+
+	t.Run("raw parameters with typed fields keep the typed fields", func(t *testing.T) {
+		raw, err := NewRawToolFunctionParameters([]byte(`{}`))
+		require.NoError(t, err)
+		raw.Type = "object"
+		got, err := raw.Materialize()
+		require.NoError(t, err)
+		assert.Same(t, raw, got)
+	})
+
+	t.Run("raw parameters that do not fit the typed fields fail", func(t *testing.T) {
+		raw, err := NewRawToolFunctionParameters([]byte(`{"required":"query"}`))
+		require.NoError(t, err)
+		_, err = raw.Materialize()
+		assert.Error(t, err)
+	})
+}
+
+// BenchmarkToolFunctionParameters_HasRootComposition measures the check that
+// runs before Anthropic normalization on raw parameters without a root
+// composition, the common case that keeps the raw passthrough.
+func BenchmarkToolFunctionParameters_HasRootComposition(b *testing.B) {
+	params, err := NewRawToolFunctionParameters([]byte(`{"type":"object","properties":{"query":{"type":"string","description":"Search query"},"limit":{"type":"integer","minimum":1,"maximum":50},"filters":{"type":"object","properties":{"tag":{"anyOf":[{"type":"string"},{"type":"null"}]}}}},"required":["query"],"additionalProperties":false}`))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if params.HasRootComposition() {
+			b.Fatal("unexpected root composition")
+		}
+	}
 }
 
 // TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic verifies deterministic

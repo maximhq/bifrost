@@ -55,6 +55,128 @@ func TestConvertToolConfig_RawParametersPassthrough(t *testing.T) {
 	}
 }
 
+// bedrockToolSchemaRoot decodes the top level of a Bedrock tool input schema.
+func bedrockToolSchemaRoot(t *testing.T, schema json.RawMessage) map[string]json.RawMessage {
+	t.Helper()
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(schema, &root); err != nil {
+		t.Fatalf("decode tool input schema %s: %v", schema, err)
+	}
+	return root
+}
+
+// TestRawRootCompositionNormalizedForClaudeOnBedrock verifies that raw tool
+// parameters with a root anyOf are rewritten for Claude on both the chat and
+// the Responses route, since Claude rejects root oneOf/anyOf/allOf.
+func TestRawRootCompositionNormalizedForClaudeOnBedrock(t *testing.T) {
+	const model = "global.anthropic.claude-sonnet-4-6"
+	newParams := func(t *testing.T) *schemas.ToolFunctionParameters {
+		t.Helper()
+		params, err := schemas.NewRawToolFunctionParameters([]byte(`{"type":"object","anyOf":[{"type":"object","properties":{"mode":{"type":"string"},"left":{"type":"string"}},"required":["mode","left"]},{"type":"object","properties":{"mode":{"type":"string"},"right":{"type":"string"}},"required":["mode","right"]}]}`))
+		if err != nil {
+			t.Fatalf("create raw tool parameters: %v", err)
+		}
+		return params
+	}
+	assertNormalized := func(t *testing.T, schema json.RawMessage) {
+		t.Helper()
+		root := bedrockToolSchemaRoot(t, schema)
+		for _, key := range []string{"oneOf", "anyOf", "allOf"} {
+			if _, ok := root[key]; ok {
+				t.Fatalf("root %s reached the Claude tool schema: %s", key, schema)
+			}
+		}
+		if got := string(root["required"]); got != `["mode"]` {
+			t.Fatalf("required = %s, want [\"mode\"] in %s", got, schema)
+		}
+	}
+
+	t.Run("chat", func(t *testing.T) {
+		cfg := convertToolConfig(model, &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "search", Parameters: newParams(t)},
+			}},
+		})
+		if cfg == nil || len(cfg.Tools) != 1 || cfg.Tools[0].ToolSpec == nil {
+			t.Fatalf("expected one converted function tool, got %+v", cfg)
+		}
+		assertNormalized(t, cfg.Tools[0].ToolSpec.InputSchema.JSON)
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bedrockReq, err := ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("search"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: newParams(t)},
+				}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+		}
+		if bedrockReq.ToolConfig == nil || len(bedrockReq.ToolConfig.Tools) != 1 || bedrockReq.ToolConfig.Tools[0].ToolSpec == nil {
+			t.Fatalf("expected one converted function tool, got %+v", bedrockReq.ToolConfig)
+		}
+		assertNormalized(t, bedrockReq.ToolConfig.Tools[0].ToolSpec.InputSchema.JSON)
+	})
+}
+
+// TestConvertToolConfig_FilledEmptyObjectKeepsSchema verifies that a decoded
+// or raw {} that the caller fills in afterwards is sent as the filled schema,
+// not replaced with Bedrock's empty-object fallback.
+func TestConvertToolConfig_FilledEmptyObjectKeepsSchema(t *testing.T) {
+	var decoded schemas.ToolFunctionParameters
+	if err := schemas.Unmarshal([]byte(`{}`), &decoded); err != nil {
+		t.Fatalf("decode {}: %v", err)
+	}
+	raw, err := schemas.NewRawToolFunctionParameters([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("create raw tool parameters: %v", err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		params *schemas.ToolFunctionParameters
+	}{
+		{name: "decoded {}", params: &decoded},
+		{name: "raw {}", params: raw},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.params.Type = "object"
+			test.params.Properties = schemas.NewOrderedMapFromPairs(schemas.KV("query", map[string]interface{}{"type": "string"}))
+			test.params.Required = []string{"query"}
+
+			cfg := convertToolConfig("global.anthropic.claude-sonnet-4-6", &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{{
+					Type:     schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{Name: "search", Parameters: test.params},
+				}},
+			})
+			if cfg == nil || len(cfg.Tools) != 1 || cfg.Tools[0].ToolSpec == nil {
+				t.Fatalf("expected one converted function tool, got %+v", cfg)
+			}
+			schema := cfg.Tools[0].ToolSpec.InputSchema.JSON
+			root := bedrockToolSchemaRoot(t, schema)
+			if got := string(root["required"]); got != `["query"]` {
+				t.Fatalf("required = %s, want [\"query\"] in %s", got, schema)
+			}
+			if !strings.Contains(string(root["properties"]), `"query"`) {
+				t.Fatalf("expected the query property to survive, got %s", schema)
+			}
+		})
+	}
+}
+
 // TestConvertToolConfig_DropsServerToolsOnBedrock locks in the bug fix from
 // the user-reported repro: sending `web_search_20260209` via the OpenAI-
 // compatible /v1/chat/completions endpoint to Bedrock was producing a
