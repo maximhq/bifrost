@@ -1141,6 +1141,46 @@ func TestChatStreamingKeepsChoicesSeparate(t *testing.T) {
 	}
 }
 
+// TestChatStreamingTopLevelOutputIsEmptyWithoutChoiceZero covers an n>1 stream that has only emitted a later choice
+// (a paused snapshot taken before choice 0 spoke). The top-level output describes choice 0 alone, so it must stay
+// empty instead of borrowing choice 1's content, tool call, finish reason or logprobs.
+func TestChatStreamingTopLevelOutputIsEmptyWithoutChoiceZero(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "chat-no-choice-zero")
+
+	withLogProbs := chatStreamChoice(1, "SECRET ", nil)
+	withLogProbs.LogProbs = &schemas.BifrostLogProbs{Content: []schemas.ContentLogProb{{Token: "SECRET"}}}
+	for _, event := range []*schemas.BifrostResponse{
+		newChatChoicesChunkResponse(0, nil, withLogProbs),
+		newChatChoicesChunkResponse(1, nil, chatToolCallChoice(1, bifrost.Ptr("send_email"), `{"to":"bob"}`)),
+	} {
+		if _, err := accumulator.processChatStreamingResponse(ctx, event, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed, err := accumulator.processChatStreamingResponse(ctx, newChatChoicesChunkResponse(2, nil, chatStreamChoice(1, "", bifrost.Ptr("length"))), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := processed.Data
+	if data.OutputMessage == nil || data.OutputMessage.Content == nil || data.OutputMessage.Content.ContentStr != nil || data.OutputMessage.ChatAssistantMessage != nil {
+		t.Fatalf("OutputMessage = %+v, want an empty assistant message", data.OutputMessage)
+	}
+	if data.FinishReason != nil || data.LogProbs != nil || len(data.ToolCalls) != 0 {
+		t.Fatalf("top-level output borrowed choice 1: finish %v, logprobs %+v, tool calls %+v", data.FinishReason, data.LogProbs, data.ToolCalls)
+	}
+	if len(data.OutputChoices) != 1 || data.OutputChoices[0].Index != 1 || *data.OutputChoices[0].Message.Content.ContentStr != "SECRET " {
+		t.Fatalf("OutputChoices = %+v, want choice 1 kept under its own index", data.OutputChoices)
+	}
+	if *data.OutputChoices[0].FinishReason != "length" || data.OutputChoices[0].LogProbs == nil {
+		t.Fatalf("choice 1 lost its own finish reason or logprobs: %+v", data.OutputChoices[0])
+	}
+}
+
 // TestChatStreamingSplitsBundledChoices covers an event that carries several choices at once. Each choice is kept
 // apart while the event's own fields (usage, raw response) are recorded once.
 func TestChatStreamingSplitsBundledChoices(t *testing.T) {

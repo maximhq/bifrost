@@ -220,6 +220,18 @@ func buildChatChoiceOutputs(chunks []*ChatStreamChunk) []schemas.StreamChoiceOut
 	return outputs
 }
 
+// choiceZeroOutput returns the output of choice 0 from outputs sorted by index. When the stream has no choice 0 yet
+// (a paused snapshot taken before it emitted anything) it returns an empty assistant message with no finish reason
+// or logprobs, so the top-level output never borrows another choice's content.
+func choiceZeroOutput(outputs []schemas.StreamChoiceOutput) schemas.StreamChoiceOutput {
+	for _, output := range outputs {
+		if output.Index == 0 {
+			return output
+		}
+	}
+	return schemas.StreamChoiceOutput{Message: BuildChatMessageFromChunks(nil)}
+}
+
 // mergeChatLogProbs joins the logprobs of the given chunks in order, or returns nil when none carry any.
 func mergeChatLogProbs(chunks []*ChatStreamChunk) *schemas.BifrostLogProbs {
 	var merged *schemas.BifrostLogProbs
@@ -558,11 +570,14 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		Cost:             nil,
 	}
 	// Build complete message from accumulated chunks. With n>1 every choice is built on its own and the
-	// top-level output describes choice 0, the same way a non-streamed response is logged.
+	// top-level output describes choice 0 (empty while choice 0 has not emitted), the same way a non-streamed
+	// response is logged.
 	var completeMessage *schemas.ChatMessage
+	var choiceZero schemas.StreamChoiceOutput
 	if hasMultipleChoices(accumulator.ChatStreamChunks) {
 		data.OutputChoices = buildChatChoiceOutputs(accumulator.ChatStreamChunks)
-		completeMessage = data.OutputChoices[0].Message
+		choiceZero = choiceZeroOutput(data.OutputChoices)
+		completeMessage = choiceZero.Message
 	} else {
 		completeMessage = a.buildCompleteMessageFromChatStreamChunks(accumulator.ChatStreamChunks)
 	}
@@ -622,8 +637,8 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 	}
 	if len(data.OutputChoices) > 0 {
 		// The highest-index chunk may belong to any choice, so take choice 0's own values.
-		data.FinishReason = data.OutputChoices[0].FinishReason
-		data.LogProbs = data.OutputChoices[0].LogProbs
+		data.FinishReason = choiceZero.FinishReason
+		data.LogProbs = choiceZero.LogProbs
 	} else {
 		data.LogProbs = mergeChatLogProbs(accumulator.ChatStreamChunks)
 	}
