@@ -72,6 +72,8 @@ export function authTypeLabel(type: string | undefined): string {
 			return i18n.t("registry.filter.tokenExchange", { ns: "mcp" });
 		case "client_credentials":
 			return i18n.t("registry.clientCredentials.authType", { ns: "mcp" });
+		case "aws_sigv4":
+			return i18n.t("registry.awsSigV4.authType", { ns: "mcp" });
 		default:
 			return type;
 	}

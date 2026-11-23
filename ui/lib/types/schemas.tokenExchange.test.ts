@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+	awsSigV4Issues,
+	awsSigV4ReservedHeader,
 	clientCredentialsIssues,
 	clientCredentialsResendRequired,
 	hasPrivateKeySettingsWithoutKey,
@@ -113,5 +115,60 @@ describe("clientCredentialsResendRequired", () => {
 		expect(
 			clientCredentialsResendRequired(saved, { ...moved, client_secret: { value: "<redacted>", ref: "env.S", type: "env" } }),
 		).toBeUndefined();
+	});
+});
+
+describe("awsSigV4Issues", () => {
+	const paths = (cfg: Parameters<typeof awsSigV4Issues>[0]) => awsSigV4Issues(cfg).map((i) => i.path);
+	const role = { value: "arn:aws-us-gov:iam::123456789012:role/bifrost" };
+
+	it("accepts a region alone, or with a role, external ID and session name", () => {
+		expect(paths({ region: { value: "us-gov-west-1" } })).toEqual([]);
+		expect(
+			paths({ region: { value: "us-east-1" }, role_arn: role, external_id: { value: "ext" }, session_name: { value: "bifrost-mcp" } }),
+		).toEqual([]);
+	});
+
+	it("requires a region shaped like an AWS region", () => {
+		expect(paths({})).toEqual(["region"]);
+		expect(paths({ region: { value: "  " } })).toEqual(["region"]);
+		expect(paths({ region: { value: "US-EAST-1" } })).toEqual(["region"]);
+		expect(paths({ region: { value: "us-east" } })).toEqual(["region"]);
+	});
+
+	it("leaves secret references to the server", () => {
+		expect(paths({ region: { value: "", ref: "env.AWS_REGION" } })).toEqual([]);
+		// A stored reference reads back with a masked value beside it.
+		expect(paths({ region: { value: "us-e****t-1", ref: "env.AWS_REGION" }, role_arn: { value: "arn****", ref: "vault.role" } })).toEqual(
+			[],
+		);
+	});
+
+	it("checks the role ARN and session name literals", () => {
+		expect(paths({ region: { value: "us-east-1" }, role_arn: { value: "arn:aws:iam::123:role/x" } })).toEqual(["role_arn"]);
+		expect(paths({ region: { value: "us-east-1" }, role_arn: { value: "arn:aws:iam::123456789012:user/x" } })).toEqual(["role_arn"]);
+		expect(paths({ region: { value: "us-east-1" }, role_arn: role, session_name: { value: "a" } })).toEqual(["session_name"]);
+		expect(paths({ region: { value: "us-east-1" }, role_arn: role, session_name: { value: "has space" } })).toEqual(["session_name"]);
+	});
+
+	it("refuses an external ID or session name without a role", () => {
+		expect(paths({ region: { value: "us-east-1" }, external_id: { value: "ext" }, session_name: { value: "bifrost-mcp" } })).toEqual([
+			"external_id",
+			"session_name",
+		]);
+	});
+});
+
+describe("awsSigV4ReservedHeader", () => {
+	it("finds a header the SigV4 signer sets, in either list, ignoring case", () => {
+		expect(awsSigV4ReservedHeader({ "X-Tenant": {} }, ["X-Request-Id"])).toBeUndefined();
+		expect(awsSigV4ReservedHeader(undefined, undefined)).toBeUndefined();
+		expect(awsSigV4ReservedHeader({ authorization: {} }, [])).toBe("authorization");
+		expect(awsSigV4ReservedHeader({}, ["*", " X-Amz-Security-Token"])).toBe(" X-Amz-Security-Token");
+		expect(awsSigV4ReservedHeader({ "X-AMZ-Date": {} })).toBe("X-AMZ-Date");
+	});
+
+	it("allows the forward-all wildcard, since the signer strips reserved headers", () => {
+		expect(awsSigV4ReservedHeader({}, ["*"])).toBeUndefined();
 	});
 });

@@ -96,6 +96,8 @@ function authHelpText(authType: MCPAuthType | string | undefined, t: TFunction<"
 			return t("library.install.helpTokenExchange");
 		case "client_credentials":
 			return t("library.install.helpClientCredentials");
+		case "aws_sigv4":
+			return t("library.install.helpAwsSigV4");
 		default:
 			return t("library.install.helpNone");
 	}

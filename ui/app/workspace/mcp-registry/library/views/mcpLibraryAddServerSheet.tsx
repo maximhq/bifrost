@@ -105,7 +105,7 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 	const needsHeaderKeys = authKind === "headers";
 
 	const applyAuthKind = (kind: MCPAuthKind) => {
-		if (kind === "none" || kind === "token_exchange" || kind === "client_credentials") {
+		if (kind === "none" || kind === "token_exchange" || kind === "client_credentials" || kind === "aws_sigv4") {
 			setValue("auth_type", kind);
 			return;
 		}
@@ -348,6 +348,7 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 														<SelectItem value="headers">{t("registry.filter.headers")}</SelectItem>
 														<SelectItem value="oauth">{t("registry.form.oauth20")}</SelectItem>
 														<SelectItem value="client_credentials">{t("registry.clientCredentials.authType")}</SelectItem>
+														<SelectItem value="aws_sigv4">{t("registry.awsSigV4.authType")}</SelectItem>
 														{IS_ENTERPRISE && idpConfigured && (
 															<SelectItem value="token_exchange">{t("registry.form.tokenExchangeObo")}</SelectItem>
 														)}

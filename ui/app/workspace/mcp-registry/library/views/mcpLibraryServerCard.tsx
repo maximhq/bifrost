@@ -55,6 +55,8 @@ export function authLabel(authType?: string): string {
 			return i18n.t("library.auth.tokenExchange", { ns: "mcp" });
 		case "client_credentials":
 			return i18n.t("registry.clientCredentials.authType", { ns: "mcp" });
+		case "aws_sigv4":
+			return i18n.t("registry.awsSigV4.authType", { ns: "mcp" });
 		default:
 			return i18n.t("library.auth.noAuth", { ns: "mcp" });
 	}

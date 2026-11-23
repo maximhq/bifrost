@@ -266,6 +266,29 @@ describe("authRows", () => {
 		expect(row(keyed, "client_credentials_resource")).toMatchObject({ value: "Not sent" });
 	});
 
+	it("summarizes AWS SigV4, naming a reference rather than its masked value", () => {
+		const own = authRows(config({ auth_type: "aws_sigv4", aws_sigv4: { region: { value: "us-gov-west-1" } } }), "Shared");
+		expect(row(own, "auth_type")).toMatchObject({ value: "AWS IAM (SigV4) · Shared" });
+		expect(row(own, "aws_sigv4_region")).toMatchObject({ value: "us-gov-west-1" });
+		expect(row(own, "aws_sigv4_service")).toMatchObject({ value: "bedrock-agentcore" });
+		expect(row(own, "aws_sigv4_role")).toMatchObject({ value: "None: Bifrost's own identity" });
+
+		const assumed = authRows(
+			config({
+				auth_type: "aws_sigv4",
+				aws_sigv4: {
+					region: { value: "us-e****t-1", ref: "env.AWS_REGION", type: "env" },
+					service: "execute-api",
+					role_arn: { value: "arn:aws:iam::123456789012:role/gateway" },
+				},
+			}),
+			"Shared",
+		);
+		expect(row(assumed, "aws_sigv4_region")).toMatchObject({ value: "env.AWS_REGION" });
+		expect(row(assumed, "aws_sigv4_service")).toMatchObject({ value: "execute-api" });
+		expect(row(assumed, "aws_sigv4_role")).toMatchObject({ value: "arn:aws:iam::123456789012:role/gateway" });
+	});
+
 	it("adds the required header names for a per-user headers server", () => {
 		const rows = authRows(config({ auth_type: "per_user_headers", per_user_header_keys: ["X-API-Key", "X-Tenant"] }), "Per-User");
 		expect(row(rows, "auth_type")).toMatchObject({ value: "Headers · Per-User" });

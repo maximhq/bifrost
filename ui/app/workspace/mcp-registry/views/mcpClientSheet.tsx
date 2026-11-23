@@ -25,6 +25,7 @@ import {
 } from "@/lib/store";
 import { MCPClient, MCPOpenAPICredential, MCPOpenAPIPreviewResponse, MCPVKConfig, SecretVar } from "@/lib/types/mcp";
 import {
+	awsSigV4ReservedHeader,
 	clientCredentialsResendMessage,
 	clientCredentialsResendRequired,
 	mcpClientUpdateSchema,
@@ -75,6 +76,7 @@ import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreviewPanel";
 import { OpenAPISpecSource } from "./openApiSpecSource";
 import { CodeModeServerLabel, ServerTypeOnSlugLabel } from "./codeModeFields";
+import { AWSSigV4Fields, awsSigV4FormValues, awsSigV4Payload } from "./awsSigV4Fields";
 import { ClientCredentialsFields, clientCredentialsFormValues, clientCredentialsPayload } from "./clientCredentialsFields";
 import { SectionHeader } from "./sectionHeader";
 import { ServerTypeOnSlugSelect } from "./serverTypeOnSlugSelect";
@@ -181,6 +183,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	const supportsOAuthCredentialUpdate = mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 	const supportsTokenExchangeCredentialUpdate = mcpClient.config.auth_type === "token_exchange";
 	const supportsClientCredentialsUpdate = mcpClient.config.auth_type === "client_credentials";
+	const supportsAWSSigV4Update = mcpClient.config.auth_type === "aws_sigv4";
 
 	// OpenAPI-backed servers: the stored document can be replaced from the
 	// General tab. The replacement is parsed through the same preview endpoint
@@ -429,6 +432,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					}
 				: undefined,
 			client_credentials: supportsClientCredentialsUpdate ? clientCredentialsFormValues(mcpClient.config.client_credentials) : undefined,
+			aws_sigv4: supportsAWSSigV4Update ? awsSigV4FormValues(mcpClient.config.aws_sigv4) : undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
 						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
@@ -513,6 +517,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					}
 				: undefined,
 			client_credentials: supportsClientCredentialsUpdate ? clientCredentialsFormValues(mcpClient.config.client_credentials) : undefined,
+			aws_sigv4: supportsAWSSigV4Update ? awsSigV4FormValues(mcpClient.config.aws_sigv4) : undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
 						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
@@ -520,7 +525,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					}
 				: undefined,
 		});
-	}, [form, mcpClient, supportsOAuthCredentialUpdate, supportsTokenExchangeCredentialUpdate, supportsClientCredentialsUpdate]);
+	}, [
+		form,
+		mcpClient,
+		supportsOAuthCredentialUpdate,
+		supportsTokenExchangeCredentialUpdate,
+		supportsClientCredentialsUpdate,
+		supportsAWSSigV4Update,
+	]);
 
 	const initialOauthScopesRaw = (mcpClient.config.oauth_scopes || []).join(", ");
 	const oauthScopesDirty = oauthScopesRaw !== initialOauthScopesRaw;
@@ -580,6 +592,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	const clientCredentialsRetargeted = !!(
 		form.formState.dirtyFields.client_credentials?.token_url || form.formState.dirtyFields.client_credentials?.assertion_audience
 	);
+	// The server replaces aws_sigv4 whole, so any change resends the block.
+	const awsSigV4Dirty = Object.keys(form.formState.dirtyFields.aws_sigv4 ?? {}).length > 0;
 	// Gates the "takes effect immediately" warning below the toggle — the
 	// backend applies a stickiness change live (opens or closes the shared
 	// connection) as part of the same update, not on some later reconnect.
@@ -613,6 +627,15 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 				: undefined;
 			if (ccResendField) {
 				form.setError(`client_credentials.${ccResendField}`, { message: clientCredentialsResendMessage() });
+				return;
+			}
+			const reservedHeader = supportsAWSSigV4Update ? awsSigV4ReservedHeader(data.headers ?? {}, data.allowed_extra_headers) : undefined;
+			if (reservedHeader) {
+				toast({
+					title: t("registry.awsSigV4.reservedHeaderTitle"),
+					description: t("registry.awsSigV4.reservedHeaderDesc", { name: reservedHeader }),
+					variant: "destructive",
+				});
 				return;
 			}
 			// A replacement document must have been parsed (and not edited since)
@@ -786,6 +809,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 						: undefined,
 					client_credentials:
 						supportsClientCredentialsUpdate && clientCredentialsDirty ? clientCredentialsPayload(data.client_credentials) : undefined,
+					aws_sigv4: supportsAWSSigV4Update && awsSigV4Dirty ? awsSigV4Payload(data.aws_sigv4) : undefined,
 					tls_config:
 						data.tls_config !== undefined
 							? {
@@ -1582,7 +1606,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											const showOAuth = supportsOAuthCredentialUpdate;
 											const showTokenExchange = supportsTokenExchangeCredentialUpdate;
 											const showClientCredentials = supportsClientCredentialsUpdate;
-											if (!showTLS && !showOAuth && !showTokenExchange && !showClientCredentials) return null;
+											const showAWSSigV4 = supportsAWSSigV4Update;
+											if (!showTLS && !showOAuth && !showTokenExchange && !showClientCredentials && !showAWSSigV4) return null;
 
 											return (
 												<>
@@ -1681,6 +1706,22 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 																		maskNonEnvValue
 																		redactNonEnvValue={false}
 																	/>
+																</div>
+															</div>
+														</>
+													)}
+
+													{showAWSSigV4 && (
+														<>
+															<DottedSeparator />
+															<div className="space-y-4">
+																<SectionHeader
+																	title={t("registry.awsSigV4.sectionTitle")}
+																	description={t("registry.awsSigV4.sectionDesc")}
+																	testId="aws-sigv4-advanced-heading"
+																/>
+																<div className="space-y-4 rounded-md border p-4">
+																	<AWSSigV4Fields control={form.control} disabled={!hasUpdateMCPClientAccess} />
 																</div>
 															</div>
 														</>

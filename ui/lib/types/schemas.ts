@@ -1,6 +1,6 @@
 import { validatePatternAlias } from "@/components/modelAccess/utils";
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
+import { MCP_AWS_SIGV4_SERVICES, MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import i18n from "@/lib/i18n";
 import { msg } from "@/lib/i18n/validationMessage";
 import { JOB_ID_PLACEHOLDER } from "@/lib/types/relays";
@@ -182,6 +182,59 @@ export function clientCredentialsIssues(cc?: ClientCredentialsFields): { path: k
 		issues.push({ path: "assertion_audience", message: i18n.t("registry.form.assertionAudienceHttps", { ns: "mcp" }) });
 	}
 	return issues;
+}
+
+// The aws_sigv4 fields awsSigV4Issues checks.
+interface AWSSigV4Fields {
+	region?: { value?: string; ref?: string };
+	service?: string;
+	role_arn?: { value?: string; ref?: string };
+	external_id?: { value?: string; ref?: string };
+	session_name?: { value?: string; ref?: string };
+}
+
+const awsRegionPattern = /^[a-z]{2}(-[a-z]+)+-[0-9]+$/;
+const awsRoleARNPattern = /^arn:aws[a-z-]*:iam::[0-9]{12}:role\/[\w+=,.@/-]+$/;
+const awsSessionNamePattern = /^[\w+=,.@-]{2,64}$/;
+
+// A literal value to check against a pattern; a secret reference is checked by the server as it resolves.
+const literalOf = (v?: { value?: string; ref?: string }) => (v?.ref?.trim() ? undefined : v?.value?.trim());
+
+// awsSigV4Issues mirrors the server's check of an aws_sigv4 block: a region, a role ARN, and an
+// external ID or session name only with a role. Patterns apply to literals only.
+export function awsSigV4Issues(cfg?: AWSSigV4Fields): { path: keyof AWSSigV4Fields; message: string }[] {
+	const issues: { path: keyof AWSSigV4Fields; message: string }[] = [];
+	const region = literalOf(cfg?.region);
+	if (!isSecretVarSet(cfg?.region)) {
+		issues.push({ path: "region", message: i18n.t("registry.awsSigV4.regionRequired", { ns: "mcp" }) });
+	} else if (region && !awsRegionPattern.test(region)) {
+		issues.push({ path: "region", message: i18n.t("registry.awsSigV4.regionInvalid", { ns: "mcp" }) });
+	}
+	const role = literalOf(cfg?.role_arn);
+	if (role && !awsRoleARNPattern.test(role)) {
+		issues.push({ path: "role_arn", message: i18n.t("registry.awsSigV4.roleArnInvalid", { ns: "mcp" }) });
+	}
+	const hasRole = isSecretVarSet(cfg?.role_arn);
+	if (isSecretVarSet(cfg?.external_id) && !hasRole) {
+		issues.push({ path: "external_id", message: i18n.t("registry.awsSigV4.needsRole", { ns: "mcp" }) });
+	}
+	const session = literalOf(cfg?.session_name);
+	if (isSecretVarSet(cfg?.session_name) && !hasRole) {
+		issues.push({ path: "session_name", message: i18n.t("registry.awsSigV4.needsRole", { ns: "mcp" }) });
+	} else if (session && !awsSessionNamePattern.test(session)) {
+		issues.push({ path: "session_name", message: i18n.t("registry.awsSigV4.sessionNameInvalid", { ns: "mcp" }) });
+	}
+	return issues;
+}
+
+// awsSigV4ReservedHeader returns the first configured or forwardable header the SigV4 signer sets
+// (Authorization or X-Amz-*), which the server refuses on an aws_sigv4 client.
+export function awsSigV4ReservedHeader(headers?: Record<string, unknown>, allowedExtraHeaders?: string[]): string | undefined {
+	const reserved = (name: string) => {
+		const lower = name.trim().toLowerCase();
+		return lower === "authorization" || lower.startsWith("x-amz-");
+	};
+	return [...Object.keys(headers ?? {}), ...(allowedExtraHeaders ?? [])].find(reserved);
 }
 
 // Azure key config schema
@@ -2309,6 +2362,20 @@ export const mcpClientUpdateSchema = z
 			})
 			.superRefine((cc, ctx) => {
 				for (const { path, message } of clientCredentialsIssues(cc)) {
+					ctx.addIssue({ code: "custom", path: [path], message });
+				}
+			})
+			.optional(),
+		aws_sigv4: z
+			.object({
+				region: secretVarSchema.optional(),
+				service: z.enum(MCP_AWS_SIGV4_SERVICES).optional(),
+				role_arn: secretVarSchema.optional(),
+				external_id: secretVarSchema.optional(),
+				session_name: secretVarSchema.optional(),
+			})
+			.superRefine((cfg, ctx) => {
+				for (const { path, message } of awsSigV4Issues(cfg)) {
 					ctx.addIssue({ code: "custom", path: [path], message });
 				}
 			})

@@ -116,7 +116,15 @@ export type MCPConnectionState =
 	// single-instance deployment.
 	| "degraded";
 
-export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers" | "token_exchange" | "client_credentials";
+export type MCPAuthType =
+	| "none"
+	| "headers"
+	| "oauth"
+	| "per_user_oauth"
+	| "per_user_headers"
+	| "token_exchange"
+	| "client_credentials"
+	| "aws_sigv4";
 
 // Which step of Bifrost's own connection handling failed. Mirrors the Go
 // MCPConnectionFailureStage constants.
@@ -233,6 +241,19 @@ export interface MCPClientCredentialsConfig {
 	omit_resource?: boolean; // form only: send resource "" so none is sent
 }
 
+// SigV4 signing for auth_type === "aws_sigv4": Bifrost signs every request with
+// its own AWS identity, optionally assuming role_arn first. Values held in an env
+// or vault reference are masked on GET; literals read back as set.
+export interface MCPAWSSigV4Config {
+	region: SecretVar; // signing region, required
+	service?: MCPAWSSigV4Service; // empty: bedrock-agentcore
+	role_arn?: SecretVar; // role to assume before signing
+	external_id?: SecretVar; // needs role_arn
+	session_name?: SecretVar; // needs role_arn; empty: bifrost-session
+}
+
+export type MCPAWSSigV4Service = "bedrock-agentcore" | "aws-mcp" | "lambda" | "execute-api";
+
 export interface OAuthConfig {
 	client_id: SecretVar;
 	client_secret?: SecretVar; // Optional for public clients using PKCE
@@ -296,6 +317,7 @@ export interface MCPClientConfig {
 	// Required (with a non-empty audience) for token_exchange auth.
 	token_exchange?: MCPTokenExchangeConfig;
 	client_credentials?: MCPClientCredentialsConfig; // client_credentials only
+	aws_sigv4?: MCPAWSSigV4Config; // aws_sigv4 only
 	is_ping_available?: boolean;
 	// Only meaningful when connection_type === "http": whether this client
 	// maintains one persistent connection reused across every caller (true)
@@ -458,6 +480,7 @@ export interface CreateMCPClientRequest {
 	// (e.g. API-key auth) create the client in pending_verification.
 	token_exchange?: MCPTokenExchangeConfig;
 	client_credentials?: MCPClientCredentialsConfig; // client_credentials only
+	aws_sigv4?: MCPAWSSigV4Config; // aws_sigv4 only
 	// per_user_headers-only: a sample set of header values supplied by the
 	// admin so the server can verify upstream + discover tools in the same
 	// create call. Discarded after verification (never persisted). Mirrors
@@ -540,6 +563,7 @@ export interface UpdateMCPClientRequest {
 	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
 	token_exchange?: MCPTokenExchangeConfig; // Only supported for existing token_exchange clients; omitted = preserve
 	client_credentials?: MCPClientCredentialsConfig; // Only for existing client_credentials clients; replaced whole, omitted = preserve
+	aws_sigv4?: MCPAWSSigV4Config; // Only for existing aws_sigv4 clients; replaced whole, omitted = preserve
 	// openapi clients only: replaces the document and/or credentials (merged
 	// onto the stored block; a redacted credential keeps the stored secret) and
 	// rebuilds the server. Omitted = preserve.
@@ -555,7 +579,7 @@ export interface GetMCPClientsParams {
 	server?: string;
 	// Comma-separated exact-match filters (OR semantics), mirroring the library page.
 	connection_type?: string; // http,sse,stdio
-	auth_type?: string; // none,headers,oauth,per_user_oauth,per_user_headers,token_exchange,client_credentials
+	auth_type?: string; // none,headers,oauth,per_user_oauth,per_user_headers,token_exchange,client_credentials,aws_sigv4
 	state?: string; // connected,disconnected — resolved against live engine state
 	virtual_keys?: string; // comma-separated VK IDs the client is assigned to
 	// Boolean facets — omit for "no filter".
