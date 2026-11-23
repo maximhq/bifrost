@@ -609,6 +609,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
 	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
 	{IDs: []string{"add_virtual_mcp_config_issues_column"}, run: migrationAddVirtualMCPConfigIssuesColumn},
+	{IDs: []string{"add_disable_content_logging_columns"}, run: migrationAddDisableContentLoggingColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -15185,6 +15186,54 @@ func migrationAddVirtualKeyDisableContentLoggingColumn(ctx context.Context, db *
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
+}
+
+// disableContentLoggingTables are the tables that carry a tri-state disable_content_logging
+// column: each is one layer of the content-logging decision.
+var disableContentLoggingTables = []any{
+	&tables.TableVirtualKey{},
+	&tables.TableTeam{},
+}
+
+// migrationAddDisableContentLoggingColumns adds disable_content_logging to every table that carries
+// a content-logging layer. The columns are nullable with no default because NULL is a meaning of
+// its own (inherit), so every existing row comes out of the migration inheriting exactly as it did
+// before.
+//
+// It runs after add_virtual_key_disable_content_logging_column, which shipped and stays as is: the
+// virtual key's column is then already there and addColumnIfNotExists skips it, so the step adds
+// only the layers that came after it.
+func migrationAddDisableContentLoggingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_disable_content_logging_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Each ALTER needs ACCESS EXCLUSIVE; bound the wait so a held lock fails this boot's attempt
+			// instead of queueing every query on the table behind it. The next boot retries.
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, table := range disableContentLoggingTables {
+				if err := addColumnIfNotExists(tx, logger, table, "disable_content_logging"); err != nil {
+					return fmt.Errorf("failed to add disable_content_logging column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackDisableContentLoggingColumns(ctx, tx, logger)
+		},
+	})
+}
+
+// rollbackDisableContentLoggingColumns refuses. Each column is the only home for its layer's
+// content-logging decision, and NULL reads as inherit: dropping them would not merely lose data,
+// it would silently start logging content for every row that had turned it off.
+func rollbackDisableContentLoggingColumns(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_disable_content_logging_columns is non-rollbackable: dropping disable_content_logging would permanently delete every content-logging decision and silently revert content-off rows to logging content; the columns are additive and older binaries safely ignore them")
 }
 
 // migrationAddTTFTTimeoutMsColumnToRoutingTargets adds the nullable ttft_timeout_ms

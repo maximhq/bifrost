@@ -1999,6 +1999,15 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 	if t.AccessProfile != "" {
 		hash.Write([]byte("accessProfile:" + t.AccessProfile))
 	}
+	// Hash DisableContentLogging only when the team says something, so every team that predates
+	// the column keeps the hash it already has and config sync sees no drift on upgrade.
+	if t.DisableContentLogging != nil {
+		if *t.DisableContentLogging {
+			hash.Write([]byte("disableContentLogging:true"))
+		} else {
+			hash.Write([]byte("disableContentLogging:false"))
+		}
+	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
