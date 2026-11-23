@@ -296,7 +296,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 				return "", gemini.ToGeminiSpeechStreamResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return gemini.ToGeminiError(err)
+				return gemini.ToGeminiStreamError(err)
 			},
 		},
 		PreCallback: extractAndSetModelAndRequestType,
