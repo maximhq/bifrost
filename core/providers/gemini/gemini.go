@@ -400,6 +400,10 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		}, nil
 	}
 
+	if malformedErr := geminiResponse.MalformedOutputError(); malformedErr != nil {
+		return nil, malformedErr
+	}
+
 	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := geminiResponse.ToBifrostChatResponse()
 	if convTracer != nil {
@@ -813,6 +817,10 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}, nil
 	}
 
+	if malformedErr := geminiResponse.MalformedOutputError(); malformedErr != nil {
+		return nil, malformedErr
+	}
+
 	// Create final response
 	bifrostResponse := geminiResponse.ToResponsesBifrostResponsesResponse()
 
@@ -924,6 +932,9 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 	}
 	if unmarshalErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, unmarshalErr)
+	}
+	if malformedErr := geminiResponse.MalformedOutputError(); malformedErr != nil {
+		return nil, malformedErr
 	}
 	ct, ch := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := geminiResponse.ToResponsesBifrostResponsesResponse()

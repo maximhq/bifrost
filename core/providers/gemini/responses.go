@@ -1662,6 +1662,15 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 		return append(responses, closeGeminiOpenItems(state, nil, response.UsageMetadata, sequenceNumber+len(responses), "", "")...), nil
 	}
 
+	// A malformed turn that has produced no output items yet can still fail cleanly,
+	// so the caller retries instead of receiving an empty completed response. Once
+	// items have been streamed it closes like any other error finish reason.
+	if len(state.ItemIDs) == 0 {
+		if malformedErr := response.MalformedOutputError(); malformedErr != nil {
+			return nil, malformedErr
+		}
+	}
+
 	// Process candidates
 	if len(response.Candidates) > 0 {
 		candidate := response.Candidates[0]
