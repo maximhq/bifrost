@@ -349747,7 +349747,7 @@
     },
     {
       "name": "382. Anthropic Managed Agents deployments through /anthropic_passthrough (anthropic-deployments-passthrough) (#10373 / PR #10374)",
-      "description": "Claude Managed Agents deployments live at /v1/deployments/{id} on the Anthropic API, and /anthropic_passthrough forwards them. Path model parsing read any deployments/{x} segment as an Azure deployment name, so the deployment id became the request's model and governance refused it with model_blocked before anything reached Anthropic: 'Model depl_... is not allowed for virtual key ...'. A key that allows every Anthropic model was refused too, because the id is not in the model catalog. The fix reads no model from a deployments path, and a deployments request that names no model skips the model allowlist (the agent's model was checked when the agent was created), while a model its body names is still checked. The cases create a virtual key that allows one Claude model, then read a deployment that does not exist and unpause it, with the Managed Agents beta header. Both must reach Anthropic and come back with its own 404 not_found_error. Red before the change: 403 model_blocked naming the deployment id. No model runs and nothing is created on the Anthropic account. Requires the governance plugin and an Anthropic key with Managed Agents access; the key is deleted at the end.",
+      "description": "Claude Managed Agents deployments live at /v1/deployments/{id} on the Anthropic API, and /anthropic_passthrough forwards them. Path model parsing read any deployments/{x} segment as an Azure deployment name, so the deployment id became the request's model and governance refused it with model_blocked before anything reached Anthropic: 'Model depl_... is not allowed for virtual key ...'. A key that allows every Anthropic model was refused too, because the id is not in the model catalog. The fix reads no model from a deployments path, and a deployments request that names no model skips the model allowlist (the agent's model was checked when the agent was created), while a model its body names is still checked. The cases create a virtual key that allows one Claude model on any Anthropic key, then read a deployment that does not exist and unpause it, with the Managed Agents beta header. Both must reach Anthropic and come back with its own 404 not_found_error. Red before the change: 403 model_blocked naming the deployment id. No model runs and nothing is created on the Anthropic account. Requires the governance plugin and an Anthropic key with Managed Agents access; the key is deleted at the end.",
       "item": [
         {
           "name": "anthropic anthropic-deployments-passthrough setup: create a virtual key that allows only claude-haiku-4-5 - #10373",
@@ -349818,7 +349818,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"{{anthropicDeploymentsVkName}}\",\"provider_configs\":[{\"provider\":\"anthropic\",\"allowed_models\":[\"claude-haiku-4-5\"],\"weight\":1}]}",
+              "raw": "{\"name\":\"{{anthropicDeploymentsVkName}}\",\"provider_configs\":[{\"provider\":\"anthropic\",\"allowed_models\":[\"claude-haiku-4-5\"],\"key_ids\":[\"*\"],\"weight\":1}]}",
               "options": {
                 "raw": {
                   "language": "json"
