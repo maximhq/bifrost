@@ -29,6 +29,7 @@
 - fix: `prompt_cache_options` reaches only models that accept it
 - fix: anthropic - a deferred web search is replayed without a made-up `web_search_tool_result`, and its late result stays in place on replay, Responses and streams
 - fix: anthropic - history with MCP or server-tool blocks no longer sends a roleless message to OpenAI-compatible providers; Responses items with no chat equivalent are dropped on the Responses-to-Chat fallback (thanks [@1AbdullahButt](https://github.com/1AbdullahButt)!)
+- fix: anthropic - a computer `wait` keeps its `duration` and a computer tool keeps its `display_number` through the gateway instead of being reset to the defaults (2 seconds, display 1); OpenAI-shaped providers do not receive either field
 - fix: bedrock - Claude's `bash_*` and `text_editor_*` tools (`local_shell` / `text_editor_*` on `/v1/responses`) are served through InvokeModel instead of being dropped on Converse, and `/bedrock` invoke routes keep `computer_*`, `bash_*` and `text_editor_*` as native tools instead of schema-less custom tools and return computer calls with their name and input; a non-Claude model reports them in `dropped_unsupported_tools`
 - fix: bedrock - `/anthropic/v1/messages` with `output_config.format` streams one well-formed text block, and plain-text answers are no longer lost
 - fix: bedrock - honour `network_config.base_url` and apply the dial-time address policy to the net/http client

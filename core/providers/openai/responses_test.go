@@ -5089,6 +5089,42 @@ func TestComputerCallHistoryActionsForGAComputerTool(t *testing.T) {
 		}
 	})
 
+	// An Anthropic-origin wait carries a duration and its computer tool a display_number;
+	// OpenAI has neither, so both are dropped from the wire without touching the caller.
+	t.Run("anthropic wait duration and display_number stay off the wire", func(t *testing.T) {
+		wait := schemas.ResponsesComputerToolCallAction{Type: "wait", Duration: schemas.Ptr(5.0)}
+		msg := schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCall), Status: schemas.Ptr("completed"), ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_wait"),
+			Action: &schemas.ResponsesToolMessageActionStruct{ResponsesComputerToolCallAction: &wait},
+		}}
+		preview := schemas.ResponsesTool{
+			Type:                            schemas.ResponsesToolTypeComputerUsePreview,
+			ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768, Environment: "browser", DisplayNumber: schemas.Ptr(2)},
+		}
+		got := wireCall(t, preview, msg)
+		action, _ := got["action"].(map[string]any)
+		if action == nil || action["type"] != "wait" || action["duration"] != nil {
+			t.Fatalf("action = %v, want a wait with no duration", got["action"])
+		}
+		if msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Duration == nil {
+			t.Fatal("the caller's wait duration was cleared in place")
+		}
+		req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI, Model: "gpt-6-sol", Input: []schemas.ResponsesMessage{msg},
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{preview}},
+		})
+		wire, err := sonic.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(wire), "display_number") {
+			t.Fatalf("display_number reached OpenAI: %s", wire)
+		}
+		if preview.ResponsesToolComputerUsePreview.DisplayNumber == nil {
+			t.Fatal("the caller's display_number was cleared in place")
+		}
+	})
+
 	t.Run("caller input is not mutated", func(t *testing.T) {
 		msg := call(false)
 		wireCall(t, computer, msg)

@@ -1756,7 +1756,7 @@ func TestToBedrockConverseRequest_InvokeClientToolsEndToEnd(t *testing.T) {
 			Content: []BedrockContentBlock{{Text: schemas.Ptr("Take a screenshot.")}},
 		}},
 		Tools: []interface{}{
-			map[string]interface{}{"type": "computer_20250124", "name": "computer", "display_width_px": float64(1024), "display_height_px": float64(768)},
+			map[string]interface{}{"type": "computer_20250124", "name": "computer", "display_width_px": float64(1024), "display_height_px": float64(768), "display_number": float64(2)},
 			map[string]interface{}{"type": "bash_20250124", "name": "bash"},
 			map[string]interface{}{"type": "text_editor_20250728", "name": "str_replace_based_edit_tool", "max_characters": float64(500), "cache_control": map[string]interface{}{"type": "ephemeral"}},
 			anthropicToolMap("get_weather", nil),
@@ -1783,6 +1783,8 @@ func TestToBedrockConverseRequest_InvokeClientToolsEndToEnd(t *testing.T) {
 	require.NotNil(t, tools[0].ResponsesToolComputerUsePreview)
 	assert.Equal(t, 1024, tools[0].ResponsesToolComputerUsePreview.DisplayWidth)
 	assert.Equal(t, 768, tools[0].ResponsesToolComputerUsePreview.DisplayHeight)
+	require.NotNil(t, tools[0].ResponsesToolComputerUsePreview.DisplayNumber, "display_number must survive the invoke ingress")
+	assert.Equal(t, 2, *tools[0].ResponsesToolComputerUsePreview.DisplayNumber)
 	assert.Equal(t, schemas.ResponsesToolTypeLocalShell, tools[1].Type)
 	assert.Equal(t, schemas.ResponsesToolType(anthropic.AnthropicToolTypeTextEditor20250728), tools[2].Type)
 	require.NotNil(t, tools[2].MaxCharacters, "max_characters must survive the invoke ingress, as on /anthropic")
@@ -1803,6 +1805,7 @@ func TestToBedrockConverseRequest_InvokeClientToolsEndToEnd(t *testing.T) {
 	assert.Contains(t, gjson.GetBytes(body, "anthropic_beta").String(), "computer-use-2025-11-24", "body=%s", body)
 	assert.Equal(t, int64(1024), out[0].Get("display_width_px").Int(), "body=%s", body)
 	assert.Equal(t, int64(768), out[0].Get("display_height_px").Int(), "body=%s", body)
+	assert.Equal(t, int64(2), out[0].Get("display_number").Int(), "a supplied display_number must reach Bedrock, not the default 1: %s", body)
 	assert.Equal(t, "bash_20250124", out[1].Get("type").String(), "body=%s", body)
 	assert.Equal(t, "text_editor_20250728", out[2].Get("type").String(), "body=%s", body)
 	assert.Equal(t, "str_replace_based_edit_tool", out[2].Get("name").String(), "body=%s", body)
@@ -1821,7 +1824,8 @@ func TestToBedrockInvokeMessagesResponse_ComputerToolUseKeepsNameAndInput(t *tes
 	var anthropicResp anthropic.AnthropicMessageResponse
 	require.NoError(t, sonic.Unmarshal([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-haiku-4-5","stop_reason":"tool_use",
 		"content":[{"type":"tool_use","id":"toolu_1","name":"computer","input":{"action":"screenshot"}},
-		{"type":"tool_use","id":"toolu_2","name":"bash","input":{"command":"ls -la /"}}],
+		{"type":"tool_use","id":"toolu_2","name":"bash","input":{"command":"ls -la /"}},
+		{"type":"tool_use","id":"toolu_3","name":"computer","input":{"action":"wait","duration":5}}],
 		"usage":{"input_tokens":10,"output_tokens":5}}`), &anthropicResp))
 
 	out, err := ToBedrockInvokeMessagesResponse(ctx, anthropicResp.ToBifrostResponsesResponse(ctx))
@@ -1830,13 +1834,17 @@ func TestToBedrockInvokeMessagesResponse_ComputerToolUseKeepsNameAndInput(t *tes
 	require.NoError(t, err)
 
 	blocks := gjson.GetBytes(encoded, "content").Array()
-	require.Len(t, blocks, 2, "body: %s", encoded)
+	require.Len(t, blocks, 3, "body: %s", encoded)
 	assert.Equal(t, "tool_use", blocks[0].Get("type").String(), "body: %s", encoded)
 	assert.Equal(t, "toolu_1", blocks[0].Get("id").String(), "body: %s", encoded)
 	assert.Equal(t, "computer", blocks[0].Get("name").String(), "body: %s", encoded)
 	assert.Equal(t, "screenshot", blocks[0].Get("input.action").String(), "body: %s", encoded)
 	assert.Equal(t, "bash", blocks[1].Get("name").String(), "body: %s", encoded)
 	assert.Equal(t, "ls -la /", blocks[1].Get("input.command").String(), "body: %s", encoded)
+	// A non-default wait duration must come back as the model sent it, not the default 2.
+	assert.Equal(t, "computer", blocks[2].Get("name").String(), "body: %s", encoded)
+	assert.Equal(t, "wait", blocks[2].Get("input.action").String(), "body: %s", encoded)
+	assert.Equal(t, float64(5), blocks[2].Get("input.duration").Float(), "body: %s", encoded)
 	assert.Equal(t, "tool_use", gjson.GetBytes(encoded, "stop_reason").String(), "body: %s", encoded)
 }
 
@@ -1844,51 +1852,59 @@ func TestToBedrockInvokeMessagesResponse_ComputerToolUseKeepsNameAndInput(t *tes
 // so the invoke stream must emit the whole tool_use there, with the action as an
 // input_json_delta, instead of a nameless block with no input (#9522).
 func TestToAnthropicInvokeStreamBytes_ComputerToolUseStreamsAction(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	state := anthropic.AcquireAnthropicResponsesStreamState()
-	defer anthropic.ReleaseAnthropicResponsesStreamState(state)
-
-	var events []map[string]interface{}
-	for seq, raw := range []string{
-		`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
-		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"computer","input":{}}}`,
-		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"action\":"}}`,
-		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"screenshot\"}"}}`,
-		`{"type":"content_block_stop","index":0}`,
+	for _, tc := range []struct{ name, first, rest, want string }{
+		{"screenshot", `{\"action\":`, `\"screenshot\"}`, `{"action":"screenshot"}`},
+		// A non-default wait duration must stream as the model sent it, not the default 2.
+		{"wait with duration", `{\"action\":\"wait\",`, `\"duration\":5}`, `{"action":"wait","duration":5}`},
 	} {
-		var chunk anthropic.AnthropicStreamEvent
-		require.NoError(t, sonic.Unmarshal([]byte(raw), &chunk))
-		responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, seq, state)
-		require.Nil(t, bErr)
-		for _, r := range responses {
-			frames, err := toAnthropicInvokeStreamBytes(ctx, r)
-			require.NoError(t, err)
-			for _, frame := range frames {
-				var ev map[string]interface{}
-				require.NoError(t, json.Unmarshal(frame, &ev))
-				if ev["type"] != "message_start" {
-					events = append(events, ev)
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			state := anthropic.AcquireAnthropicResponsesStreamState()
+			defer anthropic.ReleaseAnthropicResponsesStreamState(state)
+
+			var events []map[string]interface{}
+			for seq, raw := range []string{
+				`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+				`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"computer","input":{}}}`,
+				`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"` + tc.first + `"}}`,
+				`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"` + tc.rest + `"}}`,
+				`{"type":"content_block_stop","index":0}`,
+			} {
+				var chunk anthropic.AnthropicStreamEvent
+				require.NoError(t, sonic.Unmarshal([]byte(raw), &chunk))
+				responses, bErr, _ := chunk.ToBifrostResponsesStream(ctx, seq, state)
+				require.Nil(t, bErr)
+				for _, r := range responses {
+					frames, err := toAnthropicInvokeStreamBytes(ctx, r)
+					require.NoError(t, err)
+					for _, frame := range frames {
+						var ev map[string]interface{}
+						require.NoError(t, json.Unmarshal(frame, &ev))
+						if ev["type"] != "message_start" {
+							events = append(events, ev)
+						}
+					}
 				}
 			}
-		}
-	}
 
-	dump, _ := json.Marshal(events)
-	require.Len(t, events, 3, "expected content_block_start, input_json_delta, content_block_stop: %s", dump)
-	assert.Equal(t, "content_block_start", events[0]["type"], "%s", dump)
-	block, _ := events[0]["content_block"].(map[string]interface{})
-	assert.Equal(t, "tool_use", block["type"], "%s", dump)
-	assert.Equal(t, "toolu_1", block["id"], "%s", dump)
-	assert.Equal(t, "computer", block["name"], "%s", dump)
-	assert.Equal(t, "content_block_delta", events[1]["type"], "%s", dump)
-	delta, _ := events[1]["delta"].(map[string]interface{})
-	assert.Equal(t, "input_json_delta", delta["type"], "%s", dump)
-	assert.JSONEq(t, `{"action":"screenshot"}`, fmt.Sprint(delta["partial_json"]), "%s", dump)
-	assert.Equal(t, "content_block_stop", events[2]["type"], "%s", dump)
-	for _, ev := range events {
-		assert.EqualValues(t, 0, ev["index"], "%s", dump)
+			dump, _ := json.Marshal(events)
+			require.Len(t, events, 3, "expected content_block_start, input_json_delta, content_block_stop: %s", dump)
+			assert.Equal(t, "content_block_start", events[0]["type"], "%s", dump)
+			block, _ := events[0]["content_block"].(map[string]interface{})
+			assert.Equal(t, "tool_use", block["type"], "%s", dump)
+			assert.Equal(t, "toolu_1", block["id"], "%s", dump)
+			assert.Equal(t, "computer", block["name"], "%s", dump)
+			assert.Equal(t, "content_block_delta", events[1]["type"], "%s", dump)
+			delta, _ := events[1]["delta"].(map[string]interface{})
+			assert.Equal(t, "input_json_delta", delta["type"], "%s", dump)
+			assert.JSONEq(t, tc.want, fmt.Sprint(delta["partial_json"]), "%s", dump)
+			assert.Equal(t, "content_block_stop", events[2]["type"], "%s", dump)
+			for _, ev := range events {
+				assert.EqualValues(t, 0, ev["index"], "%s", dump)
+			}
+			assert.True(t, lookupBedrockInvokeStreamState(ctx).hasToolUse(), "a streamed computer call must make the stop reason tool_use")
+		})
 	}
-	assert.True(t, lookupBedrockInvokeStreamState(ctx).hasToolUse(), "a streamed computer call must make the stop reason tool_use")
 }
 
 // TestConvertAnthropicTools_DeferredToolSkipsCachePoint pins the one tool-level

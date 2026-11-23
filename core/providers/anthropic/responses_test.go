@@ -2404,6 +2404,50 @@ func TestToBifrostResponsesStream_ComputerCallActions(t *testing.T) {
 	assertComputerCallActions(t, *done)
 }
 
+// A computer wait duration and the computer tool's display_number round-trip through the
+// neutral types, so a value the caller or model supplied is not replaced by a default.
+// When either is omitted, the existing defaults (duration 2, display_number 1) still apply.
+func TestAnthropicComputerRoundTrip_WaitDurationAndDisplayNumber(t *testing.T) {
+	t.Run("wait keeps a supplied duration", func(t *testing.T) {
+		action := convertAnthropicToResponsesComputerAction(map[string]interface{}{"action": "wait", "duration": float64(5)})
+		if action.Duration == nil || *action.Duration != 5 {
+			t.Fatalf("neutral wait lost its duration: %+v", action)
+		}
+		if got := convertResponsesToAnthropicComputerAction(action)["duration"]; got != float64(5) {
+			t.Fatalf("wait duration = %v, want 5", got)
+		}
+	})
+	t.Run("wait without a duration keeps the default", func(t *testing.T) {
+		action := convertAnthropicToResponsesComputerAction(map[string]interface{}{"action": "wait"})
+		if got := convertResponsesToAnthropicComputerAction(action)["duration"]; got != 2 {
+			t.Fatalf("wait duration = %v, want the default 2", got)
+		}
+	})
+	dated := func(displayNumber *int) *AnthropicTool {
+		return &AnthropicTool{
+			Type: schemas.Ptr(AnthropicToolTypeComputer20250124),
+			Name: string(AnthropicToolNameComputer),
+			AnthropicToolComputerUse: &AnthropicToolComputerUse{
+				DisplayWidthPx: schemas.Ptr(1024), DisplayHeightPx: schemas.Ptr(768), DisplayNumber: displayNumber,
+			},
+		}
+	}
+	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5")
+	t.Run("display_number keeps a supplied value", func(t *testing.T) {
+		neutral := convertAnthropicToResponsesComputerTool(dated(schemas.Ptr(3)))
+		out := convertResponsesToAnthropicComputerTool(caps, neutral)
+		if out == nil || out.AnthropicToolComputerUse == nil || out.DisplayNumber == nil || *out.DisplayNumber != 3 {
+			t.Fatalf("display_number lost in the round trip: %+v", out)
+		}
+	})
+	t.Run("display_number defaults to 1 when omitted", func(t *testing.T) {
+		out := convertResponsesToAnthropicComputerTool(caps, convertAnthropicToResponsesComputerTool(dated(nil)))
+		if out == nil || out.AnthropicToolComputerUse == nil || out.DisplayNumber == nil || *out.DisplayNumber != 1 {
+			t.Fatalf("display_number default changed: %+v", out)
+		}
+	})
+}
+
 // OpenAI rejects a replayed computer_call whose id does not begin with "cu", so the
 // item minted for an assistant computer tool_use must not reuse the function call prefix.
 func TestAnthropicComputerToolUseReplaysWithComputerCallID(t *testing.T) {
