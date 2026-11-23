@@ -11,11 +11,15 @@ import (
 // RecordAuditChange attaches an entity change to the in-flight request so an
 // audit layer can record it with a before/after diff. before and after are
 // snapshotted to JSON immediately; pass nil for the side that does not exist.
-// It costs a JSON marshal per call and is otherwise inert in OSS builds.
-// Call it from the request's own goroutine: the append is not synchronized.
-func RecordAuditChange(ctx *fasthttp.RequestCtx, eventName, targetType, targetID, targetName string, before, after any) {
+// Call it as soon as the write commits, before any step that can still fail:
+// the change is recorded whatever status the request ends with. Use the
+// returned handle to refine the after state or to discard the change when a
+// rollback undoes the write. It costs a JSON marshal per call and is otherwise
+// inert in OSS builds. Call it from the request's own goroutine: the append is
+// not synchronized.
+func RecordAuditChange(ctx *fasthttp.RequestCtx, eventName, targetType, targetID, targetName string, before, after any) *AuditRecord {
 	if ctx == nil || eventName == "" {
-		return
+		return nil
 	}
 	change := configstore.AuditChange{
 		EventName:  eventName,
@@ -27,6 +31,37 @@ func RecordAuditChange(ctx *fasthttp.RequestCtx, eventName, targetType, targetID
 	}
 	changes, _ := ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
 	ctx.SetUserValue(configstore.AuditChangesUserValueKey, append(changes, change))
+	return &AuditRecord{ctx: ctx, index: len(changes)}
+}
+
+// AuditRecord is a change recorded on the in-flight request. A nil record is a
+// no-op, so callers need not check what RecordAuditChange returned.
+type AuditRecord struct {
+	ctx   *fasthttp.RequestCtx
+	index int
+}
+
+// SetAfter replaces the recorded after state, e.g. with the row a reload returned.
+func (r *AuditRecord) SetAfter(after any) {
+	if r == nil {
+		return
+	}
+	r.update(func(c *configstore.AuditChange) { c.After = AuditSnapshot(after) })
+}
+
+// Discard drops the change, for a handler whose rollback undid the write.
+func (r *AuditRecord) Discard() {
+	r.update(func(c *configstore.AuditChange) { c.Discarded = true })
+}
+
+func (r *AuditRecord) update(apply func(*configstore.AuditChange)) {
+	if r == nil {
+		return
+	}
+	changes, _ := r.ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+	if r.index < len(changes) {
+		apply(&changes[r.index])
+	}
 }
 
 // AuditSnapshot marshals v for RecordAuditChange, dropping the named top-level
