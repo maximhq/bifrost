@@ -109,10 +109,11 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	entry.MetadataParsed = mergeVirtualKeyMetadata(p.captureLoggingHeaders(ctx), ctx)
 	entry.RequestHeadersParsed = relayMatchedHeaders(req)
 	// The body is captured under the policy as the context stands now, or provisionally while
-	// governance has yet to resolve the presented key or the named project (its pre-hook runs
-	// after this one), exactly as PreLLMHook gates input capture. PostRelayHook applies the final
+	// governance has yet to resolve the presented caller or the named project (its pre-hook runs
+	// after this one), exactly as PreLLMHook gates input capture. A relay picks no provider key, so
+	// only the caller's layers can still change. PostRelayHook applies the final
 	// policy and drops what it does not allow, and an eviction drops provisional input.
-	pending.provisionalInput = governanceDecisionPending(ctx)
+	pending.provisionalInput = contentDecisionPending(ctx, contentScopeMCP)
 	pending.policy = p.resolveContentPolicy(ctx)
 	capture := pending.policy.storeContent || pending.provisionalInput
 	if capture && len(req.Body) > 0 {

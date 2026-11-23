@@ -178,7 +178,11 @@ export default function SuggestionSettingsSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex flex-col p-0" data-testid="complexity-suggestions-settings-sheet">
+			<SheetContent
+				resizeKey="complexity-suggestion-settings"
+				className="flex flex-col p-0"
+				data-testid="complexity-suggestions-settings-sheet"
+			>
 				<SheetHeader className="flex flex-col items-start gap-1 py-4" headerClassName="bg-card z-10 mb-0 border-b px-4 md:px-6">
 					<SheetTitle>{t("settingsTitle")}</SheetTitle>
 					<SheetDescription>{t("settingsDescription")}</SheetDescription>

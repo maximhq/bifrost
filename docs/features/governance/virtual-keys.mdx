@@ -56,7 +56,7 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 
 **Expiry** (optional): Pick **Never**, a preset (30 min to 7 days), or a custom date and time. See [Key Expiry](#key-expiry).
 
-**Content logging** (optional): **Inherit gateway setting** (default), **Off for this key**, or **On for this key**. See [Content logging per key](#content-logging-per-key).
+**Content logging** (optional): **Inherit** (default), **Off for this key**, or **On for this key**. A setting on the key's team outranks it. See [Content logging per key](#content-logging-per-key).
 
 3. Click **Create Virtual Key**
 
@@ -267,9 +267,9 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
 
 Each virtual key can decide whether the content of its requests and responses is stored. The `disable_content_logging` field is tri-state:
 
-- omitted or `null`: inherit `client.disable_content_logging`
-- `true`: content is not stored in the log store for this key's traffic (an allowed `x-bf-disable-content-logging: false` header can still re-enable it for one request), and connectors strip it from their exports the way their own `disable_content_logging` would (Maxim applies it to Agent Gateway traces only; see [Content Logging](/features/observability/content-logging))
-- `false`: content is stored for this key's traffic even when the client setting is `true`
+- omitted or `null`: inherit (the key's business unit, team or user decides if one sets a value, then a provider key or access profile the request uses, and `client.disable_content_logging` applies only when every layer inherits)
+- `true`: content is not stored in the log store for this key's traffic (the key's business unit, team or user can still turn it on, and an allowed `x-bf-disable-content-logging: false` header can re-enable it for one request), and connectors strip it from their exports the way their own `disable_content_logging` would (Maxim applies it to Agent Gateway traces only; see [Content Logging](/features/observability/content-logging))
+- `false`: content is stored for this key's traffic even when the client setting is `true`, unless the key's business unit, team or user decides otherwise, a provider key or access profile on the request says `true`, or the request's [project](/enterprise/projects#content-logging) (Enterprise) sets its own decision
 
 ```bash
 curl -X POST http://localhost:8080/api/governance/virtual-keys \
@@ -286,7 +286,7 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
   -d '{ "disable_content_logging": null }'
 ```
 
-Precedence is client setting, then the key, then the request's [project](/enterprise/projects#content-logging) when it has its own setting (Enterprise), then the `x-bf-disable-content-logging` header when per-request overrides are allowed. See [Content Logging](/features/observability/content-logging) for how each layer treats the log store and observability connectors.
+The key is part of the credential tier, below its business unit, team and user: a team that turns content off cannot be reopened by the key. Within the tier, a provider key or access profile that says `true` wins over a key that says `false`. A request's [project](/enterprise/projects#content-logging) with its own setting (Enterprise) overrides the key's decision. The `x-bf-disable-content-logging` header, when per-request overrides are allowed, still has the final word for the log store. See [Content Logging](/features/observability/content-logging) for how each layer treats the log store and observability connectors.
 
 ### Metadata per key
 

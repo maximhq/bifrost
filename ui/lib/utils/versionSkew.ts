@@ -270,8 +270,11 @@ export function startVersionPoll({ fetchVersion, onUpdateReady, onTimeout }: Ver
 	};
 }
 
+// A modulepreload link is skipped: Firefox fires error on one for a chunk a <script> already loaded, and a chunk
+// that really failed still rejects its import(), which vite:preloadError and unhandledrejection report.
 function failedAssetElementUrl(target: EventTarget | null): string | undefined {
 	if (!(target instanceof HTMLScriptElement) && !(target instanceof HTMLLinkElement)) return undefined;
+	if (target instanceof HTMLLinkElement && target.rel.toLowerCase().split(/\s+/).includes("modulepreload")) return undefined;
 	return sameOriginAssetUrl(target instanceof HTMLScriptElement ? target.src : target.href);
 }
 

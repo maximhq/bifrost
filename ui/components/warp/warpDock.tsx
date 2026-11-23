@@ -65,7 +65,12 @@ export default function WarpDock({ children }: { children: React.ReactNode }) {
 			{isOpen && isMobile && (
 				<Sheet open onOpenChange={(open) => !open && warp?.close()}>
 					{/* Override SheetContent's sm:w-3/4 so the sheet stays full width. */}
-					<SheetContent side="right" className="w-[calc(100%_-_16px)] p-0 sm:w-full sm:max-w-none" data-testid="warp-dock-sheet">
+					<SheetContent
+						side="right"
+						resizable={false}
+						className="w-[calc(100%_-_16px)] p-0 sm:w-full sm:max-w-none"
+						data-testid="warp-dock-sheet"
+					>
 						{/* Radix names the dialog from SheetTitle, not the panel's own heading. */}
 						<SheetTitle className="sr-only">{t("nav.warp")}</SheetTitle>
 						<SheetDescription className="sr-only">{t("warp.dock.description")}</SheetDescription>
