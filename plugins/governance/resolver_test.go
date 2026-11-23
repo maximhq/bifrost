@@ -1149,6 +1149,62 @@ func TestPreLLMHookChecksInteractionsAgentAgainstAllowlist(t *testing.T) {
 	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
 }
 
+// A Claude Managed Agents deployment is read, run, paused or archived at /v1/deployments/{id}[/{action}].
+// Those requests name no model; the router marks them model-free, so a key that restricts models reaches
+// them. A deployment update that names a model in its body is not model-free and is still checked, and a
+// request that reaches governance with no model and no flag (a caller bypassing the router) is still refused.
+func TestPreLLMHookAllowsModelFreeAnthropicDeploymentsUnderRestrictedKey(t *testing.T) {
+	const allowed, denied = "claude-sonnet-4-5", "claude-opus-4-1"
+	vk := buildVirtualKeyWithProviders("vk-depl", "sk-bf-depl", "Deployments VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{allowed}),
+	})
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	deployment := func(method, path, model, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.Anthropic, Model: model, Method: method, Path: path, Body: []byte(body),
+		}}
+	}
+	modelFree := func() *schemas.BifrostContext {
+		ctx := presentCtx("sk-bf-depl")
+		ctx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
+		return ctx
+	}
+
+	for _, req := range []*schemas.BifrostRequest{
+		deployment("GET", "/v1/deployments", "", ""),
+		deployment("GET", "/v1/deployments/depl_1", "", ""),
+		deployment("POST", "/v1/deployments/depl_1/run", "", ""),
+		deployment("POST", "/v1/deployments/depl_1/pause", "", ""),
+		deployment("POST", "/v1/deployments/depl_1/archive", "", ""),
+	} {
+		_, shortCircuit, err := plugin.PreLLMHook(modelFree(), req)
+		require.NoError(t, err)
+		assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+	}
+
+	// Without the router's flag a request naming no model is refused under a restricted key.
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("GET", "/v1/deployments/depl_1", "", ""))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+
+	// An update keeps the allowlist: the model its body names is checked.
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", "/v1/deployments/depl_1", denied, `{"model":"`+denied+`"}`))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", "/v1/deployments/depl_1", allowed, `{"model":"`+allowed+`"}`))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+}
+
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK
 // with no expiry is allowed.
 // A mixed Runware task array leaves the request model empty, so the request is charged against
