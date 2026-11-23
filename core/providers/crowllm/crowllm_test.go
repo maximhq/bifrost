@@ -108,3 +108,86 @@ func TestToCrowLLMImageGenerationRequestRejectsNilInput(t *testing.T) {
 		t.Fatal("expected an error for a nil input")
 	}
 }
+
+func TestToCrowLLMImageGenerationRequestKeepsCallerExtraParams(t *testing.T) {
+	extra := map[string]interface{}{
+		"guidance_scale": 7,
+		"loras": []interface{}{
+			map[string]interface{}{"url": "https://example.com/lora.safetensors", "scale": 80},
+		},
+		"steps_hint": "keep-me",
+	}
+	req := &schemas.BifrostImageGenerationRequest{
+		Model:  "black-forest-labs/flux-schnell",
+		Input:  &schemas.ImageGenerationInput{Prompt: "a crow"},
+		Params: &schemas.ImageGenerationParameters{ExtraParams: extra},
+	}
+
+	provider := &CrowLLMProvider{}
+	out, err := provider.ToCrowLLMImageGenerationRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.GuidanceScale == nil || *out.GuidanceScale != 7 {
+		t.Fatalf("expected guidance_scale 7, got %v", out.GuidanceScale)
+	}
+	if len(out.Loras) != 1 || out.Loras[0].URL != "https://example.com/lora.safetensors" || out.Loras[0].Scale != 80 {
+		t.Fatalf("unexpected loras: %+v", out.Loras)
+	}
+	if _, ok := out.ExtraParams["steps_hint"]; !ok {
+		t.Fatal("expected unrelated extra params to be forwarded")
+	}
+
+	// The converted keys stay in the caller's map, so a retry or fallback that
+	// reuses the request still carries its LoRA and guidance settings.
+	if _, ok := extra["guidance_scale"]; !ok {
+		t.Fatal("caller map lost guidance_scale")
+	}
+	if _, ok := extra["loras"]; !ok {
+		t.Fatal("caller map lost loras")
+	}
+
+	// A second conversion of the same request must produce the same result.
+	again, err := provider.ToCrowLLMImageGenerationRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error on second conversion: %v", err)
+	}
+	if again.GuidanceScale == nil || *again.GuidanceScale != 7 || len(again.Loras) != 1 {
+		t.Fatalf("second conversion lost settings: %+v/%+v", again.GuidanceScale, again.Loras)
+	}
+}
+
+func TestToCrowLLMImageGenerationRequestNilParams(t *testing.T) {
+	req := &schemas.BifrostImageGenerationRequest{
+		Model: "black-forest-labs/flux-schnell",
+		Input: &schemas.ImageGenerationInput{Prompt: "a crow"},
+	}
+
+	provider := &CrowLLMProvider{}
+	out, err := provider.ToCrowLLMImageGenerationRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Model == nil || *out.Model != "black-forest-labs/flux-schnell" {
+		t.Fatalf("unexpected model: %v", out.Model)
+	}
+	if out.Prompt == nil || *out.Prompt != "a crow" {
+		t.Fatalf("unexpected prompt: %v", out.Prompt)
+	}
+	if out.ExtraParams != nil {
+		t.Fatalf("expected no extra params, got %+v", out.ExtraParams)
+	}
+}
+
+func TestNewCrowLLMProviderDefaults(t *testing.T) {
+	provider, err := NewCrowLLMProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.networkConfig.BaseURL != "https://crowllm.com" {
+		t.Fatalf("expected the default base URL, got %q", provider.networkConfig.BaseURL)
+	}
+	if provider.client == nil || provider.streamingClient == nil {
+		t.Fatal("expected both HTTP clients to be configured")
+	}
+}

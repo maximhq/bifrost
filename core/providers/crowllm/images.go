@@ -61,7 +61,12 @@ func (provider *CrowLLMProvider) ToCrowLLMImageGenerationRequest(bifrostReq *sch
 		}
 		// Handle extra params
 		if bifrostReq.Params.ExtraParams != nil {
-			req.ExtraParams = bifrostReq.Params.ExtraParams
+			// Copy before deleting converted keys: the caller's map is reused by
+			// retries and fallbacks, which would otherwise lose guidance_scale/loras.
+			req.ExtraParams = make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
+			for k, v := range bifrostReq.Params.ExtraParams {
+				req.ExtraParams[k] = v
+			}
 			// Map guidance_scale
 			if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["guidance_scale"]); ok {
 				delete(req.ExtraParams, "guidance_scale")
