@@ -155,7 +155,11 @@ export function RouterSheet({ router, onClose, turnOn = false, onSaved }: Router
 
 	return (
 		<Sheet open onOpenChange={(open) => !open && !isSaving && onClose()}>
-			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-0 pt-4" data-testid="model-router-sheet">
+			<SheetContent
+				resizeKey="model-router"
+				className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-0 pt-4"
+				data-testid="model-router-sheet"
+			>
 				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>{tmr("sheet.title")}</SheetTitle>
 					<SheetDescription>{tmr("sheet.description")}</SheetDescription>

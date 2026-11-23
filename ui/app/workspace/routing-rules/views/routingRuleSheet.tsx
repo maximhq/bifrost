@@ -401,7 +401,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-0 pt-4">
+			<SheetContent resizeKey="routing-rule" className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-0 pt-4">
 				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>{isEditing ? t("routing.editTitle") : t("routing.createTitle")}</SheetTitle>
 					<SheetDescription>{isEditing ? t("routing.editDescription") : t("routing.createDescription")}</SheetDescription>

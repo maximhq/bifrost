@@ -1204,6 +1204,11 @@ func (s *fakeSidekiqStore) FailSidekiqJob(ctx context.Context, id, runnerID, met
 	return nil
 }
 
+// DeleteTerminalSidekiqJobs implements the test double used by logging handler tests.
+func (s *fakeSidekiqStore) DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error) {
+	return 0, nil
+}
+
 // ListClaimableSidekiqJobs implements the test double used by logging handler tests.
 func (s *fakeSidekiqStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
 	return nil, nil

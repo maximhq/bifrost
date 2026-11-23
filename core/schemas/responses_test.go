@@ -2795,3 +2795,34 @@ func BenchmarkToolUsageUnmarshal(b *testing.B) {
 		}
 	}
 }
+
+func TestResponsesMessageMarshalSummaryOnlyOnReasoningItems(t *testing.T) {
+	tests := []struct {
+		name        string
+		item        string
+		wantSummary string
+	}{
+		{name: "function_call with encrypted_content omits summary", item: `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"spawn_agent","namespace":"collaboration","arguments":"{}","summary":null,"encrypted_content":"gAAAA"}`},
+		{name: "message with encrypted_content omits summary", item: `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[]}],"summary":null,"encrypted_content":"gAAAA"}`},
+		{name: "reasoning item keeps an empty summary", item: `{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"gAAAA"}`, wantSummary: `[]`},
+		{name: "reasoning item keeps summary text", item: `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"t"}]}`, wantSummary: `[{"type":"summary_text","text":"t"}]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg ResponsesMessage
+			require.NoError(t, Unmarshal([]byte(tt.item), &msg))
+			out, err := Marshal(msg)
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, Unmarshal(out, &fields))
+			if strings.Contains(tt.item, "encrypted_content") {
+				require.JSONEq(t, `"gAAAA"`, string(fields["encrypted_content"]), "encrypted_content must survive: %s", out)
+			}
+			if tt.wantSummary == "" {
+				require.NotContains(t, fields, "summary", "OpenAI rejects summary on a non-reasoning item: %s", out)
+				return
+			}
+			require.JSONEq(t, tt.wantSummary, string(fields["summary"]), "%s", out)
+		})
+	}
+}

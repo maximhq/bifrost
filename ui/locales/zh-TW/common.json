@@ -600,8 +600,7 @@
 		"toggle": "切換側邊欄"
 	},
 	"sheet": {
-		"collapse": "收合",
-		"expand": "展開"
+		"resizeHandle": "調整面板大小"
 	},
 	"tabs": {
 		"showMore_one": "再顯示 {{count}} 個分頁",

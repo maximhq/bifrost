@@ -12,7 +12,11 @@ export function ObservabilityConfigSheet({ open, onOpenChange }: ObservabilityCo
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent side="right" className="flex w-full flex-col gap-4 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
+			<SheetContent
+				resizeKey="observability-config"
+				side="right"
+				className="flex w-full flex-col gap-4 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8"
+			>
 				<SheetHeader className="flex flex-row items-center px-0">
 					<SheetTitle>{t("logs.observabilitySettings")}</SheetTitle>
 				</SheetHeader>
