@@ -4,7 +4,7 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.49
+**Latest Version:** 2.1.50
 
 ## Changelog
 
@@ -13,6 +13,9 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.relays[].body_overrides` and `bifrost.relays[].routes[].body_overrides` (`relays[].body_overrides`, `relays[].routes[].body_overrides`): JSON fields forced into every request body, whatever the caller sent. A route's value replaces the relay's for the same path.
 - Added `bifrost.relays[].routes[].inherit_body_overrides` (`relays[].routes[].inherit_body_overrides`): `false` leaves the relay's `body_overrides` out of that route.
 - Added `bifrost.relays[].routes[].job` (`relays[].routes[].job`): the route starts an upstream async job, such as AWS Textract's StartDocumentAnalysis, which Bifrost polls and charges once when it finishes instead of on every status check.
+- Added `client_credentials` to `bifrost.mcp.clientConfigs[].authType`, with a `clientCredentials` block that renders into `client_credentials`: Bifrost requests one token with credentials registered at the server's authorization server.
+- Added `aws_sigv4` to `bifrost.mcp.clientConfigs[].authType`, with an `awsSigV4` block (`region`, `service`, `roleArn`, `externalId`, `sessionName`) that renders into `aws_sigv4`: Bifrost signs requests with its own AWS identity, for Amazon Bedrock AgentCore Gateway and other IAM-protected servers.
+- `aws_sigv4` is accepted for `http`, `sse` and `openapi` clients, and `client_credentials` for `http` and `sse`. The chart refuses both on `stdio`.
 
 ### 2.1.49
 

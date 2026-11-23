@@ -1647,6 +1647,32 @@ false
 {{- with $client.tokenExchange.resourceClientAuthMethod }}{{- $_ := set $te "resource_client_auth_method" . }}{{- end }}
 {{- $_ := set $cc "token_exchange" $te }}
 {{- end }}
+{{- /* OAuth client_credentials grant for auth_type "client_credentials". resource is rendered when set, even empty: "" means send no resource. */ -}}
+{{- if $client.clientCredentials }}
+{{- $ccc := dict }}
+{{- with $client.clientCredentials.tokenUrl }}{{- $_ := set $ccc "token_url" . }}{{- end }}
+{{- with $client.clientCredentials.clientId }}{{- $_ := set $ccc "client_id" . }}{{- end }}
+{{- /* A whitespace-only secret or key counts as unset, as the values schema treats it; the value is rendered as written. */ -}}
+{{- if trim (toString (default "" $client.clientCredentials.clientSecret)) }}{{- $_ := set $ccc "client_secret" $client.clientCredentials.clientSecret }}{{- end }}
+{{- with $client.clientCredentials.authMethod }}{{- $_ := set $ccc "auth_method" . }}{{- end }}
+{{- if trim (toString (default "" $client.clientCredentials.privateKey)) }}{{- $_ := set $ccc "private_key" $client.clientCredentials.privateKey }}{{- end }}
+{{- with $client.clientCredentials.keyId }}{{- $_ := set $ccc "key_id" . }}{{- end }}
+{{- with $client.clientCredentials.signingAlgorithm }}{{- $_ := set $ccc "signing_algorithm" . }}{{- end }}
+{{- with $client.clientCredentials.assertionAudience }}{{- $_ := set $ccc "assertion_audience" . }}{{- end }}
+{{- with $client.clientCredentials.scopes }}{{- $_ := set $ccc "scopes" . }}{{- end }}
+{{- if hasKey $client.clientCredentials "resource" }}{{- $_ := set $ccc "resource" $client.clientCredentials.resource }}{{- end }}
+{{- $_ := set $cc "client_credentials" $ccc }}
+{{- end }}
+{{- /* AWS SigV4 signing for auth_type "aws_sigv4": Bifrost signs with its own AWS identity, optionally assuming roleArn. */ -}}
+{{- if $client.awsSigV4 }}
+{{- $aws := dict }}
+{{- with $client.awsSigV4.region }}{{- $_ := set $aws "region" . }}{{- end }}
+{{- with $client.awsSigV4.service }}{{- $_ := set $aws "service" . }}{{- end }}
+{{- with $client.awsSigV4.roleArn }}{{- $_ := set $aws "role_arn" . }}{{- end }}
+{{- with $client.awsSigV4.externalId }}{{- $_ := set $aws "external_id" . }}{{- end }}
+{{- with $client.awsSigV4.sessionName }}{{- $_ := set $aws "session_name" . }}{{- end }}
+{{- $_ := set $cc "aws_sigv4" $aws }}
+{{- end }}
 {{- if hasKey $client "isPingAvailable" }}
 {{- $_ := set $cc "is_ping_available" $client.isPingAvailable }}
 {{- end }}
@@ -2995,8 +3021,8 @@ Call this template at the beginning of deployment/stateful templates
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig needs one of spec, specFile or specUrl for client '%s'." $idx $client.name) }}
 {{- end }}
 {{- $oaAuth := default "none" (default $client.authType $client.auth_type) }}
-{{- if not (has $oaAuth (list "none" "headers" "per_user_headers")) }}
-{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType 'openapi' (client '%s'). Use none, headers or per_user_headers; upstream API credentials go in openapiConfig.securityCredentials." $idx $oaAuth $client.name) }}
+{{- if not (has $oaAuth (list "none" "headers" "per_user_headers" "aws_sigv4")) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType 'openapi' (client '%s'). Use none, headers, per_user_headers or aws_sigv4; upstream API credentials go in openapiConfig.securityCredentials." $idx $oaAuth $client.name) }}
 {{- end }}
 {{- else if $client.openapiConfig }}
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig only applies to connectionType 'openapi' (client '%s' is '%s')." $idx $client.name $client.connectionType) }}
@@ -3006,6 +3032,15 @@ Call this template at the beginning of deployment/stateful templates
 {{- /* websocket renders as sse, so it takes the same restriction. */ -}}
 {{- if and (has $client.connectionType (list "sse" "stdio" "websocket")) (has $ccAuth $perUserAuthTypes) }}
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType '%s' (client '%s'). Per-user auth types open a connection per call, which SSE and STDIO cannot serve; use none, headers or oauth." $idx $ccAuth $client.connectionType $client.name) }}
+{{- end }}
+{{- if and (eq $client.connectionType "stdio") (has $ccAuth (list "client_credentials" "aws_sigv4")) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType 'stdio' (client '%s'). It authenticates HTTP requests, which a STDIO server never receives." $idx $ccAuth $client.name) }}
+{{- end }}
+{{- if and (eq $ccAuth "client_credentials") (not (and $client.clientCredentials $client.clientCredentials.clientId)) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].clientCredentials.clientId is required for authType 'client_credentials' (client '%s')." $idx $client.name) }}
+{{- end }}
+{{- if and (eq $ccAuth "aws_sigv4") (not (and $client.awsSigV4 $client.awsSigV4.region)) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].awsSigV4.region is required for authType 'aws_sigv4' (client '%s')." $idx $client.name) }}
 {{- end }}
 {{- if $client.perUserDiscovery }}
 {{- if eq $client.connectionType "openapi" }}
