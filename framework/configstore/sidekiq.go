@@ -372,3 +372,18 @@ func (s *RDBConfigStore) MarkStaleSidekiqJobsFailed(ctx context.Context, staleBe
 		})
 	return res.RowsAffected, res.Error
 }
+
+// DeleteTerminalSidekiqJobs deletes up to limit jobs of kind whose status is
+// terminal and whose last update is before the cutoff. Pending and running
+// jobs are never touched. The ID subquery bounds each DELETE on every dialect,
+// since Postgres and SQLite lack DELETE ... LIMIT.
+func (s *RDBConfigStore) DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	ids := s.DB().WithContext(ctx).Model(&tables.TableSidekiqJob{}).Select("id").
+		Where("kind = ? AND status IN ? AND updated_at < ?", kind, tables.SidekiqTerminalStatuses, before).
+		Limit(limit)
+	res := s.DB().WithContext(ctx).Where("id IN (?)", ids).Delete(&tables.TableSidekiqJob{})
+	return res.RowsAffected, res.Error
+}
