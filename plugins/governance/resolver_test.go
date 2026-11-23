@@ -1149,10 +1149,11 @@ func TestPreLLMHookChecksInteractionsAgentAgainstAllowlist(t *testing.T) {
 	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
 }
 
-// A Claude Managed Agents deployment is read, run, paused or archived at /v1/deployments/{id}[/{action}].
-// Those requests name no model; the router marks them model-free, so a key that restricts models reaches
-// them. A deployment update that names a model in its body is not model-free and is still checked, and a
-// request that reaches governance with no model and no flag (a caller bypassing the router) is still refused.
+// A Claude Managed Agents deployments request runs no model of its own. One that names no model is
+// marked model-free by the router, so a key that restricts models reaches it: listing, reading, updating,
+// running, pausing, unpausing and archiving. One whose body names a model is not marked and is checked like
+// any passthrough, and a request that reaches governance with no model and no flag (a caller bypassing
+// the router) is still refused.
 func TestPreLLMHookAllowsModelFreeAnthropicDeploymentsUnderRestrictedKey(t *testing.T) {
 	const allowed, denied = "claude-sonnet-4-5", "claude-opus-4-1"
 	vk := buildVirtualKeyWithProviders("vk-depl", "sk-bf-depl", "Deployments VK", []configstoreTables.TableVirtualKeyProviderConfig{
@@ -1182,7 +1183,9 @@ func TestPreLLMHookAllowsModelFreeAnthropicDeploymentsUnderRestrictedKey(t *test
 		deployment("GET", "/v1/deployments", "", ""),
 		deployment("GET", "/v1/deployments/depl_1", "", ""),
 		deployment("POST", "/v1/deployments/depl_1/run", "", ""),
+		deployment("POST", "/v1/deployments/depl_1", "", `{"name":"nightly"}`),
 		deployment("POST", "/v1/deployments/depl_1/pause", "", ""),
+		deployment("POST", "/v1/deployments/depl_1/unpause", "", ""),
 		deployment("POST", "/v1/deployments/depl_1/archive", "", ""),
 	} {
 		_, shortCircuit, err := plugin.PreLLMHook(modelFree(), req)
@@ -1195,14 +1198,16 @@ func TestPreLLMHookAllowsModelFreeAnthropicDeploymentsUnderRestrictedKey(t *test
 	require.NoError(t, err)
 	assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
 
-	// An update keeps the allowlist: the model its body names is checked.
-	_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", "/v1/deployments/depl_1", denied, `{"model":"`+denied+`"}`))
-	require.NoError(t, err)
-	assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+	// A model the body names is checked, on an update and on an action alike.
+	for _, path := range []string{"/v1/deployments/depl_1", "/v1/deployments/depl_1/run"} {
+		_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", path, denied, `{"model":"`+denied+`"}`))
+		require.NoError(t, err)
+		assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
 
-	_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", "/v1/deployments/depl_1", allowed, `{"model":"`+allowed+`"}`))
-	require.NoError(t, err)
-	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+		_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", path, allowed, `{"model":"`+allowed+`"}`))
+		require.NoError(t, err)
+		assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+	}
 }
 
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK

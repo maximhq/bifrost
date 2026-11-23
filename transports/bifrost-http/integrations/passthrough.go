@@ -91,10 +91,10 @@ func NewAnthropicPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Han
 		// deployments/{x} segment as an Azure deployment name, which made the deployment id the
 		// request's model. A deployments path names no model, so only the body can.
 		NoPathModel: isAnthropicDeploymentsPath,
-		// Reading, running, pausing or archiving a deployment runs nothing new: the agent's model was
-		// checked when the agent was created, and the request names none. Creates and updates keep the
-		// model allowlist, so a "model" their body names is still checked.
-		ModelFreePath: isAnthropicDeploymentModelFreePath,
+		// A deployments request runs no model of its own: it schedules, reads or controls runs of an agent
+		// whose model was checked when the agent was created. One that names no model skips the model
+		// allowlist; one whose body names a model is still checked.
+		ModelFreeUnlessNamed: isAnthropicDeploymentsPath,
 		StripPrefix: []string{
 			"/anthropic_passthrough",
 		},
@@ -105,7 +105,7 @@ func NewAnthropicPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Han
 const anthropicDeploymentsPath = "/v1/deployments"
 
 // isAnthropicDeploymentsPath reports whether an Anthropic passthrough path addresses Managed Agents
-// deployments: the collection or anything under it (/v1/deployments/{id}, .../run, .../pause, .../archive).
+// deployments: the collection or anything under it (/v1/deployments/{id}, .../run, .../pause, .../unpause, .../archive).
 // /v1/deployment_runs is a different collection and does not match.
 func isAnthropicDeploymentsPath(_, path string) bool {
 	if idx := strings.IndexByte(path, '?'); idx >= 0 {
@@ -116,34 +116,6 @@ func isAnthropicDeploymentsPath(_, path string) bool {
 	}
 	rest := path[len(anthropicDeploymentsPath):]
 	return rest == "" || rest[0] == '/'
-}
-
-// isAnthropicDeploymentModelFreePath reports whether a Managed Agents deployments request runs no model
-// of its own: listing (GET /v1/deployments), reading (GET /v1/deployments/{id}) and the run, pause and
-// archive actions (POST /v1/deployments/{id}/{action}).
-func isAnthropicDeploymentModelFreePath(method, path string) bool {
-	if !isAnthropicDeploymentsPath(method, path) {
-		return false
-	}
-	if idx := strings.IndexByte(path, '?'); idx >= 0 {
-		path = path[:idx]
-	}
-	rest := strings.TrimPrefix(path[len(anthropicDeploymentsPath):], "/")
-	if rest == "" {
-		return method == fasthttp.MethodGet
-	}
-	id, action, hasAction := strings.Cut(rest, "/")
-	if id == "" {
-		return false
-	}
-	if !hasAction {
-		return method == fasthttp.MethodGet
-	}
-	switch action {
-	case "run", "pause", "archive":
-		return method == fasthttp.MethodPost
-	}
-	return false
 }
 
 // NewOpenAIPassthroughRouter creates a passthrough router for /openai_passthrough.
