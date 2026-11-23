@@ -417,6 +417,7 @@ jobs:
             api.machgen.ai:443
             api.sarvam.ai:443
             api.typesafe.ai:443
+            console.nace.ai:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -489,6 +490,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          NACE_API_KEY: ${{ secrets.NACE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -603,7 +605,7 @@ jobs:
         with:
           egress-policy: block
           # test-core's allowlist: the proxies run on this runner, so every provider
-          # host still leaves it. Plus the runware, runway and typesafe upstreams,
+          # host still leaves it. Plus the runware, runway, typesafe and nace upstreams,
           # which the manifest reaches and test-core's list does not name, and every
           # other host the harness sources name, which check-egress-allowlist.sh
           # requires of a harness job (the .invalid and example names never resolve).
@@ -673,6 +675,7 @@ jobs:
             api.dev.runwayml.com:443
             api.machgen.ai:443
             api.typesafe.ai:443
+            console.nace.ai:443
             ai.google.dev:443
             code.claude.com:443
             dbx-fixture-workspace.invalid:443
@@ -772,6 +775,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          NACE_API_KEY: ${{ secrets.NACE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
@@ -831,6 +835,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: &test-core-egress >
+            console.nace.ai:443
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             accounts.google.com:443
@@ -978,6 +983,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          NACE_API_KEY: ${{ secrets.NACE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1571,6 +1577,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            console.nace.ai:443
             _grpc_config.cluster.qdrant.io:443
             _grpc_config.localhost:443
             api.cerebras.ai:443
@@ -1664,6 +1671,7 @@ jobs:
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          NACE_API_KEY: ${{ secrets.NACE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1699,6 +1707,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            console.nace.ai:443
             _grpc_config.localhost:443
             _https._tcp.archive.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
@@ -1806,6 +1815,7 @@ jobs:
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          NACE_API_KEY: ${{ secrets.NACE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2166,6 +2176,7 @@ jobs:
           # through its published 6379, which DNATs to 172.38.0.13. Keep the
           # pinned IPs in sync with .github/workflows/configs/docker-compose.yml.
           allowed-endpoints: >
+            console.nace.ai:443
             127.0.0.1:5432
             127.0.0.1:6379
             172.38.0.11:5432
@@ -2315,6 +2326,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          NACE_API_KEY: ${{ secrets.NACE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2682,6 +2694,7 @@ jobs:
           # in sync; drift here will block egress to Postgres during the docker
           # image test.
           allowed-endpoints: >
+            console.nace.ai:443
             127.0.0.11:53
             172.28.0.16:5432
             api.anthropic.com:443
@@ -2788,6 +2801,7 @@ jobs:
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          NACE_API_KEY: ${{ secrets.NACE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2844,6 +2858,7 @@ jobs:
           # in sync; drift here will block egress to Postgres during the docker
           # image test.
           allowed-endpoints: >
+            console.nace.ai:443
             127.0.0.11:53
             172.28.0.16:5432
             api.anthropic.com:443
@@ -2960,6 +2975,7 @@ jobs:
           KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          NACE_API_KEY: ${{ secrets.NACE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

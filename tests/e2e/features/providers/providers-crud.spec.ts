@@ -91,6 +91,11 @@ test.describe("Providers", () => {
   });
 
   test.describe("Provider Navigation", () => {
+    test("should offer Nace as a standard provider", async ({ providersPage, page }) => {
+      await providersPage.addProviderBtn.click();
+      await expect(page.getByTestId("add-provider-option-nace")).toBeVisible();
+    });
+
     test("should display standard providers in sidebar", async ({
       providersPage,
     }) => {

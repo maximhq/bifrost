@@ -25,6 +25,7 @@
   `sarvam-30b` is no longer served. Use `sarvam-105b`.
   </Warning>
 - **Gemini Decisions** - Gemini decision models (`gemini-decision-*`) serve `/v1/decisions` natively, and a new `input_file` part carries PDFs, audio and video. Empty or mistyped input is rejected before the call (thanks [@Xytronix](https://github.com/Xytronix)!)
+- **Nace (Drex) Decision Provider** - The new `nace` provider calls Drex decision models through `/v1/decisions` with typed answers, probabilities and request IDs. Drex Max models accept ordered images, the model list shows Drex pricing, and Drex models can be the Complexity Router decision model
 - **Regex Key Aliases** - A key alias can be a `regex:` pattern over the requested model, with a `model_id` template that reuses its capture groups (for example `regex:(claude-.*)` → `global.anthropic.$1`), so one row aliases a whole model family. The model catalog resolves pattern aliases, and the key deployments table shows pattern rows
 - **Datasheet Overrides** - Model pricing and capabilities can be edited from a datasheet editor under Models, through new override endpoints or `datasheet_overrides` in config.json. Overrides are stored separately and survive every upstream datasheet sync
 - **Usage Estimates for Cancelled Streams** - A chat, text or Responses stream that is cancelled or times out has its missing usage estimated with a tokenizer from the output already received, and priced like reported usage. Estimated fields are marked in `usage.estimation`, and provider-reported fields are never replaced

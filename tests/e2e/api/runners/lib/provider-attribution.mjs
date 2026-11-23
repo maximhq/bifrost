@@ -14,6 +14,8 @@
 // Extracted from harness-monitor.mjs so it can be tested directly; the keyword
 // table mirrors filter-collection.mjs.
 
+import { buildHaystack, declaredProviderOf, requestModelOf } from "./haystack.mjs";
+
 export const PROVIDER_KEYWORDS = {
   openai: ["openai", "/openai", "gpt-", "o3", "o1"],
   anthropic: ["anthropic", "claude-"],
@@ -25,6 +27,7 @@ export const PROVIDER_KEYWORDS = {
   passthrough: ["_passthrough", "passthrough"],
   openrouter: ["openrouter"],
   "github-copilot": ["github-copilot"],
+  nace: ["nace", "drex-"],
   huggingface: ["huggingface", "hugging face"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
 };
@@ -38,6 +41,7 @@ export const MATCH_ORDER = [
   "passthrough",
   "openrouter",
   "github-copilot",
+  "nace",
   "huggingface",
   "replicate",
   // After huggingface, whose router serves Baseten-hosted models; ahead of anthropic and
@@ -70,6 +74,11 @@ export function makeMatchProvider(isActive) {
   return function matchProvider(haystack) {
     for (const p of MATCH_ORDER) {
       if (!isActive(p)) continue;
+      if (p === "nace") {
+        // Whole word, as in filter-collection.mjs: "furnace" or "menace" in a prompt is not Nace.
+        if (/\bnace\b/.test(haystack) || haystack.includes("drex-")) return p;
+        continue;
+      }
       for (const k of PROVIDER_KEYWORDS[p] || [p]) if (haystack.includes(k)) return p;
     }
     return null;
@@ -97,11 +106,11 @@ export function providerOfFolder(folderName, matchProvider) {
 // {{vertexModel}}, while the substituted URL newman logs matches gemini through
 // "/genai" instead.
 //
-// The request name is tried next: cross-cut rows route through a unified
-// /v1/chat/completions that names no provider, and the name
-// ("openai/gpt-4o-mini ...") is the only other thing the log prints.
+// Match URL and request name together: an SDK ingress URL can name OpenAI while
+// the request name identifies Nace as the backend. Both signals are printed in
+// the log, so the same specificity order must apply to totals and results.
 //
-// Item JSON + ancestor folder names is the last resort - rows the log cannot
+// Item identity + ancestor folder names is the last resort - rows the log cannot
 // attribute at all. Those inflate a denominator the numerator can never reach,
 // which is the safe direction to be wrong in: the table under-reports progress
 // rather than over-reporting passes.
@@ -111,9 +120,11 @@ export function providerOfItem(item, ancestors, matchProvider) {
   const leafFolder = ancestors.length ? ancestors[ancestors.length - 1] : "";
   return (
     providerOfFolder(leafFolder, matchProvider) ||
-    matchProvider(url.toLowerCase()) ||
-    matchProvider(String(item.name || "").toLowerCase()) ||
-    matchProvider(stripBase64Blobs(JSON.stringify(item) + " " + ancestors.join(" ")).toLowerCase())
+    matchProvider((url + " " + (item.name || "")).toLowerCase()) ||
+    matchProvider((
+      buildHaystack({ ...item, request: { ...req, body: undefined } }, ancestors) +
+      " " + (requestModelOf(item) || "") + " " + (declaredProviderOf(item) || "")
+    ).toLowerCase())
   );
 }
 
@@ -121,7 +132,8 @@ export function providerOfItem(item, ancestors, matchProvider) {
 //
 // currentFolder is the last "❏ <name>" heading seen. When it resolves it wins,
 // which is what keeps this in step with providerOfItem above; the line's own
-// text is the fallback for rows that sit under an unattributable heading.
-export function providerOfLogLine(line, currentFolder, matchProvider) {
-  return providerOfFolder(currentFolder, matchProvider) || matchProvider(line.toLowerCase());
+// text and pending request name are the fallback for rows that sit under an
+// unattributable heading or at the collection root.
+export function providerOfLogLine(line, currentFolder, matchProvider, requestName = "") {
+  return providerOfFolder(currentFolder, matchProvider) || matchProvider((line + " " + requestName).toLowerCase());
 }
