@@ -20759,6 +20759,136 @@
               }
             },
             {
+              "name": "Cross-cut: openai content logging off via team outranks a virtual key set to on",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Team content logging off: chat succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                      "pm.test('Team content logging off: response is an assistant completion', function () { var j = pm.response.json(); var m = j && j.choices && j.choices[0] && j.choices[0].message; pm.expect(m && m.role, pm.response.text()).to.eql('assistant'); pm.expect(m.content, pm.response.text()).to.be.a('string').and.not.empty; });",
+                      "var reqId = pm.response.headers.get('x-request-id');",
+                      "pm.test('Team content logging off: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                      "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                      "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                      "function checkLog(attempt) {",
+                      "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                      "    if (!err && res.code === 200) {",
+                      "      var j = res.json();",
+                      "      pm.test('Team content logging off: content_hidden is true', function () { pm.expect(j.content_hidden, JSON.stringify(j)).to.eql(true); });",
+                      "      pm.test('Team content logging off: input_history is empty', function () { pm.expect(j.input_history || [], JSON.stringify(j.input_history)).to.have.lengthOf(0); });",
+                      "      pm.test('Team content logging off: output_message is absent', function () { pm.expect(j.output_message, JSON.stringify(j.output_message)).to.be.undefined; });",
+                      "      return;",
+                      "    }",
+                      "    // Only a 404 means the batching writer has not written the row yet; any other status or a",
+                      "    // transport error is a failure of its own, not a reason to try again.",
+                      "    if (!err && res.code === 404 && attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                      "    pm.test('Team content logging off: log row appeared', function () { pm.expect.fail('log ' + reqId + (err ? ' lookup failed: ' + String(err) : (res.code === 404 ? ' never appeared' : ' lookup returned ' + res.code + ': ' + res.text()))); });",
+                      "  });",
+                      "}",
+                      "checkLog(0);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-Bifrost-VK",
+                    "value": "sk-bf-test-key-teamoff"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Say hi\"}],\n  \"max_tokens\": 8\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Cross-cut: openai content logging off via provider key hides log content",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Provider key content logging off: chat succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                      "pm.test('Provider key content logging off: response is an assistant completion', function () { var j = pm.response.json(); var m = j && j.choices && j.choices[0] && j.choices[0].message; pm.expect(m && m.role, pm.response.text()).to.eql('assistant'); pm.expect(m.content, pm.response.text()).to.be.a('string').and.not.empty; });",
+                      "var reqId = pm.response.headers.get('x-request-id');",
+                      "pm.test('Provider key content logging off: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                      "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                      "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                      "function checkLog(attempt) {",
+                      "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                      "    if (!err && res.code === 200) {",
+                      "      var j = res.json();",
+                      "      pm.test('Provider key content logging off: content_hidden is true', function () { pm.expect(j.content_hidden, JSON.stringify(j)).to.eql(true); });",
+                      "      pm.test('Provider key content logging off: input_history is empty', function () { pm.expect(j.input_history || [], JSON.stringify(j.input_history)).to.have.lengthOf(0); });",
+                      "      pm.test('Provider key content logging off: output_message is absent', function () { pm.expect(j.output_message, JSON.stringify(j.output_message)).to.be.undefined; });",
+                      "      return;",
+                      "    }",
+                      "    // Only a 404 means the batching writer has not written the row yet; any other status or a",
+                      "    // transport error is a failure of its own, not a reason to try again.",
+                      "    if (!err && res.code === 404 && attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                      "    pm.test('Provider key content logging off: log row appeared', function () { pm.expect.fail('log ' + reqId + (err ? ' lookup failed: ' + String(err) : (res.code === 404 ? ' never appeared' : ' lookup returned ' + res.code + ': ' + res.text()))); });",
+                      "  });",
+                      "}",
+                      "checkLog(0);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-Bifrost-VK",
+                    "value": "sk-bf-test-key"
+                  },
+                  {
+                    "key": "x-bf-api-key-id",
+                    "value": "openai-key-nocontent"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"openai/bf-nocontent-gpt-4o-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Say hi\"}],\n  \"max_tokens\": 8\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
               "name": "Cross-cut: sampling-params silently dropped for Opus 4.7",
               "request": {
                 "method": "POST",
@@ -348570,8 +348700,145 @@
       ]
     },
     {
-      "name": "379. Rapid-MLX local provider (rapidmlx local provider) (#10032 / PR #10033)",
-      "description": "Requires a configured rapidmlx key pointing at a running local Rapid-MLX server serving mlx-community/Qwen3.5-4B-MLX-4bit. Pins chat and native Responses routing, with and without SSE. No external API credentials are required. Opt in with INCLUDE_PREVIEW=1 (Newman environment variable include_preview=1) after configuring the server; all five requests are skipped by default.",
+      "name": "379. Function call replay carrying reasoning fields (function call summary)",
+      "description": "A Responses input item that is not a reasoning item can still decode Bifrost's embedded reasoning fields: Codex replays function_call items with encrypted_content (and summary), which allocate ResponsesReasoning on the item. ResponsesMessage.MarshalJSON then re-emitted summary on the function_call (null, or [] here) and OpenAI rejected the request with 400 \"Unknown parameter: 'input[N].summary'\". The fix omits an empty summary on every non-reasoning item. These cases replay a function_call carrying summary:[] with its matching function_call_output; summary:[] reaches the same path as Codex's encrypted_content without needing an OpenAI-minted token, so the case is deterministic. Pinned on /v1/responses (unary and streamed) and on the /openai/v1/responses drop-in route Codex uses.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /v1/responses function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'response not completed: ' + body).to.equal('completed');",
+                  "  pm.expect(j.output, 'no output returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"stream\":false,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/responses stream function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'stream did not reach response.completed: ' + body).to.include('response.completed');",
+                  "  pm.expect(body, 'stream carried an error event: ' + body).to.not.include('\"type\":\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /openai/v1/responses stream function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'stream did not reach response.completed: ' + body).to.include('response.completed');",
+                  "  pm.expect(body, 'stream carried an error event: ' + body).to.not.include('\"type\":\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "380. Rapid-MLX local provider (rapidmlx local provider) (#10032 / PR #10033)",
+      "description": "Requires a configured rapidmlx key pointing at a running local Rapid-MLX server serving mlx-community/Qwen3.5-4B-MLX-4bit. Pins chat and native Responses routing, with and without SSE. No external API credentials are required. Opt in with INCLUDE_PREVIEW=1 (Newman environment variable include_preview=1) after configuring the server; all seven requests are skipped by default.",
       "item": [
         {
           "name": "[PREVIEW] Rapid-MLX rapidmlx/mlx-community/Qwen3.5-4B-MLX-4bit chat/completions unary - #10032",

@@ -55,6 +55,9 @@ const (
 	// topicsDiscoveryInterval is how often upkeep runs and discovery is
 	// considered.
 	topicsDiscoveryInterval = time.Hour
+	// topicUpkeepRetention is how long finished upkeep jobs are kept. Upkeep
+	// queues a new job every interval, so without it the rows grow forever.
+	topicUpkeepRetention = 7 * 24 * time.Hour
 	// topicsDiscoveryMinSize is how many requests a discovered cluster needs
 	// to be a topic. Below it the requests stay pooled: a cluster of three is
 	// three requests, not a pattern, and naming it would spend a model call

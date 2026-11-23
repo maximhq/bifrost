@@ -901,6 +901,20 @@ func TestProviderKeyCRUD(t *testing.T) {
 	assert.Equal(t, "sk-test-key-v2", storedKey.Value.Val)
 	assert.Equal(t, 2.0, storedKey.Weight)
 
+	// Content logging is tri-state and every state must survive create, read and update, including
+	// clearing a decision back to inherit.
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		key.DisableContentLogging = decision
+		require.NoError(t, store.UpdateProviderKey(ctx, "openai", key.ID, key))
+		storedKey, err = store.GetProviderKey(ctx, "openai", key.ID)
+		require.NoError(t, err)
+		assert.Equal(t, decision, storedKey.DisableContentLogging)
+		keys, err = store.GetProviderKeys(ctx, "openai")
+		require.NoError(t, err)
+		require.Len(t, keys, 1)
+		assert.Equal(t, decision, keys[0].DisableContentLogging, "the list path converts keys separately")
+	}
+
 	err = store.DeleteProviderKey(ctx, "openai", key.ID)
 	require.NoError(t, err)
 
@@ -3616,6 +3630,17 @@ func TestCreateTeam(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Test Team", result.Name)
 	assert.Equal(t, "customer-for-team", *result.CustomerID)
+	assert.Nil(t, result.DisableContentLogging, "a team created without a decision inherits")
+
+	// Content logging is tri-state and every state must survive an update, including clearing a
+	// decision back to NULL: an update that skipped nil would leave a team stuck on its old choice.
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		team.DisableContentLogging = decision
+		require.NoError(t, store.UpdateTeam(ctx, team))
+		result, err = store.GetTeam(ctx, "team-test")
+		require.NoError(t, err)
+		assert.Equal(t, decision, result.DisableContentLogging)
+	}
 }
 
 // =============================================================================

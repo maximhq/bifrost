@@ -126,7 +126,7 @@ export default function PluginTracingSheet({ open, onClose, pluginName, destinat
 
 	return (
 		<Sheet open={open} onOpenChange={onClose}>
-			<SheetContent className="flex w-full flex-col overflow-hidden p-4 md:p-8">
+			<SheetContent resizeKey="plugin-tracing" className="flex w-full flex-col overflow-hidden p-4 md:p-8">
 				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>{t("connectors.configurePluginTracing")}</SheetTitle>
 					<SheetDescription>{t("connectors.tracing.sheetDescription", { destination })}</SheetDescription>
