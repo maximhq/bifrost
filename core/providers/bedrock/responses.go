@@ -2268,11 +2268,11 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 						// (gemini/utils.go convertGenerationConfigToResponsesParameters).
 						if summary == nil && schemas.IsOpenAIModelFamily(ctx, bifrostReq.Model) {
 							summary = schemas.Ptr("auto")
-						}
-						// The neutral reasoning shape has no display field; both egress
-						// builders map Summary "none" back to thinking.display "omitted",
-						// as the /anthropic ingress does (anthropic.ToBifrostResponsesRequest).
-						if display, ok := schemas.SafeExtractString(reasoningConfigMap["display"]); ok && display == "omitted" {
+						} else if display, ok := schemas.SafeExtractString(reasoningConfigMap["display"]); ok && display == "omitted" && summary == nil {
+							// The neutral reasoning shape has no display field; the Anthropic-family
+							// egress builders map Summary "none" back to thinking.display "omitted",
+							// as the /anthropic ingress does (anthropic.ToBifrostResponsesRequest).
+							// An explicit reasoning_summary and the OpenAI default above win.
 							summary = schemas.Ptr("none")
 						}
 						var (
@@ -2656,10 +2656,14 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						if tokenBudget < anthropic.MinimumReasoningMaxTokens {
 							return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
 						}
-						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+						thinkingConfig := map[string]any{
 							"type":          "enabled",
 							"budget_tokens": tokenBudget,
-						})
+						}
+						if sum := bifrostReq.Params.Reasoning.Summary; sum != nil && *sum == "none" {
+							thinkingConfig["display"] = "omitted"
+						}
+						bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 					}
 				} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 					minBudgetTokens := MinimumReasoningMaxTokens
@@ -2762,10 +2766,14 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 							if err != nil {
 								return nil, err
 							}
-							bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+							thinkingConfig := map[string]any{
 								"type":          "enabled",
 								"budget_tokens": budgetTokens,
-							})
+							}
+							if sum := bifrostReq.Params.Reasoning.Summary; sum != nil && *sum == "none" {
+								thinkingConfig["display"] = "omitted"
+							}
+							bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 						}
 					} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
 						setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, *bifrostReq.Params.Reasoning.Effort)

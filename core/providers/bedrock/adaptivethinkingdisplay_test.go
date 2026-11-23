@@ -327,6 +327,95 @@ func TestBedrockIngress_ThinkingDisplayOmitted(t *testing.T) {
 	}
 }
 
+// Models that take thinking.type "enabled" with budget_tokens (not adaptive-only) must
+// carry display:"omitted" too: the Converse egress used to build their thinking config
+// without a display, and the InvokeModel builder had no summary to read it from.
+func TestBedrockIngress_ThinkingDisplayOmittedBudgetModel(t *testing.T) {
+	const model = "us.anthropic.claude-sonnet-4-5"
+	provider := &BedrockProvider{}
+	for name, thinking := range map[string]string{
+		"enabled_budget_with_effort": `{"type":"enabled","budget_tokens":2048,"display":"omitted"}`,
+		"adaptive_effort_only":       `{"type":"adaptive","display":"omitted"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fields := schemas.NewOrderedMap()
+			var parsed any
+			if err := sonic.Unmarshal([]byte(thinking), &parsed); err != nil {
+				t.Fatal(err)
+			}
+			fields.Set("thinking", parsed)
+			fields.Set("output_config", map[string]any{"effort": "high"})
+			converseReq := &BedrockConverseRequest{
+				ModelID:                      model,
+				AdditionalModelRequestFields: fields,
+				Messages:                     []BedrockMessage{{Role: "user", Content: []BedrockContentBlock{{Text: schemas.Ptr("hi")}}}},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+			if err != nil {
+				t.Fatalf("ToBifrostResponsesRequest failed: %v", err)
+			}
+			bifrostReq.Provider = schemas.Bedrock
+
+			out, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+			}
+			raw, _ := out.AdditionalModelRequestFields.Get("thinking")
+			cfg, _ := raw.(map[string]any)
+			if cfg["type"] != "enabled" || cfg["display"] != "omitted" || cfg["budget_tokens"] == nil {
+				t.Errorf("Converse thinking = %+v, want type enabled, budget_tokens kept, display omitted", raw)
+			}
+
+			body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, bifrostReq, provider.invokeBuildConfig(model, false, true, nil))
+			if bifrostErr != nil {
+				t.Fatalf("build invoke body failed: %v", bifrostErr.Error.Message)
+			}
+			if got := providerUtils.GetJSONField(body, "thinking.display").String(); got != "omitted" {
+				t.Errorf("InvokeModel thinking.display = %q, want \"omitted\"; thinking = %s", got, providerUtils.GetJSONField(body, "thinking").Raw)
+			}
+		})
+	}
+}
+
+// display:"omitted" is an Anthropic-family concept: it must not displace the "auto"
+// summary default an OpenAI reasoning model needs, nor an explicit reasoning_summary.
+func TestToBifrostResponsesRequest_DisplayOmittedKeepsSummaryDefaults(t *testing.T) {
+	build := func(model string, extra map[string]interface{}) *schemas.ResponsesParametersReasoning {
+		t.Helper()
+		fields := schemas.NewOrderedMap()
+		fields.Set("thinking", map[string]any{"type": "enabled", "budget_tokens": 1024, "display": "omitted"})
+		req := &BedrockConverseRequest{
+			ModelID:                      model,
+			AdditionalModelRequestFields: fields,
+			ExtraParams:                  extra,
+			Messages:                     []BedrockMessage{{Role: "user", Content: []BedrockContentBlock{{Text: schemas.Ptr("hi")}}}},
+		}
+		bifrostReq, err := req.ToBifrostResponsesRequest(nil)
+		if err != nil || bifrostReq.Params == nil || bifrostReq.Params.Reasoning == nil {
+			t.Fatalf("conversion failed: err=%v params=%+v", err, bifrostReq)
+		}
+		return bifrostReq.Params.Reasoning
+	}
+
+	if s := build("openai/o3-mini", nil).Summary; s == nil || *s != "auto" {
+		t.Errorf("OpenAI model: summary = %v, want \"auto\"", deref(s))
+	}
+	if s := build(adaptiveOnlyModel, map[string]interface{}{"reasoning_summary": "detailed"}).Summary; s == nil || *s != "detailed" {
+		t.Errorf("explicit reasoning_summary: summary = %v, want \"detailed\"", deref(s))
+	}
+	if s := build(adaptiveOnlyModel, nil).Summary; s == nil || *s != "none" {
+		t.Errorf("Anthropic model: summary = %v, want \"none\"", deref(s))
+	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
+}
+
 const betweenToolsModel = "global.anthropic.claude-sonnet-5-5"
 
 // thinking:{type:"between_tools"} is a thinking type independent of effort: it is
