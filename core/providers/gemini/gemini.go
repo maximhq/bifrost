@@ -401,7 +401,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	}
 
 	if malformedErr := geminiResponse.MalformedOutputError(); malformedErr != nil {
-		return nil, malformedErr
+		return nil, provider.enrichMalformedOutputError(ctx, malformedErr, jsonData, rawResponse, latency)
 	}
 
 	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
@@ -424,6 +424,18 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	}
 
 	return bifrostResponse, nil
+}
+
+// enrichMalformedOutputError attaches the raw request, raw response and latency to a
+// MalformedOutputError, as the success path would have on the response. completeRequest
+// has already parsed the raw response, so it is set directly rather than through
+// EnrichError, which only accepts bytes.
+func (provider *GeminiProvider) enrichMalformedOutputError(ctx *schemas.BifrostContext, malformedErr *schemas.BifrostError, jsonData []byte, rawResponse interface{}, latency time.Duration) *schemas.BifrostError {
+	malformedErr = providerUtils.EnrichError(ctx, malformedErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		malformedErr.ExtraFields.RawResponse = rawResponse
+	}
+	return malformedErr
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Gemini API.
@@ -818,7 +830,7 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 	}
 
 	if malformedErr := geminiResponse.MalformedOutputError(); malformedErr != nil {
-		return nil, malformedErr
+		return nil, provider.enrichMalformedOutputError(ctx, malformedErr, jsonData, rawResponse, latency)
 	}
 
 	// Create final response
@@ -934,7 +946,7 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, unmarshalErr)
 	}
 	if malformedErr := geminiResponse.MalformedOutputError(); malformedErr != nil {
-		return nil, malformedErr
+		return nil, providerUtils.EnrichError(ctx, malformedErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	ct, ch := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := geminiResponse.ToResponsesBifrostResponsesResponse()

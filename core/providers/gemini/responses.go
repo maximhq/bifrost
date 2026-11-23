@@ -1645,6 +1645,7 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 	var responses []*schemas.BifrostResponsesStreamResponse
 
 	// First event: Emit response.created and response.in_progress
+	startEventCount := 0
 	if !state.HasEmittedCreated {
 		// Set model and response ID from Gemini
 		if response.ModelVersion != "" && state.Model == nil {
@@ -1654,6 +1655,7 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 			state.ResponseID = &response.ResponseID
 		}
 		responses = append(responses, state.startEvents(sequenceNumber)...)
+		startEventCount = len(responses)
 	}
 
 	// A blocked prompt arrives as one candidate-less chunk; close the stream on it.
@@ -1727,6 +1729,17 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 			closeResponses := closeGeminiOpenItems(state, candidate.GroundingMetadata, response.UsageMetadata, sequenceNumber+len(responses), candidate.FinishReason, candidate.FinishMessage)
 			responses = append(responses, closeResponses...)
 		}
+	}
+
+	// Hold response.created / response.in_progress back until a chunk emits something
+	// after them. The retry loop commits a stream on its first successful chunk, so a
+	// lifecycle-only first chunk would commit the attempt and leave a later malformed
+	// chunk with no retry or fallback. The next chunk, or FinalizeGeminiResponsesStream,
+	// emits them at the same sequence number.
+	if startEventCount > 0 && len(responses) == startEventCount {
+		state.HasEmittedCreated = false
+		state.HasEmittedInProgress = false
+		return nil, nil
 	}
 
 	return responses, nil
