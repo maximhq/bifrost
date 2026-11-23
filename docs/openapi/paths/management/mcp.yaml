@@ -220,7 +220,8 @@ client:
       connection_type "stdio" (which runs the supplied command as a gateway
       subprocess), and connection_type "http"/"sse" whose connection_string
       resolves to a loopback, private-network, link-local, or CGNAT address.
-      Public http/sse targets are unaffected.
+      Public http/sse targets are unaffected. auth_type "aws_sigv4" is refused
+      the same way, since it signs requests with Bifrost's own AWS identity.
 
       For auth_type "token_exchange", verification and tool discovery run
       during the create as the signed-in admin: Bifrost exchanges the
@@ -281,7 +282,8 @@ client:
           The request was not genuinely authenticated (dashboard authentication
           is disabled or unconfigured) and connection_type is "stdio", or is
           "http"/"sse" with a connection_string resolving to a loopback,
-          private-network, link-local, or CGNAT address.
+          private-network, link-local, or CGNAT address, or auth_type is
+          "aws_sigv4".
       '422':
         description: |
           A per-user client failed verification during create, and was not
@@ -346,6 +348,14 @@ client-by-id:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          The request was not genuinely authenticated (dashboard authentication
+          is disabled or unconfigured) and changes how an aws_sigv4 client signs
+          with Bifrost's own AWS identity: it carries aws_sigv4, or, for an
+          existing aws_sigv4 client, changes the TLS settings or the spec,
+          spec_url or base_url of an OpenAPI client, whether or not aws_sigv4 is
+          sent. That needs an admin session.
       '409':
         description: >
           Nothing is applied. Either another MCP client already has the requested name, or the

@@ -1097,6 +1097,53 @@ def test_mcp_client_credentials_contract_matches_server_validation():
 
 
 
+def test_mcp_aws_sigv4_contract_matches_server_validation():
+    """MCPAWSSigV4Config.Validate (core/schemas/mcp.go) refuses an external_id or session_name
+    that is set without a role_arn that is set. The published OpenAPI schema must say the same."""
+    import copy
+
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise AssertionError("needs the jsonschema package: pip install jsonschema") from exc
+
+    mcp = load(HERE / "schemas" / "management" / "mcp.yaml")
+    common = load(HERE / "schemas" / "management" / "common.yaml")
+
+    def inline(node):
+        if isinstance(node, dict):
+            ref = node.get("$ref", "")
+            if ref.endswith("common.yaml#/EnvVar"):
+                return inline(copy.deepcopy(common["EnvVar"]))
+            if ref.startswith("#/"):
+                return inline(copy.deepcopy(mcp[ref[2:]]))
+            return {key: inline(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [inline(value) for value in node]
+        return node
+
+    block = inline(mcp["MCPAWSSigV4Config"])
+    role = "arn:aws:iam::123456789012:role/gateway"
+    cases = [
+        ("region only", {"region": "us-east-1"}, True),
+        ("region with a role", {"region": "us-east-1", "role_arn": role}, True),
+        ("a role with external_id and session_name", {"region": "us-east-1", "role_arn": role, "external_id": "ext", "session_name": "bifrost"}, True),
+        ("external_id without a role", {"region": "us-east-1", "external_id": "ext"}, False),
+        ("session_name without a role", {"region": "us-east-1", "session_name": "bifrost"}, False),
+        ("an empty external_id without a role", {"region": "us-east-1", "external_id": ""}, True),
+        ("external_id with an empty role", {"region": "us-east-1", "role_arn": "", "external_id": "ext"}, False),
+        ("a read external_id sent back with a role", {"region": "us-east-1", "role_arn": role, "external_id": {"value": "***", "type": "plain_text"}}, True),
+        ("a session_name reference without a role", {"region": "us-east-1", "session_name": {"type": "env", "ref": "env.SESSION"}}, False),
+    ]
+    validator = jsonschema.Draft202012Validator(block)
+    problems = [
+        f"{name}: OpenAPI says {'valid' if validator.is_valid(body) else 'invalid'}, server says {'valid' if want else 'invalid'}"
+        for name, body, want in cases
+        if validator.is_valid(body) != want
+    ]
+    assert not problems, "MCP aws_sigv4 drifts from server validation:\n    " + "\n    ".join(problems)
+
+
 def test_oauth_token_url_descriptions_state_the_server_rules():
     """OAuthKeyConfig.Validate accepts plain http for loopback hosts only and rejects a token_url
     carrying userinfo, a query or a fragment (extra parameters go in extra_params). Every
@@ -1282,6 +1329,7 @@ check("every operation declares its own security", test_every_operation_declares
 check("injected_tools schemas match config.schema.json", test_injected_tools_contract_matches_config_schema)
 check("oauth_key_config grant rules match server validation", test_oauth_key_config_contract_matches_server_validation)
 check("mcp client_credentials rules match server validation", test_mcp_client_credentials_contract_matches_server_validation)
+check("mcp aws_sigv4 rules match server validation", test_mcp_aws_sigv4_contract_matches_server_validation)
 check("oauth token_url descriptions state the loopback and URL-part rules", test_oauth_token_url_descriptions_state_the_server_rules)
 check("adaptive routing legacy alias declares Link and Warning on every response", test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response)
 check("adaptive routing PUT descriptions state that an empty reroute_target is stored as pool", test_adaptive_routing_put_descriptions_state_the_empty_reroute_target)

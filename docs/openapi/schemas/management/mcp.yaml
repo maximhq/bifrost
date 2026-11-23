@@ -2,7 +2,7 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange, client_credentials]
+  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange, client_credentials, aws_sigv4]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
@@ -16,6 +16,10 @@ MCPAuthType:
     - client_credentials: OAuth client_credentials grant with a client registered in advance
       at the server's authorization server; one token is shared by every caller and no
       user signs in (MCP OAuth Client Credentials extension).
+    - aws_sigv4: AWS Signature Version 4. Bifrost signs every request with its own
+      AWS identity, optionally assuming a role first, for servers that require
+      AWS IAM such as Amazon Bedrock AgentCore Gateway. For connection_type
+      "openapi", the upstream API's requests are signed.
 
 MCPTokenExchangeConfig:
   type: object
@@ -232,6 +236,65 @@ MCPSecretSet:
         not:
           required: [ref]
 
+MCPAWSSigV4Config:
+  type: object
+  required: [region]
+  properties:
+    region:
+      $ref: './common.yaml#/EnvVar'
+      description: |
+        AWS region requests are signed for, such as us-east-1 or us-gov-west-1.
+        Supports env.VAR_NAME and vault.path references. A value from a
+        reference is redacted in API responses; a literal is returned as set.
+    service:
+      type: string
+      enum: ['', bedrock-agentcore, aws-mcp, lambda, execute-api]
+      description: |
+        SigV4 signing name. Empty: bedrock-agentcore (AgentCore Gateway).
+        aws-mcp for the AWS MCP Server, lambda for Lambda function URLs,
+        execute-api for API Gateway.
+    role_arn:
+      $ref: './common.yaml#/EnvVar'
+      description: |
+        IAM role to assume before signing. Omitted: requests are signed with
+        Bifrost's own identity from the default credential chain (environment,
+        EKS Pod Identity, IRSA, instance profile). Supports env.VAR_NAME and
+        vault.path references.
+    external_id:
+      $ref: './common.yaml#/EnvVar'
+      description: |
+        External ID for the AssumeRole call, when the role's trust policy
+        requires one. Requires role_arn. Supports env.VAR_NAME and vault.path
+        references. Always masked in API responses, also when entered as a
+        literal. On update, sending the mask back keeps the stored value, also
+        when role_arn changes; send the new external ID when the new role needs
+        a different one. On create, send the value itself or a reference.
+    session_name:
+      $ref: './common.yaml#/EnvVar'
+      description: |
+        Role session name, 2 to 64 of letters, digits and +=,.@_-. Empty:
+        bifrost-session. Requires role_arn. Supports env.VAR_NAME and
+        vault.path references.
+  allOf:
+    - if:
+        anyOf:
+          - required: [external_id]
+            properties: {external_id: {$ref: '#/MCPSecretSet'}}
+          - required: [session_name]
+            properties: {session_name: {$ref: '#/MCPSecretSet'}}
+      then:
+        required: [role_arn]
+        properties:
+          role_arn: {$ref: '#/MCPSecretSet'}
+      description: external_id and session_name apply to role_arn.
+  additionalProperties: false
+  description: |
+    AWS SigV4 signing for auth_type "aws_sigv4". There are no static keys: the
+    credentials come from the environment Bifrost runs in. region, role_arn,
+    external_id and session_name accept a bare string on input and are returned
+    as `{value, ref, type}` objects in API responses. external_id is always
+    redacted; the other fields are redacted when held in a reference.
+
 MCPConnectionType:
   type: string
   enum: [http, stdio, sse, inprocess, openapi]
@@ -396,6 +459,27 @@ MCPClientCreateRequestBase:
           A `client_credentials` block only applies to auth_type
           "client_credentials"; reject it for every other auth_type, including
           an omitted one, which defaults to "headers".
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            const: aws_sigv4
+      then:
+        required: [aws_sigv4]
+        description: |
+          When `auth_type` is `aws_sigv4`, `aws_sigv4` must carry a `region`.
+    - if:
+        properties:
+          auth_type:
+            not:
+              const: aws_sigv4
+      then:
+        not:
+          required: [aws_sigv4]
+        description: |
+          An `aws_sigv4` block only applies to auth_type "aws_sigv4"; reject it
+          for every other auth_type, including an omitted one, which defaults
+          to "headers".
     - if:
         required: [per_user_discovery]
         properties:
@@ -617,6 +701,13 @@ MCPClientCreateRequestBase:
       description: |
         Required when creating a client with auth_type "client_credentials".
         Not accepted for connection_type "stdio" or "openapi".
+    aws_sigv4:
+      $ref: '#/MCPAWSSigV4Config'
+      description: |
+        Required when creating a client with auth_type "aws_sigv4". Not
+        accepted for connection_type "stdio". `headers` and
+        `allowed_extra_headers` cannot name `Authorization` or any `X-Amz-*`
+        header, which the signer sets (400).
     per_user_discovery:
       type: boolean
       default: false
@@ -675,7 +766,7 @@ MCPClientCreateRequestSSE:
           description: SSE URL (required for SSE connection type)
         auth_type:
           type: string
-          enum: [none, headers, oauth, client_credentials]
+          enum: [none, headers, oauth, client_credentials, aws_sigv4]
           description: |
             The per-user auth types open a new connection for each call, which an
             SSE stream does not allow, so SSE takes the shared auth types only.
@@ -712,14 +803,16 @@ MCPClientCreateRequestOpenAPI:
           enum: [openapi]
         auth_type:
           type: string
-          enum: [none, headers, per_user_headers]
+          enum: [none, headers, per_user_headers, aws_sigv4]
           description: |
             The synthesized server has no remote MCP handshake, so only the
-            header-shaped auth types apply. Static `headers` and per-user
-            headers are forwarded to the upstream API on every call; the
-            document's own security schemes are satisfied from
-            `openapi_config.security_credentials`. OAuth-flavored and
-            token-exchange auth types are rejected with 400.
+            header-shaped auth types and aws_sigv4 apply. Static `headers` and
+            per-user headers are forwarded to the upstream API on every call;
+            the document's own security schemes are satisfied from
+            `openapi_config.security_credentials`. With aws_sigv4 every
+            upstream API request is signed, while `spec_url` is fetched
+            unsigned. OAuth-flavored and token-exchange auth types are
+            rejected with 400.
         openapi_config:
           $ref: '#/MCPOpenAPIConfig'
         tools_to_execute:
@@ -1024,7 +1117,11 @@ MCPClientUpdateRequest:
         type: string
       description: |
         Custom headers to include in requests.
-        Only used when auth_type is "headers". Supports env./vault. references.
+        Only used when auth_type is "headers" or "aws_sigv4". Supports
+        env./vault. references. On `aws_sigv4` clients they are sent with each
+        signed request (headers that change in transit are not covered by the
+        signature); `Authorization` and `X-Amz-*` names are refused with 400,
+        here and in `allowed_extra_headers`.
         Values echoed back redacted from a GET response are recognized and
         preserve the stored value, so a fetch-modify-put round trip is safe.
     allowed_extra_headers:
@@ -1176,6 +1273,22 @@ MCPClientUpdateRequest:
         the change is saved and the response is 200 with status
         `partial_success`; the client retries with the new credentials, so do
         not resend them.
+    aws_sigv4:
+      $ref: '#/MCPAWSSigV4Config'
+      description: |
+        For `aws_sigv4` clients only. Omitted preserves the stored
+        configuration; when sent, it replaces the stored block. On an enabled
+        client a change applies at once: a persistent connection
+        (needs_session_stickiness true) reconnects with the new signing
+        settings, and a per-call client signs its next call with them. A
+        disabled client stores the change and uses it when it is enabled
+        again. A masked plain-text value round-tripped from a prior GET keeps
+        the stored value; an `env.` or `vault.` reference is stored as sent.
+        If applying it fails, the change is still stored and the response is
+        200 with status `partial_success`. An HTTP or SSE persistent connection
+        keeps its current settings until it reconnects; an `openapi` client is
+        rebuilt from scratch, so its tool calls fail until a rebuild succeeds.
+        POST /api/mcp/client/{id}/reconnect retries.
     disabled:
       type: boolean
       default: false
@@ -1374,6 +1487,12 @@ MCPClientConfig:
         For `client_credentials` clients only, including the token_url,
         auth_method and signing_algorithm chosen on save. `client_id`,
         `client_secret` and `private_key` are redacted in this response.
+    aws_sigv4:
+      $ref: '#/MCPAWSSigV4Config'
+      description: |
+        For `aws_sigv4` clients only. `external_id` is always redacted in this
+        response. `region`, `role_arn` and `session_name` are redacted when
+        held in an env or vault reference and otherwise returned as set.
     per_user_discovery:
       type: boolean
       default: false

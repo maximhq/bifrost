@@ -224,6 +224,7 @@
                   "mcp/auth/oauth",
                   "mcp/auth/per-user-oauth",
                   "mcp/auth/client-credentials",
+                  "mcp/auth/aws-sigv4",
                   "mcp/auth/token-exchange",
                   "mcp/auth/cross-app-access"
                 ]
