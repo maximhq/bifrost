@@ -493,7 +493,12 @@
 		"maximumSpend": "最大支出（美元）",
 		"noBudgetLimits": "尚未配置预算上限。",
 		"removeBudgetAria": "移除预算 {{number}}",
-		"duplicateResetPeriod": "重置周期重复；每条预算必须使用不同的周期。"
+		"duplicateResetPeriod": "重置周期重复；每条预算必须使用不同的周期。",
+		"contentLogging": "内容日志",
+		"contentLoggingInherit": "继承",
+		"contentLoggingOff": "此团队关闭",
+		"contentLoggingOn": "此团队开启",
+		"contentLoggingHelp": "是否把此团队流量的请求和响应内容写入日志。团队优先于其虚拟密钥和提供商密钥，因此密钥无法重新开启团队已关闭的内容。「关闭」也会从连接器导出中去掉内容。在允许按请求覆盖时，单次请求的请求头仍然生效。"
 	},
 	"filters": {
 		"filters": "筛选",
