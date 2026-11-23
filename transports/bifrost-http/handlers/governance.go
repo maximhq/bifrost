@@ -5996,7 +5996,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 
 	upstreamHealth := []schemas.UpstreamHealth{}
 	if source := h.upstreamHealth; source != nil {
-		upstreamHealth = vkUpstreamHealth(source(time.Now()), vk.ProviderConfigs)
+		upstreamHealth = vkUpstreamHealth(source(time.Now()), vk.ProviderConfigs, models)
 	}
 
 	SendJSON(ctx, map[string]interface{}{

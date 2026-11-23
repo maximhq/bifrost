@@ -2377,6 +2377,66 @@ func TestGetVirtualKeyQuota_HydratesBudgetsFromModelConfigs(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeyQuota_UpstreamHealthFoldsAllProviderModelLimits: a per-model limit the key
+// sets for every provider (a VK-scoped model config with no provider) is enforced on each
+// provider, so once it is exhausted the pair's effective_remaining_fraction must be 0, as it
+// is for a per-provider one.
+func TestGetVirtualKeyQuota_UpstreamHealthFoldsAllProviderModelLimits(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:       "vk-1",
+			Name:     "Production",
+			IsActive: &active,
+			ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+				{ID: 7, VirtualKeyID: "vk-1", Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
+			},
+		},
+		modelConfigs: []configstoreTables.TableModelConfig{{
+			ID:        "mc-gpt4o-all-providers",
+			Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+			ScopeID:   schemas.Ptr("vk-1"),
+			ModelName: "gpt-4o",
+			Budgets:   []configstoreTables.TableBudget{{ID: "b-gpt4o", MaxLimit: 10, CurrentUsage: 10, ResetDuration: "1d"}},
+		}},
+	}
+	h := &GovernanceHandler{configStore: store}
+	h.SetUpstreamHealthSource(func(time.Time) []schemas.UpstreamHealth {
+		return []schemas.UpstreamHealth{
+			{Provider: schemas.OpenAI, Model: "gpt-4o", Status: schemas.UpstreamHealthDegraded, Available: true, EffectiveRemainingFraction: 1},
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini", Status: schemas.UpstreamHealthDegraded, Available: true, EffectiveRemainingFraction: 1},
+		}
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp struct {
+		UpstreamHealth []schemas.UpstreamHealth `json:"upstream_health"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(resp.UpstreamHealth) != 2 {
+		t.Fatalf("expected both reachable pairs, got %+v", resp.UpstreamHealth)
+	}
+	for _, entry := range resp.UpstreamHealth {
+		want := 1.0
+		if entry.Model == "gpt-4o" {
+			want = 0
+		}
+		if entry.EffectiveRemainingFraction != want {
+			t.Fatalf("expected %s effective_remaining_fraction %v, got %v", entry.Model, want, entry.EffectiveRemainingFraction)
+		}
+	}
+}
+
 // TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets verifies the
 // AP-managed-VK path: when a registered ExternalQuotaBudgetResolver returns budgets
 // (enterprise access-profile budgets, which carry the real usage), they REPLACE the VK's

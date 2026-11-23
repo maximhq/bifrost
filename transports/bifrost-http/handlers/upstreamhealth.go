@@ -20,8 +20,9 @@ func (h *GovernanceHandler) SetUpstreamHealthSource(source UpstreamHealthSource)
 // vkUpstreamHealth returns the upstream health of the provider/model pairs the virtual key
 // can reach (its provider configs, their allowed and blacklisted models), with each pair's
 // EffectiveRemainingFraction narrowed by the static budgets and rate limits the key has on
-// that provider and on that model under it.
-func vkUpstreamHealth(snapshot []schemas.UpstreamHealth, providerConfigs []configstoreTables.TableVirtualKeyProviderConfig) []schemas.UpstreamHealth {
+// that provider, on that model under it, and on that model across all providers (a model
+// config with no provider, which governance enforces on every provider).
+func vkUpstreamHealth(snapshot []schemas.UpstreamHealth, providerConfigs []configstoreTables.TableVirtualKeyProviderConfig, models []quotaModelUsage) []schemas.UpstreamHealth {
 	out := make([]schemas.UpstreamHealth, 0, len(snapshot))
 	for _, entry := range snapshot {
 		for i := range providerConfigs {
@@ -35,6 +36,11 @@ func vkUpstreamHealth(snapshot []schemas.UpstreamHealth, providerConfigs []confi
 				for j := range pc.ModelBudgets {
 					if mb := &pc.ModelBudgets[j]; mb.ModelName == entry.Model {
 						entry.EffectiveRemainingFraction = min(entry.EffectiveRemainingFraction, staticRemainingFraction(mb.Budgets, mb.RateLimit))
+					}
+				}
+				for j := range models {
+					if m := &models[j]; m.Provider == nil && m.ModelName == entry.Model {
+						entry.EffectiveRemainingFraction = min(entry.EffectiveRemainingFraction, staticRemainingFraction(m.Budgets, m.RateLimit))
 					}
 				}
 			}

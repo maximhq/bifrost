@@ -26,7 +26,7 @@ func TestVKUpstreamHealthFiltersReachablePairsAndFoldsStaticLimits(t *testing.T)
 		}},
 	}}
 
-	got := vkUpstreamHealth(snapshot, configs)
+	got := vkUpstreamHealth(snapshot, configs, nil)
 	if len(got) != 2 || got[0].Model != "claude-a" || got[1].Model != "claude-b" {
 		t.Fatalf("expected only the reachable anthropic pairs, got %+v", got)
 	}
@@ -36,7 +36,7 @@ func TestVKUpstreamHealthFiltersReachablePairsAndFoldsStaticLimits(t *testing.T)
 	if got[1].EffectiveRemainingFraction != 0.25 {
 		t.Fatalf("expected the per-model request limit (25%% left) to bound the pair, got %v", got[1].EffectiveRemainingFraction)
 	}
-	if len(vkUpstreamHealth(snapshot, nil)) != 0 {
+	if len(vkUpstreamHealth(snapshot, nil, nil)) != 0 {
 		t.Fatal("a key with no provider configs reaches nothing")
 	}
 }
