@@ -191,8 +191,7 @@
 		"toggle": "サイドバーを切り替え"
 	},
 	"sheet": {
-		"collapse": "折りたたむ",
-		"expand": "展開"
+		"resizeHandle": "パネルのサイズを変更"
 	},
 	"tabs": {
 		"showMore_one": "さらに {{count}} 個のタブを表示",

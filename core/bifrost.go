@@ -5443,10 +5443,24 @@ func (bifrost *Bifrost) GetProviderByKey(providerKey schemas.ModelProvider) sche
 // AllowedRequests gates such as realtime-only support.
 // additionalModels narrows the pool to keys that also serve those models, for sessions where the
 // provider calls several models on one key (GPT Live's voice model and its Responses backend).
+// The chosen key's content-logging decision is stamped on the caller's context.
 func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, additionalModels ...string) (schemas.Key, error) {
+	requestCtx := ctx
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+	key, err := bifrost.selectKeyForProviderRequestType(ctx, requestType, providerKey, model, additionalModels...)
+	// The session's turns are logged on the caller's context, so the key's content-logging decision
+	// is stamped there. Never on bifrost.ctx: that context outlives every request.
+	if err == nil && requestCtx != nil && key.DisableContentLogging != nil {
+		schemas.StampContentLoggingDecision(requestCtx, schemas.BifrostContextKeyProviderKeyDisableContentLogging, *key.DisableContentLogging)
+	}
+	return key, err
+}
+
+// selectKeyForProviderRequestType picks the key SelectKeyForProviderRequestType returns, without
+// stamping anything on the context.
+func (bifrost *Bifrost) selectKeyForProviderRequestType(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, additionalModels ...string) (schemas.Key, error) {
 	baseProvider := bifrost.baseProviderType(providerKey)
 	supportedKeys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider, additionalModels...)
 	if err != nil {
@@ -7548,6 +7562,13 @@ func executeRequestWithRetries[T any](
 			currentKey = selectedKey
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, currentKey.ID)
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, currentKey.Name)
+			// The key's content-logging decision, for the post-hooks. The stamp merges with any
+			// "off" already recorded, so a key this request was already sent on that turned
+			// content off is not reopened by a retry onto another key, and it is kept on the
+			// failure paths below that clear the selected key.
+			if currentKey.DisableContentLogging != nil {
+				schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyProviderKeyDisableContentLogging, *currentKey.DisableContentLogging)
+			}
 		}
 
 		if attempts > 0 {

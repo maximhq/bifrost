@@ -97,7 +97,7 @@ export default function RSSSourcesSheet({ open, onClose }: RSSSourcesSheetProps)
 
 	return (
 		<Sheet open={open} onOpenChange={(next) => !next && onClose()}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0" data-testid="rss-sources-sheet">
+			<SheetContent resizeKey="rss-sources" className="flex w-full flex-col overflow-x-hidden px-0" data-testid="rss-sources-sheet">
 				<SheetHeader className="flex flex-col items-start pt-8" headerClassName="px-4 md:px-6">
 					<SheetTitle>{t("rssSources.title")}</SheetTitle>
 					<SheetDescription>{t("rssSources.description")}</SheetDescription>

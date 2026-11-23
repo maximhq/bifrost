@@ -1071,6 +1071,9 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 		return access, nil
 	}
 	bases, levelMode, scoping, mode := p.store.ResolvePermits(ctx)
+	// The store stamps the caller's content-logging layers while it resolves permits, so they are
+	// final now whatever it answered; the logging plugin stops holding content back for them.
+	schemas.MarkCallerContentLoggingResolved(ctx)
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
 	}
@@ -2143,6 +2146,13 @@ func (p *GovernancePlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schema
 	return resp, bifrostErr, nil
 }
 
+// teamContentLoggingStamper is a store that can stamp a team's content-logging decision from its
+// live team map. The connect path uses it when the store offers it; GovernanceStore does not
+// require it, so a store without teams stamps no team layer.
+type teamContentLoggingStamper interface {
+	StampTeamContentLogging(ctx *schemas.BifrostContext, teamID string)
+}
+
 // PreMCPConnectionHook resolves the caller's identity onto the BifrostContext
 // before the connect-plugin gate releases control to the credential-store
 // resolver. This is the only point in the MCP connect lifecycle where we can
@@ -2161,7 +2171,10 @@ func (p *GovernancePlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schema
 // error format. An unknown VK here simply leaves the row ID empty, and the
 // resolver will surface the "requires an identity" error itself.
 func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error) {
-	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	// Only the key that authenticated the request: when the transport settled another identity (an
+	// MCP user token, a session), a key the context also carries did not, and stamping it would apply
+	// its decisions, its team's above all, to a request it never vouched for.
+	virtualKeyValue := PresentedVirtualKey(ctx)
 	if virtualKeyValue == "" {
 		return req, nil, nil
 	}
@@ -2180,6 +2193,9 @@ func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req
 	// project's, on the context and on the root span.
 	if _, resolved := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); !resolved {
 		stampVirtualKeyContentLogging(ctx, vk)
+	}
+	if stamper, ok := p.store.(teamContentLoggingStamper); ok && vk.TeamID != nil {
+		stamper.StampTeamContentLogging(ctx, *vk.TeamID)
 	}
 	stampVirtualKeyMetadata(ctx, vk)
 	if vk.Team != nil {

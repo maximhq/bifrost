@@ -781,3 +781,22 @@ func TestRealtimeContextsCarryVirtualKeyMetadata(t *testing.T) {
 		t.Fatalf("relay virtual key metadata = %#v, want the request's", got)
 	}
 }
+
+// Realtime turns are logged on the relay, so it must carry every content-logging layer the request
+// was stamped with, and the resolved marker, or a turn would resolve content differently from the
+// request that opened the session.
+func TestNewRealtimeRelayContextCarriesContentLoggingLayers(t *testing.T) {
+	requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, key := range schemas.ContentLoggingContextKeys() {
+		requestCtx.SetValue(key, true)
+	}
+
+	relayCtx, relayCancel := newRealtimeRelayContext(requestCtx)
+	defer relayCancel()
+
+	for _, key := range schemas.ContentLoggingContextKeys() {
+		if got := relayCtx.Value(key); got != true {
+			t.Errorf("%s = %v on the relay, want true", key, got)
+		}
+	}
+}
