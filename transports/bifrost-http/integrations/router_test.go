@@ -2540,6 +2540,51 @@ func TestGenAIPassthroughInteractionsAgentIsTheModel(t *testing.T) {
 	}
 }
 
+// TestAnthropicPassthroughDeploymentsNameNoModel covers Claude Managed Agents deployments on
+// /anthropic_passthrough. Their paths are /v1/deployments/{id}, which path model parsing read as an
+// Azure deployments/{deployment} segment, so the deployment id became the request's model and a
+// virtual key's model allowlist refused every read, update, run, pause and archive of a deployment.
+func TestAnthropicPassthroughDeploymentsNameNoModel(t *testing.T) {
+	tests := []struct {
+		name      string
+		method    string
+		uri       string
+		body      string
+		wantModel string
+	}{
+		{name: "get a deployment", method: "GET", uri: "/anthropic_passthrough/v1/deployments/depl_01AbCdEfGhJkMnPqRsTuVwXy"},
+		{name: "update a deployment", method: "POST", uri: "/anthropic_passthrough/v1/deployments/depl_01AbCdEfGhJkMnPqRsTuVwXy", body: `{"name":"nightly"}`},
+		{name: "run a deployment", method: "POST", uri: "/anthropic_passthrough/v1/deployments/depl_01AbCdEfGhJkMnPqRsTuVwXy/run"},
+		{name: "pause a deployment", method: "POST", uri: "/anthropic_passthrough/v1/deployments/depl_01AbCdEfGhJkMnPqRsTuVwXy/pause"},
+		{name: "archive a deployment", method: "POST", uri: "/anthropic_passthrough/v1/deployments/depl_01AbCdEfGhJkMnPqRsTuVwXy/archive"},
+		{name: "list deployments", method: "GET", uri: "/anthropic_passthrough/v1/deployments?limit=20"},
+		{name: "a body model on a deployments path is still the model", method: "POST", uri: "/anthropic_passthrough/v1/deployments", body: `{"model":"claude-sonnet-4-5"}`, wantModel: "claude-sonnet-4-5"},
+		{name: "messages keep the body model", method: "POST", uri: "/anthropic_passthrough/v1/messages", body: `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[]}`, wantModel: "claude-sonnet-4-5"},
+		{name: "a model lookup keeps its path model", method: "GET", uri: "/anthropic_passthrough/v1/models/claude-sonnet-4-5", wantModel: "claude-sonnet-4-5"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := &codexPassthroughReceipt{}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: passthroughTestAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
+			require.NoError(t, err)
+			defer client.Shutdown()
+			r := router.New()
+			NewAnthropicPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.SetRequestURI(tc.uri)
+			if tc.body != "" {
+				ctx.Request.Header.SetContentType("application/json")
+				ctx.Request.SetBodyString(tc.body)
+			}
+			r.Handler(&ctx)
+			require.NotNil(t, plugin.request, string(ctx.Response.Body()))
+			require.Equal(t, schemas.Anthropic, plugin.request.PassthroughRequest.Provider)
+			require.Equal(t, tc.wantModel, plugin.request.PassthroughRequest.Model)
+		})
+	}
+}
+
 // BenchmarkGenAIPassthroughBodyModelKey measures the Interactions agent lookup every GenAI passthrough
 // request runs: a route predicate on non-Interactions paths, one strict key read on a create.
 func BenchmarkGenAIPassthroughBodyModelKey(b *testing.B) {
@@ -2563,6 +2608,23 @@ func BenchmarkGenAIPassthroughBodyModelKey(b *testing.B) {
 			if key := cfg.BodyModelKey("POST", "/interactions"); key != "" {
 				_, _ = passthroughBodyKeyModel(body, key)
 			}
+		}
+	})
+}
+
+// BenchmarkAnthropicPassthroughNoPathModel measures the deployments predicate every Anthropic passthrough request runs.
+func BenchmarkAnthropicPassthroughNoPathModel(b *testing.B) {
+	cfg := NewAnthropicPassthroughRouter(nil, nil, nil, &testLogger{}).passthroughCfg
+	b.Run("messages", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = cfg.NoPathModel("POST", "/v1/messages")
+		}
+	})
+	b.Run("deployment run", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = cfg.NoPathModel("POST", "/v1/deployments/depl_01AbCdEfGhJkMnPqRsTuVwXy/run")
 		}
 	})
 }

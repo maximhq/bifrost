@@ -87,10 +87,31 @@ func NewPassthroughRouter(
 func NewAnthropicPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider: schemas.Anthropic,
+		// Managed Agents deployments live at /v1/deployments/{id}. Path model parsing reads a
+		// deployments/{x} segment as an Azure deployment name, which made the deployment id the
+		// request's model. A deployments path names no model, so only the body can.
+		NoPathModel: isAnthropicDeploymentsPath,
 		StripPrefix: []string{
 			"/anthropic_passthrough",
 		},
 	})
+}
+
+// anthropicDeploymentsPath is the Managed Agents deployments collection on the Anthropic API.
+const anthropicDeploymentsPath = "/v1/deployments"
+
+// isAnthropicDeploymentsPath reports whether an Anthropic passthrough path addresses Managed Agents
+// deployments: the collection or anything under it (/v1/deployments/{id}, .../run, .../pause, .../archive).
+// /v1/deployment_runs is a different collection and does not match.
+func isAnthropicDeploymentsPath(_, path string) bool {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	if !strings.HasPrefix(path, anthropicDeploymentsPath) {
+		return false
+	}
+	rest := path[len(anthropicDeploymentsPath):]
+	return rest == "" || rest[0] == '/'
 }
 
 // NewOpenAIPassthroughRouter creates a passthrough router for /openai_passthrough.
