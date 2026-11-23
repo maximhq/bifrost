@@ -28217,3 +28217,53 @@ func TestReconcileFileVirtualMCPsForClient_KeepsFirstDuplicate(t *testing.T) {
 	require.Len(t, jiraOnly.ParsedTools, 1)
 	assert.Equal(t, "client-jira", jiraOnly.ParsedTools[0].MCPClientID)
 }
+
+// Legacy/file-loaded URLs can bypass the key API's validation.
+func TestGetAllKeys_RedactsRapidMLXURLCredentials(t *testing.T) {
+	initTestLogger()
+	const credential = "qx9"
+	const rawURL = "http://user:password@localhost:8000/v1?api_key=" + credential
+	t.Setenv("RAPID_MLX_REDACTION_URL", rawURL)
+	for _, raw := range []string{"http://localhost:8000/v1", rawURL, "env.RAPID_MLX_REDACTION_URL"} {
+		t.Run(raw, func(t *testing.T) {
+			original := &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(raw)}
+			stored := original.URL.GetValue()
+			cfg := &Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.RapidMLX: {Keys: []schemas.Key{{ID: "rapidmlx-key", RapidMLXKeyConfig: original}}},
+			}}
+			keys, err := cfg.GetAllKeys()
+			require.NoError(t, err)
+			require.Len(t, keys, 1)
+			require.NotNil(t, keys[0].RapidMLXKeyConfig)
+			body, err := json.Marshal(keys)
+			require.NoError(t, err)
+			assert.NotContains(t, string(body), credential)
+			assert.NotContains(t, string(body), "user:password")
+			assert.Equal(t, stored, original.URL.GetValue(), "live config must not change")
+			if raw == "http://localhost:8000/v1" {
+				assert.Equal(t, raw, keys[0].RapidMLXKeyConfig.URL.GetValue())
+			} else if strings.HasPrefix(raw, "env.") {
+				assert.Equal(t, raw, keys[0].RapidMLXKeyConfig.URL.GetRawRef())
+			} else {
+				assert.Equal(t, "http://redacted:redacted@localhost:8000/v1?api_key=redacted", keys[0].RapidMLXKeyConfig.URL.GetValue())
+			}
+		})
+	}
+}
+
+func BenchmarkGetAllKeysRapidMLX(b *testing.B) {
+	for _, serverURL := range []string{"http://localhost:8000/v1", "http://localhost:8000/v1?api_key=secret"} {
+		b.Run(serverURL, func(b *testing.B) {
+			cfg := &Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.RapidMLX: {Keys: []schemas.Key{{ID: "rapidmlx-key", RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(serverURL)}}}},
+			}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, err := cfg.GetAllKeys(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

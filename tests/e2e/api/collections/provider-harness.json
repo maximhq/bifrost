@@ -348778,6 +348778,68 @@
             },
             "url": "{{baseUrl}}/api/providers/rapidmlx/keys"
           }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-400] rapidmlx management rejects URL query credentials - #10033",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX refuses URL query', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('query');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"rapidmlx-query-rejected\",\"value\":\"\",\"weight\":1,\"rapidmlx_key_config\":{\"url\":\"http://localhost:8000/v1?api_key=rapidmlx-query-secret\"}}"
+            },
+            "url": "{{baseUrl}}/api/providers/rapidmlx/keys"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-400] rapidmlx management rejects URL fragment credentials - #10033",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Rapid-MLX refuses URL fragment', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('fragment');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"rapidmlx-fragment-rejected\",\"value\":\"\",\"weight\":1,\"rapidmlx_key_config\":{\"url\":\"http://localhost:8000/v1#rapidmlx-fragment-secret\"}}"
+            },
+            "url": "{{baseUrl}}/api/providers/rapidmlx/keys"
+          }
         }
       ]
     }

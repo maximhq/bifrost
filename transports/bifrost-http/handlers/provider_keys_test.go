@@ -2021,6 +2021,7 @@ func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
 
 func TestRapidMLXKeyURLs(t *testing.T) {
 	t.Setenv("RAPID_MLX_USERINFO_URL", "http://user:password@localhost:8000/v1")
+	t.Setenv("RAPID_MLX_QUERY_URL", "http://localhost:8000/v1?api_key=query-secret")
 	for _, tc := range []struct {
 		url      string
 		rejected bool
@@ -2031,6 +2032,11 @@ func TestRapidMLXKeyURLs(t *testing.T) {
 		{"http://user@localhost:8000/v1", true},
 		{"http://@localhost:8000/v1", true},
 		{"env.RAPID_MLX_USERINFO_URL", true},
+		{"http://localhost:8000/v1?api_key=query-secret", true},
+		{"http://localhost:8000/v1?", true},
+		{"http://localhost:8000/v1#fragment-secret", true},
+		{"http://localhost:8000/v1#", true},
+		{"env.RAPID_MLX_QUERY_URL", true},
 		{"http://169.254.169.254/v1", true},
 		{"http://0.0.0.0:8000/v1", true},
 	} {

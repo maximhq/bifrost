@@ -940,8 +940,8 @@ func validateProviderKeyServerURLs(key schemas.Key) error {
 		if err != nil {
 			return fmt.Errorf("invalid rapidmlx_key_config.url")
 		}
-		if parsedURL.User != nil {
-			return fmt.Errorf("rapidmlx_key_config.url must not contain userinfo; put credentials in the key value")
+		if parsedURL.User != nil || parsedURL.ForceQuery || parsedURL.RawQuery != "" || strings.Contains(c.URL.GetValue(), "#") {
+			return fmt.Errorf("rapidmlx_key_config.url must not contain userinfo, query, or fragment components; put credentials in the key value")
 		}
 		urls = append(urls, serverURL{"rapidmlx_key_config.url", &c.URL})
 	}
