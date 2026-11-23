@@ -62,6 +62,10 @@ source "$SCRIPT_DIR/setup-go-workspace.sh"
 
 harness_build_gateway
 harness_seed_app_dir "$APP_DIR"
+jq --arg authority "localhost:$PORT" \
+  '.server.trusted_forwarded_host = $authority' \
+  "$APP_DIR/config.json" > "$APP_DIR/config.json.tmp"
+mv "$APP_DIR/config.json.tmp" "$APP_DIR/config.json"
 
 # dbverify (on by default) asserts logged cost against the getbifrost.ai
 # datasheet. Point it at the app dir's sqlite logs DB explicitly - the Makefile's
@@ -80,8 +84,6 @@ if [ -n "${VERTEX_CREDENTIALS:-}" ] && command -v gcloud >/dev/null 2>&1; then
 else
   echo "⚠️  VERTEX_CREDENTIALS unset or gcloud missing - Vertex direct-provider parity cells will 401"
 fi
-
-harness_start_gateway "$APP_DIR" "$PORT" "$SERVER_LOG"
 
 # Retry policy. test-core is a required release gate, so a genuinely flaky cell
 # (a provider timeout, a 429 that outlived its backoff) must not sink a release
@@ -150,6 +152,28 @@ run_harness() {
     ${rerun:+RERUN_FAILED=1} || rc=$?
   return $rc
 }
+
+echo ""
+echo "Running MCP trusted forwarded host discovery..."
+MCP_APP_DIR_REL="tmp/harness-forwarded-host-app"
+MCP_APP_DIR="$REPO_ROOT/$MCP_APP_DIR_REL"
+mkdir -p "$MCP_APP_DIR"
+cp "$REPO_ROOT/tests/integrations/forwarded-host/config.json" "$MCP_APP_DIR/config.json"
+harness_start_gateway "$MCP_APP_DIR" "$PORT" "$REPO_ROOT/tmp/bifrost-forwarded-host.log"
+MCP_EXIT=0
+make run-provider-harness-test \
+  CI=1 \
+  USE_INFISICAL=0 \
+  PARALLEL=0 \
+  PROVIDER=mcp \
+  FEATURE="307. MCP trusted forwarded host discovery" \
+  INCLUDE_PREVIEW=0 \
+  BASE_URL="$BASE_URL" \
+  APP_DIR="$MCP_APP_DIR_REL" \
+  DB_VERIFY=0 || MCP_EXIT=$?
+archive_attempt mcp
+harness_stop_gateway
+harness_start_gateway "$APP_DIR" "$PORT" "$SERVER_LOG"
 
 echo ""
 echo "🧪 Running provider harness (full sweep, parallel per provider)..."
@@ -245,6 +269,11 @@ if [ "$FINAL_ATTEMPT" -gt 0 ]; then
   # Loud on purpose. A pass that needed retries is not the same as a clean pass,
   # and burying that turns a slow degradation into an invisible one.
   echo "::warning::Provider harness passed only on retry $FINAL_ATTEMPT of $RERUN_ATTEMPTS - the first attempt had failures. See tmp/harness-attempts/attempt-0/harness-failures.md."
+fi
+
+if [ "$MCP_EXIT" -ne 0 ]; then
+  echo "MCP trusted forwarded host discovery failed (exit $MCP_EXIT). See tmp/harness-attempts/attempt-mcp/."
+  exit "$MCP_EXIT"
 fi
 
 echo "✅ Provider harness completed successfully (attempts: $((FINAL_ATTEMPT + 1)))"

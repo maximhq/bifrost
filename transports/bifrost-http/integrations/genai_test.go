@@ -3,6 +3,10 @@ package integrations
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,11 +14,108 @@ import (
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+func TestGenAIFileUploadWithSharedIntegrationProfile(t *testing.T) {
+	profile, err := os.ReadFile(filepath.Join("..", "..", "..", "tests", "integrations", "python", "config.json"))
+	require.NoError(t, err)
+	var shared struct {
+		Server json.RawMessage `json:"server"`
+	}
+	require.NoError(t, json.Unmarshal(profile, &shared))
+	require.NotEmpty(t, shared.Server)
+
+	// Copy only the server settings: integration providers, secrets and stores
+	// must not participate in this regression. Local catalogs keep LoadConfig
+	// offline, and an authoritative empty provider map prevents env discovery.
+	dir := t.TempDir()
+	catalogPath := filepath.Join(dir, "catalog.json")
+	require.NoError(t, os.WriteFile(catalogPath, []byte(`{}`), 0o600))
+	settings := map[string]any{
+		"$schema":         "https://www.getbifrost.ai/schema",
+		"version":         2,
+		"source_of_truth": "config.json",
+		"server":          shared.Server,
+		"providers":       map[string]any{},
+		"config_store":    map[string]any{"enabled": false},
+		"logs_store":      map[string]any{"enabled": false},
+		"client":          map[string]any{"enable_logging": false},
+		"framework": map[string]any{
+			"pricing": map[string]any{
+				"pricing_url":               "file://" + catalogPath,
+				"model_parameters_url":      "file://" + catalogPath,
+				"mcp_library_sync_interval": 0,
+				"live_models_sync_interval": 0,
+			},
+		},
+	}
+	isolated, err := json.Marshal(settings)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), isolated, 0o600))
+	lib.SetLogger(&testLogger{})
+	config, err := lib.LoadConfig(context.Background(), dir)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		config.Close(context.Background())
+		settings["server"] = &lib.ServerConfig{}
+		resetBody, err := json.Marshal(settings)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), resetBody, 0o600))
+		reset, err := lib.LoadConfig(context.Background(), dir)
+		require.NoError(t, err)
+		reset.Close(context.Background())
+	})
+	require.NotNil(t, config.GetKVStore())
+
+	route := findGenAIRouteForTest(t, CreateGenAIFileRouteConfigs("/genai", config), "/genai/upload/v1beta/files", fasthttp.MethodPost)
+	generic := NewGenericRouter(nil, config, nil, nil, nil, &testLogger{})
+	initiation := &fasthttp.RequestCtx{}
+	initiation.Request.Header.SetMethod(fasthttp.MethodPost)
+	initiation.Request.SetRequestURI("http://localhost:8080/genai/upload/v1beta/files")
+	initiation.Request.Header.Set("Content-Type", "application/json")
+	initiation.Request.Header.Set("X-Model-Provider", "openai")
+	initiation.Request.Header.Set("X-Goog-Upload-Protocol", "resumable")
+	initiation.Request.Header.Set("X-Goog-Upload-Command", "start")
+	initiation.Request.Header.Set("X-Goog-Upload-Header-Content-Type", "application/jsonl")
+	initiation.Request.SetBodyString(`{"file":{"display_name":"batch.jsonl"}}`)
+	generic.createHandler(route)(initiation)
+
+	require.Equal(t, fasthttp.StatusOK, initiation.Response.StatusCode(), "%s", initiation.Response.Body())
+	assert.Equal(t, "active", string(initiation.Response.Header.Peek("X-Goog-Upload-Status")))
+	uploadURL, err := url.Parse(string(initiation.Response.Header.Peek("X-Goog-Upload-URL")))
+	require.NoError(t, err)
+	assert.Equal(t, "http", uploadURL.Scheme)
+	assert.Equal(t, "localhost:8080", uploadURL.Host, "the SDK must be able to follow the returned URL")
+	assert.Equal(t, route.Path, uploadURL.Path)
+	require.NotEmpty(t, uploadURL.Query().Get("upload_id"))
+
+	// Follow the generated session URL through the real chunk parser and
+	// converter without calling an upstream provider.
+	chunk := &fasthttp.RequestCtx{}
+	chunk.Request.Header.SetMethod(fasthttp.MethodPost)
+	chunk.Request.SetRequestURI(uploadURL.String())
+	chunk.Request.SetBodyString("{\"custom_id\":\"request-1\"}\n")
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := route.GetRequestTypeInstance(bifrostCtx)
+	require.NoError(t, route.RequestParser(chunk, req))
+	require.NoError(t, route.PreCallback(chunk, bifrostCtx, req))
+	handled, err := route.ShortCircuit(chunk, bifrostCtx, req)
+	require.NoError(t, err)
+	require.False(t, handled)
+	converted, err := route.FileRequestConverter(bifrostCtx, req)
+	require.NoError(t, err)
+	require.NotNil(t, converted.UploadRequest)
+	assert.Equal(t, schemas.OpenAI, converted.UploadRequest.Provider)
+	assert.Equal(t, "batch.jsonl", converted.UploadRequest.Filename)
+	require.NotNil(t, converted.UploadRequest.ContentType)
+	assert.Equal(t, "application/jsonl", *converted.UploadRequest.ContentType)
+	assert.Equal(t, chunk.Request.Body(), converted.UploadRequest.File)
+}
 
 // TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields verifies Gemini redaction covers native text, function-call argument values, and function-result values without touching metadata.
 func TestRewriteGenAIRawRequestBodyRedactsOnlyContentFields(t *testing.T) {

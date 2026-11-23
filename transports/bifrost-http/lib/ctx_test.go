@@ -864,6 +864,7 @@ func TestConvertToBifrostContext_DirectKey_EnvPrefixNotResolved(t *testing.T) {
 	}
 }
 
+// TestBuildBaseURL checks override priority and exact trusted-host selection.
 func TestBuildBaseURL(t *testing.T) {
 	const host = "bifrost.example.com"
 	tests := []struct {
@@ -872,33 +873,59 @@ func TestBuildBaseURL(t *testing.T) {
 		host     string
 		xfProto  string
 		xbfProto string
+		xfHost   string
+		trusted  string
 		want     string
 	}{
-		{name: "defaults to http", host: host, want: "http://" + host},
-		{name: "x-forwarded-proto https", host: host, xfProto: "https", want: "https://" + host},
-		{name: "x-forwarded-proto comma list", host: host, xfProto: "https, http", want: "https://" + host},
-		{name: "x-forwarded-proto uppercase", host: host, xfProto: "HTTPS", want: "https://" + host},
-		{name: "x-bf-forwarded-proto https", host: host, xbfProto: "https", want: "https://" + host},
-		{name: "x-bf-forwarded-proto uppercase trimmed", host: host, xbfProto: " HTTPS ", want: "https://" + host},
-		{name: "x-bf-forwarded-proto comma list", host: host, xbfProto: "https, http", want: "https://" + host},
-		{name: "x-bf-forwarded-proto http stays http", host: host, xbfProto: "http", want: "http://" + host},
-		{name: "hostname missing", external: "https://:8080", host: host, want: "http://" + host},
-		{name: "empty fragment override rejected", external: "https://proxy.example.com#", host: host, want: "http://" + host},
-		{name: "userinfo override rejected", external: "https://user:password@proxy.example.com", host: host, want: "http://" + host},
-		{name: "query override rejected", external: "https://proxy.example.com?token=private", host: host, want: "http://" + host},
-		{name: "fragment override rejected", external: "https://proxy.example.com#private", host: host, want: "http://" + host},
-		{name: "non HTTP override rejected", external: "ftp://proxy.example.com", host: host, want: "http://" + host},
-		{name: "external override wins", external: "https://proxy.example.com", host: host, xfProto: "http", want: "https://proxy.example.com"},
+		{name: "unconfigured Host rejected", host: host, want: ""},
+		{name: "unconfigured forwarded host rejected", host: host, xfHost: "public.example.com:8443", xfProto: "https", want: ""},
+		{name: "configured Host defaults to http", host: host, trusted: host, want: "http://" + host},
+		{name: "configured Host compared case insensitively", host: "BIFROST.EXAMPLE.COM", trusted: host, want: "http://" + host},
+		{name: "configured Host includes exact port", host: host + ":8443", trusted: host + ":8443", want: "http://" + host + ":8443"},
+		{name: "configured Host missing port rejected", host: host, trusted: host + ":8443", want: ""},
+		{name: "configured Host different port rejected", host: host + ":443", trusted: host + ":8443", want: ""},
+		{name: "configured Host suffix rejected", host: host + ".attacker.example", trusted: host, want: ""},
+		{name: "configured Host works with untrusted forwarded header", host: host, trusted: host, xfHost: "attacker.example.com", want: "http://" + host},
+		{name: "trusted forwarded host wins", host: "attacker.example.com", trusted: "public.example.com", xfHost: "public.example.com", xfProto: "https", want: "https://public.example.com"},
+		{name: "trusted forwarded host includes port", host: host, trusted: "public.example.com:8443", xfHost: "PUBLIC.EXAMPLE.COM:8443", want: "http://public.example.com:8443"},
+		{name: "trusted forwarded host first hop", host: host, trusted: "public.example.com", xfHost: " public.example.com , internal.example.com", want: "http://public.example.com"},
+		{name: "trusted host in later hop rejected", host: host, trusted: "public.example.com", xfHost: "attacker.example.com, public.example.com", want: ""},
+		{name: "trusted host suffix rejected", host: host, trusted: "public.example.com", xfHost: "public.example.com.attacker.example", want: ""},
+		{name: "trusted host port mismatch rejected", host: host, trusted: "public.example.com:8443", xfHost: "public.example.com:9999", want: ""},
+		{name: "trusted host missing header rejects untrusted Host", host: host, trusted: "public.example.com", want: ""},
+		{name: "trusted host replaces missing Host", trusted: "public.example.com", xfHost: "public.example.com", want: "http://public.example.com"},
+		{name: "explicit URL beats trusted forwarded host", external: "https://configured.example.com/edge", host: host, trusted: "public.example.com", xfHost: "public.example.com", want: "https://configured.example.com/edge"},
+		{name: "trusted IPv6 authority", host: host, trusted: "[2001:db8::1]:8443", xfHost: "[2001:db8::1]:8443", want: "http://[2001:db8::1]:8443"},
+		{name: "trusted IPv6 Host", host: "[2001:db8::1]:8443", trusted: "[2001:db8::1]:8443", want: "http://[2001:db8::1]:8443"},
+		{name: "x-forwarded-proto https", host: host, trusted: host, xfProto: "https", want: "https://" + host},
+		{name: "x-forwarded-proto comma list", host: host, trusted: host, xfProto: "https, http", want: "https://" + host},
+		{name: "x-forwarded-proto uppercase", host: host, trusted: host, xfProto: "HTTPS", want: "https://" + host},
+		{name: "x-bf-forwarded-proto https", host: host, trusted: host, xbfProto: "https", want: "https://" + host},
+		{name: "x-bf-forwarded-proto uppercase trimmed", host: host, trusted: host, xbfProto: " HTTPS ", want: "https://" + host},
+		{name: "x-bf-forwarded-proto comma list", host: host, trusted: host, xbfProto: "https, http", want: "https://" + host},
+		{name: "x-bf-forwarded-proto http stays http", host: host, trusted: host, xbfProto: "http", want: "http://" + host},
+		{name: "hostname missing", external: "https://:8080", host: host, want: ""},
+		{name: "empty fragment override rejected", external: "https://proxy.example.com#", host: host, want: ""},
+		{name: "userinfo override rejected", external: "https://user:password@proxy.example.com", host: host, want: ""},
+		{name: "query override rejected", external: "https://proxy.example.com?token=private", host: host, want: ""},
+		{name: "fragment override rejected", external: "https://proxy.example.com#private", host: host, want: ""},
+		{name: "non HTTP override rejected", external: "ftp://proxy.example.com", host: host, want: ""},
+		{name: "external override wins without trusted host", external: "https://proxy.example.com", host: "attacker.example.com", xfProto: "http", want: "https://proxy.example.com"},
 		{name: "external override trailing slash trimmed", external: "https://proxy.example.com/", host: host, want: "https://proxy.example.com"},
 		{name: "external override surrounding whitespace trimmed", external: "  https://proxy.example.com/  ", host: host, xfProto: "http", want: "https://proxy.example.com"},
-		{name: "invalid external falls back to inference", external: "not-a-url", host: host, xbfProto: "https", want: "https://" + host},
+		{name: "invalid external uses configured Host", external: "not-a-url", host: host, trusted: host, xbfProto: "https", want: "https://" + host},
 		{name: "empty host yields empty", host: "", xbfProto: "https", want: ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if err := configureTrustedForwardedHost(tt.trusted); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = configureTrustedForwardedHost("") })
 			ctx := &fasthttp.RequestCtx{}
 			ctx.Request.SetHost(tt.host)
+			ctx.Request.Header.Set("X-Forwarded-Host", tt.xfHost)
 			if tt.xfProto != "" {
 				ctx.Request.Header.Set("X-Forwarded-Proto", tt.xfProto)
 			}
@@ -912,10 +939,43 @@ func TestBuildBaseURL(t *testing.T) {
 	}
 }
 
+// TestConfigureTrustedForwardedHost rejects unusable authorities before publishing them.
+func TestConfigureTrustedForwardedHost(t *testing.T) {
+	t.Cleanup(func() { _ = configureTrustedForwardedHost("") })
+	for _, value := range []string{"https://example.com", "example.com/path", "example.com?query", "example.com#fragment", "user@example.com", "*.example.com", "example.com,other.example.com", " example.com", "example.com:invalid", "example.com:65536", "example.com:84433", "[2001:db8::1]:65536"} {
+		t.Run(value, func(t *testing.T) {
+			if err := configureTrustedForwardedHost(value); err == nil {
+				t.Fatalf("accepted invalid authority %q", value)
+			}
+		})
+	}
+	for _, value := range []string{"", "example.com", "example.com:1", "example.com:65535", "[2001:db8::1]", "[2001:db8::1]:65535"} {
+		t.Run("valid/"+value, func(t *testing.T) {
+			if err := configureTrustedForwardedHost(value); err != nil {
+				t.Fatal(err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetHost("internal.example.com")
+			ctx.Request.Header.Set("X-Forwarded-Host", value)
+			want := "http://" + value
+			if value == "" {
+				want = ""
+			}
+			if got := BuildBaseURL(ctx, ""); got != want {
+				t.Fatalf("BuildBaseURL() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // TestBuildBaseURL_BasePath pins that the Host-derived URL carries
 // server.base_path (the browser reached Bifrost under it even when the proxy
 // strips it), while an explicit external URL is used exactly as configured.
 func TestBuildBaseURL_BasePath(t *testing.T) {
+	if err := configureTrustedForwardedHost("abc.com"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = configureTrustedForwardedHost("") })
 	SetBasePath("/bifrost")
 	t.Cleanup(func() { SetBasePath("") })
 
@@ -938,6 +998,15 @@ func TestBuildBaseURL_BasePath(t *testing.T) {
 	SetBasePath("")
 	if got := BuildBaseURL(ctx, ""); got != "https://abc.com" {
 		t.Fatalf("BuildBaseURL() without base path = %q, want https://abc.com", got)
+	}
+	if err := configureTrustedForwardedHost("public.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = configureTrustedForwardedHost("") })
+	SetBasePath("/bifrost")
+	ctx.Request.Header.Set("X-Forwarded-Host", "public.example.com")
+	if got := BuildBaseURL(ctx, ""); got != "https://public.example.com/bifrost" {
+		t.Fatalf("trusted forwarded URL = %q", got)
 	}
 }
 
@@ -3197,6 +3266,8 @@ func BenchmarkBuildBaseURL(b *testing.B) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetHost("abc.com")
 	ctx.Request.Header.Set("X-Forwarded-Proto", "https")
+	_ = configureTrustedForwardedHost("abc.com")
+	defer configureTrustedForwardedHost("")
 	for name, basePath := range map[string]string{"root": "", "prefixed": "/bifrost"} {
 		b.Run(name, func(b *testing.B) {
 			SetBasePath(basePath)
@@ -3207,4 +3278,21 @@ func BenchmarkBuildBaseURL(b *testing.B) {
 			}
 		})
 	}
+	for _, forwarded := range []string{"public.example.com", "attacker.example.com", " public.example.com , internal.example.com"} {
+		b.Run("forwarded/"+forwarded, func(b *testing.B) {
+			_ = configureTrustedForwardedHost("public.example.com")
+			ctx.Request.Header.Set("X-Forwarded-Host", forwarded)
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = BuildBaseURL(ctx, "")
+			}
+		})
+	}
+	b.Run("unconfigured", func(b *testing.B) {
+		_ = configureTrustedForwardedHost("")
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = BuildBaseURL(ctx, "")
+		}
+	})
 }

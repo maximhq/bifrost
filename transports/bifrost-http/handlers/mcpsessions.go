@@ -835,7 +835,12 @@ func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth provider not configured")
 		return
 	}
-	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+	base := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
+	if base == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Cannot determine a trusted public base URL; configure client.mcp_external_client_url or server.trusted_forwarded_host")
+		return
+	}
+	redirectURI := base + oauthCallbackPath
 	flow, sessionID, err := provider.InitiateUserOAuthFlow(bfCtx, tok.OauthConfigID, tok.MCPClientID, redirectURI, rowMode)
 	if err != nil {
 		logger.Error("[mcp/sessions] reauth flow init failed: token=%s err=%v", rowID, err)
