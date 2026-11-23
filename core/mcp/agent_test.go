@@ -540,6 +540,25 @@ func TestExecuteAgentForResponsesRequest_AnswersCallsThatPointAtCodeMode(t *test
 	if !strings.Contains(string(body), "tavily is an MCP server available through code mode") {
 		t.Errorf("the next turn does not carry the hint: %s", body)
 	}
+
+	// A function the caller declared inside a namespace tool is the caller's, even when its name
+	// matches a code mode server's tool: it is handed back, not answered with a hint.
+	sent = nil
+	callMember := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		Role:                 schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_2"), Name: schemas.Ptr("tavily_search"), Arguments: schemas.Ptr(`{}`)},
+	}}}
+	req.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+		Type: schemas.ResponsesToolTypeNamespace, Name: schemas.Ptr("search"),
+		ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("tavily_search")}}},
+	}}}
+	if _, err := executor.ExecuteAgentForResponsesRequest(ctx, 10, req, callMember, makeReq, nil, nil, &codeModeAgentClients{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sent) != 0 {
+		t.Errorf("a namespace member the caller declared was answered with a hint instead of handed back (%d model calls)", len(sent))
+	}
 }
 
 func TestHasToolCallsForResponsesResponse(t *testing.T) {

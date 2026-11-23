@@ -501,6 +501,14 @@ func offeredToolNames(request interface{}) map[string]bool {
 				if tool.Name != nil {
 					names[*tool.Name] = true
 				}
+				// A namespace tool's functions are called by their own names.
+				if tool.ResponsesToolNamespace != nil {
+					for _, member := range tool.ResponsesToolNamespace.Tools {
+						if member.Name != nil {
+							names[*member.Name] = true
+						}
+					}
+				}
 			}
 		}
 	}
