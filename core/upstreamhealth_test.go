@@ -92,3 +92,41 @@ func TestUpstreamHealthCredentialsExhaustedUsesAttemptTrail(t *testing.T) {
 		t.Fatalf("expected the soonest key's hint, got %d ms", h.RetryAfterMs)
 	}
 }
+
+// A failure on a tracked pair keeps the tracker locked until it holds the pair: pruneLocked takes
+// the tracker's write lock, so it must not be able to drop the pair between the lookup and the
+// update, or the update lands on a pair no snapshot reports.
+func TestUpstreamHealthFailureHoldsTrackerUntilPairLocked(t *testing.T) {
+	b := &Bifrost{}
+	b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", upstreamError(503, "server_error", 0))
+	st := b.upstreamHealth.entries[upstreamHealthKey{schemas.OpenAI, "gpt-x"}]
+	if st == nil {
+		t.Fatal("expected the first failure to track the pair")
+	}
+
+	st.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", upstreamError(503, "server_error", 0))
+	}()
+	// While the second failure waits for the pair, a writer must not get the tracker. Two misses in
+	// a row rule out catching the lookup's own brief read lock.
+	misses := 0
+	for deadline := time.Now().Add(2 * time.Second); misses < 2 && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if b.upstreamHealth.mu.TryLock() {
+			b.upstreamHealth.mu.Unlock()
+			misses = 0
+			continue
+		}
+		misses++
+	}
+	st.mu.Unlock()
+	<-done
+	if misses < 2 {
+		t.Fatal("recordFailure released the tracker lock before locking the pair; pruning could drop the pair in between")
+	}
+	if h := findUpstreamHealth(t, b.UpstreamHealthSnapshot(time.Now()), schemas.OpenAI, "gpt-x"); h.ConsecutiveFailures != 2 {
+		t.Fatalf("expected both failures on the tracked pair, got %+v", h)
+	}
+}

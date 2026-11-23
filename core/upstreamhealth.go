@@ -151,10 +151,15 @@ func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, mo
 		return
 	}
 	key := upstreamHealthKey{provider, model}
+	// t.mu stays held until the pair is locked: pruneLocked takes t.mu for writing, so it cannot
+	// drop the pair between the lookup and this update.
 	t.mu.RLock()
 	st := t.entries[key]
-	t.mu.RUnlock()
-	if st == nil {
+	if st != nil {
+		st.mu.Lock()
+		t.mu.RUnlock()
+	} else {
+		t.mu.RUnlock()
 		t.mu.Lock()
 		if t.entries == nil {
 			t.entries = make(map[upstreamHealthKey]*upstreamHealthState)
@@ -170,9 +175,9 @@ func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, mo
 			st = &upstreamHealthState{}
 			t.entries[key] = st
 		}
+		st.mu.Lock()
 		t.mu.Unlock()
 	}
-	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.consecutiveFailures++
 	st.failureClass = class
