@@ -6939,7 +6939,8 @@
         },
         "type": {
           "type": "string",
-          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone", "chromem"]
+          "enum": ["none", "weaviate", "redis", "qdrant", "pinecone", "chromem", "pgvector"],
+          "description": "Vector store backend. pgvector has no settings: it keeps its vectors in the logs store's Postgres database (storage.logsStore must be postgres) and needs the pgvector extension 0.8.0 or later, which the default bundled postgres:16-alpine image does not include."
         },
         "weaviate": {
           "type": "object",
@@ -7492,7 +7493,7 @@
       "type": "object",
       "description": "Phrase suggestions for the semantic router: a sample of the vectors the semantic classifier computes is kept under each request's log ID so suggestions can cluster real traffic. Request text stays in the logs.",
       "properties": {
-        "enabled": {"type": "boolean", "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis or Pinecone): with Chromem, or no vector store, nothing is captured and suggestion runs are refused."},
+        "enabled": {"type": "boolean", "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis, Pinecone or pgvector): with Chromem, or no vector store, nothing is captured and suggestion runs are refused."},
         "sample_rate": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "Share of classified requests captured; default 0.1."},
         "lookback_days": {"type": "integer", "minimum": 1, "maximum": 90, "description": "Days of captured traffic suggestions draw on, and how long captured vectors are kept (never longer than the logs); default 7."},
         "schedule": {

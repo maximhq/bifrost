@@ -1514,6 +1514,24 @@ expect_render_failure "gateways: enabled telemetry needs a destination" "destina
   --set "$GW.issuerUrl=https://bifrost.example.com" --set "$GW.gateways.claudeCode.enabled=true" \
   --set "$GW.gateways.claudeCode.telemetry.enabled=true"
 
+# pgvector keeps its vectors in the logs store's database, so it renders only
+# with a postgres logs store and has no settings of its own.
+echo ""
+echo -e "${CYAN}🧭 Testing pgvector vector store...${NC}"
+echo "---------------------------------------------------"
+check_config "pgvector: renders with a postgres logs store and no settings" \
+  'vs = cfg["vector_store"]
+assert vs["enabled"] is True and vs["type"] == "pgvector", "vector_store: %r" % vs
+assert vs.get("config") == {}, "pgvector config must be an empty object: %r" % vs.get("config")' \
+  --set storage.logsStore.enabled=true --set storage.mode=postgres --set postgresql.enabled=true \
+  --set postgresql.auth.password=testpass --set vectorStore.enabled=true --set vectorStore.type=pgvector
+expect_render_failure "pgvector: refused without a logs store" "requires storage.logsStore.enabled=true with a postgres logs store" \
+  --set storage.logsStore.enabled=false --set storage.mode=postgres --set postgresql.enabled=true \
+  --set postgresql.auth.password=testpass --set vectorStore.enabled=true --set vectorStore.type=pgvector
+expect_render_failure "pgvector: refused with a sqlite logs store" "requires storage.logsStore.enabled=true with a postgres logs store" \
+  --set storage.logsStore.enabled=true --set storage.mode=sqlite \
+  --set vectorStore.enabled=true --set vectorStore.type=pgvector
+
 # Cleanup
 rm -f /tmp/helm-template-output.yaml
 
