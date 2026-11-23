@@ -2269,6 +2269,12 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 						if summary == nil && schemas.IsOpenAIModelFamily(ctx, bifrostReq.Model) {
 							summary = schemas.Ptr("auto")
 						}
+						// The neutral reasoning shape has no display field; both egress
+						// builders map Summary "none" back to thinking.display "omitted",
+						// as the /anthropic ingress does (anthropic.ToBifrostResponsesRequest).
+						if display, ok := schemas.SafeExtractString(reasoningConfigMap["display"]); ok && display == "omitted" {
+							summary = schemas.Ptr("none")
+						}
 						var (
 							effortStr string
 							found     bool

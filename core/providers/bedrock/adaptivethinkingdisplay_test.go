@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -243,6 +244,86 @@ func TestToBifrostResponsesRequest_LeavesSummaryUnsetForAnthropic(t *testing.T) 
 	}
 	if s := bifrostReq.Params.Reasoning.Summary; s != nil {
 		t.Errorf("reasoning.summary should stay unset for a non-OpenAI model, got %q", *s)
+	}
+}
+
+// An explicit thinking.display:"omitted" on the /bedrock invoke and converse routes
+// must reach Bedrock as "omitted" on both egress paths (InvokeModel when thinking is
+// on for invoke ingress, Converse otherwise). The neutral reasoning shape has no
+// display field, so the ingress carries it as Summary "none", which both egress
+// builders map back to "omitted" (the /anthropic ingress does the same).
+// An unset or "summarized" display keeps today's "summarized" default (#5185).
+func TestBedrockIngress_ThinkingDisplayOmitted(t *testing.T) {
+	const model = "us.anthropic.claude-sonnet-5-5"
+	cases := []struct {
+		name     string
+		thinking string
+		want     string
+	}{
+		{"adaptive_omitted", `{"type":"adaptive","display":"omitted"}`, "omitted"},
+		{"enabled_budget_omitted", `{"type":"enabled","budget_tokens":2048,"display":"omitted"}`, "omitted"},
+		{"adaptive_summarized", `{"type":"adaptive","display":"summarized"}`, "summarized"},
+		{"adaptive_unset", `{"type":"adaptive"}`, "summarized"},
+	}
+	provider := &BedrockProvider{}
+	for _, tc := range cases {
+		ingress := map[string]func(t *testing.T) *BedrockConverseRequest{
+			"invoke": func(t *testing.T) *BedrockConverseRequest {
+				body := `{"anthropic_version":"bedrock-2023-05-31","max_tokens":4096,"thinking":` + tc.thinking +
+					`,"output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"}]}`
+				var invokeReq BedrockInvokeRequest
+				if err := sonic.Unmarshal([]byte(body), &invokeReq); err != nil {
+					t.Fatalf("unmarshal invoke body: %v", err)
+				}
+				invokeReq.ModelID = model
+				return invokeReq.ToBedrockConverseRequest()
+			},
+			"converse": func(t *testing.T) *BedrockConverseRequest {
+				body := `{"messages":[{"role":"user","content":[{"text":"hi"}]}],"inferenceConfig":{"maxTokens":4096},` +
+					`"additionalModelRequestFields":{"thinking":` + tc.thinking + `,"output_config":{"effort":"high"}}}`
+				var converseReq BedrockConverseRequest
+				if err := sonic.Unmarshal([]byte(body), &converseReq); err != nil {
+					t.Fatalf("unmarshal converse body: %v", err)
+				}
+				converseReq.ModelID = model
+				return &converseReq
+			},
+		}
+		for route, build := range ingress {
+			t.Run(route+"/"+tc.name, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if route == "invoke" {
+					ctx.SetValue(BedrockContextKeyAnthropicInvokeIngress, true)
+				}
+				bifrostReq, err := build(t).ToBifrostResponsesRequest(ctx)
+				if err != nil {
+					t.Fatalf("ToBifrostResponsesRequest failed: %v", err)
+				}
+				bifrostReq.Provider = schemas.Bedrock
+
+				invokeBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, bifrostReq, provider.invokeBuildConfig(model, false, true, nil))
+				if bifrostErr != nil {
+					t.Fatalf("build invoke body failed: %v", bifrostErr.Error.Message)
+				}
+				if got := providerUtils.GetJSONField(invokeBody, "thinking.display").String(); got != tc.want {
+					t.Errorf("InvokeModel thinking.display = %q, want %q; thinking = %s",
+						got, tc.want, providerUtils.GetJSONField(invokeBody, "thinking").Raw)
+				}
+
+				converseReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+				if err != nil {
+					t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+				}
+				raw, ok := converseReq.AdditionalModelRequestFields.Get("thinking")
+				if !ok {
+					t.Fatalf("Converse request carries no thinking field")
+				}
+				thinking, _ := raw.(map[string]any)
+				if got := thinking["display"]; got != tc.want {
+					t.Errorf("Converse thinking.display = %v, want %q; thinking = %+v", got, tc.want, raw)
+				}
+			})
+		}
 	}
 }
 
