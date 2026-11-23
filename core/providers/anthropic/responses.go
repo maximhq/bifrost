@@ -8982,6 +8982,13 @@ func convertBifrostItemReferenceToAnthropicMessage(msg *schemas.ResponsesMessage
 
 // convertBifrostComputerCallToAnthropicToolUse converts a Bifrost computer call to Anthropic tool use blocks, one per action.
 // Earlier actions of a batched call get suffixed ids; the last keeps the call id so the screenshot output pairs with it.
+// ConvertBifrostComputerCallToAnthropicToolUse rebuilds the computer tool_use
+// blocks of a computer_call, for Anthropic-shaped egresses outside this package
+// (the Bedrock InvokeModel egress).
+func ConvertBifrostComputerCallToAnthropicToolUse(msg *schemas.ResponsesMessage) []AnthropicContentBlock {
+	return convertBifrostComputerCallToAnthropicToolUse(msg)
+}
+
 func convertBifrostComputerCallToAnthropicToolUse(msg *schemas.ResponsesMessage) []AnthropicContentBlock {
 	if msg.ResponsesToolMessage == nil {
 		return nil
@@ -10222,6 +10229,15 @@ func convertBifrostToolOutputToAnthropicMessage(msg *schemas.ResponsesMessage) *
 		}
 	}
 	return nil
+}
+
+// ConvertAnthropicToolToBifrost maps one Anthropic tool definition, flags
+// included, to the neutral Responses tool the way the /v1/messages ingress does,
+// for ingresses outside this package (the Bedrock InvokeModel ingress).
+func ConvertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
+	bifrostTool := convertAnthropicToolToBifrost(tool)
+	applyAnthropicToolFlagsToResponsesTool(tool, bifrostTool)
+	return bifrostTool
 }
 
 // convertAnthropicToolToBifrost converts AnthropicTool to schemas.Tool

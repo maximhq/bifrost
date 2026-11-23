@@ -2159,6 +2159,12 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 				}
 
 				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, bifrostTool)
+			} else if tool.AnthropicClientTool != nil {
+				// Computer, bash or text editor carried across by the invoke ingress;
+				// map it the way the /anthropic ingress does so routing sees the typed tool.
+				if bifrostTool := anthropic.ConvertAnthropicToolToBifrost(tool.AnthropicClientTool); bifrostTool != nil {
+					bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, *bifrostTool)
+				}
 			} else if tool.AnthropicToolSearch != nil {
 				// Rebuild the neutral tool_search tool carried across by the invoke
 				// ingress. The variant lives on Name — that is what the Anthropic
