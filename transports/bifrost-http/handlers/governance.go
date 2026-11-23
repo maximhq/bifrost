@@ -6009,7 +6009,8 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"model_configs":    models,
 		// What the gateway itself has recently seen from each upstream provider/model pair
 		// this key can reach: a pair whose whole key pool was refused (rate limit, quota,
-		// credential, model access) is cooling_down with available=false until cooldown_until.
+		// credential, model access) is cooling_down with available=false until cooldown_until
+		// or until a request to it succeeds.
 		// Pairs that have only succeeded are absent and available.
 		"upstream_health":                upstreamHealth,
 		"upstream_health_window_seconds": int64(schemas.UpstreamHealthWindow / time.Second),

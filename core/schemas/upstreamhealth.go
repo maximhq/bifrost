@@ -12,24 +12,28 @@ type UpstreamHealthStatus string
 
 const (
 	// UpstreamHealthAvailable: the last observed outcome was a success, or every failure
-	// it recorded has served its cooldown.
+	// it recorded has served its cooldown and left the window.
 	UpstreamHealthAvailable UpstreamHealthStatus = "available"
-	// UpstreamHealthDegraded: recent requests failed transiently (5xx, network, timeout) but
-	// nothing says waiting is required; the route is usable and may recover on retry.
+	// UpstreamHealthDegraded: the pair has failed since its last success and the latest
+	// failure is inside UpstreamHealthWindow, but no cooldown is running: a transient
+	// failure (5xx, network, timeout), a refusal whose cooldown has passed, or a stream that
+	// failed after reaching the client. The route is usable and may recover on retry.
 	UpstreamHealthDegraded UpstreamHealthStatus = "degraded"
 	// UpstreamHealthCoolingDown: every key Bifrost tried for this pair was refused for a
 	// reason that waiting is needed for (rate limit, exhausted quota, rejected credential,
 	// no model access, region block, retired model). Requests sent before CooldownUntil are
-	// expected to fail the same way.
+	// expected to fail the same way; a request to the pair that succeeds ends it early.
 	UpstreamHealthCoolingDown UpstreamHealthStatus = "cooling_down"
 )
 
 // UpstreamHealth is a point-in-time snapshot of what Bifrost has recently observed from one
-// upstream provider serving one model. Model is the model Bifrost sent to the provider
-// before any per-key alias resolution, without a provider prefix.
+// upstream provider serving one model. Model is the model name Bifrost dispatched, before any
+// per-key alias resolution, without a provider prefix.
 //
 // The state is in-memory and per process: it starts empty on boot, a pair appears only once
-// a request has failed on it, and a later success on the pair returns it to available.
+// a request has failed on it, and a later success on the pair returns it to available. Only
+// requests served from the provider's shared key pool are recorded, and a streamed request
+// is recorded when its stream ends.
 type UpstreamHealth struct {
 	Provider ModelProvider        `json:"provider"`
 	Model    string               `json:"model"`
@@ -38,7 +42,8 @@ type UpstreamHealth struct {
 	Available bool `json:"available"`
 	// EffectiveRemainingFraction is 0 while the pair is cooling down, otherwise the smallest
 	// remaining fraction of the static provider and per-model limits the reading virtual key
-	// has configured for this provider (1 when it has none).
+	// has configured for this provider, including per-model limits set for every provider
+	// (1 when it has none).
 	EffectiveRemainingFraction float64 `json:"effective_remaining_fraction"`
 	// FailureClass and StatusCode describe the most recent recorded failure.
 	FailureClass FailureClass `json:"failure_class,omitempty"`
