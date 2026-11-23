@@ -81,6 +81,26 @@ func TestResolveAdminContentLogging(t *testing.T) {
 			wantDisabled: true, wantDecided: true,
 		},
 		{
+			name: "a team that turns content on outranks a virtual key that turns it off",
+			stamps: []stamp{
+				{BifrostContextKeyGovernanceDisableContentLogging, true},
+				{BifrostContextKeyTeamDisableContentLogging, false},
+			},
+			wantDisabled: false, wantDecided: true,
+		},
+		{
+			// A provider key that turned content off keeps that decision across a retry onto a key
+			// that turns it on, but the decision is still the credential tier's: a team that turns
+			// content on outranks it.
+			name: "a team that turns content on outranks a provider key kept off across a retry",
+			stamps: []stamp{
+				{BifrostContextKeyProviderKeyDisableContentLogging, true},
+				{BifrostContextKeyProviderKeyDisableContentLogging, false},
+				{BifrostContextKeyTeamDisableContentLogging, false},
+			},
+			wantDisabled: false, wantDecided: true,
+		},
+		{
 			name:         "an inheriting org tier falls through to the credential tier",
 			stamps:       []stamp{{BifrostContextKeyProviderKeyDisableContentLogging, false}},
 			wantDisabled: false, wantDecided: true,

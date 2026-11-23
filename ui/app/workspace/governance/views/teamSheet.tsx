@@ -12,6 +12,8 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
 import { CopyableId } from "@/components/copyableId";
+import { ContentLoggingSelect } from "@/components/contentLoggingSelect";
+import { type ContentLoggingChoice, contentLoggingChoice, contentLoggingValue } from "@/components/contentLoggingSelect.utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -69,6 +71,7 @@ interface TeamFormData {
 	requestResetDuration: string;
 	// Team-wide: applies to all team budgets and the team rate limit
 	calendarAligned: boolean;
+	contentLogging: ContentLoggingChoice;
 	isDirty: boolean;
 }
 
@@ -90,6 +93,7 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 		requestMaxLimit: team?.rate_limit?.request_max_limit ?? undefined,
 		requestResetDuration: team?.rate_limit?.request_reset_duration || "1h",
 		calendarAligned: team?.calendar_aligned ?? false,
+		contentLogging: contentLoggingChoice(team?.disable_content_logging),
 	};
 };
 
@@ -215,6 +219,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 			requestMaxLimit: formData.requestMaxLimit,
 			requestResetDuration: formData.requestResetDuration,
 			calendarAligned: formData.calendarAligned,
+			contentLogging: formData.contentLogging,
 		};
 		setFormData((prev) => ({
 			...prev,
@@ -229,6 +234,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 		formData.requestMaxLimit,
 		formData.requestResetDuration,
 		formData.calendarAligned,
+		formData.contentLogging,
 		initialState,
 	]);
 
@@ -339,6 +345,8 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 					calendar_aligned: formData.calendarAligned,
 					// Only sent when the operator explicitly chose to clear spend.
 					reset_budget_usage: resetBudgetUsage || undefined,
+					// Always sent: null clears a decision back to inherit.
+					disable_content_logging: contentLoggingValue(formData.contentLogging),
 				};
 
 				// Detect rate limit changes using had/has pattern
@@ -368,6 +376,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 					budgets: submittableBudgets.length > 0 ? submittableBudgets : undefined,
 					// Team-wide setting that governs both team budgets and the team rate limit.
 					calendar_aligned: formData.calendarAligned,
+					...(formData.contentLogging !== "inherit" ? { disable_content_logging: formData.contentLogging === "disabled" } : {}),
 				};
 
 				// Add rate limit if enabled (token or request limits)
@@ -579,6 +588,22 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 								</div>
 							);
 						})()}
+
+						<div className="space-y-2">
+							<Label htmlFor="team-content-logging">{t("sheet.contentLogging")}</Label>
+							<ContentLoggingSelect
+								id="team-content-logging"
+								value={formData.contentLogging}
+								onValueChange={(choice) => updateField("contentLogging", choice)}
+								labels={{
+									inherit: t("sheet.contentLoggingInherit"),
+									off: t("sheet.contentLoggingOff"),
+									on: t("sheet.contentLoggingOn"),
+								}}
+								testIdPrefix="team-content-logging"
+							/>
+							<p className="text-muted-foreground text-xs">{t("sheet.contentLoggingHelp")}</p>
+						</div>
 
 						{/* Warning dialog shown when enabling calendar alignment on an existing team */}
 						<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
