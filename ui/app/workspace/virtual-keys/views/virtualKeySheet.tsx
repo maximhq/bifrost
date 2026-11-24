@@ -2,6 +2,8 @@ import { CalendarAlignmentNotice } from "@/components/calendarAlignmentNotice";
 import { calendarWindowDurations, isMultiUnitDuration } from "@/lib/constants/governance";
 import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
+import { ContentLoggingSelect } from "@/components/contentLoggingSelect";
+import { contentLoggingChoice, contentLoggingValue } from "@/components/contentLoggingSelect.utils";
 import { MCPClientConfigsEditor } from "@/components/mcp/mcpClientConfigsEditor";
 import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
@@ -83,7 +85,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
 import { AlertTriangle, Lock, RotateCcw, Users } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 // Side-effect import: registers the enterprise user picker so "Assign to User"
 // becomes available. Resolves to an empty module on OSS builds.
 import "@enterprise/lib/registrations/userPicker";
@@ -374,21 +376,6 @@ function ExpiryPickerField({ value, onChange, deleteAfterExpire, onDeleteAfterEx
 	);
 }
 
-type ContentLoggingChoice = "inherit" | "disabled" | "enabled";
-
-// The wire field is tri-state (absent, true, false); the form shows it as three named choices.
-function contentLoggingChoice(disableContentLogging: boolean | null | undefined): ContentLoggingChoice {
-	if (disableContentLogging === true) return "disabled";
-	if (disableContentLogging === false) return "enabled";
-	return "inherit";
-}
-
-function contentLoggingValue(choice: ContentLoggingChoice): boolean | null {
-	if (choice === "disabled") return true;
-	if (choice === "enabled") return false;
-	return null;
-}
-
 // A key owned by a profile-holding team, customer or business unit is governed by that profile: the
 // server discards the key's own providers, budgets, rate limits and MCP access. The editors for
 // those are hidden, so drop whatever they still hold rather than send values that are thrown away.
@@ -413,14 +400,6 @@ function withoutKeyGovernance<T extends CreateVirtualKeyRequest | UpdateVirtualK
 export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCancel }: VirtualKeySheetProps) {
 	const { t } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
-	const contentLoggingOptions = useMemo(
-		() => [
-			{ value: "inherit" as const, label: t("virtualKeys.contentLoggingInherit") },
-			{ value: "disabled" as const, label: t("virtualKeys.contentLoggingOff") },
-			{ value: "enabled" as const, label: t("virtualKeys.contentLoggingOn") },
-		],
-		[t],
-	);
 	const [isOpen, setIsOpen] = useState(true);
 	const navigate = useNavigate();
 	const isEditing = !!virtualKey;
@@ -1465,6 +1444,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
+				resizeKey="virtual-key"
 				className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4"
 				data-testid="vk-sheet-content"
 				onInteractOutside={(e) => e.preventDefault()}
@@ -1581,14 +1561,15 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 											{/* FormControl hands the trigger the label's id and aria attributes; hideClear because the
 											choice is an enum with no empty state. */}
 											<FormControl>
-												<ComboboxSelect
-													options={contentLoggingOptions}
+												<ContentLoggingSelect
 													value={field.value}
 													onValueChange={field.onChange}
-													disableSearch
-													hideClear
-													data-testid="vk-content-logging-select"
-													optionTestId={(value) => `vk-content-logging-option-${value}`}
+													labels={{
+														inherit: t("virtualKeys.contentLoggingInherit"),
+														off: t("virtualKeys.contentLoggingOff"),
+														on: t("virtualKeys.contentLoggingOn"),
+													}}
+													testIdPrefix="vk-content-logging"
 												/>
 											</FormControl>
 											<p className="text-muted-foreground text-xs">{t("virtualKeys.contentLoggingHelp")}</p>

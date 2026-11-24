@@ -2105,6 +2105,11 @@ func (m *MockConfigStore) FailSidekiqJob(ctx context.Context, id, runnerID, meta
 	return nil
 }
 
+// DeleteTerminalSidekiqJobs is a no-op for the mock store.
+func (m *MockConfigStore) DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error) {
+	return 0, nil
+}
+
 func (m *MockConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
 	return nil, nil
 }

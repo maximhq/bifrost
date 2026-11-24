@@ -28,6 +28,12 @@ export interface WarpConfig {
 	 */
 	api_key_id?: string;
 	/**
+	 * The virtual key Warp's model calls present when the person asking has no
+	 * user identity (the local admin, or no identity provider). A reference to
+	 * the key row, not the secret. Absent when none is set.
+	 */
+	virtual_key_id?: string;
+	/**
 	 * The other models an operator exposed. `provider` and `model` above stay
 	 * the default; the panel's switcher offers the default followed by these.
 	 */
@@ -93,6 +99,8 @@ export interface WarpConfigInput {
 	provider: string;
 	model: string;
 	api_key_id?: string;
+	/** Omitted keeps the stored value; "" clears it. */
+	virtual_key_id?: string;
 	/** Replaced whole on every write: leaving it out clears the list. */
 	additional_models?: WarpModel[];
 	max_iterations?: number;

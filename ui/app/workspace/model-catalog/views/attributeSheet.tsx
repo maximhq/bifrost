@@ -232,6 +232,7 @@ export default function AttributeSheet({ model, overrides, onClose }: AttributeS
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
+				resizeKey="model-catalog-attribute"
 				className="flex w-full flex-col overflow-x-hidden pt-4"
 				onInteractOutside={(e) => {
 					if (isDirty) e.preventDefault();

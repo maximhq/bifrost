@@ -42,6 +42,9 @@ type WarpHandler struct {
 	// log rather than once at startup, so toggling the flag takes effect
 	// without a restart. Nil means ungated.
 	enabled func() bool
+	// virtualKeyCache and virtualKeyStore resolve Warp's own virtual key; see warpVirtualKey.
+	virtualKeyCache func() VirtualKeyCache
+	virtualKeyStore virtualKeyByIDStore
 }
 
 // NewWarpLogReader adapts a log manager to what Warp reads through. Exported so
@@ -70,6 +73,10 @@ type WarpResolvers struct {
 	// caller's reads. Nil leaves Warp reading that off the request's own
 	// query scope, which is all an OSS deployment has.
 	CallerRestriction warp.CallerRestrictionResolver
+	// VirtualKeys serves the by-ID lookup of Warp's own virtual key from
+	// governance's in-memory store. A func because that store exists only once
+	// the server has bootstrapped; nil, or a nil result, falls back to a store read.
+	VirtualKeys func() VirtualKeyCache
 }
 
 // warpVirtualKeyDecorator builds the overlay describe_virtual_key applies to a
@@ -151,7 +158,10 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 	if logsStore != nil {
 		opts = append(opts, warp.WithConversationStore(logsStore))
 	}
-	handler := &WarpHandler{service: warp.NewService(store, opts...), sidekiqRunner: runner, enabled: enabled}
+	handler := &WarpHandler{service: warp.NewService(store, opts...), sidekiqRunner: runner, enabled: enabled, virtualKeyCache: resolvers.VirtualKeys}
+	if store != nil {
+		handler.virtualKeyStore = store
+	}
 	handler.backfillStore, _ = store.(warpBackfillJobStore)
 	handler.service.RegisterBackfill(runner)
 	if loggerPlugin != nil {

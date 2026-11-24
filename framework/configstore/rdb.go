@@ -185,6 +185,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		UseForBatchAPI:         dbKey.UseForBatchAPI,
 		UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
 		UseOpenAIEndpoints:     dbKey.UseOpenAIEndpoints,
+		DisableContentLogging:  dbKey.DisableContentLogging,
 		AzureKeyConfig:         dbKey.AzureKeyConfig,
 		VertexKeyConfig:        dbKey.VertexKeyConfig,
 		BedrockKeyConfig:       dbKey.BedrockKeyConfig,
@@ -220,6 +221,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		UseForBatchAPI:         key.UseForBatchAPI,
 		UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 		UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+		DisableContentLogging:  key.DisableContentLogging,
 		AzureKeyConfig:         key.AzureKeyConfig,
 		VertexKeyConfig:        key.VertexKeyConfig,
 		BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -875,6 +877,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				UseForBatchAPI:         key.UseForBatchAPI,
 				UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 				UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+				DisableContentLogging:  key.DisableContentLogging,
 				AzureKeyConfig:         key.AzureKeyConfig,
 				VertexKeyConfig:        key.VertexKeyConfig,
 				BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1175,6 +1178,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			UseForBatchAPI:         key.UseForBatchAPI,
 			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+			DisableContentLogging:  key.DisableContentLogging,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1346,6 +1350,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			UseForBatchAPI:         key.UseForBatchAPI,
 			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+			DisableContentLogging:  key.DisableContentLogging,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -4807,6 +4812,15 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		// Delete the key's relay grants the same way; a grant must not outlive its key.
 		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyRelayGrant{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
+		}
+		// Warp's own virtual key setting must not outlive the key either: left behind, every Warp turn
+		// from a caller with no identity was refused until an administrator chose another key. Cleared,
+		// such a caller gets the ordinary "no credential" refusal, which names the setting. Guarded by
+		// HasTable for a store that never created Warp's table.
+		if txDB.Migrator().HasTable(&tables.TableWarpConfig{}) {
+			if err := txDB.WithContext(ctx).Model(&tables.TableWarpConfig{}).Where("virtual_key_id = ?", id).Update("virtual_key_id", "").Error; err != nil {
+				return err
+			}
 		}
 		// Delete upstream OAuth flow rows tied to this VK. No flow_mode
 		// filter needed: an admin-mode flow row never populates
