@@ -84,4 +84,12 @@ func TestAuditRecordSetAfterKeepsSnapshotOnEncodeFailure(t *testing.T) {
 	if changes[0].After != nil {
 		t.Fatalf("after = %s, want nil", changes[0].After)
 	}
+	for name, typedNil := range map[string]any{"raw message": json.RawMessage(nil), "pointer": (*struct{ Name string })(nil)} {
+		rec.SetAfter(map[string]any{"name": "t"})
+		rec.SetAfter(typedNil)
+		changes = ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+		if changes[0].After != nil {
+			t.Fatalf("typed nil %s: after = %s, want nil", name, changes[0].After)
+		}
+	}
 }

@@ -46,8 +46,8 @@ func (r *AuditRecord) SetAfter(after any) {
 	if r == nil {
 		return
 	}
-	data := AuditSnapshot(after)
-	if data == nil && after != nil {
+	data, ok := auditSnapshot(after)
+	if !ok {
 		return // unencodable: a nil After would read as a delete, so keep the commit-time snapshot
 	}
 	r.update(func(c *configstore.AuditChange) { c.After = data })
@@ -72,37 +72,46 @@ func (r *AuditRecord) update(apply func(*configstore.AuditChange)) {
 // fields (use it to strip a secret a type's MarshalJSON would otherwise emit).
 // Returns nil for nil input or anything that fails to marshal.
 func AuditSnapshot(v any, dropFields ...string) json.RawMessage {
+	data, _ := auditSnapshot(v, dropFields...)
+	return data
+}
+
+// auditSnapshot is AuditSnapshot plus ok, false only when v cannot be marshalled.
+func auditSnapshot(v any, dropFields ...string) (json.RawMessage, bool) {
 	if v == nil {
-		return nil
+		return nil, true
 	}
 	var data []byte
 	if raw, ok := v.(json.RawMessage); ok {
 		data = raw
 		if len(dropFields) == 0 {
-			return raw
+			return raw, true
 		}
 	} else {
 		var err error
 		data, err = json.Marshal(v)
-		if err != nil || string(data) == "null" {
-			return nil
+		if err != nil {
+			return nil, false
+		}
+		if string(data) == "null" {
+			return nil, true
 		}
 	}
 	if len(dropFields) == 0 {
-		return data
+		return data, true
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
-		return data
+		return data, true
 	}
 	for _, f := range dropFields {
 		delete(fields, f)
 	}
 	out, err := json.Marshal(fields)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return out
+	return out, true
 }
 
 // startupAuditChanges collects the config.json sections LoadConfig applied over
