@@ -1320,10 +1320,10 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	// limit with it, so governance stops enforcing them. Without the governance plugin the removal
 	// still reports its error, as it always has.
 	if _, err := s.getGovernancePlugin(); err != nil {
-		return err
+		return &lib.SavedNotAppliedError{Err: err}
 	}
 	if s.Config == nil || s.Config.ModelCatalog == nil {
-		return fmt.Errorf("pricing manager not found")
+		return &lib.SavedNotAppliedError{Err: fmt.Errorf("pricing manager not found")}
 	}
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)

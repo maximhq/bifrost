@@ -797,3 +797,157 @@ func TestCommitPoint_PricingOverrideRecordedWhenUpsertFails(t *testing.T) {
 	requireStatus(t, update, fasthttp.StatusInternalServerError)
 	requireCommitPointChange(t, update, "pricing_override.updated", "name", "Renamed")
 }
+
+// keyReadBackFailingStore commits key writes but fails the read-back that follows them.
+type keyReadBackFailingStore struct {
+	configstore.ConfigStore
+}
+
+func (s *keyReadBackFailingStore) GetProviderKey(context.Context, schemas.ModelProvider, string) (*configstoreTables.TableKey, error) {
+	return nil, errCommitPointInjected
+}
+
+func newKeyReadBackFailingHandler(t *testing.T, keys ...schemas.Key) (*ProviderHandler, configstore.ConfigStore) {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: keys}})
+	attachBifrostClient(t, cfg)
+	store := cfg.ConfigStore
+	h := &ProviderHandler{
+		configStore:   &keyReadBackFailingStore{ConfigStore: store},
+		config:        cfg,
+		modelsManager: &mockModelsManager{},
+	}
+	return h, store
+}
+
+func TestCommitPoint_ProviderKeyCreateRecordedWhenReadBackFails(t *testing.T) {
+	h, store := newKeyReadBackFailingHandler(t)
+	const secret = "sk-commit-point-create-0123456789abcdef"
+
+	ctx := newTestRequestCtx(`{"name":"commit-key","value":"` + secret + `","weight":1}`)
+	ctx.SetUserValue("provider", string(schemas.OpenAI))
+	h.createProviderKey(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	keys, err := store.GetProviderConfig(context.Background(), schemas.OpenAI)
+	if err != nil || keys == nil || len(keys.Keys) != 1 {
+		t.Fatalf("expected the key to be stored, got %+v %v", keys, err)
+	}
+	change := requireCommitPointChange(t, ctx, "provider_key.created", "name", "commit-key")
+	requireNoSecret(t, change, secret)
+}
+
+func TestCommitPoint_ProviderKeyUpdateRecordedWhenReadBackFails(t *testing.T) {
+	const oldSecret = "sk-commit-point-old-0123456789abcdef"
+	const newSecret = "sk-commit-point-new-fedcba9876543210"
+	key := schemas.Key{ID: "key-1", Name: "commit-key", Value: *schemas.NewSecretVar(oldSecret), Weight: 1}
+	h, _ := newKeyReadBackFailingHandler(t, key)
+
+	ctx := newTestRequestCtx(`{"name":"renamed-key","value":"` + newSecret + `","weight":2}`)
+	ctx.SetUserValue("provider", string(schemas.OpenAI))
+	ctx.SetUserValue("key_id", "key-1")
+	h.updateProviderKey(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "provider_key.updated", "name", "renamed-key")
+	requireNoSecret(t, change, oldSecret)
+	requireNoSecret(t, change, newSecret)
+}
+
+func TestCommitPoint_DeleteProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		removeErr error
+		status    int
+		recorded  bool
+	}{
+		{"success", nil, fasthttp.StatusOK, true},
+		{"nothing deleted", errors.New("client refused the removal"), fasthttp.StatusInternalServerError, false},
+		{"deleted, cleanup failed", &lib.SavedNotAppliedError{Err: errors.New("pricing manager not found")}, fasthttp.StatusInternalServerError, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			h := &ProviderHandler{
+				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}),
+				modelsManager: &mockModelsManager{remove: func(context.Context, schemas.ModelProvider) error { return tc.removeErr }},
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodDelete)
+			ctx.SetUserValue("provider", string(schemas.OpenAI))
+			h.deleteProvider(ctx)
+
+			requireStatus(t, ctx, tc.status)
+			changes := liveAuditChanges(ctx)
+			if tc.recorded != (len(changes) == 1 && changes[0].EventName == "provider.deleted") {
+				t.Fatalf("recorded=%v, changes=%+v", tc.recorded, changes)
+			}
+		})
+	}
+}
+
+// failingRuntimeUpdateMCPManager fails the in-memory update after the row is written.
+type failingRuntimeUpdateMCPManager struct {
+	fakeMCPManagerVerifyOnly
+}
+
+func (*failingRuntimeUpdateMCPManager) UpdateMCPClient(context.Context, string, *schemas.MCPClientConfig) error {
+	return errors.New("runtime update failed")
+}
+
+// rollbackStore commits the first client write and fails the rollback write when failRollback is set.
+type rollbackStore struct {
+	mockUpdateConfigStore
+	failRollback bool
+}
+
+func (s *rollbackStore) UpdateMCPClientConfig(ctx context.Context, id string, row *configstoreTables.TableMCPClient) error {
+	s.updates++
+	if s.updates > 1 && s.failRollback {
+		return errors.New("rollback write failed")
+	}
+	return nil
+}
+
+func TestCommitPoint_MCPClientUpdateRuntimeFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		failRollback bool
+		recorded     bool
+	}{
+		{"rollback restores the row", false, false},
+		{"rollback fails so the write stands", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			existing := &schemas.MCPClientConfig{ID: "client-rb", Name: "rb_mcp", EndpointSlug: "rb-slug", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone}
+			store := libtest.MCPClients(t, &lib.Config{
+				MCPConfig:    &schemas.MCPConfig{},
+				ClientConfig: &configstore.ClientConfig{},
+			}, existing)
+			cfgStore := &rollbackStore{failRollback: tc.failRollback}
+			store.ConfigStore = cfgStore
+			h := &MCPHandler{store: store, mcpManager: &failingRuntimeUpdateMCPManager{}}
+
+			disabled := true
+			body, err := json.Marshal(MCPClientUpdateRequest{Disabled: &disabled})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("id", existing.ID)
+			ctx.Request.SetBody(body)
+			h.updateMCPClient(ctx)
+
+			requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+			if cfgStore.updates != 2 {
+				t.Fatalf("expected the write and its rollback, got %d writes", cfgStore.updates)
+			}
+			changes := liveAuditChanges(ctx)
+			if tc.recorded != (len(changes) == 1 && changes[0].EventName == "mcp_client.updated") {
+				t.Fatalf("recorded=%v, changes=%+v", tc.recorded, changes)
+			}
+		})
+	}
+}

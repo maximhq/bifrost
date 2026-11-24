@@ -9763,10 +9763,10 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 		return fmt.Errorf("failed to update provider config in store: %w", err)
 	}
 	if err := c.refreshProvider(ctx, provider); err != nil {
-		return err
+		return &SavedNotAppliedError{Err: err}
 	}
 	if err := c.client.UpdateProvider(provider); err != nil {
-		return fmt.Errorf("failed to update provider: %w", err)
+		return &SavedNotAppliedError{Err: fmt.Errorf("failed to update provider: %w", err)}
 	}
 	logger.Info("Updated configuration for provider: %s", provider)
 	return nil
@@ -9809,10 +9809,10 @@ func (c *Config) AddProviderKey(ctx context.Context, provider schemas.ModelProvi
 		return fmt.Errorf("failed to create provider key in store: %w", err)
 	}
 	if err := c.refreshRef(ctx, "provider key", livestore.Ref{Kind: livestore.KindProviderKey, ID: key.ID}); err != nil {
-		return err
+		return &SavedNotAppliedError{Err: err}
 	}
 	if err := c.client.UpdateProvider(provider); err != nil {
-		return fmt.Errorf("failed to update provider: %w", err)
+		return &SavedNotAppliedError{Err: fmt.Errorf("failed to update provider: %w", err)}
 	}
 	logger.Info("Added key %s to provider: %s", key.ID, provider)
 	return nil
@@ -9842,10 +9842,10 @@ func (c *Config) UpdateProviderKey(ctx context.Context, provider schemas.ModelPr
 		return fmt.Errorf("failed to update provider key in store: %w", err)
 	}
 	if err := c.refreshRef(ctx, "provider key", livestore.Ref{Kind: livestore.KindProviderKey, ID: keyID}); err != nil {
-		return err
+		return &SavedNotAppliedError{Err: err}
 	}
 	if err := c.client.UpdateProvider(provider); err != nil {
-		return fmt.Errorf("failed to update provider: %w", err)
+		return &SavedNotAppliedError{Err: fmt.Errorf("failed to update provider: %w", err)}
 	}
 	logger.Info("Updated key %s for provider: %s", keyID, provider)
 	return nil
@@ -9869,10 +9869,17 @@ func (c *Config) RemoveProviderKey(ctx context.Context, provider schemas.ModelPr
 		return fmt.Errorf("failed to delete provider key from store: %w", err)
 	}
 	if err := c.refreshRef(ctx, "provider key", livestore.Ref{Kind: livestore.KindProviderKey, ID: keyID, Remove: true}); err != nil {
-		return err
+		if gone {
+			return err
+		}
+		return &SavedNotAppliedError{Err: err}
 	}
 	if err := c.client.UpdateProvider(provider); err != nil {
-		return fmt.Errorf("failed to update provider: %w", err)
+		err = fmt.Errorf("failed to update provider: %w", err)
+		if gone {
+			return err
+		}
+		return &SavedNotAppliedError{Err: err}
 	}
 	if gone {
 		return ErrNotFound

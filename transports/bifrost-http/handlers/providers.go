@@ -553,6 +553,9 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		h.stopRuntimeProvider(payload.Provider)
 		if rollbackErr != nil {
 			logger.Error("Failed to rollback provider %s after reload failure: %v", payload.Provider, rollbackErr)
+			if !lib.IsSavedNotApplied(rollbackErr) { // the delete failed, so the add is still stored
+				lib.RecordAuditChange(ctx, "provider.created", "provider", string(payload.Provider), string(payload.Provider), nil, auditProviderConfig(config.Redacted()))
+			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initialize provider after add: %v (rollback failed: %v)", err, rollbackErr))
 			return
 		}
@@ -799,6 +802,12 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	// Update provider config in store (env vars will be processed by store)
 	if err := h.config.UpdateProviderConfig(ctx, provider, config); err != nil {
 		logger.Warn("Failed to update provider %s: %v", provider, err)
+		if created {
+			// The add above committed this config, whatever the update did.
+			lib.RecordAuditChange(ctx, "provider.created", "provider", string(provider), string(provider), nil, auditProviderConfig(config.Redacted()))
+		} else if lib.IsSavedNotApplied(err) {
+			lib.RecordAuditChange(ctx, "provider.updated", "provider", string(provider), string(provider), before, auditProviderConfig(config.Redacted()))
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err))
 		return
 	}
@@ -858,6 +867,12 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	// Any failure answers 500, a failed database delete included: a success would hide a provider
 	// that is still stored, or still served from memory.
 	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
+		if lib.IsSavedNotApplied(err) {
+			logger.Error("Provider %s deleted but runtime cleanup failed: %v", provider, err)
+			lib.RecordAuditChange(ctx, "provider.deleted", "provider", string(provider), string(provider), auditProviderConfig(existing), nil)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Provider deleted but runtime cleanup failed: %v", err))
+			return
+		}
 		logger.Warn("Failed to delete provider %s: %v", provider, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to delete provider: %v", err))
 		return

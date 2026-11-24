@@ -201,6 +201,10 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := h.config.AddProviderKey(ctx, provider, key); err != nil {
 		logger.Warn("Failed to create key for provider %s: %v", provider, err)
+		if lib.IsSavedNotApplied(err) {
+			written := redactedProviderKey(key)
+			lib.RecordAuditChange(ctx, "provider_key.created", "provider_key", written.ID, written.Name, nil, written)
+		}
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
 			return
@@ -220,13 +224,15 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 	}
 	h.rearmComplexitySemanticClassifier(provider)
 
+	written := redactedProviderKey(key)
+	rec := lib.RecordAuditChange(ctx, "provider_key.created", "provider_key", written.ID, written.Name, nil, written)
 	redactedKey, err := h.redactedKeyOf(ctx, provider, key.ID)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get created provider key: %v", err))
 		return
 	}
 
-	lib.RecordAuditChange(ctx, "provider_key.created", "provider_key", redactedKey.ID, redactedKey.Name, nil, redactedKey)
+	rec.SetAfter(redactedKey)
 	SendJSON(ctx, redactedKey)
 }
 
@@ -345,6 +351,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := h.config.UpdateProviderKey(ctx, provider, keyID, mergedKey); err != nil {
 		logger.Warn("Failed to update key %s for provider %s: %v", keyID, provider, err)
+		if lib.IsSavedNotApplied(err) {
+			written := redactedProviderKey(mergedKey)
+			lib.RecordAuditChange(ctx, "provider_key.updated", "provider_key", keyID, written.Name, before, written)
+		}
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
 			return
@@ -364,13 +374,15 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 	}
 	h.rearmComplexitySemanticClassifier(provider)
 
+	written := redactedProviderKey(mergedKey)
+	rec := lib.RecordAuditChange(ctx, "provider_key.updated", "provider_key", keyID, written.Name, before, written)
 	redactedKey, err := h.redactedKeyOf(ctx, provider, keyID)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get updated provider key: %v", err))
 		return
 	}
 
-	lib.RecordAuditChange(ctx, "provider_key.updated", "provider_key", redactedKey.ID, redactedKey.Name, before, redactedKey)
+	rec.SetAfter(redactedKey)
 	SendJSON(ctx, redactedKey)
 }
 
@@ -406,6 +418,9 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := h.config.RemoveProviderKey(ctx, provider, keyID); err != nil {
 		logger.Warn("Failed to delete key %s for provider %s: %v", keyID, provider, err)
+		if lib.IsSavedNotApplied(err) {
+			lib.RecordAuditChange(ctx, "provider_key.deleted", "provider_key", redactedKey.ID, redactedKey.Name, redactedKey, nil)
+		}
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
 			return
@@ -1399,4 +1414,13 @@ func rejectUnknownAnthropicKeyConfigFields(body []byte) error {
 		return fmt.Errorf("anthropic_key_config: %s", strings.TrimPrefix(err.Error(), "json: "))
 	}
 	return nil
+}
+
+// redactedProviderKey masks key's secrets the way the keys API shows them, for audit snapshots.
+func redactedProviderKey(key schemas.Key) schemas.Key {
+	redacted := (&configstore.ProviderConfig{Keys: []schemas.Key{key}}).Redacted()
+	if redacted == nil || len(redacted.Keys) == 0 {
+		return schemas.Key{ID: key.ID, Name: key.Name}
+	}
+	return redacted.Keys[0]
 }
