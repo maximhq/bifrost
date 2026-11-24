@@ -561,6 +561,20 @@ func TestChatMessageThinkingContentBlocksBecomeReasoningDetails(t *testing.T) {
 		}
 	})
 
+	t.Run("a null reasoning_details counts as not sent", func(t *testing.T) {
+		var msg ChatMessage
+		err := Unmarshal([]byte(`{"role":"assistant","reasoning_details":null,
+			"content":[{"type":"thinking","thinking":"t","signature":"s"}],
+			"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}`), &msg)
+		if err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		details := msg.ChatAssistantMessage.ReasoningDetails
+		if len(details) != 1 || details[0].Signature == nil || *details[0].Signature != "s" {
+			t.Fatalf("the signed thinking block should replay, got %+v", details)
+		}
+	})
+
 	t.Run("an explicit empty reasoning_details array wins over thinking blocks", func(t *testing.T) {
 		var msg ChatMessage
 		err := Unmarshal([]byte(`{"role":"assistant","reasoning_details":[],

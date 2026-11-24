@@ -1298,7 +1298,8 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 		cm.ChatAssistantMessage = &assistantMsg
 	}
 
-	cm.MoveThinkingBlocksToReasoningDetails(gjson.GetBytes(data, "reasoning_details").Exists())
+	sentDetails := gjson.GetBytes(data, "reasoning_details")
+	cm.MoveThinkingBlocksToReasoningDetails(sentDetails.Exists() && sentDetails.Type != gjson.Null)
 	cm.AttachMessageCacheControl(base.CacheControl)
 	return nil
 }

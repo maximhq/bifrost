@@ -349469,11 +349469,11 @@
       ]
     },
     {
-      "name": "380. Chat thinking content blocks replay as signed reasoning (thinking content block replay)",
+      "name": "380. Chat thinking content blocks replay as signed reasoning (thinking content block replay) (#8954 / PR #8955)",
       "description": "LiteLLM-based clients, including the OpenAI Agents SDK, replay Anthropic thinking as {\"type\":\"thinking\",\"thinking\",\"signature\"} blocks in the assistant message content. Chat ingress kept them as content blocks: the Bedrock chat converter rejected the request with \"unsupported content block type: thinking\" and the Anthropic converter dropped them, so signed thinking never reached the model between tool turns. Case 1 gets a signed thinking block and a tool call. Cases 2 and 3 replay that turn as a thinking content block on the native and /openai routes, whose ingress paths differ, and read the outbound Converse body via x-bf-send-back-raw-request to check the first assistant block is reasoningContent carrying the same signature. The prerequest scripts build the replay body from the collection variables case 1 sets.",
       "item": [
         {
-          "name": "380.1 bedrock/claude-haiku-4-5 /v1/chat/completions turn 1 returns signed thinking and a tool call (thinking content block replay)",
+          "name": "380.1 bedrock/claude-haiku-4-5 /v1/chat/completions turn 1 returns signed thinking and a tool call (thinking content block replay) - #8954",
           "event": [
             {
               "listen": "test",
@@ -349534,7 +349534,7 @@
           }
         },
         {
-          "name": "380.2 bedrock/claude-haiku-4-5 /v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay)",
+          "name": "380.2 bedrock/claude-haiku-4-5 /v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay) - #8954",
           "event": [
             {
               "listen": "prerequest",
@@ -349582,6 +349582,15 @@
                   "  var first = (assistant.content || [])[0] || {};",
                   "  var text = (first.reasoningContent || {}).reasoningText || {};",
                   "  pm.expect(text.signature, 'assistant turn reached Converse without the signed thinking: ' + JSON.stringify(assistant).slice(0, 600)).to.eql(sig);",
+                  "});",
+                  "",
+                  "pm.test('380.2 bedrock/claude-haiku-4-5 /v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay): the replayed tool call reaches Converse as a toolUse block', function () {",
+                  "  var call = JSON.parse(pm.collectionVariables.get('tcbToolCall') || 'null') || {};",
+                  "  var name = (call.function || {}).name || 'submit';",
+                  "  var assistant = ((rr && rr.messages) || []).filter(function (m) { return m.role === 'assistant'; })[0] || {};",
+                  "  var block = (assistant.content || []).filter(function (b) { return b.toolUse; })[0] || {};",
+                  "  pm.expect(block.toolUse, 'assistant turn reached Converse without the replayed tool call: ' + JSON.stringify(assistant).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(block.toolUse.name).to.eql(name);",
                   "});"
                 ]
               }
@@ -349617,7 +349626,7 @@
           }
         },
         {
-          "name": "380.3 bedrock/claude-haiku-4-5 /openai/v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay)",
+          "name": "380.3 bedrock/claude-haiku-4-5 /openai/v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay) - #8954",
           "event": [
             {
               "listen": "prerequest",
@@ -349665,6 +349674,15 @@
                   "  var first = (assistant.content || [])[0] || {};",
                   "  var text = (first.reasoningContent || {}).reasoningText || {};",
                   "  pm.expect(text.signature, 'assistant turn reached Converse without the signed thinking: ' + JSON.stringify(assistant).slice(0, 600)).to.eql(sig);",
+                  "});",
+                  "",
+                  "pm.test('380.3 bedrock/claude-haiku-4-5 /openai/v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay): the replayed tool call reaches Converse as a toolUse block', function () {",
+                  "  var call = JSON.parse(pm.collectionVariables.get('tcbToolCall') || 'null') || {};",
+                  "  var name = (call.function || {}).name || 'submit';",
+                  "  var assistant = ((rr && rr.messages) || []).filter(function (m) { return m.role === 'assistant'; })[0] || {};",
+                  "  var block = (assistant.content || []).filter(function (b) { return b.toolUse; })[0] || {};",
+                  "  pm.expect(block.toolUse, 'assistant turn reached Converse without the replayed tool call: ' + JSON.stringify(assistant).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(block.toolUse.name).to.eql(name);",
                   "});"
                 ]
               }

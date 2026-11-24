@@ -3883,6 +3883,19 @@ func TestConvertOpenAIMessagesToBifrostMessages_ThinkingContentBlocks(t *testing
 	require.Equal(t, "I multiply.", *converted[0].ChatAssistantMessage.Reasoning)
 }
 
+func TestConvertOpenAIMessagesToBifrostMessages_NullReasoningDetailsKeepThinkingBlocks(t *testing.T) {
+	var msg OpenAIMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`{"role":"assistant","reasoning_details":null,
+		"content":[{"type":"thinking","thinking":"t","signature":"s"}],
+		"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}`), &msg))
+
+	converted := ConvertOpenAIMessagesToBifrostMessages([]OpenAIMessage{msg})
+	require.Len(t, converted, 1)
+	require.NotNil(t, converted[0].ChatAssistantMessage)
+	require.Len(t, converted[0].ChatAssistantMessage.ReasoningDetails, 1)
+	require.Equal(t, "s", *converted[0].ChatAssistantMessage.ReasoningDetails[0].Signature)
+}
+
 func TestConvertOpenAIMessagesToBifrostMessages_EmptyReasoningDetailsWinOverThinkingBlocks(t *testing.T) {
 	var msg OpenAIMessage
 	require.NoError(t, sonic.Unmarshal([]byte(`{"role":"assistant","reasoning_details":[],
