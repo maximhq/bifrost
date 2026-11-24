@@ -185,6 +185,95 @@ test("--shard composes with the other predicates instead of replacing them", () 
   for (const n of sliced) assert.ok(whole.includes(n), `${n} passed the slice but not the folder filter`);
 });
 
+// ----- [SERIAL] folders --------------------------------------------------------------------------
+
+// A folder that changes gateway-wide state: setup, the request under test, cleanup. Nothing chains
+// them through a variable, so producer expansion does not hold them together - the request under
+// test only works because the setup before it already ran against the same gateway.
+const serialStep = (name) => ({ ...row(0), name });
+const SERIAL_STEPS = ["serial setup", "serial act", "serial cleanup"];
+const OTHER_SERIAL_STEPS = ["other setup", "other act", "other cleanup"];
+const SERIAL_SOURCE = join(WORK, "source-serial.json");
+writeFileSync(
+  SERIAL_SOURCE,
+  JSON.stringify({
+    ...COLLECTION,
+    item: [
+      { name: "Chat folder", item: Array.from({ length: 20 }, (_, i) => row(i + 1)) },
+      { name: "Gateway state case [SERIAL]", item: SERIAL_STEPS.map(serialStep) },
+      { name: "Another gateway state case [SERIAL]", item: OTHER_SERIAL_STEPS.map(serialStep) },
+    ],
+  })
+);
+const serialRowsOf = (names) => names.filter((n) => /^(serial|other) /.test(n));
+
+// Split across slices, the request under test runs in a process that never did its setup, while
+// the cleanup in another slice undoes the setup under a third. Two such folders in different
+// slices would do the same to each other, so every one of them rides in the first slice.
+test("a [SERIAL] folder is never split across --shard slices", () => {
+  for (const count of [2, 3, 4, 6]) {
+    const slices = Array.from({ length: count }, (_, k) =>
+      serialRowsOf(runFilter(["--provider", "anthropic", "--shard", `${k + 1}/${count}`], { source: SERIAL_SOURCE }))
+    );
+    assert.deepEqual(slices[0], [...SERIAL_STEPS, ...OTHER_SERIAL_STEPS], `slice 1/${count} must hold both folders whole, in order`);
+    for (const [k, rows] of slices.slice(1).entries()) {
+      assert.deepEqual(rows, [], `slice ${k + 2}/${count} holds part of a [SERIAL] folder`);
+    }
+  }
+});
+
+// The class axis forks concurrently too, and the steps of one folder classify differently (a
+// config PUT is "other", the chat it sets up is "chat"). All of them go to one class.
+test("a [SERIAL] folder lands whole in the other class", () => {
+  assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--class", "chat"], { source: SERIAL_SOURCE })), []);
+  assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--class", "other"], { source: SERIAL_SOURCE })), [
+    ...SERIAL_STEPS,
+    ...OTHER_SERIAL_STEPS,
+  ]);
+});
+
+// A filter that names one step (a rerun of the failed request, a narrow FEATURE) must not replay
+// it without its setup, nor leave the gateway changed by dropping the cleanup.
+test("selecting one step of a [SERIAL] folder selects the whole folder", () => {
+  assert.deepEqual(runFilter(["--feature", "serial act"], { source: SERIAL_SOURCE }), SERIAL_STEPS);
+});
+
+test("[SERIAL] folders keep the slices a partition", () => {
+  const whole = runFilter(["--provider", "anthropic"], { source: SERIAL_SOURCE });
+  const seen = new Map();
+  for (const k of [1, 2, 3]) {
+    for (const n of runFilter(["--provider", "anthropic", "--shard", `${k}/3`], { source: SERIAL_SOURCE })) {
+      seen.set(n, (seen.get(n) || 0) + 1);
+    }
+  }
+  assert.deepEqual(whole.filter((n) => seen.get(n) !== 1), [], "rows that do not run exactly once across the slices");
+});
+
+// The harness runs [SERIAL] folders in a pass of their own, after the parallel sweep, so nothing else
+// hits the gateway while one of them has changed gateway-wide state. --exclude-serial makes the sweep
+// and --only-serial makes that pass; together they cover every row exactly once.
+test("--exclude-serial leaves every [SERIAL] folder out of the sweep, even one a filter names", () => {
+  assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--exclude-serial"], { source: SERIAL_SOURCE })), []);
+  assert.deepEqual(serialRowsOf(runFilter(["--feature", "serial act", "--exclude-serial"], { source: SERIAL_SOURCE })), []);
+  for (const k of [1, 2, 3]) {
+    assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--exclude-serial", "--shard", `${k}/3`], { source: SERIAL_SOURCE })), []);
+  }
+});
+
+test("--only-serial selects the [SERIAL] folders whole, in collection order", () => {
+  assert.deepEqual(runFilter(["--only-serial"], { source: SERIAL_SOURCE }), [...SERIAL_STEPS, ...OTHER_SERIAL_STEPS]);
+  assert.deepEqual(runFilter(["--only-serial", "--feature", "serial act"], { source: SERIAL_SOURCE }), SERIAL_STEPS);
+});
+
+test("the sweep and the serial pass together run every row exactly once", () => {
+  const whole = runFilter(["--provider", "anthropic"], { source: SERIAL_SOURCE });
+  const split = [
+    ...runFilter(["--provider", "anthropic", "--exclude-serial"], { source: SERIAL_SOURCE }),
+    ...runFilter(["--provider", "anthropic", "--only-serial"], { source: SERIAL_SOURCE }),
+  ];
+  assert.deepEqual([...split].sort(), [...whole].sort());
+});
+
 // ----- rejected forms ----------------------------------------------------------------------------
 
 // An out-of-range or malformed shard must fail loudly. Silently treating it as "no sharding" would
@@ -570,6 +659,173 @@ test("--rerun-failed of a failed read round pulls its write round back in", () =
   );
   const kept = runFilter(["--rerun-failed", "--report", report], { source: CACHE_SOURCE });
   assert.deepEqual(kept, [writeRound.name, readRound.name], "the rerun must replay the write round before the read");
+});
+
+// ----- the serial pass ------------------------------------------------------------------------
+
+// Runs the REAL serial-pass filter step and its "nothing to run" check, with every make reference
+// expanded to nothing (USE_NODE to a no-op), the recipe's helpers stubbed, and a `node` that fails
+// the way filter-collection.mjs does on a real fault. Returns NEWMAN_EXIT afterwards.
+function serialFilterStepExit() {
+  const s = lines.findIndex((l) => l.includes("rm -f tmp/harness-serial-filtered.json"));
+  const e = lines.findIndex((l, i) => i > s && l.includes("nothing to run."));
+  assert.ok(s !== -1 && e !== -1, "could not locate the serial pass filter step in the Makefile");
+  // One shell command line, as make hands it to the shell: continuations joined, make references
+  // expanded (innermost first; a shell's `$$(...)` is left alone), then `$$` undone.
+  let block = lines
+    .slice(s, e + 1)
+    .map((l) => l.replace(/\\$/, ""))
+    .join(" ")
+    .replace(/\$\(USE_NODE\)/g, ":");
+  for (let prev = ""; prev !== block; ) {
+    prev = block;
+    block = block.replace(/(?<!\$)\$\([^()$]*\)/g, "");
+  }
+  block = block.replace(/\$\$/g, "$");
+  const stubs = 'say() { :; }; run_quiet() { "$@"; }; node() { return 2; }; FEATURE_ANY_FLAG=; EXCLUDE_FLAG=; NEWMAN_EXIT=0\n';
+  return execFileSync("bash", ["-c", `set -u\n${stubs}${block} fi\necho "$NEWMAN_EXIT"`], { cwd: WORK, encoding: "utf8" }).trim();
+}
+
+// A serial filter that fails leaves no filtered collection, which reads as a scope with no [SERIAL]
+// folder. The run must fail rather than pass without running a single serial check, as a shard
+// whose filter fails already does.
+test("a serial filter that fails fails the run instead of skipping the serial pass", () => {
+  assert.notEqual(serialFilterStepExit(), "0", "the serial pass was skipped and NEWMAN_EXIT stayed 0");
+});
+
+// ----- provider partitions ---------------------------------------------------------------------
+
+// An Azure GPT Live create names gpt- and /openai, so the openai keywords would claim it too and
+// an openai run would bill a second Azure session. It belongs to azure alone, whether the model or
+// the Azure OpenAI SDK user agent names Azure, matched as the gateway matches it (any "AzureOpenAI");
+// Azure rows on other routes keep both partitions.
+test("Azure live session rows run only in the azure partition", () => {
+  const live = (name, url, model) => ({
+    name,
+    request: { method: "POST", url, body: { mode: "raw", raw: JSON.stringify({ session: { model }, transport: { type: "webrtc", sdp: "v=0" } }) } },
+  });
+  const source = join(WORK, "source-providers.json");
+  writeFileSync(
+    source,
+    JSON.stringify({
+      info: { name: "providers" },
+      item: [
+        {
+          name: "live folder",
+          item: [
+            live("azure-live-native", "http://localhost:8080/v1/live/sessions", "azure/gpt-live-1"),
+            live("azure-live-openai-route", "http://localhost:8080/openai/v1/live/sessions", "azure/gpt-live-1"),
+            live("openai-live", "http://localhost:8080/v1/live/sessions", "openai/gpt-live-1"),
+            { ...live("azure-sdk-live", "http://localhost:8080/openai/v1/live/sessions", "gpt-live-1"), request: { ...live("", "http://localhost:8080/openai/v1/live/sessions", "gpt-live-1").request, header: [{ key: "User-Agent", value: "AzureOpenAI/Python 1.109.1" }] } },
+            { ...live("azure-sdk-bare-ua-live", "http://localhost:8080/openai/v1/live/sessions", "gpt-live-1"), request: { ...live("", "http://localhost:8080/openai/v1/live/sessions", "gpt-live-1").request, header: [{ key: "User-Agent", value: "AzureOpenAI" }] } },
+            {
+              name: "azure-chat-openai-route",
+              request: { method: "POST", url: "http://localhost:8080/openai/v1/chat/completions", body: { mode: "raw", raw: JSON.stringify({ model: "azure/gpt-4o", messages: [] }) } },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(runFilter(["--provider", "openai"], { source }), ["openai-live", "azure-chat-openai-route"]);
+  assert.deepEqual(runFilter(["--provider", "azure"], { source }), ["azure-live-native", "azure-live-openai-route", "azure-sdk-live", "azure-sdk-bare-ua-live", "azure-chat-openai-route"]);
+});
+
+// A Baseten model sent through the Anthropic Messages ingress names "anthropic" only in its route,
+// and a Hugging Face row routed to Baseten-hosted models ("huggingface/baseten/...") names
+// "baseten" only in its model id. Each upstream call goes to the model's own provider, so the
+// anthropic partition must not claim the first and the baseten partition must not claim the second.
+test("Baseten partition excludes Hugging Face rows and the anthropic partition excludes Baseten rows", () => {
+  const post = (name, url, model) => ({
+    name,
+    request: { method: "POST", url, body: { mode: "raw", raw: JSON.stringify({ model, max_tokens: 16, messages: [] }) } },
+  });
+  const source = join(WORK, "source-baseten.json");
+  writeFileSync(
+    source,
+    JSON.stringify({
+      info: { name: "providers" },
+      item: [
+        {
+          name: "routes folder",
+          item: [
+            post("baseten-anthropic-route", "http://localhost:8080/anthropic/v1/messages", "baseten/zai-org/GLM-5.3"),
+            post("anthropic-native", "http://localhost:8080/anthropic/v1/messages", "claude-opus-4-7"),
+            post("baseten-chat", "http://localhost:8080/v1/chat/completions", "baseten/zai-org/GLM-5.3"),
+            post("huggingface-baseten-chat", "http://localhost:8080/v1/chat/completions", "huggingface/baseten/zai-org/GLM-5.3"),
+            // Prose in a prompt is not the row's identity: this row calls Baseten.
+            {
+              name: "baseten-chat-prompt-names-other-hub",
+              request: {
+                method: "POST",
+                url: "http://localhost:8080/v1/chat/completions",
+                body: { mode: "raw", raw: JSON.stringify({ model: "baseten/zai-org/GLM-5.3", messages: [{ role: "user", content: "Is this model on huggingface?" }] }) },
+              },
+            },
+          ],
+        },
+        {
+          name: "61. Hugging Face Baseten model discovery",
+          item: [{ name: "list-models", request: { method: "GET", url: "http://localhost:8080/v1/models?provider=huggingface" } }],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(runFilter(["--provider", "anthropic"], { source }), ["anthropic-native"]);
+  assert.deepEqual(runFilter(["--provider", "baseten"], { source }), ["baseten-anthropic-route", "baseten-chat", "baseten-chat-prompt-names-other-hub"]);
+  assert.deepEqual(runFilter(["--provider", "huggingface"], { source }), ["huggingface-baseten-chat", "list-models"]);
+});
+
+// Soniox's OpenAI drop-in rows travel /openai/v1/audio/..., so the openai keywords claim them even
+// though the upstream call goes to Soniox. An openai-only sweep would then call Soniox without its
+// key, and a sweep with the key would run those rows (and bill them) twice.
+test("Soniox rows run only in the soniox partition", () => {
+  const speech = (name, url, model) => ({
+    name,
+    request: { method: "POST", url, body: { mode: "raw", raw: JSON.stringify({ model, input: "hello", voice: "Maya" }) } },
+  });
+  const source = join(WORK, "source-soniox.json");
+  writeFileSync(
+    source,
+    JSON.stringify({
+      info: { name: "providers" },
+      item: [
+        {
+          name: "Soniox provider folder",
+          item: [
+            speech("soniox-speech-native", "http://localhost:8080/v1/audio/speech", "soniox/tts-rt-v2"),
+            speech("soniox-speech-openai-route", "http://localhost:8080/openai/v1/audio/speech", "soniox/tts-rt-v2"),
+            {
+              name: "soniox-transcription-openai-route",
+              request: {
+                method: "POST",
+                url: "http://localhost:8080/openai/v1/audio/transcriptions",
+                body: { mode: "formdata", formdata: [{ key: "model", value: "soniox/stt-async-v6", type: "text" }] },
+              },
+            },
+            { name: "soniox-models", request: { method: "GET", url: "http://localhost:8080/v1/models?provider=soniox" } },
+          ],
+        },
+        {
+          name: "OpenAI folder",
+          item: [
+            speech("openai-speech-openai-route", "http://localhost:8080/openai/v1/audio/speech", "tts-1"),
+            // Prose in a prompt is not the row's identity: this row calls OpenAI.
+            {
+              name: "openai-speech-prompt-names-another-vendor",
+              request: {
+                method: "POST",
+                url: "http://localhost:8080/openai/v1/audio/speech",
+                body: { mode: "raw", raw: JSON.stringify({ model: "tts-1", input: "Say soniox", voice: "alloy" }) },
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(runFilter(["--provider", "openai"], { source }), ["openai-speech-openai-route", "openai-speech-prompt-names-another-vendor"]);
+  assert.deepEqual(runFilter(["--provider", "soniox"], { source }), ["soniox-speech-native", "soniox-speech-openai-route", "soniox-transcription-openai-route", "soniox-models"]);
 });
 
 rmSync(WORK, { recursive: true, force: true });

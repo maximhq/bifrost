@@ -354,3 +354,18 @@ func TestInjectTraceContext_EmptyIDs(t *testing.T) {
 		t.Errorf("traceparent should not be set for empty trace ID")
 	}
 }
+
+// Vendor trace state rides tracestate, not traceparent, so a connector rebuilding the
+// caller's parent context has to read it separately.
+func TestExtractTraceState(t *testing.T) {
+	header := &fasthttp.RequestHeader{}
+	if got := ExtractTraceState(header); got != "" {
+		t.Errorf("ExtractTraceState() with no header = %q, want empty", got)
+	}
+
+	const traceState = "dd=s:2;t.llmobs_ml_app:checkout-agent,other=vendor"
+	header.Set(TraceStateHeader, traceState)
+	if got := ExtractTraceState(header); got != traceState {
+		t.Errorf("ExtractTraceState() = %q, want %q", got, traceState)
+	}
+}

@@ -50,6 +50,8 @@ const virtualKey = args.vk || process.env.BIFROST_VK || "";
 // Management API (/api/logs) auth. Separate from the VK: on hosted these are
 // different credentials, and reading logs is not something a VK is entitled to.
 const apiKey = args["api-key"] || process.env.BIFROST_API_KEY || "";
+// OSS setup lock: a local gateway with dashboard auth off needs the setup token on /api.
+const setupToken = (process.env.BIFROST_E2E_SETUP_TOKEN || process.env.BIFROST_SETUP_TOKEN || "bifrost-e2e-setup-token").trim();
 const extraHeaders = parseHeaderArgs(args.header);
 
 const casesPath = args.cases || path.join(HERE, "..", "fixtures", "video-costing-cases.json");
@@ -94,6 +96,7 @@ function inferenceHeaders(requestId) {
 function managementHeaders() {
   const h = { ...extraHeaders };
   if (apiKey) h["authorization"] = apiKey.startsWith("Bearer ") ? apiKey : `Bearer ${apiKey}`;
+  if (setupToken) h["X-Bifrost-Setup-Token"] = setupToken;
   return h;
 }
 
@@ -270,7 +273,9 @@ async function runCase(spec, defaults, state) {
     };
   }
   const videoId = submitRes.body && (submitRes.body.id || submitRes.body.video_id);
-  const parentRequestID = (submitRes.headers && submitRes.headers.get("x-request-id")) || requestId;
+  // x-bifrost-request-id is the log row id; the x-request-id response header is the provider's
+  // own when it sends one (OpenAI does).
+  const parentRequestID = (submitRes.headers && submitRes.headers.get("x-bifrost-request-id")) || requestId;
   const submission = { videoId, requestId: parentRequestID };
   if (!videoId) {
     setState("fail", "no video id");

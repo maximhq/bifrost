@@ -5,6 +5,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/lrucache"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
@@ -33,6 +34,22 @@ func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider s
 		}
 	}
 	return mc.datasheet.GetCapabilityEntry(model, provider)
+}
+
+// GetMaxOutputTokens returns the datasheet max_output_tokens for a
+// (model, provider) pair, or 0 when the catalog has none. Memoized per catalog
+// generation, misses included: on a miss the capability lookup scans the whole
+// sheet, which is too slow to repeat on every request.
+func (mc *ModelCatalog) GetMaxOutputTokens(model string, provider schemas.ModelProvider) int {
+	if mc == nil || model == "" {
+		return 0
+	}
+	return mc.maxOutputTokens.GetOrCompute(lrucache.EncodeKey(string(provider), model), func() int {
+		if entry := mc.GetModelCapabilityEntryForModel(model, provider); entry != nil && entry.MaxOutputTokens != nil {
+			return *entry.MaxOutputTokens
+		}
+		return 0
+	})
 }
 
 // GetCatalogPricingOverrides returns the scoped pricing overrides relevant to
@@ -74,6 +91,25 @@ func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.M
 // CalculateCost computes the dollar cost for a Bifrost response.
 func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *PricingLookupScopes) float64 {
 	return mc.datasheet.CalculateCost(result, (*datasheet.LookupScopes)(scopes))
+}
+
+// SetIgnoreProviderCost toggles whether the provider's self-reported usage.cost
+// is ignored, so the request is priced from the catalog and pricing overrides.
+func (mc *ModelCatalog) SetIgnoreProviderCost(provider schemas.ModelProvider, ignore bool) {
+	mc.datasheet.SetIgnoreProviderCost(provider, ignore)
+}
+
+// ReplaceIgnoreProviderCost resets the set of providers whose reported cost is ignored.
+func (mc *ModelCatalog) ReplaceIgnoreProviderCost(providers []schemas.ModelProvider) {
+	mc.datasheet.ReplaceIgnoreProviderCost(providers)
+}
+
+// IsProviderCostIgnored reports whether the provider's self-reported cost is ignored.
+func (mc *ModelCatalog) IsProviderCostIgnored(provider schemas.ModelProvider) bool {
+	if mc == nil {
+		return false
+	}
+	return mc.datasheet.IsProviderCostIgnored(provider)
 }
 
 // CalculateCostBreakdown computes the per-category cost breakdown (input /

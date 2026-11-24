@@ -2,6 +2,8 @@ package integrations
 
 import (
 	"bytes"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -13,7 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/kvstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -161,9 +163,7 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// Forward provider response headers from context so streaming error responses include them
 	if bifrostCtx != nil {
 		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-			for key, value := range headers {
-				ctx.Response.Header.Set(key, value)
-			}
+			lib.ForwardProviderResponseHeaders(ctx, headers)
 		}
 	}
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
@@ -188,7 +188,7 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		return
 	}
 
-	ctx.SetBody(errorJSON)
+	ctx.SetBody(lib.StripExtraFieldsIfInHeaders(ctx, errorJSON))
 }
 
 // sendError sends an error response with the appropriate status code and JSON body.
@@ -202,9 +202,7 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 	// Forward provider response headers from context so error responses include them
 	if bifrostCtx != nil {
 		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-			for key, value := range headers {
-				ctx.Response.Header.Set(key, value)
-			}
+			lib.ForwardProviderResponseHeaders(ctx, headers)
 		}
 	}
 	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
@@ -225,7 +223,7 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 		return
 	}
 
-	ctx.SetBody(errorBody)
+	ctx.SetBody(lib.StripExtraFieldsIfInHeaders(ctx, errorBody))
 }
 
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
@@ -245,7 +243,7 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schema
 		return
 	}
 
-	ctx.SetBody(responseBody)
+	ctx.SetBody(lib.StripExtraFieldsIfInHeaders(ctx, responseBody))
 }
 
 // tryStreamLargeResponse checks if large response mode was activated by the provider,
@@ -264,10 +262,10 @@ func (g *GenericRouter) tryStreamLargeResponse(ctx *fasthttp.RequestCtx, bifrost
 	// Forward provider response headers before streaming — providers store them in
 	// context via BifrostContextKeyProviderResponseHeaders, but some early-return
 	// branches in the router skip the common footer that normally forwards them.
+	// The x-bifrost-* names written above are skipped, so a chained upstream's own
+	// cannot replace them.
 	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
-		for key, value := range headers {
-			ctx.Response.Header.Set(key, value)
-		}
+		lib.ForwardProviderResponseHeaders(ctx, headers)
 	}
 	if g.streamLargeResponse(ctx, bifrostCtx) {
 		ctx.SetUserValue(lib.FastHTTPUserValueLargeResponseMode, true)
@@ -475,17 +473,31 @@ func isAnthropicOAuthBearer(authHeader string) bool {
 	return strings.HasPrefix(strings.ToLower(authHeader), "bearer sk-ant-oat")
 }
 
-// isJWTBearer reports whether the Authorization header value carries a JWT bearer
-// token (three dot-separated segments, first one a base64url JSON header starting
-// with "eyJ"), e.g. ChatGPT/Codex OAuth access tokens. Plain "Bearer sk-..." API
-// keys and Bifrost virtual keys do not match.
-func isJWTBearer(authHeader string) bool {
+// chatGPTTokenIssuer is the issuer of the access tokens ChatGPT sign-in gives Codex.
+const chatGPTTokenIssuer = "https://auth.openai.com"
+
+// isChatGPTBearer reports whether the Authorization header value carries a ChatGPT sign-in
+// token: a JWT (three dot-separated segments, the first a base64url JSON header starting with
+// "eyJ") whose issuer is auth.openai.com. The issuer is read without verification, since
+// chatgpt.com verifies the token; the check only keeps other JWTs, such as a user's
+// identity-provider token, from being sent there. API keys and virtual keys do not match.
+func isChatGPTBearer(authHeader string) bool {
 	const prefix = "bearer "
 	if len(authHeader) <= len(prefix) || !strings.EqualFold(authHeader[:len(prefix)], prefix) {
 		return false
 	}
 	parts := strings.Split(strings.TrimSpace(authHeader[len(prefix):]), ".")
-	return len(parts) == 3 && strings.HasPrefix(parts[0], "eyJ") && parts[1] != "" && parts[2] != ""
+	if len(parts) != 3 || !strings.HasPrefix(parts[0], "eyJ") || parts[1] == "" || parts[2] == "" {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return false
+	}
+	var claims struct {
+		Issuer string `json:"iss"`
+	}
+	return sonic.Unmarshal(payload, &claims) == nil && claims.Issuer == chatGPTTokenIssuer
 }
 
 // resolveLargePayloadMetadata returns metadata from the sync context key,
@@ -540,12 +552,16 @@ func getProviderFromHeader(ctx *fasthttp.RequestCtx, defaultProvider schemas.Mod
 	return schemas.ModelProvider(providerHeader)
 }
 
+// errPassthroughNotEnabled marks a custom provider that has not opted in to HTTP passthrough.
+var errPassthroughNotEnabled = errors.New("passthrough is not enabled")
+
 // getPassthroughProvider resolves the provider for a passthrough request from the
 // x-model-provider header, falling back to defaultProvider when the header is absent. On the
 // catch-all passthrough routes the header picks which key pool and upstream a caller-shaped
-// path is dispatched to, so its value is constrained to the known provider set (built-ins
-// plus registered custom providers) before anything is looked up.
-func getPassthroughProvider(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (schemas.ModelProvider, error) {
+// path is dispatched to, so it must name the route's resolved provider or, when allowCustom is
+// set, a custom provider that speaks the same wire format and opted in with a passthrough policy.
+// Any other provider would receive a path shaped for a different API.
+func getPassthroughProvider(ctx *fasthttp.RequestCtx, store lib.HandlerStore, defaultProvider schemas.ModelProvider, allowCustom bool) (schemas.ModelProvider, error) {
 	providerHeader := string(ctx.Request.Header.Peek("x-model-provider"))
 	if providerHeader == "" {
 		return defaultProvider, nil
@@ -553,7 +569,19 @@ func getPassthroughProvider(ctx *fasthttp.RequestCtx, defaultProvider schemas.Mo
 	if !schemas.IsKnownProvider(providerHeader) {
 		return "", fmt.Errorf("unknown provider %q in x-model-provider header", providerHeader)
 	}
-	return schemas.ModelProvider(providerHeader), nil
+	provider := schemas.ModelProvider(providerHeader)
+	if provider == defaultProvider {
+		return provider, nil
+	}
+	if allowCustom {
+		if base, enabled, ok := store.GetCustomProviderPassthrough(provider); ok && base == defaultProvider {
+			if !enabled {
+				return "", fmt.Errorf("%w for provider %s; configure its passthrough allowed routes", errPassthroughNotEnabled, provider)
+			}
+			return provider, nil
+		}
+	}
+	return "", fmt.Errorf("provider does not match the passthrough route: expected %s or a custom provider based on it", defaultProvider)
 }
 
 func RegisterKVDecoders(store *kvstore.Store) {

@@ -7,6 +7,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
@@ -25,10 +26,18 @@ const (
 	DecisionModelBlocked    Decision = "model_blocked"
 	DecisionProviderBlocked Decision = "provider_blocked"
 	DecisionMCPToolBlocked  Decision = "mcp_tool_blocked"
+	// DecisionModelLimitsUnattributable refuses a passthrough body naming models whose own limits
+	// one request cannot be charged against (a mixed task array).
+	DecisionModelLimitsUnattributable Decision = "model_limits_unattributable"
 	// DecisionAccessUnresolved means nothing was resolved about what the request may reach, so
 	// there was nothing to evaluate it against. It is a wiring fault rather than a policy
 	// decision: evaluation is reached only after access has been resolved for the request.
 	DecisionAccessUnresolved Decision = "access_unresolved"
+	// DecisionAgentBlocked reports that the settled grant has no Agent Gateway permit
+	// for the requested agent. It is the A2A analogue of DecisionMCPToolBlocked.
+	DecisionAgentBlocked Decision = "agent_blocked"
+	// DecisionRelayBlocked refuses a relay the caller holds no grant for.
+	DecisionRelayBlocked Decision = "relay_blocked"
 )
 
 // EvaluationRequest contains the context for evaluating a request
@@ -36,6 +45,14 @@ type EvaluationRequest struct {
 	RequestType schemas.RequestType   `json:"request_type"`
 	Provider    schemas.ModelProvider `json:"provider"`
 	Model       string                `json:"model"`
+	// OpaqueBatchInput marks a batch create whose work is an uploaded file or blob rather than
+	// inline requests, so the models it will run are not visible to governance.
+	OpaqueBatchInput bool `json:"opaque_batch_input,omitempty"`
+	// ModelUnseen marks a passthrough request that names no model anywhere governance can read:
+	// not on the request and not in its body.
+	ModelUnseen bool `json:"model_unseen,omitempty"`
+	// LiteralModel marks a model checked as written, never widened by a key alias.
+	LiteralModel bool `json:"literal_model,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
@@ -98,7 +115,7 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	// model gate has nothing left to check against, so it is skipped with it. A provider the
 	// caller does configure keeps its model allowlist.
 	providerUnconfigured := skipProviderCheck && !access.IsProviderAllowed(string(provider))
-	if !skipProviderCheck && evaluationRequest.RequestType != schemas.MCPToolExecutionRequest && requestType != schemas.ListModelsRequest && !access.IsProviderAllowed(string(provider)) {
+	if !skipProviderCheck && evaluationRequest.RequestType != schemas.MCPToolExecutionRequest && requestType != schemas.RelayRequest && requestType != schemas.ListModelsRequest && !access.IsProviderAllowed(string(provider)) {
 		return &EvaluationResult{
 			Decision: DecisionProviderBlocked,
 			Reason:   denialReason(fmt.Sprintf("Provider '%s' is not allowed", provider), access.DeniedPermitsForModel(string(provider), "")),
@@ -115,10 +132,53 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	// still carries a model allowlist that would deny the request one step later.
 	skipModelCheck := bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipModelCheck)
 	checkModelIfPresent := IsModelCheckedWhenPresent(requestType)
-	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) && !access.IsModelAllowed(string(provider), model) {
+	// A batch defined by an uploaded file or blob names its models only inside that input, which
+	// governance never reads. An access permitting every model of the provider loses nothing by
+	// that. One that restricts models would have the restriction silently skipped, so it is held
+	// to what the provider actually binds: where the batch job runs the model named on the request
+	// (Gemini, Vertex, Bedrock), that model has to be present, and the allowlist below checks it;
+	// where the batch API ignores the request's model and runs whatever the rows name (OpenAI,
+	// Azure), no hint can stand in for the rows, so the access has to permit every model of the
+	// provider. A custom provider is held to what its base provider binds. Inline batches are not
+	// opaque: PreLLMHook evaluates each item's model first.
+	if requestType == schemas.BatchCreateRequest && evaluationRequest.OpaqueBatchInput && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
+		if !batchModelBoundByProvider(provider, r.governanceInMemoryStore) {
+			return &EvaluationResult{
+				Decision: DecisionModelBlocked,
+				Reason:   denialReason(fmt.Sprintf("File-based batch creation on provider '%s' requires an access that allows every model of the provider: its batch API runs the models named inside the uploaded input, not the model on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
+			}
+		}
+		if model == "" {
+			return &EvaluationResult{
+				Decision: DecisionModelBlocked,
+				Reason:   denialReason(fmt.Sprintf("Batch creation on provider '%s' requires a model: this access restricts models, and a file-based batch names none on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
+			}
+		}
+	}
+	// A passthrough body is forwarded as the provider reads it. The models it names are evaluated
+	// one by one before this pass (PreLLMHook reads them from the body), so a request that names
+	// none anywhere leaves a model restriction with nothing to check. It is refused rather than
+	// skipped, since the provider will still run some model: its default, or one named in a shape
+	// governance does not read.
+	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.ModelUnseen && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
 		return &EvaluationResult{
 			Decision: DecisionModelBlocked,
-			Reason:   denialReason(fmt.Sprintf("Model '%s' is not allowed", model), access.DeniedPermitsForModel(string(provider), model)),
+			Reason:   denialReason(fmt.Sprintf("Passthrough on provider '%s' requires a model: this access restricts models, and the request names none that can be checked", provider), access.DeniedPermitsForModel(string(provider), "")),
+		}
+	}
+	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) {
+		// A batch item's model, and any request whose credential bypasses key selection (a direct
+		// key, or a bearer that is the credential itself), reaches the provider as written: no key
+		// alias is resolved for it, so it is held to its literal name.
+		modelAccess := access
+		if evaluationRequest.LiteralModel || hasDirectKeyAuth(ctx) || bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
+			modelAccess = r.literalAccess(access)
+		}
+		if !modelAccess.IsModelAllowed(string(provider), model) {
+			return &EvaluationResult{
+				Decision: DecisionModelBlocked,
+				Reason:   denialReason(fmt.Sprintf("Model '%s' is not allowed", model), modelAccess.DeniedPermitsForModel(string(provider), model)),
+			}
 		}
 	}
 
@@ -258,4 +318,41 @@ func reasonFromErr(err error, decision Decision) string {
 		return err.Error()
 	}
 	return fmt.Sprintf("policy violation (%s)", decision)
+}
+
+// literalAccess is access matched without key aliases, for a model that reaches the provider as
+// written. See literalAccessFor.
+func (r *BudgetResolver) literalAccess(access schemas.Access) schemas.Access {
+	return literalAccessFor(access, r.modelCatalog, r.governanceInMemoryStore)
+}
+
+// literalAccessFor rebuilds access without the alias-target source, so a blacklist on a model the name
+// would become through a key alias does not refuse a name that is never resolved. The matcher resolves
+// the provider's configuration as GovernancePlugin.modelMatcher does, so the custom-provider exemption
+// still applies, but on a copy with its keys cleared: key aliases are the only thing
+// IsModelAllowedForProvider reads them for. Without a catalog names match as written. Admission and
+// limit settlement both use it, so a literal request answers to the permits that admitted it.
+func literalAccessFor(access schemas.Access, catalog *modelcatalog.ModelCatalog, store InMemoryStore) schemas.Access {
+	if access == nil {
+		return nil
+	}
+	var matcher grant.ModelMatcher
+	if catalog != nil {
+		matcher = func(provider, model string, allowed []string) bool {
+			var providerConfig *configstore.ProviderConfig
+			if store != nil {
+				if config, ok := configuredProvider(store, schemas.ModelProvider(provider)); ok {
+					config.Keys = nil // config is a copy; with no keys no alias can widen the match
+					providerConfig = &config
+				}
+			}
+			return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
+		}
+	}
+	// A copy of the access itself keeps every permit and level; Bases is only the granting level, so
+	// rebuilding from it would drop the levels that cap the access.
+	if full, ok := access.(*grant.Access); ok {
+		return full.WithModelMatcher(matcher)
+	}
+	return grant.NewAccess(access.Bases(), grant.CompositionMode(access.LevelMode()), access.Scoping(), grant.CompositionMode(access.Mode()), matcher)
 }

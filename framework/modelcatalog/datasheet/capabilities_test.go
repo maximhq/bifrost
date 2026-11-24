@@ -1,12 +1,60 @@
 package datasheet
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
+
+// TestIsEmptyModelCapabilities distinguishes empty containers from explicit scalar overrides.
+func TestIsEmptyModelCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		data  string
+		empty bool
+	}{
+		{"zero value", `{}`, true},
+		{"null parameters", `{"model_parameters":null}`, true},
+		{"declared empty parameters", `{"model_parameters":[]}`, false},
+		{"empty containers", `{"supported_endpoints":[],"server_tools":{},"reasoning_budget":{}}`, true},
+		{"empty nested elements", `{"model_parameters":[{},null,{"id":""}]}`, true},
+		{"explicit false", `{"supports_function_calling":false}`, false},
+		{"explicit zero", `{"min_output_tokens":0}`, false},
+		{"explicit empty string", `{"synthetic_structured_output_tool_prefix":""}`, false},
+		{"map entry", `{"unsupported_fields":{"temperature":false}}`, false},
+		{"endpoint", `{"supported_endpoints":["/v1/responses"]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var caps schemas.ModelCapabilities
+			if err := json.Unmarshal([]byte(tc.data), &caps); err != nil {
+				t.Fatal(err)
+			}
+			if got := IsEmptyModelCapabilities(&caps); got != tc.empty {
+				t.Fatalf("IsEmptyModelCapabilities(%s) = %t, want %t", tc.data, got, tc.empty)
+			}
+		})
+	}
+}
+
+// BenchmarkIsEmptyModelCapabilities measures the shared check used during sync
+// and capability cache misses, without database or JSON decoding costs.
+func BenchmarkIsEmptyModelCapabilities(b *testing.B) {
+	for name, caps := range map[string]*schemas.ModelCapabilities{
+		"empty":       {},
+		"token_limit": {MaxOutputTokens: capabilityIntPtr(32000)},
+		"endpoints":   {SupportedEndpoints: []string{"/v1/chat/completions"}},
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				IsEmptyModelCapabilities(caps)
+			}
+		})
+	}
+}
 
 func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T) {
 	contextLengthChat := 128000
@@ -16,7 +64,7 @@ func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T)
 
 	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o", "openai", "responses"): {
+			makeKeyNormalized("gpt-4o", "openai", "responses"): {
 				Model:           "gpt-4o",
 				Provider:        "openai",
 				Mode:            "responses",
@@ -24,7 +72,7 @@ func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T)
 				MaxInputTokens:  capabilityIntPtr(100000),
 				MaxOutputTokens: capabilityIntPtr(32000),
 			},
-			makeKey("gpt-4o", "openai", "chat"): {
+			makeKeyNormalized("gpt-4o", "openai", "chat"): {
 				Model:           "gpt-4o",
 				Provider:        "openai",
 				Mode:            "chat",
@@ -62,7 +110,7 @@ func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T)
 func TestGetCapabilityEntry_FallsBackToAnyModeDeterministically(t *testing.T) {
 	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("imagen", "vertex", "image_generation"): {
+			makeKeyNormalized("imagen", "vertex", "image_generation"): {
 				Model:           "imagen",
 				Provider:        "vertex",
 				Mode:            "image_generation",
@@ -81,12 +129,55 @@ func TestGetCapabilityEntry_FallsBackToAnyModeDeterministically(t *testing.T) {
 	}
 }
 
+// Rows that differ only by casing collapse to the lowercase one, and the any-mode
+// scan returns that same row whatever casing the request uses.
+func TestGetCapabilityEntry_AnyModeFallbackUsesLowercaseRowForEveryCasing(t *testing.T) {
+	s := NewTestStore(nil)
+	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "Embed-X", Provider: "azure", Mode: "embedding", MaxInputTokens: capabilityIntPtr(999)},
+		{Model: "embed-x", Provider: "azure", Mode: "embedding", MaxInputTokens: capabilityIntPtr(100)},
+	})
+
+	for _, model := range []string{"embed-x", "Embed-X", "EMBED-X"} {
+		entry := s.GetCapabilityEntry(model, schemas.Azure)
+		if entry == nil || entry.MaxInputTokens == nil {
+			t.Fatalf("%s: expected capability entry with max_input_tokens, got %+v", model, entry)
+		}
+		if *entry.MaxInputTokens != 100 {
+			t.Fatalf("%s: expected max_input_tokens 100 from the lowercase row, got %d", model, *entry.MaxInputTokens)
+		}
+		row := s.Get(model, schemas.Azure, schemas.EmbeddingRequest)
+		if row == nil || row.MaxInputTokens == nil || *row.MaxInputTokens != 100 {
+			t.Fatalf("%s: capability entry and pricing row disagree: row %+v", model, row)
+		}
+	}
+}
+
+// The preferred-mode lookup (chat, responses, text completion) matches a row
+// whose casing differs from the request, so max output tokens and model info
+// resolve for it. The embedding row is what the any-mode scan would return if
+// the chat lookup missed, so it proves the preferred-mode lookup answered.
+func TestGetCapabilityEntry_PreferredModeMatchesAnyCase(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("Qwen3-235B-A22B", "azure", "chat"):      {Model: "Qwen3-235B-A22B", Provider: "azure", Mode: "chat", MaxOutputTokens: capabilityIntPtr(32000)},
+		makeKeyNormalized("qwen3-235b-a22b", "azure", "embedding"): {Model: "qwen3-235b-a22b", Provider: "azure", Mode: "embedding", MaxOutputTokens: capabilityIntPtr(1)},
+	})
+
+	entry := s.GetCapabilityEntry("qwen3-235b-a22b", schemas.Azure)
+	if entry == nil || entry.MaxOutputTokens == nil {
+		t.Fatalf("expected capability entry with max_output_tokens, got %+v", entry)
+	}
+	if *entry.MaxOutputTokens != 32000 {
+		t.Fatalf("expected max_output_tokens 32000, got %d", *entry.MaxOutputTokens)
+	}
+}
+
 func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 	contextLengthChat := 128000
 
 	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o-2024-08-06", "openai", "responses"): {
+			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "responses"): {
 				Model:           "gpt-4o-2024-08-06",
 				BaseModel:       "gpt-4o",
 				Provider:        "openai",
@@ -94,7 +185,7 @@ func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 				ContextLength:   capabilityIntPtr(64000),
 				MaxOutputTokens: capabilityIntPtr(8000),
 			},
-			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
+			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
 				Model:           "gpt-4o-2024-08-06",
 				BaseModel:       "gpt-4o",
 				Provider:        "openai",
@@ -123,7 +214,7 @@ func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 func TestGetCapabilityEntry_ResolvesProviderPrefixedAlias(t *testing.T) {
 	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
+			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
 				Model:           "gpt-4o-2024-08-06",
 				BaseModel:       "gpt-4o",
 				Provider:        "openai",
@@ -152,7 +243,7 @@ func TestGetCapabilityEntry_PrefersLiteralMatchOverAliasFamily(t *testing.T) {
 
 	s := &Store{
 		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKey("gpt-4o", "openai", "chat"): {
+			makeKeyNormalized("gpt-4o", "openai", "chat"): {
 				Model:           "gpt-4o",
 				BaseModel:       "gpt-4o",
 				Provider:        "openai",
@@ -160,7 +251,7 @@ func TestGetCapabilityEntry_PrefersLiteralMatchOverAliasFamily(t *testing.T) {
 				ContextLength:   &literalContextLength,
 				MaxOutputTokens: capabilityIntPtr(4000),
 			},
-			makeKey("gpt-4o-2024-08-06", "openai", "chat"): {
+			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
 				Model:           "gpt-4o-2024-08-06",
 				BaseModel:       "gpt-4o",
 				Provider:        "openai",
@@ -247,6 +338,52 @@ func TestExtractSupportedParams_StopSpellings(t *testing.T) {
 	}
 }
 
+// TestExtractSupportedParams_NoModelParameters guards datasheet rows that
+// declare capability flags but no model_parameters list (e.g.
+// apac.anthropic.claude-sonnet-4-6 in the 2026-10-20 datasheet). Such a row
+// must not shrink the allowlist to flags alone: compat's should_drop_params
+// would strip max_tokens/temperature/top_p and the provider would silently
+// substitute its own defaults. An undisclosed list means "unknown", not
+// "unsupported".
+func TestExtractSupportedParams_NoModelParameters(t *testing.T) {
+	got := extractSupportedParams(&schemas.ModelCapabilities{
+		SupportsFunctionCalling: capabilityBoolPtr(true),
+	})
+	for _, want := range []string{"temperature", "top_p", "stop", "max_tokens", "max_completion_tokens", "max_output_tokens", "tools"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("expected supported params to contain %q for a row without model_parameters, got %v", want, got)
+		}
+	}
+
+	// A row that does list model_parameters keeps its declared surface.
+	declared := extractSupportedParams(&schemas.ModelCapabilities{
+		ModelParameters: []schemas.ModelParameterDescriptor{{ID: "temperature"}},
+	})
+	if slices.Contains(declared, "top_p") {
+		t.Errorf("expected top_p to stay undeclared for a row with a model_parameters list, got %v", declared)
+	}
+
+	// An explicit empty list declares an empty surface; only an absent (or
+	// null) list falls back to the defaults.
+	for _, tc := range []struct {
+		row          string
+		wantDefaults bool
+	}{
+		{`{"supports_function_calling": true}`, true},
+		{`{"supports_function_calling": true, "model_parameters": null}`, true},
+		{`{"supports_function_calling": true, "model_parameters": []}`, false},
+	} {
+		var caps schemas.ModelCapabilities
+		if err := json.Unmarshal([]byte(tc.row), &caps); err != nil {
+			t.Fatalf("unmarshal %s: %v", tc.row, err)
+		}
+		got := extractSupportedParams(&caps)
+		if slices.Contains(got, "temperature") != tc.wantDefaults {
+			t.Errorf("row %s: expected default sampling params=%v, got %v", tc.row, tc.wantDefaults, got)
+		}
+	}
+}
+
 // TestExtractSupportedParams_WebSearch guards the two web-search keys: the
 // model_parameters "web_search" id and the supports_web_search flag must each
 // yield both web_search (responses-path tool) and web_search_options (chat-path
@@ -313,5 +450,27 @@ func TestExtractSupportedParams_NoneReasoningEffort(t *testing.T) {
 	}
 	if got := extractSupportedParams(&schemas.ModelCapabilities{}); slices.Contains(got, "supports_none_reasoning_effort") {
 		t.Errorf("expected supported params to omit \"supports_none_reasoning_effort\" when unset, got %v", got)
+	}
+}
+
+// TestExtractSupportedParams_ReasoningSummaryFlags guards the per-value summary flags:
+// each is listed unless the datasheet sets it explicitly false.
+func TestExtractSupportedParams_ReasoningSummaryFlags(t *testing.T) {
+	params := []string{"reasoning_summary_detailed", "reasoning_summary_concise", "reasoning_summary_auto"}
+	got := extractSupportedParams(&schemas.ModelCapabilities{})
+	for _, param := range params {
+		if !slices.Contains(got, param) {
+			t.Errorf("expected %q when unset, got %v", param, got)
+		}
+	}
+	got = extractSupportedParams(&schemas.ModelCapabilities{
+		SupportsReasoningSummaryDetailed: capabilityBoolPtr(false),
+		SupportsReasoningSummaryConcise:  capabilityBoolPtr(false),
+		SupportsReasoningSummaryAuto:     capabilityBoolPtr(false),
+	})
+	for _, param := range params {
+		if slices.Contains(got, param) {
+			t.Errorf("expected %q omitted when false, got %v", param, got)
+		}
 	}
 }

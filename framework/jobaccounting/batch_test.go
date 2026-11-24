@@ -267,6 +267,20 @@ func (fakePricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimen
 	}
 }
 
+// Interaction rates for the settler tests: one agent priced per token at the standard (not batch)
+// rate, and nothing for anything else. It prices only what a passthrough read would have carried.
+func (fakePricing) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *modelcatalog.PricingLookupScopes) *schemas.BifrostCost {
+	if result == nil || result.PassthroughResponse == nil || result.PassthroughResponse.PassthroughUsage == nil {
+		return nil
+	}
+	usage := result.PassthroughResponse.PassthroughUsage.LLMUsage
+	if usage == nil || result.PassthroughResponse.ExtraFields.RoutingInfo.Model != "deep-research-preview-04-2026" {
+		return nil
+	}
+	total := float64(usage.PromptTokens)*0.000002 + float64(usage.CompletionTokens)*0.000012
+	return &schemas.BifrostCost{TotalCost: total}
+}
+
 func (fakePricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
 	if usage == nil || requestType != schemas.BatchResultsRequest {
 		return modelcatalog.BatchCostDetails{}
@@ -315,6 +329,11 @@ type requestTypePricing struct {
 func (p *requestTypePricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
 	p.requestTypes = append(p.requestTypes, requestType)
 	return modelcatalog.BatchCostDetails{Cost: float64(usage.PromptTokens), Priced: true}
+}
+
+// This fake exists to record batch request types; interaction pricing is fakePricing's job.
+func (p *requestTypePricing) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *modelcatalog.PricingLookupScopes) *schemas.BifrostCost {
+	return nil
 }
 
 // This fake exists to record batch request types; video pricing is fakePricing's job.
@@ -620,6 +639,8 @@ func TestAccountBatchResults_BedrockIncludesCacheDetailsInPromptUsage(t *testing
 	assert.InDelta(t, 0.00031, summary.Cost, 1e-12)
 }
 
+// TestAccountBatchResults_GeminiAggregatesUsageFromResponseBody verifies that usage metrics
+// from Gemini batch response bodies are correctly aggregated.
 func TestAccountBatchResults_GeminiAggregatesUsageFromResponseBody(t *testing.T) {
 	store := newFakeAccountingStore()
 
@@ -644,6 +665,63 @@ func TestAccountBatchResults_GeminiAggregatesUsageFromResponseBody(t *testing.T)
 	assert.InDelta(t, 0.00028, summary.Cost, 1e-12)
 }
 
+// TestAccountBatchResults_GeminiWithThinkingTokensPricesAtParityWithChat verifies that a
+// Gemini batch row whose completion tokens include reasoning/thinking tokens is priced
+// at exact parity with identical usage processed via the chat path.
+func TestAccountBatchResults_GeminiWithThinkingTokensPricesAtParityWithChat(t *testing.T) {
+	store := newFakeAccountingStore()
+	pricing := fakePricing{}
+	model := "gemini-2.0-flash"
+
+	// Prompt: 100, Candidates: 50, Thoughts: 400 -> Total: 550, Completion: 450
+	summary, err := AccountBatchResults(context.Background(), store, store, pricing, JobRequest{
+		ClaimedBy:     "test-node",
+		Provider:      schemas.Gemini,
+		ProviderJobID: "gemini_thinking_batch",
+		FallbackModel: model,
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{
+				{
+					CustomID: "row-thinking",
+					Response: &schemas.BatchResultResponse{
+						StatusCode: 200,
+						Body: map[string]interface{}{
+							"usage": map[string]interface{}{
+								"prompt_tokens":     100,
+								"completion_tokens": 450,
+								"total_tokens":      550,
+								"completion_tokens_details": map[string]interface{}{
+									"reasoning_tokens": 400,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	assert.True(t, summary.Accounted)
+	assert.Equal(t, 100, summary.Usage.PromptTokens)
+	assert.Equal(t, 450, summary.Usage.CompletionTokens)
+	assert.Equal(t, 550, summary.Usage.TotalTokens)
+
+	// Pricing parity check against Chat path:
+	chatUsage := &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 450,
+		TotalTokens:      550,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+			ReasoningTokens: 400,
+		},
+	}
+	expectedChatCost := pricing.CalculateBatchCostDetailsForUsage(chatUsage, schemas.Gemini, model, schemas.BatchResultsRequest, nil).Cost
+	assert.InDelta(t, expectedChatCost, summary.Cost, 1e-12)
+}
+
+// TestAccountBatchResults_UsesAggregateWriterAndUsageReporter verifies that batch accounting
+// routes usage records through the provided aggregate writer and usage reporter.
 func TestAccountBatchResults_UsesAggregateWriterAndUsageReporter(t *testing.T) {
 	store := newFakeAccountingStore()
 	writer := &fakeAggregateLogWriter{}

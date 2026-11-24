@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -73,6 +74,31 @@ func TestGetModelConfigsPaginatedScopesFilter(t *testing.T) {
 	t.Run("deprecated Scope field still filters on its own", func(t *testing.T) {
 		got := modelsForParams(t, ModelConfigsQueryParams{Scope: "global"})
 		require.ElementsMatch(t, []string{"gemini"}, got)
+	})
+
+	// A query scope on the context (the enterprise DAC filter) narrows both the
+	// page and its total, so the list never pages over rows the caller cannot see.
+	t.Run("context query scope narrows page and total", func(t *testing.T) {
+		scoped := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB {
+			return db.Where("scope = ? OR scope_id = ?", "global", "vk1")
+		})
+		rows, total, err := store.GetModelConfigsPaginated(scoped, ModelConfigsQueryParams{Limit: 1})
+		require.NoError(t, err)
+		require.Equal(t, int64(2), total)
+		require.Len(t, rows, 1)
+		require.Contains(t, []string{"mc-1", "mc-3"}, rows[0].ID)
+	})
+
+	// The single-row read follows the same scope, so an id the caller may not see reads as missing.
+	t.Run("context query scope hides a row from GetModelConfigByID", func(t *testing.T) {
+		scoped := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB {
+			return db.Where("scope = ? OR scope_id = ?", "global", "vk1")
+		})
+		_, err := store.GetModelConfigByID(scoped, "mc-2")
+		require.ErrorIs(t, err, ErrNotFound)
+		row, err := store.GetModelConfigByID(scoped, "mc-1")
+		require.NoError(t, err)
+		require.Equal(t, "gpt-4o", row.ModelName)
 	})
 
 	t.Run("deprecated Scope is OR-ed with Scopes", func(t *testing.T) {

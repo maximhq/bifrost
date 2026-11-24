@@ -176,14 +176,13 @@ func (r *VertexEmbeddingRequest) GetExtraParams() map[string]interface{} {
 }
 
 type VertexGeminiEmbeddingRequest struct {
-	Content              *gemini.Content        `json:"content,omitempty"`
-	DocumentOCR          *bool                  `json:"documentOcr,omitempty"`
-	AudioTrackExtraction *bool                  `json:"audioTrackExtraction,omitempty"`
-	TaskType             *string                `json:"taskType,omitempty"`
-	Title                *string                `json:"title,omitempty"`
-	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
-	AutoTruncate         *bool                  `json:"autoTruncate,omitempty"`
-	ExtraParams          map[string]interface{} `json:"-"`
+	Content              *gemini.Content                  `json:"content,omitempty"`
+	EmbedContentConfig   *gemini.GeminiEmbedContentConfig `json:"embedContentConfig,omitempty"`
+	TaskType             *string                          `json:"taskType,omitempty"`
+	Title                *string                          `json:"title,omitempty"`
+	OutputDimensionality *int                             `json:"outputDimensionality,omitempty"`
+	AutoTruncate         *bool                            `json:"autoTruncate,omitempty"`
+	ExtraParams          map[string]interface{}           `json:"-"`
 }
 
 func (r *VertexGeminiEmbeddingRequest) GetExtraParams() map[string]interface{} {
@@ -533,4 +532,46 @@ type gcsErrorBody struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// ================================ Cloud Text-to-Speech Types ================================
+
+// VertexSpeechRequest is a Cloud Text-to-Speech text:synthesize request.
+type VertexSpeechRequest struct {
+	Input       VertexSpeechInput       `json:"input"`
+	Voice       VertexSpeechVoice       `json:"voice"`
+	AudioConfig VertexSpeechAudioConfig `json:"audioConfig"`
+	ExtraParams map[string]interface{}  `json:"-"`
+}
+
+// GetExtraParams implements providerUtils.RequestBodyWithExtraParams.
+func (r *VertexSpeechRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// VertexSpeechInput carries the text to speak, as plain text or SSML.
+type VertexSpeechInput struct {
+	Text string `json:"text,omitempty"`
+	SSML string `json:"ssml,omitempty"`
+}
+
+// VertexSpeechVoice selects the voice; the language code must match the voice's locale.
+type VertexSpeechVoice struct {
+	LanguageCode string `json:"languageCode"`
+	Name         string `json:"name,omitempty"`
+}
+
+// VertexSpeechAudioConfig sets the output encoding and prosody.
+type VertexSpeechAudioConfig struct {
+	AudioEncoding    string   `json:"audioEncoding"`
+	SpeakingRate     *float64 `json:"speakingRate,omitempty"`
+	Pitch            *float64 `json:"pitch,omitempty"` // rejected by Chirp 3 HD voices
+	VolumeGainDb     *float64 `json:"volumeGainDb,omitempty"`
+	SampleRateHertz  *int     `json:"sampleRateHertz,omitempty"`
+	EffectsProfileID []string `json:"effectsProfileId,omitempty"`
+}
+
+// VertexSpeechResponse is a Cloud Text-to-Speech text:synthesize response.
+type VertexSpeechResponse struct {
+	AudioContent string `json:"audioContent"` // base64; MP3 and OGG_OPUS keep their container header and LINEAR16 a WAV header
 }

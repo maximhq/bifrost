@@ -9,11 +9,13 @@ export interface ProviderKeyConfig {
   value: string
   models?: string[]
   weight?: number
+  /** The key's content-logging choice; omit to leave the form's current choice. */
+  contentLogging?: 'inherit' | 'disabled' | 'enabled'
 }
 
 export interface CustomProviderConfig {
   name: string
-  baseProviderType: 'openai' | 'anthropic' | 'gemini' | 'cohere' | 'bedrock' | string
+  baseProviderType: 'openai' | 'anthropic' | 'gemini' | 'cohere' | 'bedrock' | 'typesafe' | string
   baseUrl?: string
   authType?: 'api_key' | 'bearer' | 'basic' | 'none'
   isKeyless?: boolean

@@ -54,7 +54,7 @@ by tests.
 | Field reference docs | `docs/providers/custom-pricing.mdx` | Row in the relevant section's table |
 | Architecture excerpt | `docs/architecture/framework/model-catalog.mdx` | Optional — file says "excerpt", but keep the "Costs - Other"-style section current when touching an adjacent field |
 | UI override type | `ui/lib/types/governance.ts`, `PricingOverridePatch` | `field_name?: number;` |
-| UI override form | `ui/app/workspace/custom-pricing/overrides/pricingOverrideSheet.tsx`, `PRICING_FIELDS` | `{ key, label, group, requestTypeGroups }` entry |
+| UI override form | `ui/app/workspace/custom-pricing/overrides/pricingFields.ts`, `PRICING_FIELDS` | `{ key, label, group, requestTypeGroups }` entry |
 | Tests | `framework/modelcatalog/datasheet/cost_test.go`, `overrides_test.go` | One cost-calculation test, one `patchPricing` test |
 
 ---
@@ -166,7 +166,7 @@ in-scope for this change.
 
 1. `ui/lib/types/governance.ts` — add `field_name?: number;` to `PricingOverridePatch`, in the
    matching comment section.
-2. `ui/app/workspace/custom-pricing/overrides/pricingOverrideSheet.tsx` — add an entry to
+2. `ui/app/workspace/custom-pricing/overrides/pricingFields.ts` — add an entry to
    `PRICING_FIELDS`: `key` (exact JSON field name), a short human `label`, `group` (which visual
    section it renders under — usually matches an existing sibling field's group), and
    `requestTypeGroups` (which of `chat/embedding/rerank/audio/image/video/ocr` it applies to, per
@@ -200,7 +200,7 @@ clean run with no matching text would falsely report failure). If you want to sc
 just the touched files, capture it to a variable first and check `tsc`'s exit status separately:
 ```bash
 tsc_out=$(./node_modules/.bin/tsc --noEmit -p tsconfig.json 2>&1); tsc_status=$?
-echo "$tsc_out" | grep -i "pricingOverrideSheet\|governance.ts" || true
+echo "$tsc_out" | grep -i "pricingFields\|governance.ts" || true
 [ "$tsc_status" -eq 0 ]
 ```
 

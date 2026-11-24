@@ -141,8 +141,8 @@ func requireCodeModeClientsReady(t *testing.T, manager *mcp.MCPManager, configs 
 		if !client.ExecutionConfig.IsCodeModeClient {
 			t.Fatalf("MCP client %q (%s) is not configured as a code-mode client", config.Name, config.ID)
 		}
-		if countExecutableTools(client.ToolMap, client.ExecutionConfig.ToolsToExecute) == 0 {
-			t.Fatalf("MCP client %q (%s) has no executable code-mode tools; state=%s tool_count=%d tools_to_execute=%v", config.Name, config.ID, client.State, len(client.ToolMap), client.ExecutionConfig.ToolsToExecute)
+		if countExecutableTools(clientTools(manager, client.ExecutionConfig.ID), client.ExecutionConfig.ToolsToExecute) == 0 {
+			t.Fatalf("MCP client %q (%s) has no executable code-mode tools; state=%s tool_count=%d tools_to_execute=%v", config.Name, config.ID, client.State, len(clientTools(manager, client.ExecutionConfig.ID)), client.ExecutionConfig.ToolsToExecute)
 		}
 	}
 }
@@ -566,7 +566,8 @@ result = {"echo": echo, "calc": calc}`,
 			includeTools:  []string{},
 			code:          `result = testToolsServer.echo(message="blocked")`,
 			shouldSucceed: false,
-			expectedError: "undefined: testToolsServer",
+			// Narrowed to no tools, the request reaches no code-mode client, so code mode is refused.
+			expectedError: "not permitted (no code mode client available to this request)",
 		},
 	}
 
@@ -1190,7 +1191,7 @@ func TestCodeMode_STDIO_ErrorTestServer_NetworkErrors(t *testing.T) {
 		{
 			name: "return_error_network",
 			code: `r = errorTestServer.return_error(error_type="network")
-result = {"error_message": r}`,
+result = {"error_message": r.error}`,
 			verifyResult: func(t *testing.T, execResult map[string]interface{}) {
 				result, ok := execResult["result"].(map[string]interface{})
 				require.True(t, ok)
@@ -1200,7 +1201,7 @@ result = {"error_message": r}`,
 		{
 			name: "return_error_timeout",
 			code: `r = errorTestServer.return_error(error_type="timeout")
-result = {"error_message": r}`,
+result = {"error_message": r.error}`,
 			verifyResult: func(t *testing.T, execResult map[string]interface{}) {
 				result, ok := execResult["result"].(map[string]interface{})
 				require.True(t, ok)
@@ -1210,7 +1211,7 @@ result = {"error_message": r}`,
 		{
 			name: "return_error_validation",
 			code: `r = errorTestServer.return_error(error_type="validation")
-result = {"error_message": r}`,
+result = {"error_message": r.error}`,
 			verifyResult: func(t *testing.T, execResult map[string]interface{}) {
 				result, ok := execResult["result"].(map[string]interface{})
 				require.True(t, ok)
@@ -1220,7 +1221,7 @@ result = {"error_message": r}`,
 		{
 			name: "return_error_permission",
 			code: `r = errorTestServer.return_error(error_type="permission")
-result = {"error_message": r}`,
+result = {"error_message": r.error}`,
 			verifyResult: func(t *testing.T, execResult map[string]interface{}) {
 				result, ok := execResult["result"].(map[string]interface{})
 				require.True(t, ok)
@@ -1290,12 +1291,9 @@ func TestCodeMode_STDIO_ErrorTestServer_MalformedAndPartial(t *testing.T) {
 		},
 		{
 			name: "intermittent_fail_low_rate",
-			code: `result = errorTestServer.intermittent_fail(fail_rate=0.1)`,
-			verifyResult: func(t *testing.T, execResult map[string]interface{}) {
-				// Either success or error
-				result := execResult["result"]
-				assert.NotNil(t, result)
-			},
+			// fail_rate is a percentage (0-100) on the error test server.
+			code:         `result = errorTestServer.intermittent_fail(fail_rate=10)`,
+			verifyResult: verifyIntermittentResult,
 		},
 		{
 			name: "memory_intensive_small",
@@ -1395,6 +1393,21 @@ result = {
 	}
 }
 
+// verifyIntermittentResult accepts either outcome of intermittent_fail: the success
+// map, or the tool error, which code mode hands the script as an error value that
+// returns as {"error": "<message>"}.
+func verifyIntermittentResult(t *testing.T, execResult map[string]any) {
+	result, ok := execResult["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected intermittent_fail result %T: %v", execResult["result"], execResult["result"])
+	}
+	if message, failed := result["error"]; failed {
+		assert.Contains(t, message, "Intermittent failure")
+		return
+	}
+	assert.Equal(t, true, result["success"], "success map: %v", result)
+}
+
 func TestCodeMode_STDIO_ErrorTestServer_IntermittentAndHandling(t *testing.T) {
 	t.Parallel()
 
@@ -1408,27 +1421,14 @@ func TestCodeMode_STDIO_ErrorTestServer_IntermittentAndHandling(t *testing.T) {
 	}{
 		{
 			name: "intermittent_fail_low_rate",
-			code: `result = errorTestServer.intermittent_fail(id="test-1", fail_rate=0.1)`,
-			verifyResult: func(t *testing.T, execResult map[string]interface{}) {
-				result, ok := execResult["result"].(map[string]interface{})
-				require.True(t, ok)
-				// Either success or error
-				if result["error"] != nil {
-					assert.Contains(t, result["error"], "Intermittent")
-				} else {
-					assert.True(t, result["success"].(bool))
-				}
-			},
+			// fail_rate is a percentage (0-100) on the error test server.
+			code:         `result = errorTestServer.intermittent_fail(id="test-1", fail_rate=10)`,
+			verifyResult: verifyIntermittentResult,
 		},
 		{
-			name: "intermittent_fail_high_rate",
-			code: `result = errorTestServer.intermittent_fail(id="test-2", fail_rate=0.9)`,
-			verifyResult: func(t *testing.T, execResult map[string]interface{}) {
-				result, ok := execResult["result"].(map[string]interface{})
-				require.True(t, ok)
-				// Most likely error
-				assert.NotNil(t, result)
-			},
+			name:         "intermittent_fail_high_rate",
+			code:         `result = errorTestServer.intermittent_fail(id="test-2", fail_rate=90)`,
+			verifyResult: verifyIntermittentResult,
 		},
 		{
 			name: "error_handling_in_code",

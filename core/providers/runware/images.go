@@ -265,6 +265,17 @@ func runwareResultAssets(result *RunwareResult) (id string, url string, base64Da
 	return result.ImageUUID, "", "", ""
 }
 
+// processingRunwareTaskUUID returns the taskUUID of the first row Runware still reports as
+// processing, or "" once every row has finished.
+func processingRunwareTaskUUID(results []RunwareResult) string {
+	for i := range results {
+		if strings.EqualFold(results[i].Status, "processing") {
+			return results[i].TaskUUID
+		}
+	}
+	return ""
+}
+
 // toRunwareImageToolRequest builds a Runware single-image tool task (upscale, removeBackground).
 // These share one envelope: the image is nested under "inputs", model tuning goes in "settings"
 // and "providerSettings", and none of the imageInference fields (prompt, dimensions, steps) apply,
@@ -318,6 +329,10 @@ func ToBifrostImageGenerationResponse(resp *RunwareResponse) (*schemas.BifrostIm
 			return nil, providerUtils.NewBifrostOperationError(msg, nil)
 		}
 		return nil, providerUtils.NewBifrostOperationError("runware returned no images", nil)
+	}
+	// A processing row carries no asset, so it must not surface as an empty image.
+	if taskUUID := processingRunwareTaskUUID(resp.Data); taskUUID != "" {
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("runware task %s is still processing", taskUUID), nil)
 	}
 
 	bifrostResp := &schemas.BifrostImageGenerationResponse{

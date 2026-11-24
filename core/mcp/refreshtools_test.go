@@ -16,18 +16,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// refreshToolMapKeys snapshots the prefixed tool names currently cached on a
-// client, so a test can watch the manager's view of an upstream tool set
-// without reaching into the connection.
+// refreshToolMapKeys snapshots the prefixed tool names currently recorded for
+// a client in the manager's discovery store, so a test can watch the manager's view
+// of an upstream tool set without reaching into the connection.
 func refreshToolMapKeys(m *MCPManager, id string) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	cs, ok := m.clientMap[id]
-	if !ok || cs.ToolMap == nil {
+	tools := m.discoveryStore.GetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: id}).GetTools()
+	if len(tools) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(cs.ToolMap))
-	for k := range cs.ToolMap {
+	keys := make([]string, 0, len(tools))
+	for k := range tools {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -148,7 +146,7 @@ func TestRefreshClientTools_StickyClient_RelistsOverLiveConnection(t *testing.T)
 // every other discovery path.
 func TestRefreshClientTools_FiresToolsChangeCallback(t *testing.T) {
 	// Both discovery branches, because they reach the callback by different
-	// routes: the per-call one through writeBackDiscoveredTools after an
+	// routes: the per-call one through writeBackDiscovery after an
 	// ephemeral discovery, the sticky one through the same write-back after a
 	// tools/list over the live connection.
 	for _, sticky := range []bool{false, true} {
@@ -163,7 +161,8 @@ func TestRefreshClientTools_FiresToolsChangeCallback(t *testing.T) {
 			t.Cleanup(func() { _ = m.Cleanup() })
 
 			fired := make(chan map[string]schemas.ChatTool, 4)
-			m.SetToolsChangeCallback(func(_, _ string, tools map[string]schemas.ChatTool, _ map[string]string, _ string) {
+			m.SetDiscoveryChangeCallback(func(_, _ string, discovery *schemas.MCPDiscovery) {
+				tools := discovery.Tools
 				fired <- tools
 			})
 
@@ -210,12 +209,8 @@ func drainToolsChange(ch chan map[string]schemas.ChatTool) {
 
 // TestRefreshClientTools_AwaitingAdminVerification_Refuses covers the case an
 // on-demand refresh must not quietly resolve. A client parked in
-// pending_verification is waiting on a human, and for token_exchange the
-// refresh would not merely fail — it would succeed, because that auth type
-// resolves its own client-credentials token with no admin involved. Since
-// awaitsAdminVerification reads DiscoveredTools == nil as the pending signal
-// there, persisting a discovered set would promote the client out of
-// pending_verification permanently and drop the Verify CTA with it.
+// pending_verification is waiting on a human, and a refresh is not the admin
+// step it waits for: it must not run in its place, whichever auth type.
 func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -225,22 +220,28 @@ func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 		{
 			name:     "oauth_with_unauthorized_inline_config",
 			authType: schemas.MCPAuthTypeOauth,
-			pending:  func(c *schemas.MCPClientConfig) { c.PendingOAuthConfig = &schemas.OAuth2Config{} },
+			pending: func(c *schemas.MCPClientConfig) {
+				c.PendingOAuthConfig = &schemas.OAuth2Config{}
+				c.PendingVerification = true
+			},
 		},
 		{
 			name:     "per_user_oauth_with_unauthorized_inline_config",
 			authType: schemas.MCPAuthTypePerUserOauth,
-			pending:  func(c *schemas.MCPClientConfig) { c.PendingOAuthConfig = &schemas.OAuth2Config{} },
+			pending: func(c *schemas.MCPClientConfig) {
+				c.PendingOAuthConfig = &schemas.OAuth2Config{}
+				c.PendingVerification = true
+			},
 		},
 		{
 			name:     "token_exchange_never_verified",
 			authType: schemas.MCPAuthTypeTokenExchange,
-			pending:  func(c *schemas.MCPClientConfig) { c.DiscoveredTools = nil },
+			pending:  func(c *schemas.MCPClientConfig) { c.PendingVerification = true },
 		},
 		{
 			name:     "per_user_headers_never_verified",
 			authType: schemas.MCPAuthTypePerUserHeaders,
-			pending:  func(c *schemas.MCPClientConfig) { c.DiscoveredTools = nil },
+			pending:  func(c *schemas.MCPClientConfig) { c.PendingVerification = true },
 		},
 	}
 
@@ -265,8 +266,6 @@ func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStatePendingVerification,
-				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -276,13 +275,39 @@ func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 
 			m.mu.RLock()
 			state := m.clientMap[config.ID].State
-			tools := len(m.clientMap[config.ID].ToolMap)
 			m.mu.RUnlock()
 			assert.Equal(t, schemas.MCPConnectionStatePendingVerification, state,
 				"a refused refresh must leave the client awaiting its admin")
-			assert.Zero(t, tools, "nothing may be discovered onto a client still awaiting verification")
+			assert.Empty(t, storedTools(m, config.ID),
+				"nothing may be discovered onto a client still awaiting verification")
 		})
 	}
+}
+
+// TestRefreshClientTools_RefusesAPerUserDiscoveryClient: a client with
+// per_user_discovery on has no shared tool list to refresh and no admin
+// credential to discover one with, so the refresh is refused as not
+// applicable rather than failing on the missing credential, and says where
+// one caller's tools are refreshed instead.
+func TestRefreshClientTools_RefusesAPerUserDiscoveryClient(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { m.checkerManager.StopAll() })
+
+	config := newRefreshConfig("refresh-per-user", "svc", "http://127.0.0.1:0/mcp", false)
+	config.AuthType = schemas.MCPAuthTypePerUserOauth
+	config.PerUserDiscovery = schemas.Ptr(true)
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+	}
+	m.mu.Unlock()
+
+	_, err := m.RefreshClientTools(context.Background(), config.ID)
+	require.ErrorIs(t, err, schemas.ErrMCPRefreshNotApplicable)
+	assert.Contains(t, err.Error(), "refresh a caller's tools from their session")
 }
 
 // TestRefreshClientTools_DisabledAndNeedsReauth_Refuse pins the other two
@@ -304,8 +329,6 @@ func TestRefreshClientTools_DisabledAndNeedsReauth_Refuse(t *testing.T) {
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           state,
-				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
 			}
 			m.mu.Unlock()
@@ -361,7 +384,7 @@ func buildRefreshMCPServerWithHook(t *testing.T, onToolsList func()) (ts *httpte
 }
 
 // TestRefreshClientTools_StaleWriteBack_ReportsInstalledCount pins tool_count to
-// what the client actually serves. writeBackDiscoveredTools drops a discovery
+// what the client actually serves. writeBackDiscovery drops a discovery
 // whose ConnGeneration no longer matches — a reconnect swapped the connection
 // while the tools/list was in flight — and leaves the existing ToolMap in place.
 // Reporting the discarded discovery's length would then describe a tool set the
@@ -371,7 +394,7 @@ func TestRefreshClientTools_StaleWriteBack_ReportsInstalledCount(t *testing.T) {
 	const clientID = "refresh-stale-writeback"
 
 	// Bump the generation from inside the in-flight tools/list, which is
-	// exactly the window writeBackDiscoveredTools guards against.
+	// exactly the window writeBackDiscovery guards against.
 	bumped := false
 	ts, addTool := buildRefreshMCPServerWithHook(t, func() {
 		if m == nil || bumped {
@@ -435,7 +458,6 @@ func TestRefreshClientTools_EditedVerifiedClient_StillRefreshes(t *testing.T) {
 	// Already verified: exactly what a restart loads for a server whose admin
 	// verification ran in an earlier process.
 	config.DiscoveredTools = map[string]schemas.ChatTool{"edited-echo": {}}
-	config.DiscoveredToolNameMapping = map[string]string{}
 	require.NoError(t, m.AddClient(context.Background(), config))
 
 	_, err := m.RefreshClientTools(context.Background(), config.ID)
@@ -445,7 +467,6 @@ func TestRefreshClientTools_EditedVerifiedClient_StillRefreshes(t *testing.T) {
 	// editable fields, and no DiscoveredTools.
 	edit := *config
 	edit.DiscoveredTools = nil
-	edit.DiscoveredToolNameMapping = nil
 	edit.ToolsToAutoExecute = []string{"echo"}
 	require.NoError(t, m.UpdateClient(config.ID, &edit))
 

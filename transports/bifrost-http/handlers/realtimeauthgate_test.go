@@ -7,7 +7,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -48,7 +48,7 @@ func TestRefuseUnauthenticatedRealtime_AnonymousAllowedWhenNotEnforced(t *testin
 }
 
 // TestRefuseUnauthenticatedRealtime_VirtualKeyAllowed proves a virtual-key caller is admitted.
-// The credential is recorded the same way createBifrostContextFromAuth records it at upgrade.
+// The credential is recorded the same way createBifrostContextFromHeaders records it at upgrade.
 func TestRefuseUnauthenticatedRealtime_VirtualKeyAllowed(t *testing.T) {
 	ctx, cancel := newRealtimeGateContext(t)
 	defer cancel()
@@ -172,7 +172,10 @@ func (usableTestPermit) IsActive() bool                            { return true
 func (usableTestPermit) IsExpired() bool                           { return false }
 func (usableTestPermit) ProviderPermits() []schemas.ProviderPermit { return nil }
 func (usableTestPermit) MCPPermits() []schemas.MCPPermit           { return nil }
+func (usableTestPermit) AgentPermits() []string                    { return nil }
 func (usableTestPermit) AllowsAllProviders() bool                  { return true }
+func (usableTestPermit) RelayPermits() []string                    { return nil }
+func (usableTestPermit) Level() int                                { return 0 }
 
 // newResolvedVirtualKeyContext is a context whose presented virtual key resolved to usable
 // access, mirroring what the per-request pipeline leaves behind for a real key.
@@ -181,7 +184,7 @@ func newResolvedVirtualKeyContext(t *testing.T) (*schemas.BifrostContext, contex
 	ctx, cancel := newRealtimeGateContext(t)
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-valid")
 	lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-valid"))
-	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{usableTestPermit{}}, nil, "", nil))
+	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{usableTestPermit{}}, "", nil, "", nil))
 	return ctx, cancel
 }
 

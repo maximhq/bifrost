@@ -5,8 +5,11 @@ package lib
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
 // BaseAccount implements the Account interface for Bifrost.
@@ -87,6 +90,16 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	} else {
 		providerConfig.NetworkConfig = schemas.DefaultNetworkConfig
 	}
+	inherited, ok, err := inheritGlobalProxy(providerConfig.ProxyConfig, baseAccount.store.GetGlobalProxyConfig())
+	if err != nil {
+		return nil, fmt.Errorf("provider %s: %w", providerKey, err)
+	}
+	if ok {
+		// skip_tls_verify and the proxy CA travel on inherited.proxy, which applies the
+		// skip to the https:// proxy's own certificate only. Setting
+		// NetworkConfig.InsecureSkipVerify instead would skip verification of targets.
+		providerConfig.ProxyConfig = inherited.proxy
+	}
 	if config.ConcurrencyAndBufferSize != nil {
 		providerConfig.ConcurrencyAndBufferSize = *config.ConcurrencyAndBufferSize
 	} else {
@@ -95,6 +108,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	providerConfig.SendBackRawRequest = config.SendBackRawRequest
 	providerConfig.SendBackRawResponse = config.SendBackRawResponse
 	providerConfig.StoreRawRequestResponse = config.StoreRawRequestResponse
+	providerConfig.IgnoreProviderCost = config.IgnoreProviderCost
 	if config.CustomProviderConfig != nil {
 		providerConfig.CustomProviderConfig = config.CustomProviderConfig
 	}
@@ -104,5 +118,94 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if config.PromptCache != nil {
 		providerConfig.PromptCache = config.PromptCache
 	}
+	if config.InjectedTools != nil {
+		providerConfig.InjectedTools = config.InjectedTools
+	}
+	if config.Passthrough != nil {
+		providerConfig.Passthrough = config.Passthrough
+	}
 	return providerConfig, nil
+}
+
+// hasOwnProxy reports whether a provider's proxy_config names a proxy of its own.
+// The UI saves type "none" when the proxy form is left untouched, so "none" and an
+// empty type mean "not configured", the same as nil.
+func hasOwnProxy(proxyConfig *schemas.ProxyConfig) bool {
+	return proxyConfig != nil && proxyConfig.Type != "" && proxyConfig.Type != schemas.NoProxy
+}
+
+// inheritedProxy is the global proxy translated for one provider.
+type inheritedProxy struct {
+	proxy *schemas.ProxyConfig
+}
+
+// InheritedGlobalProxy is the proxy a relay with no proxy_config of its own inherits
+// from the global proxy, nil when the global proxy is off or not enabled for inference,
+// and an error when it is on but its URL cannot be read.
+func InheritedGlobalProxy(global *configstoreTables.GlobalProxyConfig) (*schemas.ProxyConfig, error) {
+	inherited, ok, err := inheritGlobalProxy(nil, global)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return inherited.proxy, nil
+}
+
+// inheritGlobalProxy returns the global proxy for a provider that has none of its
+// own, when the global proxy is enabled for inference. A provider's own proxy always
+// wins. ok is false when nothing should be inherited.
+//
+// no_proxy carries over, so hosts such as a VPC endpoint stay direct. skip_tls_verify
+// and ca_cert_pem carry over on the proxy config: the skip covers only the https://
+// proxy's own certificate, and targets stay verified (the CA is trusted for them).
+// The global timeout does not carry over: each provider keeps its own network_config
+// timeouts.
+func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.GlobalProxyConfig) (inheritedProxy, bool, error) {
+	if hasOwnProxy(own) || global == nil || !global.Enabled || !global.EnableForInference || strings.TrimSpace(global.URL) == "" {
+		return inheritedProxy{}, false, nil
+	}
+	var proxyType schemas.ProxyType
+	switch global.Type {
+	case network.GlobalProxyTypeHTTP, "":
+		proxyType = schemas.HTTPProxy
+	case network.GlobalProxyTypeSOCKS5:
+		proxyType = schemas.Socks5Proxy
+	default:
+		// "tcp" has no provider-level equivalent (the UI does not offer it).
+		return inheritedProxy{}, false, nil
+	}
+	// A bare host:port takes the type's scheme, as the settings page reads it. Providers
+	// parse the URL to add credentials and fall back to no proxy when it does not parse, so
+	// they get the normalized URL. A URL that cannot be normalized is an error, not "no
+	// proxy": a stored URL can predate the validator, and dropping it would send inference
+	// direct around a proxy that is on. A scheme that does not match the type is kept, not
+	// refused: config.json stored such proxies before the scheme was checked, and the
+	// dialer follows the URL's scheme.
+	proxyURL, err := parseGlobalProxyURL(global.Type, strings.TrimSpace(global.URL))
+	if err != nil {
+		return inheritedProxy{}, false, fmt.Errorf("global proxy enabled for inference: %w", err)
+	}
+	return inheritedProxy{
+		proxy: &schemas.ProxyConfig{
+			Type:     proxyType,
+			URL:      plainSecret(proxyURL.String()),
+			Username: plainSecret(global.Username),
+			Password: plainSecret(global.Password),
+			NoProxy:  global.NoProxy,
+			// skip_tls_verify covers only the https:// proxy's own certificate; the
+			// proxy CA is trusted for that hop and for TLS through the proxy, so
+			// targets are always verified. NetworkConfig is deliberately left alone.
+			SkipTLSVerify: global.SkipTLSVerify,
+			CACertPEM:     plainSecret(global.CACertPEM),
+		},
+	}, true, nil
+}
+
+// plainSecret wraps a literal value. The global proxy stores plain strings, so a
+// password that happens to start with "env." must not be read as an env reference,
+// which NewSecretVar would do.
+func plainSecret(value string) *schemas.SecretVar {
+	if value == "" {
+		return nil
+	}
+	return &schemas.SecretVar{Val: value, SecretType: schemas.SecretTypePlainText}
 }

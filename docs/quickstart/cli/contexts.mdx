@@ -1,0 +1,81 @@
+---
+title: "Contexts and credentials"
+description: "Create, switch, and remove Bifrost CLI contexts, work across multiple gateways, and understand where credentials are stored and how environment variables override them."
+icon: "layer-group"
+---
+
+A context holds one gateway URL, an optional default model, launcher selections, and its own keyring credentials. Use one context per environment.
+
+| Task | Command |
+| --- | --- |
+| Create a context | `bifrost context add <name> --base-url <url> [--default-model MODEL] [--use]` |
+| List contexts | `bifrost context list` |
+| Show the current context | `bifrost context current` |
+| Show a context | `bifrost context show <name>` |
+| Switch the current context | `bifrost context use <name>` |
+| Use a context for one command | `bifrost --context <name> <command>` |
+| Read context settings | `bifrost config get [base-url\|default-model\|context]` |
+| Change the default model | `bifrost config set default-model <model>` / `bifrost config unset default-model` |
+| Change the gateway URL | `bifrost config set base-url <url>` |
+| Delete a context and its credentials | `bifrost context delete <name> --yes` |
+
+The first context you add becomes current. Deleting the current context makes the first remaining context current. Contexts cannot be renamed; add a new one and delete the old one.
+
+## Work across environments
+
+```bash
+bifrost context add staging --base-url https://bifrost-staging.example.com
+bifrost context add production --base-url https://bifrost.example.com --use
+
+bifrost --context staging auth login
+bifrost --context production auth login
+
+bifrost --context staging models list
+bifrost models list                      # uses production
+```
+
+Credentials, SSO sessions, assigned-key selections, and persistent agent configuration all belong to a context. Switching contexts switches every credential at once. Coding agents launched from the CLI use the current context or the one passed with `--context`.
+
+<Warning>
+  `bifrost config set base-url` keeps the context's stored credentials, which are then sent to the new URL. To point at a different gateway, add a new context instead. Changing the URL from the interactive launcher clears the context's SSO session.
+</Warning>
+
+An ad hoc `--base-url` without `--context` uses no stored credentials; only credential environment variables apply.
+
+{/* SCREENSHOT TODO: bifrost context list showing staging and production contexts with the current context marked */}
+
+## Where credentials are stored
+
+| Path | Contents |
+| --- | --- |
+| `~/.bifrost/state.json` | Contexts and launcher selections. No secrets. |
+| `~/.bifrost/config.json` | Legacy launcher defaults. No secrets. |
+| `~/.bifrost/receipts/` | Restoration receipts for `bifrost configure`. Owner-only. |
+| Operating-system keyring | Virtual keys, management API keys, and session tokens, per context |
+
+## Environment variables and CI
+
+Environment variables override stored values, which is useful in CI:
+
+| Variable | Overrides |
+| --- | --- |
+| `BIFROST_CONTEXT`, `BIFROST_BASE_URL` | Context and gateway URL |
+| `BIFROST_VIRTUAL_KEY` | Virtual key |
+| `BIFROST_MANAGEMENT_KEY` | Management API key |
+| `BIFROST_SESSION_TOKEN` | OSS dashboard session |
+| `BIFROST_AGENT_TOKEN`, `BIFROST_AGENT_REFRESH_TOKEN`, `BIFROST_AGENT_VIRTUAL_KEY_ID` | Enterprise SSO session and key selection |
+| `BIFROST_OUTPUT` | Default output format |
+| `BIFROST_STATE_PATH` | Location of `state.json` |
+
+For CI, prefer `BIFROST_BASE_URL` plus `BIFROST_VIRTUAL_KEY` or `BIFROST_MANAGEMENT_KEY` from your secret store. Browser SSO is for interactive use.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Coding agents" icon="terminal" href="/quickstart/cli/coding-agents">
+    Launch Claude Code, Codex, OpenCode, or Gemini through Bifrost.
+  </Card>
+  <Card title="Commands" icon="list" href="/quickstart/cli/commands">
+    Inspect, query, and administer the gateway.
+  </Card>
+</CardGroup>

@@ -117,11 +117,21 @@ type Permit interface {
 	// MCPPermits is every MCP client the permit allows tools of.
 	MCPPermits() []MCPPermit
 
+	// AgentPermits is every Agent Gateway registration the permit allows.
+	AgentPermits() []string
+
+	// RelayPermits is every relay the permit allows by name.
+	RelayPermits() []string
+
 	// AllowsAllProviders reports whether the permit grants every provider, including ones it holds no
 	// provider permit for. It coexists with ProviderPermits: a provider the permit lists still has
 	// that permit's model, key, and weight rules applied; a provider it lists none for is allowed with
 	// all models and all keys. False is the default, deny-by-default behaviour.
 	AllowsAllProviders() bool
+
+	// Level is the permit's place on the caller's side when levels intersect: 0 is the caller's own,
+	// higher levels cap the ones below. Permits sharing a level are read as one.
+	Level() int
 }
 
 // Access is an attempt's resolved access: the permits the caller holds, the permit scoping the
@@ -132,12 +142,19 @@ type Permit interface {
 // any of them allows may serve it, and every one of them that permits it pays for it (see
 // PermitsForModel). There is one scoping permit at most, composed under one mode.
 //
+// With intersecting levels (see LevelMode), the lowest level present grants and each level above it
+// caps. The scoping permit composes with the capped result.
+//
 // Either side may be empty. No caller permits means the caller holds no access of their own, which
 // is not the same as holding a permit that permits nothing. No scoping permit means the mode is
 // irrelevant and the answer is what the caller's permits permit.
 type Access interface {
-	// Bases returns the permits the caller holds, in attribution order. Empty when they hold none.
+	// Bases returns the permits that grant, in attribution order: all of them, or the lowest level
+	// when levels intersect. Empty when the caller holds none.
 	Bases() []Permit
+	// LevelMode returns how the caller's levels combine: "intersect" caps by every level, anything
+	// else reads the permits as one. Separate from Mode, which is the scoping permit's.
+	LevelMode() string
 	// Scoping returns the permit scoping this request, or nil when nothing scopes it.
 	Scoping() Permit
 	// Mode returns the composition mode governing this request, as the resolver that built it names
@@ -152,16 +169,28 @@ type Access interface {
 	// lose to nothing: a permit that blacklists the model does not permit it, whatever its
 	// allowed-models list says. An empty model asks about the provider alone.
 	IsModelAllowed(provider string, model string) bool
+	// AllowsEveryModel reports whether the request may use any model at all on provider: every
+	// permit deciding for the provider allows all of its models and blacklists none. It is the
+	// question to ask when a request will run models it does not name, such as a batch defined by
+	// an uploaded file: an access for which this is false has a model restriction that only a
+	// named model lets it apply.
+	AllowsEveryModel(provider string) bool
 	// IsMCPToolAllowed reports whether the request may execute toolPattern, which is either
 	// "<client>-<tool>" or the "<client>-*" wildcard standing for every tool of a client. A
 	// wildcard is permitted when the client is granted any tool at all; narrowing a wildcard down
 	// to the tools actually granted is MCPToolIncludeList's job.
 	IsMCPToolAllowed(toolPattern string) bool
 
+	// IsAgentAllowed reports whether the request may call the named Agent Gateway registration.
+	IsAgentAllowed(agentName string) bool
+
+	// IsRelayAllowed reports whether the request may call the named relay.
+	IsRelayAllowed(endpointName string) bool
+
 	// PermitsForModel returns the permits the request answers to for model on provider: every one
-	// of the caller's permits that permits the pair, then the scoping permit whenever the request
-	// is scoped. Nil when the request may not use the pair at all. An empty model asks about the
-	// provider alone.
+	// of the caller's permits that permits the pair, then every capping level permit that permits
+	// it, then the scoping permit whenever the request is scoped. Nil when the request may not use
+	// the pair at all. An empty model asks about the provider alone.
 	//
 	// This is the attribution rule, and what the pair costs is gathered against every permit named
 	// here. The caller's permits are read as one, so each of them that permits the pair covers the
@@ -172,9 +201,9 @@ type Access interface {
 
 	// KeysForModel returns the provider keys the request may use for model on provider, and whether
 	// that list is restrictive at all: any key any of the caller's permitting permits allows,
-	// composed with the scoping permit's under the mode. restricted is false when every key of the
-	// provider is allowed, in which case keyIDs is nil; when restricted is true, only keyIDs may be
-	// used and an empty list allows none.
+	// narrowed by each capping level, then composed with the scoping permit's under the mode.
+	// restricted is false when every key of the provider is allowed, in which case keyIDs is nil;
+	// when restricted is true, only keyIDs may be used and an empty list allows none.
 	KeysForModel(provider string, model string) (keyIDs []string, restricted bool)
 	// ProvidersForModel returns every provider permit the request may serve model from, in
 	// evaluation order: the caller's permits first, each in full and in their order, then providers
@@ -202,6 +231,10 @@ type Access interface {
 	// DeniedPermitsForModel returns the permits that refused model on provider, so the refusal can name them.
 	// An empty model asks about the provider alone. Nil when the request is allowed.
 	DeniedPermitsForModel(provider string, model string) []Permit
+	// DeniedPermitsForAgent is DeniedPermitsForModel for an Agent Gateway registration.
+	DeniedPermitsForAgent(agentName string) []Permit
+	// DeniedPermitsForRelay is DeniedPermitsForModel for a relay.
+	DeniedPermitsForRelay(endpointName string) []Permit
 	// DeniedPermitsForMCPTool is DeniedPermitsForModel for an MCP tool pattern.
 	DeniedPermitsForMCPTool(toolPattern string) []Permit
 }

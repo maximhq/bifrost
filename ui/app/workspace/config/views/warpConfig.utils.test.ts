@@ -1,15 +1,20 @@
 import type { ModelProvider } from "@/lib/types/config";
-import { describe, expect, it } from "vitest";
+import i18n from "@/lib/i18n";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
 	embeddingSpaceChanged,
 	normalizeWarpNamespace,
+	setWarpManagementWrite,
+	warpManagementWriteSwitchDisabled,
 	supportsWarpEmbedding,
+	type WarpEmbeddingFields,
 	validateWarpEmbedding,
 	validateWarpModelRows,
+	warpManagementTokens,
+	warpManagementWritesChanged,
 	warpModelRowsChanged,
 	warpModelRowsFromConfig,
 	warpModelsPayload,
-	type WarpEmbeddingFields,
 } from "./warpConfig.utils";
 
 const valid: WarpEmbeddingFields = {
@@ -20,6 +25,10 @@ const valid: WarpEmbeddingFields = {
 	threshold: 0.8,
 	searchLimit: 10,
 };
+
+beforeAll(async () => {
+	await i18n.changeLanguage("en");
+});
 
 describe("Warp embedding configuration", () => {
 	it("requires a connected vector store and complete embedding space when enabled", () => {
@@ -199,5 +208,46 @@ describe("Warp model rows", () => {
 				true,
 			),
 		).toEqual([null, null, "This provider and model is already listed."]);
+	});
+});
+describe("Warp management writes", () => {
+	it("toggles a kind on and off in the stored order", () => {
+		expect(setWarpManagementWrite([], "delete", true)).toEqual(["delete"]);
+		expect(setWarpManagementWrite(["delete"], "create", true)).toEqual(["create", "delete"]);
+		expect(setWarpManagementWrite(["create", "delete"], "create", false)).toEqual(["delete"]);
+		expect(setWarpManagementWrite(["create"], "create", true)).toEqual(["create"]);
+	});
+
+	it("compares the chosen kinds with the saved ones, order aside", () => {
+		expect(warpManagementWritesChanged([], undefined)).toBe(false);
+		expect(warpManagementWritesChanged(["create", "delete"], ["delete", "create"])).toBe(false);
+		expect(warpManagementWritesChanged(["create"], [])).toBe(true);
+		expect(warpManagementWritesChanged([], ["update"])).toBe(true);
+	});
+
+	it("locks every switch without access, and otherwise only stops turning a kind on", () => {
+		const base = { disabled: false, checked: false, writesAvailable: true, loaded: true, offered: true };
+		expect(warpManagementWriteSwitchDisabled(base)).toBe(false);
+		expect(warpManagementWriteSwitchDisabled({ ...base, disabled: true })).toBe(true);
+		expect(warpManagementWriteSwitchDisabled({ ...base, disabled: true, checked: true })).toBe(true);
+		// Writes off at the ceiling: an off kind cannot be turned on, an on kind can still be turned off.
+		expect(warpManagementWriteSwitchDisabled({ ...base, writesAvailable: false })).toBe(true);
+		expect(warpManagementWriteSwitchDisabled({ ...base, writesAvailable: false, checked: true })).toBe(false);
+		// A kind the loaded catalog does not offer: the same.
+		expect(warpManagementWriteSwitchDisabled({ ...base, offered: false })).toBe(true);
+		expect(warpManagementWriteSwitchDisabled({ ...base, offered: false, checked: true })).toBe(false);
+	});
+
+	it("adds up what reads and the chosen kinds send with every request", () => {
+		const sizes = [
+			{ kind: "read" as const, tools: 98, estimated_tokens: 30000 },
+			{ kind: "create" as const, tools: 20, estimated_tokens: 50000 },
+			{ kind: "update" as const, tools: 36, estimated_tokens: 87000 },
+		];
+		expect(warpManagementTokens(sizes, [])).toBe(30000);
+		expect(warpManagementTokens(sizes, ["update"])).toBe(117000);
+		expect(warpManagementTokens(sizes, ["create", "update", "delete"])).toBe(167000);
+		expect(warpManagementTokens(undefined, ["create"])).toBeNull();
+		expect(warpManagementTokens([], [])).toBeNull();
 	});
 });

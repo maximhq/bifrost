@@ -99,10 +99,6 @@ export class ModelLimitsPage extends BasePage {
       await this.page.keyboard.press('Escape')
       await expect(this.sheet).not.toBeVisible({ timeout: 5000 })
     }
-
-    await expect(this.page.locator('html'))
-      .not.toHaveClass(/bprogress-busy/, { timeout: 10000 })
-      .catch(() => {})
   }
 
   private async setBudget(config?: { maxLimit: number; resetDuration?: string }): Promise<void> {
@@ -151,7 +147,8 @@ export class ModelLimitsPage extends BasePage {
     const modelSelectContainer = this.sheet.getByTestId('model-limit-model-select')
     const modelInput = modelSelectContainer.getByRole('combobox')
     await modelInput.click()
-    await modelInput.pressSequentially(config.modelName)
+    // ModelSelector searches server-side from the input inside its popover.
+    await this.page.getByPlaceholder('Search models...').fill(config.modelName)
     const targetOption = this.page.getByRole('option', { name: config.modelName, exact: true }).first()
     await expect(targetOption).toBeVisible({ timeout: 10000 })
     await targetOption.click()

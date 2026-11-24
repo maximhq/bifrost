@@ -14,14 +14,19 @@ import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { useGetBaseModelsQuery, useGetModelsQuery } from "@/lib/store/apis/providersApi";
 import { cn } from "@/lib/utils";
+import { isSentinelValue } from "@/lib/utils/strings";
 import { ChevronDownIcon, Loader2Icon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
+import type { ParseKeys } from "i18next";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 
 /** One row in the dropdown, after the consumer has had a say in it. */
 export interface ModelSelectorOption {
 	value: string;
 	label: string;
+	/** When set, rendered translated in place of `label` (for module-level constants that cannot call `t`). */
+	labelKey?: ParseKeys<"common">;
 	provider?: string;
 	isDeprecated?: boolean;
 	/** Non-selectable. The row still renders, greyed, with `disabledReason` beside it. */
@@ -39,6 +44,8 @@ interface ModelSelectorBaseProps {
 	vks?: string[];
 	/** Bypasses the provider-level model pool, matching the /api/models `unfiltered` flag. */
 	unfiltered?: boolean;
+	/** Lists only models that serve decisions natively, matching the /api/models `decisions` flag. */
+	decisions?: boolean;
 	/**
 	 * Search on the server (default). Set false to pull one page up front and filter it in
 	 * the browser — worth it only for small, fixed pools.
@@ -82,6 +89,8 @@ interface ModelSelectorBaseProps {
 	renderValueLabel?: (value: string) => React.ReactNode;
 	/** Drops the magnifier from the trigger. The one in the search field stays either way. */
 	hideSearchIcon?: boolean;
+	/** Single select only: open with an empty search showing the full list, instead of seeding it with the current model. */
+	openWithEmptySearch?: boolean;
 	/** id for the trigger, so a form label and its error message can point at it. */
 	inputId?: string;
 	ariaLabelledBy?: string;
@@ -108,7 +117,7 @@ export type ModelSelectorProps = ModelSelectorSingleProps | ModelSelectorMultiPr
  * The wildcard row, for the surfaces whose list accepts "*" as "every model". Ready to hand
  * to `extraOptions`; module level so its identity is stable across renders.
  */
-export const ALL_MODELS_OPTION: ModelSelectorOption[] = [{ value: "*", label: "All Models" }];
+export const ALL_MODELS_OPTION: ModelSelectorOption[] = [{ value: "*", label: "All Models", labelKey: "modelAccess.allModels" }]; // i18n-ignore: translated via labelKey
 
 /** A catalog row. Base models carry only a name, so everything past it is optional. */
 interface ListedModel {
@@ -127,15 +136,17 @@ function clientFilter(value: string, search: string): number {
 }
 
 export function ModelSelector(props: ModelSelectorProps) {
+	const { t } = useTranslation("common");
 	const {
 		provider,
 		keys,
 		vks,
 		unfiltered = false,
+		decisions = false,
 		serverSearch = true,
 		pageSize = DEFAULT_PAGE_SIZE,
-		placeholder = "Select model",
-		searchPlaceholder = "Search models...",
+		placeholder: placeholderProp,
+		searchPlaceholder: searchPlaceholderProp,
 		disabled = false,
 		className,
 		contentClassName,
@@ -145,14 +156,21 @@ export function ModelSelector(props: ModelSelectorProps) {
 		disableDeprecated = true,
 		getOptionState,
 		emptyMessage,
-		extraOptions,
+		extraOptions: extraOptionsProp,
 		renderValueLabel,
 		hideSearchIcon = false,
+		openWithEmptySearch = false,
 		inputId,
 		ariaLabelledBy,
 		ariaDescribedBy,
 		ariaInvalid,
 	} = props;
+	const extraOptions = useMemo(
+		() => extraOptionsProp?.map((o) => (o.labelKey ? { ...o, label: t(o.labelKey) } : o)),
+		[extraOptionsProp, t],
+	);
+	const placeholder = placeholderProp ?? t("modelAccess.selectModel");
+	const searchPlaceholder = searchPlaceholderProp ?? t("modelAccess.searchModels");
 
 	const isMulti = props.multiple === true;
 	const onChange = props.onChange;
@@ -178,7 +196,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 	const effectiveSearch = serverSearch ? (search === seededSearch ? search : (debouncedSearch as string)) : "";
 	useEffect(() => {
 		setPages(1);
-	}, [effectiveSearch, provider, unfiltered]);
+	}, [effectiveSearch, provider, unfiltered, decisions]);
 
 	// Base models are the same catalog with the provider dimension collapsed, so only one of
 	// the two ever runs; the rest of the component works off whichever answered.
@@ -193,6 +211,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 			vks: vks && vks.length > 0 ? vks : undefined,
 			limit: pageSize * pages,
 			unfiltered,
+			decisions,
 		},
 		{ skip: idle || useBaseModels },
 	);
@@ -220,7 +239,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 			};
 			if (disableDeprecated && model.is_deprecated) {
 				base.disabled = true;
-				base.disabledReason = "Deprecated";
+				base.disabledReason = t("modelAccess.deprecated");
 			}
 			const override = getOptionState?.(base);
 			return override ? { ...base, ...override } : base;
@@ -229,7 +248,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 		// disabled by the consumer, and the two have to end up in one order. A row nobody
 		// can pick never sits above one they can.
 		return mapped.sort((a, b) => Number(Boolean(a.disabled)) - Number(Boolean(b.disabled)));
-	}, [rows, disableDeprecated, getOptionState]);
+	}, [rows, disableDeprecated, getOptionState, t]);
 
 	const extraValues = useMemo(() => new Set((extraOptions ?? []).map((o) => o.value)), [extraOptions]);
 
@@ -244,10 +263,12 @@ export function ModelSelector(props: ModelSelectorProps) {
 	// A selected model can sit outside the loaded page — it was picked under a different
 	// search, or saved before the catalog changed. Pin it so it stays visible and
 	// deselectable instead of silently vanishing from the list.
+	// A placeholder like "__none__" that no extra row claims is treated as no selection, never rendered raw.
+	const shown = useMemo(() => selected.filter((v) => extraValues.has(v) || !isSentinelValue(v)), [selected, extraValues]);
 	const pinned = useMemo<ModelSelectorOption[]>(() => {
 		const loaded = new Set(options.map((o) => o.value));
-		return selected.filter((v) => !loaded.has(v) && !extraValues.has(v)).map((v) => ({ value: v, label: v }));
-	}, [options, selected, extraValues]);
+		return shown.filter((v) => !loaded.has(v) && !extraValues.has(v)).map((v) => ({ value: v, label: v }));
+	}, [options, shown, extraValues]);
 
 	const loadedCount = rows.length + pinned.length + visibleExtras.length;
 	const hasMore = rows.length < total;
@@ -349,13 +370,13 @@ export function ModelSelector(props: ModelSelectorProps) {
 			 * gets back to the full list in one click. Multi keeps its empty field: its search is
 			 * for the next pick, not the ones already made.
 			 */
-			const seed = !isMulti && selected[0] && !extraValues.has(selected[0]) ? selected[0] : "";
+			const seed = !isMulti && !openWithEmptySearch && shown[0] && !extraValues.has(shown[0]) ? shown[0] : "";
 			setSeededSearch(seed);
 			setSearch(seed);
 			setOpen(true);
 			setHasOpened(true);
 		},
-		[closeAndResetSearch, isMulti, selected, extraValues],
+		[closeAndResetSearch, isMulti, openWithEmptySearch, shown, extraValues],
 	);
 
 	// Paging happens on scroll rather than through a button, so the list stays a list.
@@ -417,16 +438,16 @@ export function ModelSelector(props: ModelSelectorProps) {
 					data-testid={props["data-testid"] ?? "model-selector-trigger"}
 					className={cn(
 						"h-auto min-h-9 w-full justify-between !bg-transparent py-1.5 font-normal active:scale-none",
-						selected.length === 0 && "text-muted-foreground",
+						shown.length === 0 && "text-muted-foreground",
 						className,
 					)}
 				>
 					{/* Multi keeps every chip on the trigger: the row wraps and the trigger grows to fit. */}
-					{selected.length === 0 ? (
+					{shown.length === 0 ? (
 						<span className="min-w-0 truncate">{placeholder}</span>
 					) : isMulti ? (
 						<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-							{selected.map((value) => (
+							{shown.map((value) => (
 								<span key={value} className="bg-accent dark:bg-card flex max-w-[180px] items-center gap-1 rounded-sm px-1 py-0.5 text-xs">
 									{renderValueLabel ? renderValueLabel(value) : <span className="min-w-0 truncate">{labelFor(value)}</span>}
 									{/*
@@ -439,7 +460,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 									<span
 										role="button"
 										tabIndex={-1}
-										aria-label={`Remove ${labelFor(value)}`}
+										aria-label={t("combobox.removeAria", { label: labelFor(value) })}
 										className="text-muted-foreground hover:text-foreground flex shrink-0 cursor-pointer items-center"
 										onClick={(e) => {
 											e.preventDefault();
@@ -460,9 +481,9 @@ export function ModelSelector(props: ModelSelectorProps) {
 							))}
 						</span>
 					) : renderValueLabel ? (
-						renderValueLabel(selected[0])
+						renderValueLabel(shown[0])
 					) : (
-						<span className="min-w-0 truncate">{labelFor(selected[0])}</span>
+						<span className="min-w-0 truncate">{labelFor(shown[0])}</span>
 					)}
 					<span className="ml-2 flex shrink-0 items-center gap-1">
 						{/* The magnifier on the closed trigger is what tells the user this opens into a search. */}
@@ -500,7 +521,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 
 					{pinned.length > 0 && (
 						<ComboboxGroup>
-							<ComboboxLabel>Selected</ComboboxLabel>
+							<ComboboxLabel>{t("entityAssociation.selected")}</ComboboxLabel>
 							{pinned.map(renderOption)}
 						</ComboboxGroup>
 					)}
@@ -512,7 +533,12 @@ export function ModelSelector(props: ModelSelectorProps) {
 						<ComboboxItem value={`${CUSTOM_VALUE_PREFIX}${trimmedSearch}`} onSelect={() => toggle(trimmedSearch)}>
 							<PlusIcon className="size-3.5 shrink-0 opacity-60" />
 							<span className="min-w-0 grow truncate">
-								Use <span className="font-medium">{trimmedSearch}</span>
+								<Trans
+									t={t}
+									i18nKey="modelAccess.useModel"
+									values={{ name: trimmedSearch }}
+									components={{ name: <span className="font-medium" /> }}
+								/>
 							</span>
 						</ComboboxItem>
 					)}
@@ -520,21 +546,23 @@ export function ModelSelector(props: ModelSelectorProps) {
 					{/* cmdk decides when this shows, which also covers client-side filtering to zero. */}
 					{!isSearching && (
 						<ComboboxEmpty className="text-muted-foreground">
-							{isError ? "Couldn't load models." : (emptyMessage ?? (search ? "No matching models." : "No models available."))}
+							{isError
+								? t("modelAccess.couldntLoad")
+								: (emptyMessage ?? (search ? t("modelAccess.noMatching") : t("modelAccess.noneAvailable")))}
 						</ComboboxEmpty>
 					)}
 
 					{isSearching && loadedCount === 0 && (
 						<div className="text-muted-foreground flex items-center justify-center gap-2 py-6 text-sm">
 							<Loader2Icon className="size-3.5 animate-spin" />
-							Searching…
+							{t("modelAccess.searching")}
 						</div>
 					)}
 
 					{hasMore && isFetching && (
 						<div className="text-muted-foreground flex items-center justify-center gap-2 py-2 text-xs">
 							<Loader2Icon className="size-3 animate-spin" />
-							Loading more…
+							{t("modelAccess.loadingMore")}
 						</div>
 					)}
 				</ComboboxList>

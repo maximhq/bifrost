@@ -55,7 +55,7 @@ func vkPermit(vk *configstoreTables.TableVirtualKey, openClients map[string]stri
 
 // vkAccess is the access a request carrying only vk's permit has.
 func vkAccess(vk *configstoreTables.TableVirtualKey, openClients map[string]string) schemas.Access {
-	return grant.NewAccess([]schemas.Permit{vkPermit(vk, openClients)}, nil, "", nil)
+	return grant.NewAccess([]schemas.Permit{vkPermit(vk, openClients)}, "", nil, "", nil)
 }
 
 // A key also answers to where it sits in the organization, so its holder limits carry its team's
@@ -571,16 +571,19 @@ type permitStore struct {
 	bases   []schemas.Permit
 	scoping schemas.Permit
 	mode    grant.CompositionMode
+	// above is appended to the store's bases; levelMode is returned as is.
+	above     []schemas.Permit
+	levelMode grant.CompositionMode
 	// resolvesNothing makes the store answer with no permit at all, as a store that resolves callers
 	// beyond keys does when the caller it was asked about has no access configured.
 	resolvesNothing bool
 	calls           int
 }
 
-func (s *permitStore) ResolvePermits(ctx *schemas.BifrostContext) ([]schemas.Permit, schemas.Permit, grant.CompositionMode) {
+func (s *permitStore) ResolvePermits(ctx *schemas.BifrostContext) ([]schemas.Permit, grant.CompositionMode, schemas.Permit, grant.CompositionMode) {
 	s.calls++
 	if s.resolvesNothing {
-		return nil, nil, ""
+		return nil, "", nil, ""
 	}
 	var bases []schemas.Permit
 	switch {
@@ -589,14 +592,14 @@ func (s *permitStore) ResolvePermits(ctx *schemas.BifrostContext) ([]schemas.Per
 	case s.baseOverride != nil:
 		bases = []schemas.Permit{s.baseOverride}
 	default:
-		bases, _, _ = s.GovernanceStore.ResolvePermits(ctx)
+		bases, _, _, _ = s.GovernanceStore.ResolvePermits(ctx)
 	}
-	return bases, s.scoping, s.mode
+	return append(bases, s.above...), s.levelMode, s.scoping, s.mode
 }
 
 // newAccessTestPlugin builds a plugin over a store that serves vk, optionally wrapped so the
 // store composes further permits onto every request.
-func newAccessTestPlugin(t *testing.T, vk *configstoreTables.TableVirtualKey, wrap *permitStore) *GovernancePlugin {
+func newAccessTestPlugin(t testing.TB, vk *configstoreTables.TableVirtualKey, wrap *permitStore) *GovernancePlugin {
 	t.Helper()
 	logger := NewMockLogger()
 	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
@@ -652,6 +655,27 @@ func TestResolveAccess(t *testing.T) {
 		assert.Equal(t, string(grant.Union), access.Mode())
 		assert.True(t, access.IsProviderAllowed("openai"), "the key's own provider")
 		assert.True(t, access.IsProviderAllowed("anthropic"), "the permit scoping the request")
+	})
+
+	t.Run("a store answering with intersecting levels caps the caller's permits", func(t *testing.T) {
+		// The key allows every openai model and the team only one, so only that one is left.
+		team := grant.NewPermit(grant.PermitTeamAccessProfile, "t1", "Team", true, false, []schemas.ProviderPermit{{
+			Provider: "openai", AllowedModels: []string{"gpt-4o-mini"}, KeyIDs: []string{"*"},
+		}}, nil, grant.WithLevel(1))
+		store := &permitStore{above: []schemas.Permit{team}, levelMode: grant.Intersect}
+		plugin := newAccessTestPlugin(t, vk, store)
+
+		access, err := plugin.ResolveAccess(newPreRequestCtx(nil, nil))
+
+		require.NoError(t, err)
+		require.NotNil(t, access)
+		assert.Equal(t, string(grant.Intersect), access.LevelMode())
+		require.Len(t, access.Bases(), 1, "the key grants; the team's profile only caps it")
+		assert.True(t, access.IsModelAllowed("openai", "gpt-4o-mini"))
+		assert.False(t, access.IsModelAllowed("openai", "gpt-4o"))
+		denied := access.DeniedPermitsForModel("openai", "gpt-4o")
+		require.Len(t, denied, 1)
+		assert.Equal(t, "t1", denied[0].ID())
 	})
 
 	t.Run("the store may answer for a caller whose permits are not a key's", func(t *testing.T) {
@@ -909,6 +933,112 @@ func TestResolveAccessMarksTraceWhenContentLoggingOff(t *testing.T) {
 	}
 }
 
+// A key under a team carries the team's content-logging decision too. The team is read from the
+// store's live team map, not the key's team pointer, so an edit to the team reaches the very next
+// request; and the team outranks the key in both directions.
+func TestResolveAccessStampsTeamContentLogging(t *testing.T) {
+	type setup struct {
+		team *bool
+		vk   *bool
+	}
+	newPlugin := func(t *testing.T, s setup) (*GovernancePlugin, *LocalGovernanceStore, configstoreTables.TableTeam) {
+		t.Helper()
+		team := configstoreTables.TableTeam{ID: "team-dcl", Name: "team-dcl", DisableContentLogging: s.team}
+		vk := buildVKForMCPStamping(nil)
+		vk.TeamID = &team.ID
+		vk.DisableContentLogging = s.vk
+		logger := NewMockLogger()
+		local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			Teams:       []configstoreTables.TableTeam{team},
+		}, nil, &mockInMemoryStore{})
+		require.NoError(t, err)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+		return plugin, local, team
+	}
+	resolve := func(t *testing.T, plugin *GovernancePlugin) *schemas.BifrostContext {
+		t.Helper()
+		ctx := emptyCtx()
+		ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, mcpTestVKValue), nil, nil, nil, nil, nil, nil))
+		_, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		require.Equal(t, "team-dcl", ctx.Value(schemas.BifrostContextKeyGovernanceTeamID), "precondition: the key resolved under its team")
+		return ctx
+	}
+
+	t.Run("team off outranks a key that turns content on", func(t *testing.T) {
+		plugin, _, _ := newPlugin(t, setup{team: new(true), vk: new(false)})
+		ctx := resolve(t, plugin)
+		assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging))
+		disabled, decided := schemas.ResolveAdminContentLogging(ctx)
+		assert.True(t, decided)
+		assert.True(t, disabled)
+	})
+
+	t.Run("team on outranks a key that turns content off", func(t *testing.T) {
+		plugin, _, _ := newPlugin(t, setup{team: new(false), vk: new(true)})
+		ctx := resolve(t, plugin)
+		disabled, decided := schemas.ResolveAdminContentLogging(ctx)
+		assert.True(t, decided)
+		assert.False(t, disabled)
+	})
+
+	t.Run("an inheriting team leaves the key to decide", func(t *testing.T) {
+		plugin, _, _ := newPlugin(t, setup{team: nil, vk: new(true)})
+		ctx := resolve(t, plugin)
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging), "inherit must leave the team layer absent")
+		disabled, decided := schemas.ResolveAdminContentLogging(ctx)
+		assert.True(t, decided)
+		assert.True(t, disabled)
+	})
+
+	t.Run("a team edit reaches the next request", func(t *testing.T) {
+		plugin, local, team := newPlugin(t, setup{team: nil})
+		ctx := resolve(t, plugin)
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging))
+
+		team.DisableContentLogging = new(true)
+		local.UpdateTeamInMemory(context.Background(), &team, nil)
+		ctx = resolve(t, plugin)
+		assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging), "the edited team must be read live, not off the key's stale team pointer")
+	})
+}
+
+// Resolving access is where every store stamps the caller's content-logging layers, so it marks them
+// resolved once the store has answered, whatever it answered: a key that inherits, and a request that
+// presented nothing at all, are resolved too. The logging plugin reads the mark to stop holding
+// content back for a decision that is no longer coming.
+func TestResolveAccessMarksCallerContentLoggingResolved(t *testing.T) {
+	vk := buildVKForMCPStamping(nil)
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, &mockInMemoryStore{})
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	t.Run("a resolved key", func(t *testing.T) {
+		ctx := emptyCtx()
+		ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, mcpTestVKValue), nil, nil, nil, nil, nil, nil))
+		require.False(t, schemas.CallerContentLoggingResolved(ctx), "precondition: nothing resolved yet")
+		_, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		assert.True(t, schemas.CallerContentLoggingResolved(ctx))
+	})
+
+	t.Run("a request that presented nothing", func(t *testing.T) {
+		ctx := emptyCtx()
+		access, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		require.Nil(t, access, "precondition: nothing granted this request anything")
+		assert.True(t, schemas.CallerContentLoggingResolved(ctx))
+	})
+}
+
 // The key a request presented is read off the identity the transport settled, and only falls back
 // to the context key for a context nothing settled an identity on.
 func TestPresentedVirtualKey(t *testing.T) {
@@ -925,6 +1055,14 @@ func TestPresentedVirtualKey(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-stale")
 		ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-settled"), nil, nil, nil, nil, nil, nil))
 		assert.Equal(t, "sk-bf-settled", PresentedVirtualKey(ctx), "what the transport settled, not what else the context carries")
+	})
+
+	t.Run("a context with no grant answers with the key it carries", func(t *testing.T) {
+		// MCP connects and the internal health-check and admin-verification probes build contexts
+		// without a grant: nothing was settled, so the key under its own name is what was presented.
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-ungranted")
+		assert.Equal(t, "sk-bf-ungranted", PresentedVirtualKey(ctx))
 	})
 
 	t.Run("an identity that presented something else presented no key", func(t *testing.T) {
@@ -1344,6 +1482,70 @@ func TestMandatoryAuthAcceptsAnAuthenticatedIdentity(t *testing.T) {
 	})
 }
 
+// A signed-in user nothing grants access to is refused as access not found - unless the caller asked
+// for such a user to be admitted, which Warp does: reaching its chat route already proves the user's
+// role allows it, and on a deployment without access profiles no user ever holds a permit. Admitted
+// means served as a key-less request is, ungoverned; it never widens what a presented key resolves
+// to, and it admits nobody who is not a user.
+func TestEvaluateAdmitsAnUngrantedUserOnlyWhenAsked(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, &mockInMemoryStore{})
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)},
+		logger, local, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	user := &schemas.UserRef{ID: "user-1"}
+	session := grant.NewCredential(grant.CredentialSessionToken, "user-1")
+	evaluate := func(t *testing.T, admit bool, identity schemas.Identity) (*EvaluationResult, *schemas.BifrostError) {
+		t.Helper()
+		ctx := emptyCtx()
+		ctx.Grant().SetIdentity(identity)
+		if admit {
+			ctx.SetValue(schemas.BifrostContextKeyAdmitUngrantedUser, true)
+		}
+		return plugin.Evaluate(ctx, &EvaluationRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			Provider:    schemas.OpenAI,
+			Model:       "gpt-4o",
+		})
+	}
+
+	t.Run("a user with no access is refused by default", func(t *testing.T) {
+		result, bifrostErr := evaluate(t, false, grant.NewIdentity(session, user, nil, nil, nil, nil, nil))
+
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, DecisionAccessNotFound, result.Decision)
+	})
+
+	t.Run("the same user is admitted when the caller asks", func(t *testing.T) {
+		result, bifrostErr := evaluate(t, true, grant.NewIdentity(session, user, nil, nil, nil, nil, nil))
+
+		require.Nil(t, bifrostErr)
+		assert.Equal(t, DecisionAllow, result.Decision)
+	})
+
+	t.Run("a presented key that resolves to nothing is still refused", func(t *testing.T) {
+		// The key is what the request goes by, whoever the session names: a dead key is a dead key.
+		result, bifrostErr := evaluate(t, true, grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-nobody"), user, nil, nil, nil, nil, nil))
+
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, DecisionAccessNotFound, result.Decision)
+	})
+
+	t.Run("a credential naming no user is not a user", func(t *testing.T) {
+		result, bifrostErr := evaluate(t, true, grant.NewIdentity(session, nil, nil, nil, nil, nil, nil))
+
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, DecisionAccessNotFound, result.Decision)
+	})
+}
+
 // Whether a credential may be used at all is settled when its permit is built, so the funnel reads
 // it off the permit rather than resolving the credential again. Inactive and expired are reported
 // distinctly, and inactive wins when a key is both: a key switched off is not a key that ran out.
@@ -1424,7 +1626,7 @@ func TestPermitFindsItsOwnScopedModelConfigs(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := resolverCtx(store, "sk-bf-scoped")
-	bases, _, _ := store.ResolvePermits(ctx)
+	bases, _, _, _ := store.ResolvePermits(ctx)
 	require.Len(t, bases, 1)
 	require.Equal(t, string(grant.PermitVirtualKey), bases[0].Type(), "the type production stamps, not a scope name")
 

@@ -103,6 +103,45 @@ type ToolDeps struct {
 	// charts holds what render_chart drew this turn, so the answer's chart
 	// blocks can be expanded from it. Built per turn with the rest of deps.
 	charts *chartRegistry
+	// topics answers list_topics from the computed clusters. Nil when there
+	// is no vector store.
+	topics TopicLister
+	// clock is the turn's one reading of the time, in the asker's zone.
+	clock time.Time
+}
+
+// now is the instant every tool call in a turn measures from, carrying the
+// asker's zone as its location.
+//
+// Pinned once per turn (see Agent.Run) rather than read per call: "-7d" then
+// names the same window for every tool the model calls, so a total and its
+// breakdown cover the same requests. The location is how parseTime knows whose
+// midnight "today" means. Deps built without a clock - most tests - read the
+// live one, in UTC.
+func (d *ToolDeps) now() time.Time {
+	if d == nil || d.clock.IsZero() {
+		return Now()
+	}
+	return d.clock
+}
+
+// askerLocation is the zone calendar dates are resolved in. timezone and
+// utcOffsetMinutes are the already-sanitized values a Turn carries.
+//
+// The named zone wins: only it knows that a date months away sits at a
+// different offset than today's. The bare offset is the fallback for a client
+// that sent no usable name, and is right for any date on this side of a
+// daylight saving change.
+func askerLocation(timezone string, utcOffsetMinutes int) *time.Location {
+	if timezone != "" {
+		if location, err := time.LoadLocation(timezone); err == nil {
+			return location
+		}
+	}
+	if utcOffsetMinutes != 0 {
+		return time.FixedZone("", utcOffsetMinutes*60)
+	}
+	return time.UTC
 }
 
 // Tool pairs a model-facing declaration with its executor.
@@ -142,8 +181,8 @@ const FilterSchema = `{
   "type": "object",
   "description": "Narrows which requests are considered. Omit a field to leave that dimension unfiltered. If start_time is omitted the last 24 hours are used.",
   "properties": {
-    "start_time": {"type": "string", "description": "RFC3339 timestamp, or a relative offset like -7d, -24h, -30m."},
-    "end_time": {"type": "string", "description": "RFC3339 timestamp, a relative offset like -1d, or \"now\". Defaults to now; omit it for a window that ends now."},
+    "start_time": {"type": "string", "description": "A relative offset like -7d, -24h, -30m for a rolling window. For a calendar day: \"today\", \"yesterday\" or a date like 2026-09-03, which starts at midnight in the asker's time zone. For a moment: a local time like 2026-09-03T14:00, read in the asker's time zone, or an RFC3339 timestamp with an explicit offset."},
+    "end_time": {"type": "string", "description": "Same forms as start_time, or \"now\". end_time is inclusive: a calendar day here means the end of that day, so one whole day is start_time and end_time set to that same day, never the day after. Defaults to now; omit it for a window that ends now."},
     "providers": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "e.g. openai, anthropic, bedrock."},
     "models": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "status": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "success, error, or cancelled."},
@@ -155,6 +194,7 @@ const FilterSchema = `{
     "user_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "business_unit_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "project_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
+    "topic_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Warp topics, by the id list_topics returns: the requests filed under any of them. The way to list, count or break down the requests behind a topic. Never guess an id - take it from a list_topics result."},
     "apps": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Include only these apps. \"Warp\" is refused: it is this assistant, not the person's traffic."},
     "min_latency": {"type": "number", "description": "Milliseconds."},
     "max_latency": {"type": "number", "description": "Milliseconds."},
@@ -164,6 +204,7 @@ const FilterSchema = `{
     "max_cost": {"type": "number"},
     "cache_hit_types": {"type": "array", "items": {"type": "string", "enum": ["direct", "semantic"]}, "minItems": 1, "description": "Local-cache hit type: direct (exact match) or semantic (fuzzy match)."},
     "routing_rule_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing rules that handled the request. Ids come from describe_filter_space or a query_usage_by routing_rule ranking - never guess one."},
+    "model_router_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Model routers that classified the request for its complexity tier, by router id. Only requests a router classified have one. Ids come from a query_usage_by model_router ranking - never guess one."},
     "routing_engine_used": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing engines the request passed through, e.g. routing-rule, governance, loadbalancing. A request can pass through several."},
     "selected_key_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Provider API keys Bifrost picked for the request - not virtual keys. Ids come from describe_filter_space (provider_keys)."},
     "aliases": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Model aliases the request was addressed to before Bifrost resolved them to a model."},
@@ -173,12 +214,15 @@ const FilterSchema = `{
     "user_agents": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Raw User-Agent strings. Prefer apps, which groups them."},
     "metadata_filters": {"type": "object", "additionalProperties": {"type": "string"}, "minProperties": 1, "description": "Request metadata, as key to value, e.g. {\"env\": \"prod\"}. Every pair must match. Keys and values that occur are listed by describe_filter_space (metadata)."},
     "session_id": {"type": "string", "minLength": 1, "description": "Exact Bifrost session id."},
+    "agent_names": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Registered agents, by name: requests whose session one of these agents ran in. Only for an agent the person names - never guess one."},
+    "agent_correlation_id": {"type": "string", "minLength": 1, "description": "Exact agent correlation id, as the caller sent it in x-bf-agent-correlation-id."},
     "request_id": {"type": "string", "minLength": 1, "description": "Exact request id."},
     "parent_request_id": {"type": "string", "minLength": 1, "description": "Requests spawned by this request, e.g. the fallback attempts of one call."},
     "missing_cost_only": {"type": "boolean", "description": "Only successful requests whose cost could not be computed."},
     "error_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's error classification on failed requests, e.g. invalid_request_error, overloaded_error - the ids a query_usage_by error_type ranking returns. This is how to fetch the rows behind one row of that ranking."},
     "error_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's finer-grained error code, e.g. context_length_exceeded. Many providers leave it empty - prefer error_types or status_codes unless an error_code ranking shows values. overloaded_error and rate_limit_error are error types - put them in error_types, never here."},
     "status_codes": {"type": "array", "items": {"type": "integer", "minimum": 100, "maximum": 599}, "minItems": 1, "maxItems": 50, "description": "HTTP status the failure came back with, e.g. 400, 429, 529. Populated on every failed request."},
+    "guardrail_outcomes": {"type": "array", "items": {"type": "string", "enum": ["blocked", "detected"]}, "minItems": 1, "description": "Requests a guardrail acted on: blocked (a guardrail stopped the request) or detected (a detect-only rule matched). Several values are OR-ed together."},
     "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."},
     "scope": {"type": "string", "enum": ["all"], "description": "Set to \"all\" when the question is explicitly about everyone's traffic. Without it, an identified caller with no team, customer, business unit, project, user or virtual key named is scoped to their own traffic. It widens the question, not the permission: results are still limited to what the caller may see."}
   }
@@ -205,6 +249,12 @@ func (e *unknownFilterFieldsError) Error() string {
 // is the worst failure mode available here: the model cannot tell, and neither
 // can the reader.
 func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, error) {
+	return parseFiltersWithLookback(raw, now, DefaultLookback)
+}
+
+// parseFiltersWithLookback is parseFilters with the window a missing
+// start_time falls back to, measured back from end_time.
+func parseFiltersWithLookback(raw map[string]any, now time.Time, lookback time.Duration) (*logstore.SearchFilters, error) {
 	filters := &logstore.SearchFilters{}
 	if raw == nil {
 		raw = map[string]any{}
@@ -214,14 +264,14 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		"start_time": true, "end_time": true, "providers": true, "models": true,
 		"status": true, "stop_reasons": true, "objects": true, "virtual_key_ids": true,
 		"team_ids": true, "customer_ids": true, "user_ids": true, "business_unit_ids": true,
-		"project_ids": true, "apps": true, "min_latency": true, "max_latency": true,
+		"project_ids": true, "topic_ids": true, "apps": true, "min_latency": true, "max_latency": true,
 		"min_tokens": true, "max_tokens": true, "min_cost": true, "max_cost": true,
 		"cache_hit_types": true, "content_search": true, "scope": true,
-		"error_types": true, "error_codes": true, "status_codes": true,
+		"error_types": true, "error_codes": true, "status_codes": true, "guardrail_outcomes": true,
 		"routing_rule_ids": true, "routing_engine_used": true, "selected_key_ids": true, "aliases": true,
-		"complexity_tiers": true, "complexity_mechanisms": true, "tool_call_names": true, "user_agents": true,
+		"model_router_ids": true, "complexity_tiers": true, "complexity_mechanisms": true, "tool_call_names": true, "user_agents": true,
 		"metadata_filters": true, "session_id": true, "request_id": true, "parent_request_id": true,
-		"missing_cost_only": true,
+		"missing_cost_only": true, "agent_names": true, "agent_correlation_id": true,
 	}
 	unknown := []string{}
 	for key := range raw {
@@ -250,7 +300,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	if err != nil {
 		return nil, fmt.Errorf("start_time: %w", err)
 	}
-	end, err := parseTime(raw["end_time"], now)
+	end, err := parseTimeBound(raw["end_time"], now, true)
 	if err != nil {
 		return nil, fmt.Errorf("end_time: %w", err)
 	}
@@ -258,13 +308,17 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		end = &now
 	}
 	if start == nil {
-		defaulted := end.Add(-DefaultLookback)
+		defaulted := end.Add(-lookback)
 		start = &defaulted
 	}
 	if start.After(*end) {
 		return nil, fmt.Errorf("start_time must be before end_time")
 	}
-	filters.StartTime, filters.EndTime = start, end
+	// now carries the asker's zone so a calendar day could be resolved; the
+	// window itself is two instants, handed on in UTC like every other time
+	// the store sees.
+	resolvedStart, resolvedEnd := start.UTC(), end.UTC()
+	filters.StartTime, filters.EndTime = &resolvedStart, &resolvedEnd
 
 	// HEAD's validating field readers are kept over the replayed side's silent
 	// coercions: a filter that rejects a malformed value is the whole point of
@@ -275,13 +329,15 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		"stop_reasons": &filters.StopReasons, "objects": &filters.Objects,
 		"virtual_key_ids": &filters.VirtualKeyIDs, "team_ids": &filters.TeamIDs,
 		"customer_ids": &filters.CustomerIDs, "user_ids": &filters.UserIDs,
-		"business_unit_ids": &filters.BusinessUnitIDs, "project_ids": &filters.ProjectIDs,
+		"business_unit_ids": &filters.BusinessUnitIDs, "project_ids": &filters.ProjectIDs, "topic_ids": &filters.TopicIDs,
 		"apps": &filters.Apps, "cache_hit_types": &filters.CacheHitTypes,
-		"error_types": &filters.ErrorTypes, "error_codes": &filters.ErrorCodes,
+		"error_types": &filters.ErrorTypes, "error_codes": &filters.ErrorCodes, "guardrail_outcomes": &filters.GuardrailOutcomes,
 		"routing_rule_ids": &filters.RoutingRuleIDs, "routing_engine_used": &filters.RoutingEngineUsed,
+		"model_router_ids": &filters.ModelRouterIDs,
 		"selected_key_ids": &filters.SelectedKeyIDs, "aliases": &filters.Aliases,
 		"complexity_tiers": &filters.ComplexityTiers, "complexity_mechanisms": &filters.ComplexityMechanisms,
 		"tool_call_names": &filters.ToolCallNames, "user_agents": &filters.UserAgents,
+		"agent_names": &filters.AgentNames,
 	} {
 		values, err := stringSliceField(raw, key)
 		if err != nil {
@@ -310,6 +366,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	}
 	for key, target := range map[string]*string{
 		"session_id": &filters.SessionID, "request_id": &filters.RequestID, "parent_request_id": &filters.ParentRequestID,
+		"agent_correlation_id": &filters.AgentCorrelationID,
 	} {
 		value, err := exactStringField(raw, key)
 		if err != nil {
@@ -363,11 +420,33 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	return filters, nil
 }
 
-// parseTime accepts RFC3339 or a relative offset like "-7d". Models reach
-// for relative offsets constantly ("last week"), and making them compute an
-// absolute timestamp from a date they only half-know is a reliable source of
-// wrong answers.
+// localTimeLayouts are the moments a model writes without an offset. They are
+// read on the asker's wall clock, which is where the time came from: someone
+// who says "around 2pm on the 3rd" means 2pm where they are.
+var localTimeLayouts = [...]string{"2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02T15:04", "2006-01-02 15:04"}
+
+// parseTime reads a window's start. See parseTimeBound.
 func parseTime(value any, now time.Time) (*time.Time, error) {
+	return parseTimeBound(value, now, false)
+}
+
+// parseTimeBound reads one end of a window: a relative offset like "-7d", a
+// calendar day ("today", "yesterday", "2026-09-03"), a local time with no
+// offset, or RFC3339.
+//
+// Models reach for relative offsets constantly ("last week"), and making them
+// compute an absolute timestamp from a date they only half-know is a reliable
+// source of wrong answers. The same holds for a calendar day, whose boundary
+// is midnight in the asker's zone at that date's own UTC offset: the model
+// names the day and the boundary is worked out here, in now's location, which
+// is the asker's zone (see ToolDeps.now).
+//
+// A day is a span, so which instant it stands for depends on the bound. As a
+// start it is the day's first instant. As an end (endOfDay) it is the last
+// microsecond before the next midnight - the store's end bound is inclusive,
+// and a bound on the midnight itself would take in the first hourly bucket of
+// the following day - or now, when the day is still in progress.
+func parseTimeBound(value any, now time.Time, endOfDay bool) (*time.Time, error) {
 	// Absent means "use the default window", which is documented. A value that
 	// is present but not a usable timestamp does not: returning nil for it
 	// turned a malformed argument into a valid query over different dates, and
@@ -375,12 +454,13 @@ func parseTime(value any, now time.Time) (*time.Time, error) {
 	if value == nil {
 		return nil, nil
 	}
+	const accepted = "a relative offset like -7d, a date like 2026-09-03, \"today\", \"yesterday\", or an RFC3339 timestamp"
 	text, ok := value.(string)
 	if !ok {
-		return nil, fmt.Errorf("must be an RFC3339 timestamp or a relative offset like -7d, got %T", value)
+		return nil, fmt.Errorf("must be %s, got %T", accepted, value)
 	}
 	if strings.TrimSpace(text) == "" {
-		return nil, fmt.Errorf("must be an RFC3339 timestamp or a relative offset like -7d, got a blank string")
+		return nil, fmt.Errorf("must be %s, got a blank string", accepted)
 	}
 	text = strings.TrimSpace(text)
 	// end_time is documented as defaulting to now, and models spell that out.
@@ -408,11 +488,52 @@ func parseTime(value any, now time.Time) (*time.Time, error) {
 		result := now.Add(duration)
 		return &result, nil
 	}
+	location := now.Location()
+	year, month, day := now.Date()
+	switch {
+	case strings.EqualFold(text, "today"):
+		return calendarDayBound(year, month, day, now, endOfDay), nil
+	case strings.EqualFold(text, "yesterday"):
+		return calendarDayBound(year, month, day-1, now, endOfDay), nil
+	}
+	if date, err := time.ParseInLocation(time.DateOnly, text, location); err == nil {
+		year, month, day = date.Date()
+		return calendarDayBound(year, month, day, now, endOfDay), nil
+	}
+	for _, layout := range localTimeLayouts {
+		parsed, err := time.ParseInLocation(layout, text, location)
+		if err != nil {
+			continue
+		}
+		// A wall time inside the hour a daylight saving change skips never
+		// happened. ParseInLocation does not refuse it: it returns a real
+		// instant an hour away, and the bound would silently be one nobody
+		// wrote. Formatting it back is how the shift shows.
+		if parsed.Format(layout) != text {
+			return nil, fmt.Errorf("local time %q does not exist in %s, where the clocks skip it; pass a time that does", text, location)
+		}
+		return &parsed, nil
+	}
 	parsed, err := time.Parse(time.RFC3339, text)
 	if err != nil {
-		return nil, fmt.Errorf("could not parse %q, expected RFC3339, a relative offset like -7d, or \"now\"", text)
+		return nil, fmt.Errorf("could not parse %q, expected %s, or \"now\"", text, accepted)
 	}
 	return &parsed, nil
+}
+
+// calendarDayBound is the start of a day in now's location, or its end. The day
+// is passed as a date rather than an instant so the next midnight is found by
+// the calendar: a day is 23 or 25 hours long across a daylight saving change.
+func calendarDayBound(year int, month time.Month, day int, now time.Time, endOfDay bool) *time.Time {
+	if !endOfDay {
+		start := time.Date(year, month, day, 0, 0, 0, 0, now.Location())
+		return &start
+	}
+	end := time.Date(year, month, day+1, 0, 0, 0, 0, now.Location()).Add(-time.Microsecond)
+	if end.After(now) {
+		end = now
+	}
+	return &end
 }
 
 // enumSliceArg reads a list argument whose values must come from a fixed set.
@@ -566,7 +687,7 @@ func exactStringField(raw map[string]any, key string) (string, error) {
 
 // metadataFiltersField reads metadata_filters: a non-empty object of string
 // values, every pair of which must match.
-func metadataFiltersField(raw map[string]any) (map[string]string, error) {
+func metadataFiltersField(raw map[string]any) (map[string][]string, error) {
 	value, present := raw["metadata_filters"]
 	if !present {
 		return nil, nil
@@ -575,13 +696,13 @@ func metadataFiltersField(raw map[string]any) (map[string]string, error) {
 	if !ok || len(pairs) == 0 {
 		return nil, fmt.Errorf(`metadata_filters must be a non-empty object of key to value, like {"env": "prod"}; omit the field to leave it unfiltered`)
 	}
-	out := make(map[string]string, len(pairs))
+	out := make(map[string][]string, len(pairs))
 	for key, item := range pairs {
 		text, ok := item.(string)
 		if !ok || strings.TrimSpace(key) == "" {
 			return nil, fmt.Errorf("metadata_filters values must be strings, got %v for %q", item, key)
 		}
-		out[key] = text
+		out[key] = []string{text}
 	}
 	return out, nil
 }
@@ -682,6 +803,29 @@ func stringArg(args map[string]any, key string) (string, error) {
 		return "", fmt.Errorf("%s must not be empty", key)
 	}
 	return text, nil
+}
+
+// stringSliceArg reads a required list of strings. A non-string element is an
+// error rather than dropped, so a malformed call is never answered as a
+// narrower one.
+func stringSliceArg(args map[string]any, key string) ([]string, error) {
+	value, present := args[key]
+	if !present || value == nil {
+		return nil, fmt.Errorf("%s is required", key)
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array of strings, got %T", key, value)
+	}
+	result := make([]string, 0, len(items))
+	for index, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s[%d] must be a string, got %T", key, index, item)
+		}
+		result = append(result, text)
+	}
+	return result, nil
 }
 
 // boolArg reads an optional boolean flag.
@@ -867,11 +1011,23 @@ func truncateText(text string, limit int) string {
 	count := 0
 	for i := range text {
 		if count == limit {
-			return text[:i] + "... [truncated]"
+			return text[:i] + truncationMarker
 		}
 		count++
 	}
-	return text + "... [truncated]"
+	return text + truncationMarker
+}
+
+// truncationMarker is what truncateText appends to a value it cut.
+const truncationMarker = "... [truncated]"
+
+// fitText cuts text like truncateText, but so the result, marker included, is
+// at most limit characters.
+func fitText(text string, limit int) string {
+	if utf8.RuneCountInString(text) <= limit {
+		return text
+	}
+	return truncateText(text, max(limit-utf8.RuneCountInString(truncationMarker), 0))
 }
 
 // logRow is the projection query_logs returns. The full logstore.Log carries
@@ -956,7 +1112,7 @@ func projectLog(entry *logstore.Log, includeContent bool, contentLimit int) logR
 		}
 	}
 	if includeContent {
-		row.Content = truncateText(logContent(entry), contentLimit)
+		row.Content = logContent(entry, contentLimit)
 	}
 	return row
 }
@@ -969,41 +1125,76 @@ func derefFloat(value *float64) float64 {
 	return *value
 }
 
-// logContent renders a compact text view of a request.
+// logContent renders what a request was about within limit characters: the
+// person's first turn, their latest one, and the reply.
 //
 // ContentHidden is the hard gate. It means content logging was disabled for that
 // request, so the payload must never be served back through any API — a promise
 // the deployment made to whoever's data this is. Warp is an API like any other,
 // and a model is the last place a hidden payload should resurface.
 //
-// Otherwise it prefers ContentSummary, the stored last-user-message preview,
-// which is already bounded. Reconstructing the full message history would
-// reintroduce exactly the size problem this projection exists to solve.
-func logContent(entry *logstore.Log) string {
+// It reads the person's own turns, with a coding agent's envelopes taken out,
+// rather than ContentSummary. The plain store's summary is every message joined
+// from the top, and a coding agent's request opens with its system prompt and
+// the project's AGENTS.md, so a preview cut from the front showed only the
+// agent's setup and never the task. The summary is the fallback for a row that
+// carries no history, such as a non-chat request, or only a list row's last
+// element with no user turn in it.
+//
+// The first turn is usually the task and the latest says where it went, so
+// the two share most of the budget; whatever a short section leaves unused
+// passes to the ones after it.
+func logContent(entry *logstore.Log, limit int) string {
 	if entry.ContentHidden {
 		return ""
 	}
-	if entry.ContentSummary != "" {
-		return entry.ContentSummary
+	opening, last := conversationUserTexts(entry)
+	assistant := strings.Join(strings.Fields(logAssistantText(entry)), " ")
+	hasHistory := len(entry.InputHistoryParsed) > 0 || len(entry.ResponsesInputHistoryParsed) > 0
+	if !hasHistory && assistant == "" {
+		return fitText(summaryTurnText(entry.ContentSummary, isCodexLog(entry)), limit)
 	}
-	// ChatMessage.Content is a pointer and is routinely nil - a tool-call turn
-	// carries none, and an offloaded payload leaves the parsed history empty.
-	// Every access below is guarded because this walks logged traffic, which is
-	// the least predictable data in the system.
-	var builder strings.Builder
-	for _, message := range entry.InputHistoryParsed {
-		if message.Content != nil && message.Content.ContentStr != nil {
-			builder.WriteString(string(message.Role))
-			builder.WriteString(": ")
-			builder.WriteString(*message.Content.ContentStr)
-			builder.WriteString("\n")
+	lastLabel := "user"
+	if opening != "" {
+		lastLabel = "user (latest turn)"
+	}
+	sections := [...]struct {
+		label, text string
+		share       int
+	}{
+		{"user (first turn)", opening, 2},
+		{lastLabel, last, 2},
+		{"assistant", assistant, 1},
+	}
+	// The labels and the newlines between sections come out of the limit
+	// first, so what is shared out is only what the text can use.
+	shares, remaining := 0, limit
+	for _, section := range sections {
+		if section.text != "" {
+			if shares > 0 {
+				remaining--
+			}
+			shares += section.share
+			remaining -= utf8.RuneCountInString(section.label) + len(": ")
 		}
 	}
-	if entry.OutputMessageParsed != nil && entry.OutputMessageParsed.Content != nil && entry.OutputMessageParsed.Content.ContentStr != nil {
-		builder.WriteString("assistant: ")
-		builder.WriteString(*entry.OutputMessageParsed.Content.ContentStr)
+	remaining = max(remaining, 0)
+	var builder strings.Builder
+	for _, section := range sections {
+		if section.text == "" {
+			continue
+		}
+		text := fitText(section.text, remaining*section.share/shares)
+		shares -= section.share
+		remaining -= utf8.RuneCountInString(text)
+		if builder.Len() > 0 {
+			builder.WriteByte('\n')
+		}
+		builder.WriteString(section.label)
+		builder.WriteString(": ")
+		builder.WriteString(text)
 	}
-	return strings.TrimSpace(builder.String())
+	return builder.String()
 }
 
 // bucketSize picks the bucket width, reusing the same helper the dashboard
@@ -1015,8 +1206,7 @@ func bucketSize(filters *logstore.SearchFilters) (int64, error) {
 	// itself (a shared helper other callers do use with a possibly-nil bound),
 	// StartTime/EndTime are never nil here.
 	bucket := logstore.DefaultBucketSize(filters.StartTime, filters.EndTime)
-	span := filters.EndTime.Sub(*filters.StartTime).Seconds()
-	if bucket > 0 && span/float64(bucket) > MaxHistogramBuckets {
+	if histogramBucketCount(*filters.StartTime, *filters.EndTime, bucket) > MaxHistogramBuckets {
 		return 0, fmt.Errorf("the requested time range produces more than %d buckets; use a shorter range", MaxHistogramBuckets)
 	}
 	return bucket, nil
@@ -1074,6 +1264,7 @@ func buildToolsFor(searcher *SemanticSearcher, userLimits bool) []Tool {
 		renderChartTool(),
 		describeFilterSpaceTool(),
 		describeVirtualKeyTool(),
+		listTopicsTool(),
 	)
 	if userLimits {
 		tools = append(tools, describeUserLimitsTool())
@@ -1163,4 +1354,22 @@ func filtersObject(args map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("filters must be an object mapping dimension names to values, got %T", value)
 	}
 	return raw, nil
+}
+
+// histogramBucketCount is how many buckets of bucketSeconds the inclusive range
+// [start, end] touches. The stores align buckets to the epoch, so a range that
+// starts partway through a bucket reaches one more than its length divided by
+// the bucket size, and both end buckets count.
+func histogramBucketCount(start, end time.Time, bucketSeconds int64) int64 {
+	if bucketSeconds <= 0 || end.Before(start) {
+		return 0
+	}
+	floorDiv := func(value int64) int64 {
+		quotient := value / bucketSeconds
+		if value%bucketSeconds < 0 {
+			quotient--
+		}
+		return quotient
+	}
+	return floorDiv(end.Unix()) - floorDiv(start.Unix()) + 1
 }

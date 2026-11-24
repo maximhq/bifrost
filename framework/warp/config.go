@@ -2,11 +2,14 @@ package warp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
@@ -19,6 +22,7 @@ type ConfigView struct {
 	Provider                schemas.ModelProvider `json:"provider"`
 	Model                   string                `json:"model"`
 	APIKeyID                string                `json:"api_key_id,omitempty"`
+	VirtualKeyID            string                `json:"virtual_key_id,omitempty"` // see schemas.WarpConfig.VirtualKeyID
 	AdditionalModels        []schemas.WarpModel   `json:"additional_models,omitempty"`
 	MaxIterations           int                   `json:"max_iterations"`
 	RequestTimeoutSeconds   int                   `json:"request_timeout_seconds"`
@@ -33,7 +37,20 @@ type ConfigView struct {
 	LogVectorStoreNamespace string                `json:"log_vector_store_namespace"`
 	SemanticSearchThreshold float64               `json:"semantic_search_threshold"`
 	SemanticSearchLimit     int                   `json:"semantic_search_limit"`
-	VectorStoreConnected    bool                  `json:"vector_store_connected"`
+	// TopicDiscoveryMinRequests is how many requests that matched no topic
+	// start a discovery.
+	TopicDiscoveryMinRequests int  `json:"topic_discovery_min_requests"`
+	VectorStoreConnected      bool `json:"vector_store_connected"`
+	// ManagementWrites are the kinds of change Warp may offer; empty is reads only.
+	ManagementWrites []string `json:"management_writes"`
+	// ManagementWritesAvailable is whether the Bifrost MCP serves writes at all
+	// (bifrost_mcp_allow_writes, the ceiling); without it none of the kinds runs.
+	ManagementWritesAvailable bool `json:"management_writes_available"`
+	// ManagementToolSizes is what each kind adds to every Warp request, so the
+	// settings page can say what turning one on costs. Empty while the Bifrost MCP is not loaded.
+	ManagementToolSizes []ManagementToolSize `json:"management_tool_sizes,omitempty"`
+	BifrostMCPAvailable bool                 `json:"bifrost_mcp_available"` // Warp answers only while this is true, when BifrostMCPEnabled
+	BifrostMCPEnabled   bool                 `json:"bifrost_mcp_enabled"`   // Warp uses the Bifrost MCP at all; off, the settings page and panel hide its setup
 }
 
 // ConfigInput is a configuration write.
@@ -45,6 +62,10 @@ type ConfigInput struct {
 	// provider that needs none. It round-trips like any other field - no
 	// omitted-means-unchanged special case, because there is no secret to lose.
 	APIKeyID string `json:"api_key_id,omitempty"`
+	// VirtualKeyID names the virtual key Warp's calls present for a caller with no
+	// user identity (see schemas.WarpConfig.VirtualKeyID). Omitted keeps the
+	// stored value; "" clears it.
+	VirtualKeyID string `json:"virtual_key_id,omitempty"`
 	// AdditionalModels are the other models the panel may switch to. Replaced
 	// whole on every write, like the default above: omitted means none.
 	AdditionalModels      []schemas.WarpModel `json:"additional_models,omitempty"`
@@ -64,6 +85,12 @@ type ConfigInput struct {
 	LogVectorStoreNamespace string                `json:"log_vector_store_namespace"`
 	SemanticSearchThreshold float64               `json:"semantic_search_threshold,omitempty"`
 	SemanticSearchLimit     int                   `json:"semantic_search_limit,omitempty"`
+	// TopicDiscoveryMinRequests is how many unmatched requests start a
+	// discovery. Omitted keeps the stored value.
+	TopicDiscoveryMinRequests int `json:"topic_discovery_min_requests,omitempty"`
+	// ManagementWrites are the kinds of change Warp may offer, from
+	// schemas.WarpManagementWrites. Omitted keeps the stored value; [] is reads only.
+	ManagementWrites []string `json:"management_writes,omitempty"`
 
 	// present records the keys the decoded request carried. See UnmarshalJSON.
 	present map[string]bool
@@ -122,6 +149,12 @@ func (c *ConfigInput) supplied(field string) bool {
 		return c.SemanticSearchThreshold != 0
 	case "semantic_search_limit":
 		return c.SemanticSearchLimit != 0
+	case "topic_discovery_min_requests":
+		return c.TopicDiscoveryMinRequests != 0
+	case "management_writes":
+		return c.ManagementWrites != nil
+	case "virtual_key_id":
+		return c.VirtualKeyID != ""
 	}
 	return false
 }
@@ -164,6 +197,15 @@ func applyStoredEmbeddingSettings(input *ConfigInput, previous *tables.TableWarp
 	if !input.supplied("semantic_search_limit") {
 		input.SemanticSearchLimit = previous.SemanticSearchLimit
 	}
+	if !input.supplied("topic_discovery_min_requests") {
+		input.TopicDiscoveryMinRequests = previous.TopicDiscoveryMinRequests
+	}
+	if !input.supplied("management_writes") {
+		input.ManagementWrites = managementWrites(previous)
+	}
+	if !input.supplied("virtual_key_id") {
+		input.VirtualKeyID = previous.VirtualKeyID
+	}
 }
 
 // ConfigView returns the stored configuration for display.
@@ -181,14 +223,21 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 		return ConfigView{}, err
 	}
 	if row == nil {
+		_, catalog := s.managementTools()
 		return ConfigView{
-			MaxIterations:           schemas.WarpDefaultMaxIterations,
-			RequestTimeoutSeconds:   schemas.WarpDefaultRequestTimeoutSeconds,
-			HistoryRetentionDays:    schemas.WarpDefaultHistoryRetentionDays,
-			LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
-			SemanticSearchThreshold: schemas.WarpDefaultSemanticSearchThreshold,
-			SemanticSearchLimit:     schemas.WarpDefaultSemanticSearchLimit,
-			VectorStoreConnected:    s.vectorStore != nil,
+			MaxIterations:             schemas.WarpDefaultMaxIterations,
+			RequestTimeoutSeconds:     schemas.WarpDefaultRequestTimeoutSeconds,
+			HistoryRetentionDays:      schemas.WarpDefaultHistoryRetentionDays,
+			LogVectorStoreNamespace:   schemas.WarpDefaultLogVectorStoreNamespace,
+			SemanticSearchThreshold:   schemas.WarpDefaultSemanticSearchThreshold,
+			SemanticSearchLimit:       schemas.WarpDefaultSemanticSearchLimit,
+			TopicDiscoveryMinRequests: schemas.WarpDefaultTopicDiscoveryMinRequests,
+			VectorStoreConnected:      s.vectorStore != nil,
+			ManagementWrites:          []string{},
+			ManagementWritesAvailable: catalog.hasWrites(),
+			ManagementToolSizes:       catalog.sizes(),
+			BifrostMCPAvailable:       s.bifrostMCPAvailable(),
+			BifrostMCPEnabled:         s.bifrostMCP,
 		}, nil
 	}
 	return s.configViewFromRow(row), nil
@@ -211,6 +260,13 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	applyStoredEmbeddingSettings(input, previous)
 	if err := ValidateConfigInput(input); err != nil {
 		return ConfigView{}, err
+	}
+	// Only when it changes: a key switched off after it was chosen must not block
+	// saving an unrelated setting, and a chat run under it reports the refusal.
+	if input.VirtualKeyID != "" && (previous == nil || previous.VirtualKeyID != input.VirtualKeyID) {
+		if err := s.checkWarpVirtualKey(ctx, input.VirtualKeyID); err != nil {
+			return ConfigView{}, err
+		}
 	}
 	if input.Enabled && s.vectorStore == nil {
 		return ConfigView{}, ErrNoVectorStore
@@ -273,23 +329,32 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		return ConfigView{}, err
 	}
 	row := &tables.TableWarpConfig{
-		Enabled:                 input.Enabled,
-		Provider:                string(input.Provider),
-		Model:                   input.Model,
-		APIKeyID:                strings.TrimSpace(input.APIKeyID),
-		AdditionalModels:        additionalModels,
-		MaxIterations:           input.MaxIterations,
-		RequestTimeoutSeconds:   input.RequestTimeoutSeconds,
-		HistoryRetentionDays:    input.HistoryRetentionDays,
-		Temperature:             input.Temperature,
-		ReasoningEffort:         input.ReasoningEffort,
-		EmbeddingProvider:       string(input.EmbeddingProvider),
-		EmbeddingModel:          input.EmbeddingModel,
-		EmbeddingAPIKeyID:       strings.TrimSpace(input.EmbeddingAPIKeyID),
-		EmbeddingDimension:      input.EmbeddingDimension,
-		LogVectorStoreNamespace: input.LogVectorStoreNamespace,
-		SemanticSearchThreshold: input.SemanticSearchThreshold,
-		SemanticSearchLimit:     input.SemanticSearchLimit,
+		Enabled:                   input.Enabled,
+		Provider:                  string(input.Provider),
+		Model:                     input.Model,
+		APIKeyID:                  strings.TrimSpace(input.APIKeyID),
+		VirtualKeyID:              input.VirtualKeyID,
+		AdditionalModels:          additionalModels,
+		MaxIterations:             input.MaxIterations,
+		RequestTimeoutSeconds:     input.RequestTimeoutSeconds,
+		HistoryRetentionDays:      input.HistoryRetentionDays,
+		Temperature:               input.Temperature,
+		ReasoningEffort:           input.ReasoningEffort,
+		EmbeddingProvider:         string(input.EmbeddingProvider),
+		EmbeddingModel:            input.EmbeddingModel,
+		EmbeddingAPIKeyID:         strings.TrimSpace(input.EmbeddingAPIKeyID),
+		EmbeddingDimension:        input.EmbeddingDimension,
+		LogVectorStoreNamespace:   input.LogVectorStoreNamespace,
+		SemanticSearchThreshold:   input.SemanticSearchThreshold,
+		SemanticSearchLimit:       input.SemanticSearchLimit,
+		TopicDiscoveryMinRequests: input.TopicDiscoveryMinRequests,
+	}
+	if len(input.ManagementWrites) > 0 {
+		encoded, err := sonic.MarshalString(input.ManagementWrites)
+		if err != nil {
+			return ConfigView{}, err
+		}
+		row.ManagementWrites = &encoded
 	}
 	if len(retired) > 0 {
 		value := string(retiredJSON)
@@ -316,6 +381,26 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		return ConfigView{}, err
 	}
 	return s.configViewFromRow(row), nil
+}
+
+// checkWarpVirtualKey refuses a Warp virtual key that names no key, or one
+// switched off. Without a governance reader there is nothing to check against,
+// and the key is accepted as given.
+func (s *Service) checkWarpVirtualKey(ctx context.Context, id string) error {
+	if s.governance == nil {
+		return nil
+	}
+	vk, err := s.governance.GetVirtualKey(ctx, id)
+	if errors.Is(err, configstore.ErrNotFound) || (err == nil && vk == nil) {
+		return fmt.Errorf("%w: virtual_key_id %q names no virtual key", ErrInvalidConfig, id)
+	}
+	if err != nil {
+		return err
+	}
+	if !vk.IsActiveValue() {
+		return fmt.Errorf("%w: virtual key %q is inactive", ErrInvalidConfig, vk.Name)
+	}
+	return nil
 }
 
 // mergeOmittedEmbeddingSettings fills embedding fields the write left empty
@@ -349,6 +434,9 @@ func mergeOmittedEmbeddingSettings(row, previous *tables.TableWarpConfig) {
 	if row.SemanticSearchLimit == 0 {
 		row.SemanticSearchLimit = previous.SemanticSearchLimit
 	}
+	if row.TopicDiscoveryMinRequests == 0 {
+		row.TopicDiscoveryMinRequests = previous.TopicDiscoveryMinRequests
+	}
 }
 
 // ValidateConfigInput normalizes and checks a write in place.
@@ -369,6 +457,7 @@ func ValidateConfigInput(input *ConfigInput) error {
 	input.EmbeddingProvider = schemas.ModelProvider(strings.TrimSpace(string(input.EmbeddingProvider)))
 	input.EmbeddingModel = strings.TrimSpace(input.EmbeddingModel)
 	input.EmbeddingAPIKeyID = strings.TrimSpace(input.EmbeddingAPIKeyID)
+	input.VirtualKeyID = strings.TrimSpace(input.VirtualKeyID)
 	input.LogVectorStoreNamespace = strings.TrimSpace(input.LogVectorStoreNamespace)
 	if input.LogVectorStoreNamespace == "" {
 		input.LogVectorStoreNamespace = schemas.WarpDefaultLogVectorStoreNamespace
@@ -379,6 +468,14 @@ func ValidateConfigInput(input *ConfigInput) error {
 	if input.SemanticSearchLimit == 0 {
 		input.SemanticSearchLimit = schemas.WarpDefaultSemanticSearchLimit
 	}
+	if input.TopicDiscoveryMinRequests == 0 {
+		input.TopicDiscoveryMinRequests = schemas.WarpDefaultTopicDiscoveryMinRequests
+	}
+	writes, err := normalizeManagementWrites(input.ManagementWrites)
+	if err != nil {
+		return err
+	}
+	input.ManagementWrites = writes
 
 	if input.Enabled {
 		if input.Provider == "" {
@@ -443,6 +540,9 @@ func ValidateConfigInput(input *ConfigInput) error {
 	}
 	if input.SemanticSearchLimit < 1 || input.SemanticSearchLimit > schemas.WarpMaxSemanticSearchLimit {
 		return fmt.Errorf("%w: semantic_search_limit must be between 1 and %d", ErrInvalidConfig, schemas.WarpMaxSemanticSearchLimit)
+	}
+	if input.TopicDiscoveryMinRequests < schemas.WarpMinTopicDiscoveryMinRequests || input.TopicDiscoveryMinRequests > schemas.WarpMaxTopicDiscoveryMinRequests {
+		return fmt.Errorf("%w: topic_discovery_min_requests must be between %d and %d", ErrInvalidConfig, schemas.WarpMinTopicDiscoveryMinRequests, schemas.WarpMaxTopicDiscoveryMinRequests)
 	}
 	return nil
 }
@@ -545,28 +645,45 @@ func (s *Service) Config(ctx context.Context) (*schemas.WarpConfig, error) {
 // form never has to show a zero where a default applies.
 func (s *Service) configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 	config := configFromRow(row)
-	return ConfigView{
-		Configured:              config.IsConfigured(),
-		Enabled:                 row.Enabled,
-		Provider:                schemas.ModelProvider(row.Provider),
-		Model:                   row.Model,
-		APIKeyID:                row.APIKeyID,
-		AdditionalModels:        config.AdditionalModels,
-		MaxIterations:           config.EffectiveMaxIterations(),
-		RequestTimeoutSeconds:   config.EffectiveRequestTimeoutSeconds(),
-		HistoryRetentionDays:    config.EffectiveHistoryRetentionDays(),
-		SystemPromptSuffix:      derefString(row.SystemPromptSuffix),
-		Temperature:             config.Temperature,
-		ReasoningEffort:         config.ReasoningEffort,
-		EmbeddingProvider:       config.EmbeddingProvider,
-		EmbeddingModel:          config.EmbeddingModel,
-		EmbeddingAPIKeyID:       config.EmbeddingAPIKeyID,
-		EmbeddingDimension:      config.EmbeddingDimension,
-		LogVectorStoreNamespace: config.EffectiveLogVectorStoreNamespace(),
-		SemanticSearchThreshold: config.EffectiveSemanticSearchThreshold(),
-		SemanticSearchLimit:     config.EffectiveSemanticSearchLimit(),
-		VectorStoreConnected:    s.vectorStore != nil,
+	view := ConfigView{
+		Configured:                config.IsConfigured(),
+		Enabled:                   row.Enabled,
+		Provider:                  schemas.ModelProvider(row.Provider),
+		Model:                     row.Model,
+		APIKeyID:                  row.APIKeyID,
+		VirtualKeyID:              row.VirtualKeyID,
+		AdditionalModels:          config.AdditionalModels,
+		MaxIterations:             config.EffectiveMaxIterations(),
+		RequestTimeoutSeconds:     config.EffectiveRequestTimeoutSeconds(),
+		HistoryRetentionDays:      config.EffectiveHistoryRetentionDays(),
+		SystemPromptSuffix:        derefString(row.SystemPromptSuffix),
+		Temperature:               config.Temperature,
+		ReasoningEffort:           config.ReasoningEffort,
+		EmbeddingProvider:         config.EmbeddingProvider,
+		EmbeddingModel:            config.EmbeddingModel,
+		EmbeddingAPIKeyID:         config.EmbeddingAPIKeyID,
+		EmbeddingDimension:        config.EmbeddingDimension,
+		LogVectorStoreNamespace:   config.EffectiveLogVectorStoreNamespace(),
+		SemanticSearchThreshold:   config.EffectiveSemanticSearchThreshold(),
+		SemanticSearchLimit:       config.EffectiveSemanticSearchLimit(),
+		TopicDiscoveryMinRequests: config.EffectiveTopicDiscoveryMinRequests(),
+		VectorStoreConnected:      s.vectorStore != nil,
+		ManagementWrites:          nonNilStrings(config.ManagementWrites),
+		BifrostMCPAvailable:       s.bifrostMCPAvailable(),
+		BifrostMCPEnabled:         s.bifrostMCP,
 	}
+	_, catalog := s.managementTools()
+	view.ManagementWritesAvailable = catalog.hasWrites()
+	view.ManagementToolSizes = catalog.sizes()
+	return view
+}
+
+// bifrostMCPAvailable reports whether a turn would get the Bifrost MCP's tools,
+// the same check NewTurn refuses on, so the panel can show the setup state
+// before anyone asks a question.
+func (s *Service) bifrostMCPAvailable() bool {
+	_, catalog := s.managementTools()
+	return catalog != nil
 }
 
 // configFromRow lifts a stored row into the shared schema type.
@@ -577,6 +694,7 @@ func configFromRow(row *tables.TableWarpConfig) *schemas.WarpConfig {
 	return &schemas.WarpConfig{
 		Enabled:                         row.Enabled,
 		APIKeyID:                        row.APIKeyID,
+		VirtualKeyID:                    row.VirtualKeyID,
 		Provider:                        schemas.ModelProvider(row.Provider),
 		Model:                           row.Model,
 		AdditionalModels:                additionalModels(row),
@@ -594,6 +712,8 @@ func configFromRow(row *tables.TableWarpConfig) *schemas.WarpConfig {
 		LogVectorStoreNamespace:         row.LogVectorStoreNamespace,
 		SemanticSearchThreshold:         row.SemanticSearchThreshold,
 		SemanticSearchLimit:             row.SemanticSearchLimit,
+		TopicDiscoveryMinRequests:       row.TopicDiscoveryMinRequests,
+		ManagementWrites:                managementWrites(row),
 		RetiredLogVectorStoreNamespaces: retiredNamespaces(row),
 	}
 }
@@ -657,4 +777,51 @@ func derefString(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// managementWrites reads the stored kinds, dropping any this build does not know.
+func managementWrites(row *tables.TableWarpConfig) []string {
+	if row == nil || row.ManagementWrites == nil || *row.ManagementWrites == "" {
+		return nil
+	}
+	var values []string
+	if err := sonic.UnmarshalString(*row.ManagementWrites, &values); err != nil {
+		return nil
+	}
+	known, _ := normalizeManagementWrites(slices.DeleteFunc(values, func(v string) bool { return !schemas.IsWarpManagementWrite(v) }))
+	return known
+}
+
+// normalizeManagementWrites trims and lowercases the kinds, drops duplicates and
+// orders them as schemas.WarpManagementWrites does, so a stored value compares
+// equal however it was written. An unknown kind is refused: reads are not one,
+// they are always on.
+func normalizeManagementWrites(values []string) ([]string, error) {
+	if values == nil {
+		return nil, nil
+	}
+	chosen := map[string]bool{}
+	for _, value := range values {
+		kind := strings.ToLower(strings.TrimSpace(value))
+		if !schemas.IsWarpManagementWrite(kind) {
+			return nil, fmt.Errorf("%w: management_writes may only contain %s; reads are always on", ErrInvalidConfig, strings.Join(schemas.WarpManagementWrites, ", "))
+		}
+		chosen[kind] = true
+	}
+	normalized := make([]string, 0, len(chosen))
+	for _, kind := range schemas.WarpManagementWrites {
+		if chosen[kind] {
+			normalized = append(normalized, kind)
+		}
+	}
+	return normalized, nil
+}
+
+// nonNilStrings returns values, or an empty list for nil, so a view always
+// carries the field as a list.
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }

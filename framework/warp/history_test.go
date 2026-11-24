@@ -86,6 +86,20 @@ func (m *memoryConversations) AppendWarpMessages(_ context.Context, ownerID, con
 	return nil
 }
 
+func (m *memoryConversations) SwapWarpQuestion(_ context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error) {
+	thread, ok := m.threads[conversationID]
+	if !ok || thread.OwnerID != ownerID {
+		return false, nil
+	}
+	for i := range thread.Messages {
+		if thread.Messages[i].ID == messageID && thread.Messages[i].QuestionJSON == expected {
+			thread.Messages[i].QuestionJSON = replacement
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *memoryConversations) DeleteWarpConversation(_ context.Context, ownerID, id string) error {
 	if _, err := m.GetWarpConversation(context.Background(), ownerID, id); err != nil {
 		return err
@@ -246,7 +260,42 @@ func TestWarpRecordTurnFilesErrorTurns(t *testing.T) {
 	service := historyService(store)
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-err", IsNew: true, question: "q"}, ChatResponse{Error: &ChatError{Code: ErrUpstream, Message: "boom"}})
 	require.NotEmpty(t, id)
-	require.Equal(t, "boom", store.threads[id].Messages[1].Error)
+	detail, err := service.GetConversation(context.Background(), schemas.WarpOwnerID("u1"), id)
+	require.NoError(t, err)
+	require.Equal(t, "boom", detail.Messages[1].Error)
+}
+
+// A failed turn keeps its code. Only the message used to be filed, so a
+// reopened thread headlined a spent budget with whatever followed the first
+// colon of governance's sentence, where the live turn had said "You've used up
+// your budget".
+func TestWarpReopenedErrorTurnKeepsItsCode(t *testing.T) {
+	store := newMemoryConversations()
+	service := historyService(store)
+	message := "This deployment's governance rules refused Warp's model call for your account: user budget exceeded: 0.0600 >= 0.0500 dollars"
+	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-code", IsNew: true, question: "q"}, ChatResponse{Error: &ChatError{Code: ErrBudgetExceeded, Message: message}})
+	require.NotEmpty(t, id)
+
+	detail, err := service.GetConversation(context.Background(), schemas.WarpOwnerID("u1"), id)
+	require.NoError(t, err)
+	require.Equal(t, ErrBudgetExceeded, detail.Messages[1].ErrorCode)
+	require.Equal(t, message, detail.Messages[1].Error, "the message comes back whole, colons and all")
+
+	// A row filed before codes were kept has a bare message, which may hold a
+	// colon of its own; it is a message, never a code.
+	store.threads[id].Messages[1].Error = "TypeError: Failed to fetch"
+	detail, err = service.GetConversation(context.Background(), schemas.WarpOwnerID("u1"), id)
+	require.NoError(t, err)
+	require.Empty(t, detail.Messages[1].ErrorCode)
+	require.Equal(t, "TypeError: Failed to fetch", detail.Messages[1].Error)
+
+	// A code-less message that happens to start like one still round-trips as
+	// a message.
+	for _, message := range []string{"timeout: upstream closed", ":odd", "plain"} {
+		code, decoded := decodeStoredError(encodeStoredError("", message))
+		require.Empty(t, code, message)
+		require.Equal(t, message, decoded)
+	}
 }
 
 // Filing must survive a request whose context is already cancelled: the answer

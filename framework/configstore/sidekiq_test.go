@@ -728,7 +728,7 @@ func TestListSidekiqJobs(t *testing.T) {
 	mk("old-done", tables.SidekiqStatusCompleted, 72*time.Hour, &old)
 
 	t.Run("active jobs always listed, finished jobs only inside the window, newest first", func(t *testing.T) {
-		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 50)
+		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 50, nil)
 		require.NoError(t, err)
 		ids := make([]string, 0, len(jobs))
 		for _, j := range jobs {
@@ -738,8 +738,190 @@ func TestListSidekiqJobs(t *testing.T) {
 	})
 
 	t.Run("limit caps the result", func(t *testing.T) {
-		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 2)
+		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 2, nil)
 		require.NoError(t, err)
 		assert.Len(t, jobs, 2)
 	})
+
+	// A routine kind's completed runs are left out in the query, so they never
+	// take the places the limit leaves; its failures and active jobs still show.
+	t.Run("quiet kinds hide only their completed jobs", func(t *testing.T) {
+		quiet := func(id, status string, completedAgo *time.Duration) {
+			t.Helper()
+			require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: id, Kind: "routine"}))
+			setCreatedAt(t, store, id, now.Add(-30*time.Minute))
+			updates := map[string]any{"status": status}
+			if completedAgo != nil {
+				updates["completed_at"] = now.Add(-*completedAgo)
+			}
+			require.NoError(t, store.DB().Model(&tables.TableSidekiqJob{}).Where("id = ?", id).Updates(updates).Error)
+		}
+		quiet("routine-done", tables.SidekiqStatusCompleted, &recent)
+		quiet("routine-failed", tables.SidekiqStatusFailed, &recent)
+		quiet("routine-pending", tables.SidekiqStatusPending, nil)
+
+		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 50, []string{"routine"})
+		require.NoError(t, err)
+		ids := make([]string, 0, len(jobs))
+		for _, j := range jobs {
+			ids = append(ids, j.ID)
+		}
+		assert.NotContains(t, ids, "routine-done")
+		assert.Contains(t, ids, "routine-failed")
+		assert.Contains(t, ids, "routine-pending")
+		assert.Contains(t, ids, "recent-done", "another kind's completed job is still listed")
+
+		jobs, err = store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 50, nil)
+		require.NoError(t, err)
+		ids = ids[:0]
+		for _, j := range jobs {
+			ids = append(ids, j.ID)
+		}
+		assert.Contains(t, ids, "routine-done", "nothing is quiet unless asked")
+	})
+}
+
+// TestDeleteTerminalSidekiqJobs pins that only finished jobs of the kind last
+// updated before the cutoff are deleted, at most limit per call.
+func TestDeleteTerminalSidekiqJobs(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+	old := time.Now().Add(-48 * time.Hour)
+	for _, j := range []struct{ id, kind, status string }{
+		{"done-1", "timer", tables.SidekiqStatusCompleted},
+		{"done-2", "timer", tables.SidekiqStatusFailed},
+		{"done-3", "timer", tables.SidekiqStatusCancelled},
+		{"pending", "timer", tables.SidekiqStatusPending},
+		{"running", "timer", tables.SidekiqStatusRunning},
+		{"other", "manual", tables.SidekiqStatusCompleted},
+		{"recent", "timer", tables.SidekiqStatusCompleted},
+	} {
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: j.id, Kind: j.kind, Status: j.status}))
+		if j.id != "recent" {
+			setUpdatedAt(t, store, j.id, old)
+		}
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+
+	n, err := store.DeleteTerminalSidekiqJobs(ctx, "timer", cutoff, 2)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, n, "limit bounds one call")
+	n, err = store.DeleteTerminalSidekiqJobs(ctx, "timer", cutoff, 2)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, n)
+	n, err = store.DeleteTerminalSidekiqJobs(ctx, "timer", cutoff, 2)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+
+	for _, id := range []string{"pending", "running", "other", "recent"} {
+		getJob(t, store, id)
+	}
+	for _, id := range []string{"done-1", "done-2", "done-3"} {
+		job, err := store.GetSidekiqJob(ctx, id)
+		require.NoError(t, err)
+		assert.Nil(t, job, id)
+	}
+}
+
+// TestClaimPartitionedSidekiqJobSerializesPerKey pins on PostgreSQL that two
+// claims for one partitioning key cannot both commit as running. Job A runs
+// under a stale owner and is older; job B is pending and newer. The reclaim of
+// A takes the key's lock and then waits on A's row, which another transaction
+// holds, so its statement has read the partition before B is claimed. B's
+// claim must come back unclaimed while A's reclaim holds the key; without
+// serializing the claims per key both A and B would end up running.
+func TestClaimPartitionedSidekiqJobSerializesPerKey(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := store.DB().WithContext(ctx)
+
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "a", Kind: "sync", PartitioningKey: "p"}))
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "b", Kind: "sync", PartitioningKey: "p"}))
+	base := time.Now().Add(-time.Hour)
+	require.NoError(t, db.Exec(`UPDATE sidekiq SET created_at = ? WHERE id = 'a'`, base).Error)
+	require.NoError(t, db.Exec(`UPDATE sidekiq SET created_at = ? WHERE id = 'b'`, base.Add(time.Minute)).Error)
+	require.NoError(t, db.Exec(`UPDATE sidekiq SET status = ?, runner_id = 'r-old', updated_at = ? WHERE id = 'a'`, tables.SidekiqStatusRunning, base).Error)
+	a, b := getJob(t, store, "a"), getJob(t, store, "b")
+	stale := time.Now().Add(-15 * time.Minute)
+
+	holder := db.Begin()
+	require.NoError(t, holder.Error)
+	defer holder.Rollback()
+	var holderPID int64
+	require.NoError(t, holder.Raw(`SELECT pg_backend_pid()`).Scan(&holderPID).Error)
+	require.NoError(t, holder.Exec(`UPDATE sidekiq SET metadata = metadata WHERE id = 'a'`).Error)
+
+	// The claims report through channels rather than t, so a failed test
+	// never logs from a goroutine that outlives it.
+	type claimResult struct {
+		ok  bool
+		err error
+	}
+	claimA := make(chan claimResult, 1)
+	go func() {
+		ok, err := store.ClaimPartitionedSidekiqJob(ctx, "a", "r-new", stale, "p", a.CreatedAt)
+		claimA <- claimResult{ok, err}
+	}()
+	// The reclaim of A is now waiting on A's row, its statement already begun.
+	require.Eventually(t, func() bool {
+		var n int64
+		err := db.Raw(`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND ? = ANY(pg_blocking_pids(pid))`, holderPID).Scan(&n).Error
+		return err == nil && n > 0
+	}, 10*time.Second, 20*time.Millisecond, "the reclaim of A waits on the held row")
+
+	claimB := make(chan claimResult, 1)
+	go func() {
+		ok, err := store.ClaimPartitionedSidekiqJob(ctx, "b", "r-b", stale, "p", b.CreatedAt)
+		claimB <- claimResult{ok, err}
+	}()
+	// B's claim settles while A's reclaim still holds the key and A's row is
+	// still held, so the outcome is decided by the per-key lock, not timing.
+	var gotB claimResult
+	select {
+	case gotB = <-claimB:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the claim of B never returned while the reclaim of A held the key")
+	}
+	require.NoError(t, holder.Rollback().Error)
+	gotA := <-claimA
+	require.NoError(t, gotB.err)
+	require.NoError(t, gotA.err)
+	assert.False(t, gotB.ok, "B is not claimed while A's reclaim holds the key")
+	assert.True(t, gotA.ok, "the reclaim of A runs")
+	assert.Equal(t, tables.SidekiqStatusPending, getJob(t, store, "b").Status, "B stays claimable for the next tick")
+}
+
+// TestClaimPartitionedSidekiqJobBusyKeyDoesNotWait pins on PostgreSQL that a
+// claim whose partitioning key is locked by another claim returns unclaimed at
+// once instead of waiting. The dispatcher holds a runner slot for the whole
+// claim, on a context without a deadline, so a waiting claim would pin that
+// slot for as long as the other claim takes.
+func TestClaimPartitionedSidekiqJobBusyKeyDoesNotWait(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := store.DB().WithContext(ctx)
+
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "j", Kind: "sync", PartitioningKey: "p"}))
+	j := getJob(t, store, "j")
+
+	holder := db.Begin()
+	require.NoError(t, holder.Error)
+	defer holder.Rollback()
+	require.NoError(t, holder.Exec(`SELECT pg_advisory_xact_lock(hashtext(?))`, "sidekiq:p").Error)
+
+	claimCtx, claimCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer claimCancel()
+	started := time.Now()
+	ok, err := store.ClaimPartitionedSidekiqJob(claimCtx, "j", "r-1", time.Now().Add(-15*time.Minute), "p", j.CreatedAt)
+	require.NoError(t, err, "a busy key is not an error")
+	assert.False(t, ok, "a busy key leaves the job unclaimed")
+	assert.Less(t, time.Since(started), time.Second, "the claim does not wait for the key")
+	assert.Equal(t, tables.SidekiqStatusPending, getJob(t, store, "j").Status, "the job stays claimable")
+
+	require.NoError(t, holder.Rollback().Error)
+	ok, err = store.ClaimPartitionedSidekiqJob(ctx, "j", "r-1", time.Now().Add(-15*time.Minute), "p", j.CreatedAt)
+	require.NoError(t, err)
+	assert.True(t, ok, "the job is claimed once the key is free")
 }

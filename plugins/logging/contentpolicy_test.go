@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -129,6 +130,157 @@ func TestResolveContentPolicyVirtualKeyOverridesClientFlag(t *testing.T) {
 	})
 }
 
+// The log store resolves every content-logging layer through the shared tiers, not the virtual key
+// alone: a higher org layer outranks the key in both directions, and peers in the credential tier
+// resolve with any "off" winning.
+func TestResolveContentPolicyFollowsLayerTiers(t *testing.T) {
+	type stamp struct {
+		layer    schemas.BifrostContextKey
+		disabled bool
+	}
+	for _, tc := range []struct {
+		name       string
+		clientOff  bool
+		stamps     []stamp
+		wantStored bool
+	}{
+		{
+			name:      "team off outranks a key that turns content on",
+			clientOff: false,
+			stamps: []stamp{
+				{schemas.BifrostContextKeyTeamDisableContentLogging, true},
+				{schemas.BifrostContextKeyGovernanceDisableContentLogging, false},
+			},
+			wantStored: false,
+		},
+		{
+			name:      "business unit on outranks a key that turns content off",
+			clientOff: false,
+			stamps: []stamp{
+				{schemas.BifrostContextKeyBusinessUnitDisableContentLogging, false},
+				{schemas.BifrostContextKeyGovernanceDisableContentLogging, true},
+			},
+			wantStored: true,
+		},
+		{
+			name:      "a provider key off beats a virtual key on in the same tier",
+			clientOff: false,
+			stamps: []stamp{
+				{schemas.BifrostContextKeyGovernanceDisableContentLogging, false},
+				{schemas.BifrostContextKeyProviderKeyDisableContentLogging, true},
+			},
+			wantStored: false,
+		},
+		{
+			name:      "a user on overrides a client flag that is off",
+			clientOff: true,
+			stamps: []stamp{
+				{schemas.BifrostContextKeyUserDisableContentLogging, false},
+			},
+			wantStored: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := policyTestPlugin(boolPtr(tc.clientOff), nil, true)
+			ctx := policyCtx(false, nil)
+			for _, s := range tc.stamps {
+				schemas.StampContentLoggingDecision(ctx, s.layer, s.disabled)
+			}
+			assert.Equal(t, tc.wantStored, p.resolveContentPolicy(ctx).storeContent)
+		})
+	}
+}
+
+// A pre-hook's content decision is pending while a layer that is stamped after it could still change
+// the result: the caller's layers until governance marks them resolved, and on the LLM path the
+// provider key, which core picks after every PreLLMHook. An allowed header ends it, since it outranks
+// every layer.
+func TestContentDecisionPending(t *testing.T) {
+	withIdentity := func(kind grant.CredentialKind) func(*schemas.BifrostContext) {
+		return func(ctx *schemas.BifrostContext) {
+			ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(kind, "presented"), nil, nil, nil, nil, nil, nil))
+		}
+	}
+	resolved := func(ctx *schemas.BifrostContext) { schemas.MarkCallerContentLoggingResolved(ctx) }
+	stamp := func(layer schemas.BifrostContextKey, disabled bool) func(*schemas.BifrostContext) {
+		return func(ctx *schemas.BifrostContext) { schemas.StampContentLoggingDecision(ctx, layer, disabled) }
+	}
+	for _, tc := range []struct {
+		name    string
+		setup   []func(*schemas.BifrostContext)
+		wantMCP bool
+		wantLLM bool
+	}{
+		{
+			name:    "no caller: only the provider key is still to come",
+			wantMCP: false, wantLLM: true,
+		},
+		{
+			name:    "an unresolved virtual key",
+			setup:   []func(*schemas.BifrostContext){withIdentity(grant.CredentialVirtualKey)},
+			wantMCP: true, wantLLM: true,
+		},
+		{
+			name:    "an unresolved user token with no virtual key",
+			setup:   []func(*schemas.BifrostContext){withIdentity(grant.CredentialMCPToken)},
+			wantMCP: true, wantLLM: true,
+		},
+		{
+			name:    "a resolved caller whose layers all inherit",
+			setup:   []func(*schemas.BifrostContext){withIdentity(grant.CredentialIdentityToken), resolved},
+			wantMCP: false, wantLLM: true,
+		},
+		{
+			name: "a resolved caller whose team decided leaves the provider key nothing to change",
+			setup: []func(*schemas.BifrostContext){
+				withIdentity(grant.CredentialVirtualKey),
+				stamp(schemas.BifrostContextKeyTeamDisableContentLogging, false),
+				resolved,
+			},
+			wantMCP: false, wantLLM: false,
+		},
+		{
+			name: "a resolved key that turned content off leaves the provider key nothing to change",
+			setup: []func(*schemas.BifrostContext){
+				withIdentity(grant.CredentialVirtualKey),
+				stamp(schemas.BifrostContextKeyGovernanceDisableContentLogging, true),
+				resolved,
+			},
+			wantMCP: false, wantLLM: false,
+		},
+		{
+			name: "an allowed header outranks every layer still to come",
+			setup: []func(*schemas.BifrostContext){
+				withIdentity(grant.CredentialVirtualKey),
+				func(ctx *schemas.BifrostContext) {
+					ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, true)
+					ctx.SetValue(schemas.BifrostContextKeyDisableContentLogging, true)
+				},
+			},
+			wantMCP: false, wantLLM: false,
+		},
+		{
+			name: "a header the deployment does not allow ends nothing",
+			setup: []func(*schemas.BifrostContext){
+				withIdentity(grant.CredentialVirtualKey),
+				func(ctx *schemas.BifrostContext) { ctx.SetValue(schemas.BifrostContextKeyDisableContentLogging, true) },
+			},
+			wantMCP: true, wantLLM: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			ctx.SetGrant(grant.New())
+			for _, s := range tc.setup {
+				s(ctx)
+			}
+			assert.Equal(t, tc.wantMCP, contentDecisionPending(ctx, contentScopeMCP), "MCP scope")
+			assert.Equal(t, tc.wantLLM, contentDecisionPending(ctx, contentScopeLLM), "LLM scope")
+		})
+	}
+	assert.False(t, contentDecisionPending(nil, contentScopeLLM), "nil context")
+}
+
 func TestResolveContentPolicyHeaderDisableWithoutGateIgnored(t *testing.T) {
 	p := policyTestPlugin(nil, nil, true)
 
@@ -159,6 +311,28 @@ func TestResolveContentPolicyRetainAppliesToStaticDisable(t *testing.T) {
 	policy := p.resolveContentPolicy(policyCtx(false, nil))
 	assert.True(t, policy.storeContent)
 	assert.True(t, policy.hidden)
+}
+
+// An admin layer that turns content off is still "disabled" for retention: with
+// retain_content_in_object_storage on, the payload is kept hidden in object storage, which the
+// API docs for every layer's disable_content_logging warn about.
+func TestResolveContentPolicyRetainAppliesToAdminLayers(t *testing.T) {
+	for _, layer := range []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyBusinessUnitDisableContentLogging,
+		schemas.BifrostContextKeyTeamDisableContentLogging,
+		schemas.BifrostContextKeyUserDisableContentLogging,
+		schemas.BifrostContextKeyProviderKeyDisableContentLogging,
+		schemas.BifrostContextKeyGovernanceDisableContentLogging,
+		schemas.BifrostContextKeyAccessProfileDisableContentLogging,
+	} {
+		t.Run(string(layer), func(t *testing.T) {
+			p := policyTestPlugin(new(false), new(true), true)
+			policy := p.resolveContentPolicy(policyCtx(false, map[schemas.BifrostContextKey]bool{layer: true}))
+			assert.True(t, policy.storeContent, "the payload is kept for object storage")
+			assert.True(t, policy.hidden, "the payload is never served back")
+			assert.False(t, policy.visible())
+		})
+	}
 }
 
 func TestResolveContentPolicyRetainWithoutObjectStorageDrops(t *testing.T) {

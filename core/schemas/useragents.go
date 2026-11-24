@@ -42,6 +42,10 @@ var (
 	OpenCode = UserAgentIdentifiers{"opencode"}
 	// Windsurf identifies requests from Windsurf clients.
 	Windsurf = UserAgentIdentifiers{"windsurf"}
+	// AntigravityCLI identifies explicit Antigravity CLI user agents independently of the desktop.
+	AntigravityCLI = UserAgentIdentifiers{"antigravity-cli"}
+	// AntigravityDesktop identifies the desktop backend and explicitly named desktop clients.
+	AntigravityDesktop = UserAgentIdentifiers{"antigravity-desktop", "antigravity/"}
 	// GeminiCLI identifies requests from Gemini CLI clients.
 	GeminiCLI = UserAgentIdentifiers{"gemini-cli", "geminicli", "gemini"}
 	// QwenCodeCLI identifies requests from Qwen Code clients.
@@ -140,6 +144,8 @@ var UserAgentAppMatchers = []UserAgentAppMatcher{
 	{App: "Cline", Identifiers: Cline},
 	{App: "OpenCode", Identifiers: OpenCode},
 	{App: "Windsurf", Identifiers: Windsurf},
+	{App: "Antigravity CLI", Identifiers: AntigravityCLI},
+	{App: "Antigravity Desktop", Identifiers: AntigravityDesktop},
 	{App: "Gemini CLI", Identifiers: GeminiCLI},
 	{App: "Qwen Code", Identifiers: QwenCodeCLI},
 }

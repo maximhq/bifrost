@@ -325,11 +325,16 @@ func (e SecretVar) MarshalJSON() ([]byte, error) {
 	}{Val: e.Val, Ref: e.ref, SecretType: e.SecretType})
 }
 
-// UnmarshalJSON unmarshals the value from JSON.
+// UnmarshalJSON unmarshals the value from JSON. A JSON string is decoded with a JSON
+// decoder rather than strconv.Unquote, which rejects valid JSON escapes such as \/ and
+// would leave the quoted text as the value.
 func (e *SecretVar) UnmarshalJSON(data []byte) error {
 	val := string(data)
-	if unquoted, err := strconv.Unquote(val); err == nil {
-		val = unquoted
+	if len(data) > 0 && data[0] == '"' {
+		var decoded string
+		if err := sonic.Unmarshal(data, &decoded); err == nil {
+			val = decoded
+		}
 	}
 	if sonic.Valid(data) {
 		valueNode, _ := sonic.Get(data, "value")

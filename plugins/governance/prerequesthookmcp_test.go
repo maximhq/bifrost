@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -474,6 +475,103 @@ func TestPreMCPHookGatesTheToolOnAccess(t *testing.T) {
 	})
 }
 
+// Codemode meta-tools are not in any grant's tool list, but their discovery side enumerates tools
+// through the request context, so PreMCPHook has to scope that context to the grant before letting
+// them run.
+func TestPreMCPHookScopesCodemodeDiscoveryToAccess(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+
+	for _, metaTool := range []string{"listToolFiles", "readToolFile", "getToolDocs"} {
+		t.Run(metaTool+" stamps the grant when the caller sent no filter", func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, vk, nil)
+			ctx := newPreRequestCtx(nil, nil)
+
+			_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall(metaTool))
+
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "codemode meta-tools are not refused")
+			assert.Equal(t, []string{"sentry-read_file"}, ctx.Value(schemas.MCPContextKeyIncludeTools))
+		})
+	}
+
+	t.Run("a caller filter is narrowed to the grant, never widened", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, vk, nil)
+		ctx := newPreRequestCtx([]string{"sentry-read_file", "sentry-delete_project", "other-*"}, nil)
+
+		_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall("listToolFiles"))
+
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit)
+		assert.Equal(t, []string{"sentry-read_file"}, ctx.Value(schemas.MCPContextKeyIncludeTools))
+	})
+
+	t.Run("a request that presented nothing stays unrestricted", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, vk, nil)
+		ctx := emptyCtx()
+
+		_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall("listToolFiles"))
+
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit)
+		assert.Nil(t, ctx.Value(schemas.MCPContextKeyIncludeTools))
+	})
+}
+
+// TestPreMCPHookEvaluatesCodemodeToolsLikeAnyTool pins that a caller who may not use tools at all is
+// refused a codemode meta-tool too. They skipped evaluation, so an inactive or expired key, a credential
+// that resolves to nothing, or no credential where one is required could still list and read the tool
+// stubs on the execute endpoint, though every tool call the code made would then be refused.
+func TestPreMCPHookEvaluatesCodemodeToolsLikeAnyTool(t *testing.T) {
+	refusal := func(t *testing.T, plugin *GovernancePlugin, ctx *schemas.BifrostContext) *schemas.BifrostError {
+		t.Helper()
+		_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall("listToolFiles"))
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit, "the meta-tool is refused")
+		require.NotNil(t, shortCircuit.Error)
+		require.NotNil(t, shortCircuit.Error.Type)
+		return shortCircuit.Error
+	}
+
+	t.Run("an inactive key", func(t *testing.T) {
+		vk := buildVKForMCPStamping([]string{"read_file"})
+		inactive := false
+		vk.IsActive = &inactive
+		bifrostErr := refusal(t, newAccessTestPlugin(t, vk, nil), newPreRequestCtx(nil, nil))
+		assert.Equal(t, string(DecisionAccessBlocked), *bifrostErr.Type)
+		assert.Contains(t, bifrostErr.Error.Message, "virtual key is inactive")
+	})
+
+	t.Run("an expired key", func(t *testing.T) {
+		vk := buildVKForMCPStamping([]string{"read_file"})
+		past := time.Now().UTC().Add(-time.Second)
+		vk.ExpiresAt = &past
+		bifrostErr := refusal(t, newAccessTestPlugin(t, vk, nil), newPreRequestCtx(nil, nil))
+		assert.Equal(t, string(DecisionAccessBlocked), *bifrostErr.Type)
+	})
+
+	t.Run("no credential where one is required", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, buildVKForMCPStamping([]string{"read_file"}), nil)
+		plugin.cfgMutex.Lock()
+		plugin.isVkMandatory = boolPtr(true)
+		plugin.cfgMutex.Unlock()
+		bifrostErr := refusal(t, plugin, emptyCtx())
+		assert.Equal(t, "virtual_key_required", *bifrostErr.Type)
+	})
+
+	t.Run("a credential that resolves to nothing", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, buildVKForMCPStamping([]string{"read_file"}), nil)
+		bifrostErr := refusal(t, plugin, presentCtx("sk-bf-revoked"))
+		assert.Equal(t, string(DecisionAccessNotFound), *bifrostErr.Type)
+	})
+
+	t.Run("a context carrying no grant at all", func(t *testing.T) {
+		// The HTTP transport installs a grant on every request; a caller of the Go API may not.
+		plugin := newAccessTestPlugin(t, buildVKForMCPStamping([]string{"read_file"}), nil)
+		bifrostErr := refusal(t, plugin, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+		assert.Equal(t, string(DecisionAccessUnresolved), *bifrostErr.Type)
+	})
+}
+
 // ============================================================================
 // The four inputs together: a client allowed by default, an explicit VK config for another,
 // and both caller headers.
@@ -556,4 +654,31 @@ func TestPreRequestHookMCP_ExplicitEmptyConfigBeatsAllowedByDefault(t *testing.T
 		p := newPluginForMCPStampingWithDefaults(t, vk, defaults)
 		assert.Equal(t, []string{}, stampedIncludeTools(t, p, newPreRequestCtx([]string{"youtube-*"}, []string{"youtube"}), newChatRequest()))
 	})
+}
+
+// A prompt or resource read is evaluated like a tool call (a credential that resolves to nothing is
+// refused) but not checked against the tool allow-list: core only routes it to servers the access reaches.
+func TestPreMCPHookEvaluatesPromptAndResourceReads(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+	reads := map[string]*schemas.BifrostMCPRequest{
+		"prompt":   {RequestType: schemas.MCPRequestTypeGetPrompt, ClientName: "sentry", BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: "sentry-triage"}},
+		"resource": {RequestType: schemas.MCPRequestTypeReadResource, ClientName: "sentry", BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: "sentry://issues/1"}},
+	}
+	for name, req := range reads {
+		t.Run(name, func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, vk, nil)
+			ctx := newPreRequestCtx(nil, nil)
+			_, shortCircuit, err := plugin.PreMCPHook(ctx, req)
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "a granted caller's read is not refused by the tool allow-list")
+			// Core checks the server it picked against this list after the hooks, so a direct read
+			// is held to the grant exactly as /mcp, which stamps it before core, is.
+			assert.Equal(t, []string{"sentry-read_file"}, ctx.Value(schemas.MCPContextKeyIncludeTools), "the read stamps the grant's tool list")
+
+			_, shortCircuit, err = plugin.PreMCPHook(presentCtx("sk-bf-revoked"), req)
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "an unresolvable credential is refused by evaluation")
+			assert.Equal(t, string(DecisionAccessNotFound), *shortCircuit.Error.Type)
+		})
+	}
 }

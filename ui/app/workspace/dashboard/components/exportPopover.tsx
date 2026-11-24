@@ -14,6 +14,8 @@ import { buildCSV, downloadCSV } from "@/lib/utils/csv";
 import { Download, FileSpreadsheet, FileText, Loader2 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { type DashboardData, type DashboardTab, type ExportTab, getCSVSections, getExportTabLabel } from "../utils/exportUtils";
+import { useTranslation } from "react-i18next";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface ExportPopoverProps {
 	getData: () => DashboardData;
@@ -26,7 +28,9 @@ interface ExportPopoverProps {
 	onExportDone: () => void;
 }
 
+/** Dashboard export menu: CSV or PDF, for the active tab or every tab. */
 export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, onExportDone }: ExportPopoverProps) {
+	const { t } = useTranslation("observability");
 	const [exporting, setExporting] = useState(false);
 
 	const fileName = useCallback((scope: ExportTab) => (scope === "all" ? "dashboard-export" : `dashboard-${scope}`), []);
@@ -69,8 +73,8 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 
 				await generatePdf(sections, fileName(scope), {
 					branding: {
-						logoSrc: "/bifrost-logo.webp",
-						text: "Powered by",
+						logoSrc: withBasePath("/bifrost-logo.webp"),
+						text: t("dashboard.export.poweredBy"),
 					},
 				});
 			} finally {
@@ -78,7 +82,7 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 				setExporting(false);
 			}
 		},
-		[onPdfExport, onExportDone, fileName],
+		[onPdfExport, onExportDone, fileName, t],
 	);
 
 	const activeTabLabel = getExportTabLabel(activeTab);
@@ -104,28 +108,28 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 								className="size-7.5"
 								disabled={exporting}
 								data-testid="dashboard-export-trigger"
-								aria-label={exporting ? "Exporting..." : "Export"}
+								aria-label={exporting ? t("dashboard.export.exporting") : t("dashboard.export.export")}
 							>
 								{exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
 							</Button>
 						</DropdownMenuTrigger>
 					</span>
 				</TooltipTrigger>
-				<TooltipContent side="bottom">{exporting ? "Exporting..." : "Export"}</TooltipContent>
+				<TooltipContent side="bottom">{exporting ? t("dashboard.export.exporting") : t("dashboard.export.export")}</TooltipContent>
 			</Tooltip>
 			<DropdownMenuContent align="end">
 				<DropdownMenuSub>
 					<DropdownMenuSubTrigger data-testid="export-csv-item" className="flex gap-2">
 						<FileSpreadsheet className="h-4 w-4" />
-						CSV
+						{t("dashboard.export.csv")}
 					</DropdownMenuSubTrigger>
 					<DropdownMenuPortal>
 						<DropdownMenuSubContent>
 							<DropdownMenuItem onClick={() => handleCsvExport(activeTab)} data-testid="export-csv-current-tab">
-								This tab ({activeTabLabel})
+								{t("dashboard.export.thisTab", { label: activeTabLabel })}
 							</DropdownMenuItem>
 							<DropdownMenuItem onClick={() => handleCsvExport("all")} data-testid="export-csv-all-tabs">
-								All tabs
+								{t("dashboard.export.allTabs")}
 							</DropdownMenuItem>
 						</DropdownMenuSubContent>
 					</DropdownMenuPortal>
@@ -133,15 +137,15 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 				<DropdownMenuSub>
 					<DropdownMenuSubTrigger data-testid="export-pdf-item" className="flex gap-2">
 						<FileText className="h-4 w-4" />
-						PDF
+						{t("dashboard.export.pdf")}
 					</DropdownMenuSubTrigger>
 					<DropdownMenuPortal>
 						<DropdownMenuSubContent>
 							<DropdownMenuItem onClick={() => handlePdfExport(activeTab)} data-testid="export-pdf-current-tab">
-								This tab ({activeTabLabel})
+								{t("dashboard.export.thisTab", { label: activeTabLabel })}
 							</DropdownMenuItem>
 							<DropdownMenuItem onClick={() => handlePdfExport("all")} data-testid="export-pdf-all-tabs">
-								All tabs
+								{t("dashboard.export.allTabs")}
 							</DropdownMenuItem>
 						</DropdownMenuSubContent>
 					</DropdownMenuPortal>

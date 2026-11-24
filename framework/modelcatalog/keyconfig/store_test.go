@@ -62,15 +62,51 @@ func TestEmptyKeysAndStandardProviderRemoves(t *testing.T) {
 
 func TestKeylessNonStandardProviderUnrestricted(t *testing.T) {
 	custom := schemas.ModelProvider("my-custom")
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
-		custom: nil,
-	})
-	allowed := s.AllowedFor(custom)
-	if !slices.Equal(allowed, schemas.WhiteList{"*"}) {
-		t.Errorf("keyless custom: AllowedFor = %v, want [*]", allowed)
+	replaced := New(nil)
+	replaced.Replace(map[schemas.ModelProvider][]schemas.Key{custom: nil}, custom)
+	set := New(nil)
+	set.SetKeylessProvider(custom, nil)
+	for name, s := range map[string]*Store{"Replace": replaced, "SetKeylessProvider": set} {
+		allowed := s.AllowedFor(custom)
+		if !slices.Equal(allowed, schemas.WhiteList{"*"}) {
+			t.Errorf("%s: keyless custom: AllowedFor = %v, want [*]", name, allowed)
+		}
+		if !s.IsAllowed(custom, "anything") {
+			t.Errorf("%s: keyless custom: IsAllowed = false for arbitrary model", name)
+		}
 	}
-	if !s.IsAllowed(custom, "anything") {
-		t.Error("keyless custom: IsAllowed = false for arbitrary model")
+}
+
+// TestKeylessFlagDoesNotUnrestrictStandardProvider pins that the keyless flag
+// only applies to custom providers: a standard provider with no keys is still
+// dropped.
+func TestKeylessFlagDoesNotUnrestrictStandardProvider(t *testing.T) {
+	s := New(nil)
+	s.SetKeylessProvider(schemas.OpenAI, nil)
+	if got := s.AllowedFor(schemas.OpenAI); got != nil {
+		t.Errorf("standard provider marked keyless with no keys: AllowedFor = %v, want nil", got)
+	}
+}
+
+// TestZeroKeyCustomProviderNotKeylessAbsent pins that a custom provider that
+// is not keyless and has no keys (e.g. its only key was rejected at save) can
+// serve nothing: it is absent from the store, so the catalog never offers it
+// as a candidate for a bare model name. Both write paths are covered.
+func TestZeroKeyCustomProviderNotKeylessAbsent(t *testing.T) {
+	custom := schemas.ModelProvider("my-custom")
+	replaced, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{custom: nil})
+	set := New(nil)
+	set.SetProvider(custom, []schemas.Key{})
+	for name, s := range map[string]*Store{"Replace": replaced, "SetProvider": set} {
+		if got := s.AllowedFor(custom); got != nil {
+			t.Errorf("%s: zero-key custom provider AllowedFor = %v, want nil", name, got)
+		}
+		if s.IsAllowed(custom, "text-embedding-005") {
+			t.Errorf("%s: zero-key custom provider IsAllowed = true, want false", name)
+		}
+		if got := s.Providers(); slices.Contains(got, custom) {
+			t.Errorf("%s: Providers() = %v, want %q absent", name, got, custom)
+		}
 	}
 }
 
@@ -523,7 +559,8 @@ func TestProviders_StandardWithoutKeys(t *testing.T) {
 // unrestricted via the allModelsAllowed branch.
 func TestProviders_KeylessNonStandardIncluded(t *testing.T) {
 	custom := schemas.ModelProvider("my-custom-bedrock")
-	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{custom: nil})
+	s := New(nil)
+	s.Replace(map[schemas.ModelProvider][]schemas.Key{custom: nil}, custom)
 	got := s.Providers()
 	if !slices.Contains(got, custom) {
 		t.Errorf("Providers() = %v, want to include %q (keyless non-standard provider)", got, custom)
@@ -737,5 +774,70 @@ func TestRegexEntries_AggregateKeepsExactNamesNextToRegex(t *testing.T) {
 	}
 	if s.IsAllowed(schemas.OpenAI, "gpt-3.5-turbo") {
 		t.Error("IsAllowed(gpt-3.5-turbo) = true; want false")
+	}
+}
+
+func TestResolveAliasPatternFallback(t *testing.T) {
+	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+		schemas.Bedrock: {
+			{
+				ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"regex:claude-.*"},
+				Aliases: schemas.KeyAliases{
+					"regex:(claude-.*)": schemas.AliasConfig{ModelID: "global.anthropic.$1"},
+				},
+			},
+			{
+				ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"},
+				Aliases: schemas.KeyAliases{
+					"claude-opus-4-8": schemas.AliasConfig{ModelID: "us.anthropic.claude-opus-4-8"},
+				},
+			},
+		},
+	})
+	owner, ok := s.ResolveAlias(schemas.Bedrock, "claude-fable-5")
+	if !ok {
+		t.Fatal("ResolveAlias !ok for a name a pattern alias matches")
+	}
+	if owner.KeyID != "k1" || owner.Config.ModelID != "global.anthropic.claude-fable-5" {
+		t.Errorf("owner = %s/%q, want k1/global.anthropic.claude-fable-5", owner.KeyID, owner.Config.ModelID)
+	}
+	if owner.Config.ModelName != nil {
+		t.Errorf("owner.Config.ModelName = %q, want unset", *owner.Config.ModelName)
+	}
+	owner, ok = s.ResolveAlias(schemas.Bedrock, "claude-opus-4-8")
+	if !ok || owner.KeyID != "k2" {
+		t.Errorf("exact alias on k2 should win over k1's pattern, got %s ok=%v", owner.KeyID, ok)
+	}
+	if _, ok := s.ResolveAlias(schemas.Bedrock, "regex:(claude-.*)"); ok {
+		t.Error("ResolveAlias resolved the pattern text itself")
+	}
+	if _, ok := s.ResolveAlias(schemas.Bedrock, "mistral-large"); ok {
+		t.Error("ResolveAlias ok for a name no alias matches")
+	}
+}
+
+// TestResolveAliasPatternSkipsKeysThatCannotServe pins that a pattern is ignored when its own key's lists refuse the model.
+func TestResolveAliasPatternSkipsKeysThatCannotServe(t *testing.T) {
+	pattern := func(prefix string) schemas.KeyAliases {
+		return schemas.KeyAliases{"regex:(claude-.*)": schemas.AliasConfig{ModelID: prefix + ".$1"}}
+	}
+	s, _ := newStoreFromFixture(map[schemas.ModelProvider][]schemas.Key{
+		schemas.Bedrock: {
+			{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"claude-opus-5"}, Aliases: pattern("us")},
+			{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"claude-haiku-5"}, Aliases: pattern("eu")},
+		},
+	})
+	for model, want := range map[string]string{
+		"claude-opus-5":   "k1/us.claude-opus-5",
+		"claude-sonnet-5": "k2/eu.claude-sonnet-5",
+		"claude-haiku-5":  "",
+	} {
+		got := ""
+		if owner, ok := s.ResolveAlias(schemas.Bedrock, model); ok {
+			got = owner.KeyID + "/" + owner.Config.ModelID
+		}
+		if got != want {
+			t.Errorf("ResolveAlias(%q) = %q, want %q", model, got, want)
+		}
 	}
 }

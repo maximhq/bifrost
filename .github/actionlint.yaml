@@ -1,0 +1,9 @@
+# actionlint only knows GitHub's standard runner labels. The ARM64 jobs and
+# the Linux builder (the runner with the allowlisted egress IP) are
+# GitHub-hosted larger runners with custom labels. codspeed-macro is
+# CodSpeed's macro-benchmark runner.
+self-hosted-runner:
+  labels:
+    - arm-64-2cpu-8gb
+    - builder-8-32
+    - codspeed-macro

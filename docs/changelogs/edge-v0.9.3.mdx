@@ -1,0 +1,49 @@
+---
+title: "v0.9.3"
+description: "Edge v0.9.3 changelog - 2026-10-13"
+---
+
+<Update label="Bifrost Edge" description="v0.9.3">
+
+## Changelog
+
+v0.9.3 adds per-app capture exemptions: admins can turn off Edge routing for one application, fleet-wide or for a user or team, while block lists, governance-required rules and MCP restrictions still apply. It also routes Claude Desktop Chat through the gateway, widens Cursor protocol coverage (FileSync, voice, media, review and helper RPCs), and adds stateless MCP inspection, so the pre and post phases of a tool call can run on different gateway nodes. The background service uses less CPU and memory, MCP wrappers repair themselves after upgrades and restarts, and uninstall cleans shell settings for every local user.
+
+## ✨ Features
+
+- **Per-App Capture Exemptions** - Admins can disable Edge capture for a single app: Claude Code, Desktop, Cowork and web chat; Codex CLI and Desktop; OpenCode; Gemini CLI; Conductor; Cursor; ChatGPT Desktop and web. The setting can be fleet-wide or set per user or team (user beats team, team beats global). An exempt app keeps its native vendor credentials, and its traffic is relayed unchanged in both TUN and TRP. App and domain blocks, governance-required rules and MCP restrictions still take priority. A policy change closes only that app's connections, and device details show the applied status and any cleanup errors. Requires a matching server update.
+- **Claude Desktop Chat Through the Gateway** - When `claude-desktop` is in gateway mode, the Desktop Chat picker lists the gateway's Anthropic models, and chats on those models are served through the gateway, over both the REST and the newer Desktop Connect paths. Supported: text, attachments, uploaded text, image and PDF files, project instructions, streaming, follow-ups, stop, and retries without duplicate inference. Device tools and hosted connectors go through native policy inspection, and a hosted connector needs a one-time approval. Conversation history is kept in memory only (1 hour and 16 MiB per session, at most 64 sessions), so you must start a new chat after Edge restarts. Browser Chat is unchanged. Requires a matching server update.
+- **Claude Desktop Hosted Connector Observations** - In native Desktop chats, MCP function calls in the conversation timeline are logged as unknown-installation observations, with no invented arguments, results or outcome.
+- **Expanded Cursor Protocol Coverage** - Edge now routes every RPC in the pinned Cursor 3.23.12 bundle: 207 handled locally, 2,218 relayed natively, 11 unsupported. New governed handlers cover conversation naming, transcript overviews, Git branch and commit message suggestions, `RunPoll`/`RunInferencePoll`/`RunInferenceSSE`, Agent Review, the composer enhancer, voice transcription (`StreamStt`, up to 5 minutes), embeddings, text-to-speech, and planning, ranking and editor helpers. New managed fields: `linter_model`, `linter_fim_format`, `computer_use_model`, `embedding_model`, `speech_model`, `speech_voice`, `image_model`, `video_model` and `transcription_model`.
+- **Cursor FileSync Cache and Native Cloud Settings** - Cursor FileSync is now reported as enabled. Uploads and deltas are stored in a local cache isolated by identity and window, and Tab restores synced source from that cache before gateway inference. In v0.9.2, FileSync was disabled. Cloud agent launch, remote control, private workers and telemetry settings now keep Cursor's native values, and the matching account and cloud RPCs are relayed with Cursor credentials.
+- **Cursor Built-in Security Review Subagent** - `custom_task` now offers Cursor's built-in `security-review` agent with read-only tools (Read, Grep, Glob, LS). A workspace agent with the same name cannot give it write access.
+- **Stateless MCP Inspection** - When the server supports MCP inspection protocol version 2, each tool call carries an encrypted continuation that expires after 30 minutes. Post-inspection can then run on any gateway node, with no session affinity. If the post phase fails, the output is withheld and the call is not retried. Requires a matching server update.
+- **Self-Repairing MCP Wrappers** - Edge keeps a durable copy of its binary in a managed `mcp-shims` directory, so wrapped MCP servers keep launching across upgrades. A missing or corrupted copy is restored without unwrapping client configs. The local MCP endpoint restarts within 1 second after a failure. Connection and request inspection phases retry transient failures, and a 401 refreshes the session first. Result phases are never replayed. Diagnostics show executable readiness, recovery state and the last inspection outcome.
+- **Manual Model List Refresh** - New tray item "Refresh model list" fetches the allowed catalog immediately. On success it shows a confirmation. On failure it shows the real error and keeps the cached list. The shared catalog cache now lasts 10 minutes (was 5) and survives a token rotation for the same user.
+- **Separate Request Log** - In daemon mode, request logs go to `daemon.requests.log` instead of `daemon.log`. Diagnostics and support exports include the new file. All log sinks are now asynchronous and bounded: 4 MiB queue, records over 64 KiB truncated, dropped records counted. On macOS, the launchd stdout and stderr files are kept bounded in place.
+- **Lower CPU Use When Idle** - Config sync, MCP domain updates, source-file watching, version probes, the MCP tool catalog, managed credential reconciles and the Codex catalog now skip their work when the inputs have not changed. File watchers react only to the relevant parts of `.claude.json`, Gemini `settings.json` and Cursor's state database.
+- **Lower Memory Use for Large Catalogs** - Codex and OpenCode model pickers are streamed instead of being built fully in memory, and per-model metadata sits in a bounded cache (100 entries, 8 MiB). All models still appear. The Codex template reader and managed-file checks no longer load whole files into memory.
+- **MCP Restore on Uninstall** - New `--restore-mcp-configs` flag restores wrapped MCP registrations and removes `mcp-shims`. Uninstall scripts run it before removing files. If restoration is incomplete, they stop, so you can retry cleanup.
+
+## 🐞 Fixed
+
+- **Shell HTTPS Clients Broke After Removal** - The managed shell profile block now sets each variable only when its file is readable (POSIX shells and fish), so curl and pip keep working after uninstall.
+- **macOS Uninstall Cleaned Only the Console User** - The remove script now cleans every local account (UID 500 and above), also when nobody is logged in. It skips symlinked rc files and keeps file ownership.
+- **Uninstall Left Client Environment Variables Set** - `--uninstall-cleanup` clears the client environment variables Edge set before it removes files.
+- **Codex Blank Response and Reconnect Loop** - A gateway stream labelled `text/plain` is now read as an event stream. Other unsupported content types return a clear 502.
+- **Claude Desktop Signed Out When Bifrost Was Signed Out** - Desktop chat calls now get a 409 instead of a 401, so Desktop keeps its own session.
+- **Claude Code Placeholder Credential Sent Upstream** - Placeholder credentials are written only after capture is ready, and a request with no native credential during recovery gets a local 503.
+- **MCP Capture Lost After IPC Failure** - A single IPC bind failure no longer disables MCP tool-call capture until restart.
+- **MCP Wrappers Unwrapped During Restart** - A temporarily unavailable hub no longer removes managed wraps.
+- **Waiting MCP Calls Ignored Cancellation** - `notifications/cancelled` now cancels calls that are still waiting for approval.
+- **Logging Stalled Requests and Exit** - A full console pipe or a slow disk no longer blocks request handling, and a fatal exit waits at most 1 second to flush logs.
+- **Shared CDN Address Route Removed (TUN)** - Removing one domain no longer removes the route of another configured domain on the same IP.
+- **Codex Desktop ChatGPT Backend Not Captured (TUN)** - Codex Desktop traffic to `chatgpt.com` now gets the same routing as Codex CLI.
+- **Tool Calls Without a Finish Reason Rejected** - A complete non-streamed tool call with no `finish_reason` now passes native inspection.
+- **Partial Capture Device Leaked on Startup Failure** - The capture device is closed when its name or MTU cannot be read.
+- **Cursor Simulated Messages Rejected** - User messages with Cursor's simulated-message markers are accepted.
+- **Codex Catalog Left After Losing All Models** - The managed Codex catalog is removed when the allowed model list is empty.
+- **Removed Configs Treated as Unreadable on Windows** - Edge now tells a missing config file apart from an unreadable one.
+- **Partial Settings File After a Crash** - A combined settings file Edge manages is written through a temporary file, so a crash cannot leave it half-written.
+
+</Update>
