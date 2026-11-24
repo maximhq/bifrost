@@ -18,6 +18,7 @@ interface Props {
 	align?: "left" | "right";
 	/** Show the label exactly as given: for names that are case-sensitive data, such as query parameters. */
 	rawLabel?: boolean;
+	testId?: string;
 }
 
 const isPrimitive = (value: React.ReactNode): boolean =>
@@ -30,6 +31,7 @@ export default function LogEntryDetailsView(props: Props) {
 	const orientation = props.orientation || "vertical";
 	return (
 		<div
+			data-testid={props.testId}
 			className={cn("items-top flex min-w-0 max-w-full flex-col gap-2", {
 				[`${props.className}`]: props.className !== undefined,
 				"items-start": props.align === "left" || props.align === undefined,

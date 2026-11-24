@@ -177,7 +177,9 @@ Bifrost refuses to save a relay where a caller's status check would be charged: 
 
 ## In Relay Logs
 
-The start call is a row like any other, with its job id and the status `started`. When the job ends, a **job** row is added with the final status, the units and the charge. It links to the start call's row. A job Bifrost could not price still gets its row, with the reason and a blank cost, and nothing is charged.
+The start call is a row like any other, with its job id and the status `started`. When the job ends, a **job** row is added with the final status, the units and the charge. It links to the start call's row and carries that call's model, route and the names of its virtual key, user, team and project. A job Bifrost could not price still gets its row, with the reason and a blank cost, and nothing is charged.
+
+The job row also shows how the job was followed: how many times Bifrost tried a status check (a try skipped because another node held the job counts too), the last job status it read, the HTTP status of the check that ended it, and when it was settled. The replies to those checks are not stored.
 
 <Note>
 Jobs are recorded by request logging. With logging off, the start call is still charged its fee, but no job is followed or charged.

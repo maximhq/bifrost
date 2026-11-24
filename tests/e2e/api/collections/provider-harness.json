@@ -299536,6 +299536,7 @@
                       "var vkValue = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
                       "pm.test('jobs key: has an id and a value', function () { pm.expect(vk.id, 'key id').to.be.a('string').and.not.empty; pm.expect(typeof vkValue, 'key value type').to.eql('string'); pm.expect(vkValue.length, 'key value length').to.be.above(0); });",
                       "pm.collectionVariables.set('relayJobsVkId', vk.id);",
+                      "pm.collectionVariables.set('relayJobsVkName', vk.name);",
                       "pm.collectionVariables.set('relayJobsVkValue', vkValue);"
                     ]
                   }
@@ -299811,6 +299812,11 @@
                       "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
                       "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.eql(pm.collectionVariables.get('relayJobOkStartLogId'));",
                       "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "    pm.expect(row.job_debug && row.job_debug.polls >= 1, 'the row records the status checks sent: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_debug.last_status, dump).to.eql(\"SUCCEEDED\");",
+                      "    pm.expect(row.job_debug.last_http_status, dump).to.eql(200);",
+                      "    pm.expect(row.job_debug.settled_at, dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_name, 'the start call\\'s names are copied: ' + dump).to.eql(pm.collectionVariables.get('relayJobsVkName'));",
                       "  });",
                       "});"
                     ]
@@ -300024,6 +300030,11 @@
                       "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
                       "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.eql(pm.collectionVariables.get('relayJobRetryStartLogId'));",
                       "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "    pm.expect(row.job_debug && row.job_debug.polls >= 1, 'the row records the status checks sent: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_debug.last_status, dump).to.eql(\"SUCCEEDED\");",
+                      "    pm.expect(row.job_debug.last_http_status, dump).to.eql(200);",
+                      "    pm.expect(row.job_debug.settled_at, dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_name, 'the start call\\'s names are copied: ' + dump).to.eql(pm.collectionVariables.get('relayJobsVkName'));",
                       "  });",
                       "});"
                     ]
@@ -300253,6 +300264,11 @@
                       "    pm.expect(row.units == null, 'units: ' + dump).to.be.true;",
                       "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.eql(pm.collectionVariables.get('relayJobFailedStartLogId'));",
                       "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "    pm.expect(row.job_debug && row.job_debug.polls >= 1, 'the row records the status checks sent: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_debug.last_status, dump).to.eql(\"FAILED\");",
+                      "    pm.expect(row.job_debug.last_http_status, dump).to.eql(200);",
+                      "    pm.expect(row.job_debug.settled_at, dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_name, 'the start call\\'s names are copied: ' + dump).to.eql(pm.collectionVariables.get('relayJobsVkName'));",
                       "  });",
                       "});"
                     ]
@@ -300420,6 +300436,11 @@
                       "    pm.expect(row.units == null, 'units: ' + dump).to.be.true;",
                       "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.eql(pm.collectionVariables.get('relayJobNoUsageStartLogId'));",
                       "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "    pm.expect(row.job_debug && row.job_debug.polls >= 1, 'the row records the status checks sent: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_debug.last_status, dump).to.eql(\"SUCCEEDED\");",
+                      "    pm.expect(row.job_debug.last_http_status, dump).to.eql(200);",
+                      "    pm.expect(row.job_debug.settled_at, dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_name, 'the start call\\'s names are copied: ' + dump).to.eql(pm.collectionVariables.get('relayJobsVkName'));",
                       "  });",
                       "});"
                     ]
@@ -300587,6 +300608,11 @@
                       "    pm.expect(near(row.units, 2), 'units should be 2: ' + dump).to.be.true;",
                       "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.eql(pm.collectionVariables.get('relayJobThrottleStartLogId'));",
                       "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "    pm.expect(row.job_debug && row.job_debug.polls >= 1, 'the row records the status checks sent: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_debug.last_status, dump).to.eql(\"SUCCEEDED\");",
+                      "    pm.expect(row.job_debug.last_http_status, dump).to.eql(200);",
+                      "    pm.expect(row.job_debug.settled_at, dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_name, 'the start call\\'s names are copied: ' + dump).to.eql(pm.collectionVariables.get('relayJobsVkName'));",
                       "  });",
                       "});"
                     ]

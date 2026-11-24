@@ -621,6 +621,46 @@ export function RelayLogDetailSheet({
 													value={<code className="font-mono text-xs">{display.parent_log_id}</code>}
 												/>
 											)}
+											{display.job_debug && (
+												<>
+													<LogEntryDetailsView
+														className="w-full"
+														label={t("relayLogs.detail.jobPolls")}
+														testId="relay-log-job-polls"
+														value={display.job_debug.polls.toLocaleString(getLocale())}
+													/>
+													{display.job_debug.last_status && (
+														<LogEntryDetailsView
+															className="w-full"
+															label={t("relayLogs.detail.jobLastStatus")}
+															testId="relay-log-job-last-status"
+															value={display.job_debug.last_status}
+														/>
+													)}
+													{display.job_debug.last_http_status ? (
+														<LogEntryDetailsView
+															className="w-full"
+															label={t("relayLogs.detail.jobLastHttpStatus")}
+															value={display.job_debug.last_http_status}
+														/>
+													) : null}
+													<LogEntryDetailsView
+														className="w-full"
+														label={t("relayLogs.detail.jobSettledAt")}
+														testId="relay-log-job-settled-at"
+														value={format(new Date(display.job_debug.settled_at), "yyyy-MM-dd hh:mm:ss aa", {
+															locale: dateFnsLocale(getLocale()),
+														})}
+													/>
+													{display.job_debug.last_error && (
+														<LogEntryDetailsView
+															className="w-full"
+															label={t("relayLogs.detail.jobLastError")}
+															value={display.job_debug.last_error}
+														/>
+													)}
+												</>
+											)}
 											{display.virtual_key_id && (
 												<LogEntryDetailsView
 													className="w-full"

@@ -139,11 +139,14 @@ func TestEndpointJobSweeperSettlesOnce(t *testing.T) {
 	job := seedEndpointJob(t, store)
 	poller := &fakeEndpointPoller{status: 200, body: `{"status":"IN_PROGRESS"}`}
 	logs := newFakeEndpointLogs()
+	// The start call's row, whose model, route and names the job row copies.
+	logs.rows["req-1"] = &logstore.RelayLog{ID: "req-1", Model: "textract-v2", RoutePath: "/jobs", VirtualKeyName: schemas.Ptr("prod"),
+		TeamName: schemas.Ptr("Team One"), ProjectID: schemas.Ptr("p-1"), App: schemas.Ptr("claude-code"), TeamIDsParsed: []string{"t1"}}
 	reporter := &fakeEndpointReporter{}
 	sweeper := relaySweeper(store, poller, logs, reporter)
 
 	sweeper.SweepOnce(ctx)
-	assert.Empty(t, logs.rows, "a running job writes nothing")
+	assert.Len(t, logs.rows, 1, "a running job writes nothing")
 	assert.Equal(t, 1, job.PollAttempts)
 	assert.Equal(t, "IN_PROGRESS", job.ProviderStatus)
 	assert.True(t, job.NextCheckAt.After(time.Now()), "and is polled again later")
@@ -153,7 +156,7 @@ func TestEndpointJobSweeperSettlesOnce(t *testing.T) {
 	reporter.fail = true
 	makeDue(job)
 	sweeper.SweepOnce(ctx)
-	require.Len(t, logs.rows, 1)
+	require.Len(t, logs.rows, 2)
 	assert.NotNil(t, job.AggregateLogWrittenAt)
 	assert.Empty(t, reporter.reports)
 
@@ -174,6 +177,18 @@ func TestEndpointJobSweeperSettlesOnce(t *testing.T) {
 	assert.Equal(t, "j-1", *row.JobID)
 	assert.Equal(t, "req-1", *row.ParentLogID)
 	assert.Equal(t, report.RequestID, row.ID, "the charge is keyed by the settlement row, so governance dedupes retries")
+	require.NotNil(t, row.JobDebugParsed)
+	assert.Equal(t, 2, row.JobDebugParsed.Polls, "one poll found it running, one found it done")
+	assert.Equal(t, "SUCCEEDED", row.JobDebugParsed.LastStatus)
+	assert.Equal(t, 200, row.JobDebugParsed.LastHTTPStatus)
+	assert.Empty(t, row.JobDebugParsed.LastError)
+	assert.Equal(t, "textract-v2", row.Model)
+	assert.Equal(t, "/jobs", row.RoutePath)
+	assert.Equal(t, "prod", *row.VirtualKeyName)
+	assert.Equal(t, "Team One", *row.TeamName)
+	assert.Equal(t, "p-1", *row.ProjectID)
+	assert.Equal(t, "claude-code", *row.App)
+	assert.Equal(t, []string{"t1"}, row.TeamIDsParsed)
 
 	makeDue(job)
 	sweeper.SweepOnce(ctx)
@@ -314,10 +329,19 @@ func TestEndpointJobSweeperPollsOnceMorePastTimeout(t *testing.T) {
 	store = newFakeAccountingStore()
 	job = seedEndpointJob(t, store)
 	job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
-	relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"IN_PROGRESS"}`}, newFakeEndpointLogs(), &fakeEndpointReporter{}).SweepOnce(ctx)
+	logs := newFakeEndpointLogs()
+	relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"IN_PROGRESS"}`}, logs, &fakeEndpointReporter{}).SweepOnce(ctx)
 	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 	require.NotNil(t, job.UnpriceableReason)
 	assert.Equal(t, UnpriceableReasonRelayJobTimeout, *job.UnpriceableReason)
+	// The job row says why: the status it was stuck at and the timeout.
+	row := logs.rows[relayRowID(job)]
+	require.NotNil(t, row)
+	require.NotNil(t, row.JobDebugParsed)
+	assert.Equal(t, 1, row.JobDebugParsed.Polls)
+	assert.Equal(t, "IN_PROGRESS", row.JobDebugParsed.LastStatus)
+	assert.Contains(t, row.JobDebugParsed.LastError, "did not finish")
+	assert.Empty(t, row.Model, "no start row to copy from leaves the job row as it was")
 }
 
 // A poll the upstream throttles, or one sent while the relay is missing from the live set (a reload,
@@ -562,4 +586,31 @@ func TestRelayRunnerIDAndBackoffMatchTheOtherKinds(t *testing.T) {
 		assert.Equal(t, video.Backoff(attempts, 30*time.Second), relay.Backoff(attempts, 30*time.Second), "attempts %d", attempts)
 	}
 	assert.Equal(t, 5*time.Minute, relay.Backoff(40, 30*time.Second))
+}
+
+// The job details record the status the upstream answered, and count a final poll that got no answer.
+func TestRelayJobDebugRecordsTheAnsweredStatusAndEverySentPoll(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name       string
+		poller     *fakeEndpointPoller
+		wantStatus int
+	}{
+		{"throttled 400 past the deadline", &fakeEndpointPoller{status: http.StatusBadRequest, body: `{"__type":"ThrottlingException"}`}, http.StatusBadRequest},
+		{"no answer past the deadline", &fakeEndpointPoller{err: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "connection reset"}}}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeAccountingStore()
+			job := seedEndpointJob(t, store)
+			job.PollAttempts = 2
+			job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+			logs := newFakeEndpointLogs()
+			relaySweeper(store, tc.poller, logs, &fakeEndpointReporter{}).SweepOnce(ctx)
+			row := logs.rows[relayRowID(job)]
+			require.NotNil(t, row)
+			require.NotNil(t, row.JobDebugParsed)
+			assert.Equal(t, tc.wantStatus, row.JobDebugParsed.LastHTTPStatus)
+			assert.Equal(t, 3, row.JobDebugParsed.Polls, "two earlier polls and the one that ended the job")
+		})
+	}
 }

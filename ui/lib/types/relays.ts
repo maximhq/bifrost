@@ -235,6 +235,15 @@ export interface UsagePreview {
 
 export type RelayLogStatus = "success" | "error" | "cancelled" | "processing";
 
+/** How a job row's job was polled (job_debug); poll replies are never stored. */
+export interface RelayJobDebug {
+	polls: number;
+	last_status?: string;
+	last_http_status?: number;
+	last_error?: string;
+	settled_at: string;
+}
+
 export interface RelayLog {
 	id: string;
 	timestamp: string;
@@ -266,6 +275,7 @@ export interface RelayLog {
 	total_tokens?: number;
 	job_id?: string;
 	job_status?: string;
+	job_debug?: RelayJobDebug;
 	parent_log_id?: string;
 	user_id?: string;
 	user_name?: string;

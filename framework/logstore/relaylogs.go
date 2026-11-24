@@ -55,6 +55,7 @@ type RelayLog struct {
 	JobID       *string `gorm:"type:varchar(255);index:idx_relay_logs_job_id" json:"job_id,omitempty"`
 	JobStatus   *string `gorm:"type:varchar(64)" json:"job_status,omitempty"`
 	ParentLogID *string `gorm:"type:varchar(255);index:idx_relay_logs_parent_log_id" json:"parent_log_id,omitempty"` // a job row's start call
+	JobDebug    string  `gorm:"type:text" json:"-"`                                                                  // JSON serialized *RelayJobDebug, on job rows
 
 	UserID             *string `gorm:"type:varchar(255);index:idx_relay_logs_user_id" json:"user_id,omitempty"`
 	UserName           *string `gorm:"type:varchar(255)" json:"user_name,omitempty"`
@@ -100,6 +101,7 @@ type RelayLog struct {
 	MetadataParsed          map[string]any        `gorm:"-" json:"metadata,omitempty"`
 	RequestHeadersParsed    map[string]string     `gorm:"-" json:"request_headers,omitempty"`
 	ErrorDetailsParsed      *schemas.BifrostError `gorm:"-" json:"error_details,omitempty"`
+	JobDebugParsed          *RelayJobDebug        `gorm:"-" json:"job_debug,omitempty"`
 	OverheadBreakdownParsed []OverheadBucket      `gorm:"-" json:"overhead_breakdown,omitempty"`
 	TeamIDsParsed           []string              `gorm:"-" json:"team_ids,omitempty"`
 	TeamNamesParsed         []string              `gorm:"-" json:"team_names,omitempty"`
@@ -113,6 +115,16 @@ type RelayLog struct {
 	// the stripped path and the error without raw payloads, as an LLM row offloads error_details.
 	RetainedPath         *string               `gorm:"-" json:"-"`
 	RetainedErrorDetails *schemas.BifrostError `gorm:"-" json:"-"`
+}
+
+// RelayJobDebug is how a job row's job was polled, as video_debug is on an LLM row. Poll replies
+// themselves are never stored.
+type RelayJobDebug struct {
+	Polls          int       `json:"polls"`                      // status checks Bifrost sent
+	LastStatus     string    `json:"last_status,omitempty"`      // the job status last read from a reply
+	LastHTTPStatus int       `json:"last_http_status,omitempty"` // HTTP status of the poll that ended the job
+	LastError      string    `json:"last_error,omitempty"`       // why the job ended unpriced
+	SettledAt      time.Time `json:"settled_at"`
 }
 
 // Relay log kinds and statuses.
@@ -203,6 +215,13 @@ func (l *RelayLog) SerializeFields() error {
 		}
 		l.ErrorDetails = string(data)
 	}
+	if l.JobDebugParsed != nil {
+		data, err := sonic.Marshal(l.JobDebugParsed)
+		if err != nil {
+			return fmt.Errorf("failed to serialize relay job debug: %w", err)
+		}
+		l.JobDebug = string(data)
+	}
 	if len(l.OverheadBreakdownParsed) > 0 {
 		data, err := marshalOverheadBreakdown(l.OverheadBreakdownParsed)
 		if err != nil {
@@ -236,6 +255,13 @@ func (l *RelayLog) DeserializeFields() error {
 		var details schemas.BifrostError
 		if err := sonic.Unmarshal([]byte(l.ErrorDetails), &details); err == nil {
 			l.ErrorDetailsParsed = &details
+		}
+	}
+	l.JobDebugParsed = nil
+	if l.JobDebug != "" {
+		var debug RelayJobDebug
+		if err := sonic.Unmarshal([]byte(l.JobDebug), &debug); err == nil {
+			l.JobDebugParsed = &debug
 		}
 	}
 	if l.OverheadBreakdown != "" {

@@ -84,6 +84,8 @@ type relayVerdict struct {
 	body        []byte
 	reason      string // set when the job ended without a reply to price
 	reasonErr   error
+	httpStatus  int  // the final poll's HTTP status as answered, 0 when it got no answer
+	polled      bool // a poll was sent to end the job, answered or not
 
 	usage   *schemas.RelayUsage // the priced usage, set by Settle
 	written bool                // the settlement row already exists
@@ -177,7 +179,12 @@ func (s *RelaySettler) Poll(ctx context.Context, listed *cstables.TableProviderJ
 			return nil, NewProviderCallError(bErr)
 		}
 		reason, pollErr := relayPollFailure(bErr)
-		return settle(&relayVerdict{snap: snap, reason: reason, reasonErr: pollErr})
+		// The status as the upstream answered it, not the 429 a throttling 400 is read as.
+		answered := pollStatusCode(bErr)
+		if resp != nil {
+			answered = resp.StatusCode
+		}
+		return settle(&relayVerdict{snap: snap, reason: reason, reasonErr: pollErr, httpStatus: answered, polled: true})
 	}
 
 	status := snap.Status(resp.Body)
@@ -188,11 +195,11 @@ func (s *RelaySettler) Poll(ctx context.Context, listed *cstables.TableProviderJ
 			return &PollResult{Job: &job, Retry: true}, nil
 		}
 		return settle(&relayVerdict{
-			snap: snap, status: status, reason: UnpriceableReasonRelayJobTimeout,
+			snap: snap, status: status, reason: UnpriceableReasonRelayJobTimeout, httpStatus: resp.StatusCode, polled: true,
 			reasonErr: fmt.Errorf("job did not finish within %ds (last status %q)", snap.Timeout(), status),
 		})
 	}
-	return settle(&relayVerdict{snap: snap, status: status, succeeded: succeeded, contentType: resp.ContentType, body: resp.Body})
+	return settle(&relayVerdict{snap: snap, status: status, succeeded: succeeded, contentType: resp.ContentType, body: resp.Body, httpStatus: resp.StatusCode, polled: true})
 }
 
 // relayJobBusyOrDone reports a job another runner holds or has finished since it was listed.
@@ -204,6 +211,14 @@ func relayJobBusyOrDone(job *cstables.TableProviderJob) bool {
 		return job.ClaimedAt != nil && time.Since(*job.ClaimedAt) < defaultClaimTTL
 	}
 	return false
+}
+
+// pollStatusCode is a failed poll's HTTP status, 0 when it never got an answer.
+func pollStatusCode(bErr *schemas.BifrostError) int {
+	if bErr.StatusCode == nil {
+		return 0
+	}
+	return *bErr.StatusCode
 }
 
 // relayPollFailure names why a job's last poll failed.
@@ -375,6 +390,13 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 		OutputTokens:       usage.OutputTokens,
 		TotalTokens:        usage.TotalTokens,
 	}
+	entry.JobDebugParsed = &logstore.RelayJobDebug{Polls: job.PollAttempts, LastStatus: job.ProviderStatus, LastHTTPStatus: e.verdict.httpStatus, SettledAt: time.Now().UTC()}
+	if e.verdict.polled {
+		entry.JobDebugParsed.Polls++ // the poll that ended the job
+	}
+	if e.verdict.status != "" {
+		entry.JobDebugParsed.LastStatus = e.verdict.status
+	}
 	if e.unpriced {
 		entry.Cost, entry.CostPerRequest, entry.CostPerUnit = nil, nil, nil
 		message := e.verdict.reason
@@ -382,9 +404,33 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 			message = e.verdict.reasonErr.Error()
 		}
 		entry.ErrorDetailsParsed = &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(e.verdict.reason), Message: message}}
+		entry.JobDebugParsed.LastError = message
+	}
+	if job.SourceLogID != nil {
+		// The start call's row is gone only if a user or retention removed it; the job row stands alone then.
+		if start, err := e.logs.FindRelayLog(ctx, *job.SourceLogID); err == nil {
+			copyStartAttribution(entry, start)
+		}
 	}
 	_, err := e.logs.BatchCreateRelayLogsIfNotExists(ctx, []*logstore.RelayLog{entry})
 	return err
+}
+
+// copyStartAttribution gives a job row what its start call's row resolved at request time, as an
+// LLM job row copies its source log: the model, the route and the display names behind the ids.
+func copyStartAttribution(entry, start *logstore.RelayLog) {
+	entry.Model = start.Model
+	entry.RoutePath = start.RoutePath
+	entry.UserName, entry.UserEmail = start.UserName, start.UserEmail
+	entry.VirtualKeyName = start.VirtualKeyName
+	entry.TeamName, entry.CustomerName = start.TeamName, start.CustomerName
+	entry.BusinessUnitID, entry.BusinessUnitName = start.BusinessUnitID, start.BusinessUnitName
+	entry.ProjectID, entry.ProjectName = start.ProjectID, start.ProjectName
+	entry.SessionID, entry.AgentCorrelationID = start.SessionID, start.AgentCorrelationID
+	entry.UserAgent, entry.App = start.UserAgent, start.App
+	entry.TeamIDsParsed, entry.TeamNamesParsed = start.TeamIDsParsed, start.TeamNamesParsed
+	entry.CustomerIDsParsed, entry.CustomerNamesParsed = start.CustomerIDsParsed, start.CustomerNamesParsed
+	entry.BusinessUnitIDsParsed, entry.BusinessUnitNamesParsed = start.BusinessUnitIDsParsed, start.BusinessUnitNamesParsed
 }
 
 func (e *relayLogsRecord) Emit(context.Context) {}
