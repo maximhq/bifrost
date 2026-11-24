@@ -1098,9 +1098,9 @@ func addBatchDetailToLog(entry *logstore.Log, batchID string, status string, cou
 	entry.BatchDebugParsed = debug
 }
 
-// batchJobModel is the model a batch job is retrieved and priced under: the one
-// the caller named, not an alias's provider target. Batch key selection filters
-// on the names a key's models list allows, which are the requested names.
+// batchJobModel is the model a batch job is recorded under: the one the caller
+// named, not an alias's provider target. Batch key selection filters on the names
+// a key's models list allows, which are the requested names.
 func batchJobModel(entry *logstore.Log) string {
 	if entry.Alias != nil && *entry.Alias != "" {
 		return *entry.Alias
