@@ -111,7 +111,7 @@
 
 ## 🗄️ Database Migrations
 
-- `normalize_virtual_key_is_active` repairs NULL virtual key active states to `true`, preserving explicit `false`, configuration hashes, and update timestamps. The repair runs in a cancellable background task after store initialization, with one transaction per key and retries after failures. Completion is recorded only after all pages succeed; startup never waits for the backfill. The repair is non-rollbackable, and reads normalize NULL values while it is pending and for later writes from older replicas.
+- `normalize_virtual_key_is_active` repairs NULL virtual key active states to `true`, preserving explicit `false`, configuration hashes, and update timestamps. The repair runs in a cancellable background task after store initialization, with one transaction per key and retries after failures. Completion is recorded only after all pages succeed; startup never waits for the backfill. Closing the store on shutdown or after a failed configuration load cancels and joins the repair worker. The repair is non-rollbackable, and reads normalize NULL values while it is pending and for later writes from older replicas.
 <Warning>
 This release adds columns to the `logs` table (`logs_add_model_routing_columns`) and the `agent_logs` table (`agent_logs_add_caller_correlation_id_column`). Bifrost handles concurrent access on the application side, but on large log tables the change still takes locks and adds load. Deploy during a low-traffic window.
 </Warning>

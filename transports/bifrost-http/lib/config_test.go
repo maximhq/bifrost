@@ -386,6 +386,7 @@ import (
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/maximhq/bifrost/framework/postgresconn"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
@@ -3031,6 +3032,29 @@ func TestValidateClientConfig_IssuerURLRequiredForClaudeCodeGateway(t *testing.T
 			}
 		})
 	}
+}
+
+func TestLoadConfig_ClosesConfigStoreOnLogsInitFailure(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	tempDir := createTempDir(t)
+	// The config store can open normally, but the default logs database cannot
+	// open a directory as its file.
+	require.NoError(t, os.Mkdir(filepath.Join(tempDir, "logs.db"), 0700))
+	var store configstore.ConfigStore
+	RegisterConfigStoreReadyHook(func(_ context.Context, opened configstore.ConfigStore) {
+		store = opened
+		t.Cleanup(func() { _ = opened.Close(ctx) })
+	})
+	defer RegisterConfigStoreReadyHook(nil)
+
+	cfg, err := LoadConfig(ctx, tempDir)
+	require.ErrorContains(t, err, "failed to initialize logs store")
+	require.Nil(t, cfg)
+	require.NotNil(t, store, "the config store must open before the logs store fails")
+	sqlDB, err := store.DB().DB()
+	require.NoError(t, err)
+	require.ErrorContains(t, sqlDB.PingContext(ctx), "database is closed")
 }
 
 // TestLoadConfig_OAuthDiscoveryWithoutIssuerURLFailsBoot verifies OAuth
@@ -10156,6 +10180,7 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 // config.json reloads. Set BIFROST_REPRO_POSTGRES_PORT to use a disposable Postgres
 // database (bifrost/bifrost_password, database bifrost) instead of temporary SQLite.
 func TestVirtualKeyConfigSyncOmittedIsActive(t *testing.T) {
+	const repairMigration = "normalize_virtual_key_is_active"
 	initTestLogger()
 	tempDir := createTempDir(t)
 	ctx := context.Background()
@@ -10261,17 +10286,38 @@ func TestVirtualKeyConfigSyncOmittedIsActive(t *testing.T) {
 	cfg = load()
 	check(cfg, id, "explicit false control", false)
 	legacy := check(cfg, newID, "before legacy NULL seed", true)
-	db := cfg.ConfigStore.(*configstore.RDBConfigStore).DB()
-	// Simulate an installation predating the repair migration, without changing
-	// its config hash or updated_at. An unchanged file must still be repaired.
-	require.NoError(t, db.Exec("UPDATE governance_virtual_keys SET is_active = NULL WHERE id = ?", newID).Error)
-	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "normalize_virtual_key_is_active").Error)
 	cfg.Close(ctx)
+	// Stop the existing worker before seeding pending repair on a separate pool.
+	// The original hash and updated_at are kept so the file still looks unchanged.
+	var seedDB *gorm.DB
+	switch storage := data.ConfigStoreConfig.Config.(type) {
+	case *configstore.SQLiteConfig:
+		seedDB, err = gorm.Open(sqlite.Open(storage.Path), &gorm.Config{})
+	case *configstore.PostgresConfig:
+		seedDB, err = postgresconn.Open(postgresconn.BuildDSN(storage), storage, nil)
+	default:
+		t.Fatalf("unexpected test config store: %T", storage)
+	}
+	require.NoError(t, err)
+	seedPool, err := seedDB.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = seedPool.Close() })
+	require.NoError(t, seedDB.Exec("UPDATE governance_virtual_keys SET is_active = NULL WHERE id = ?", newID).Error)
+	require.NoError(t, seedDB.Exec("DELETE FROM migrations WHERE id = ?", repairMigration).Error)
+	var pending struct{ IsActive *bool }
+	require.NoError(t, seedDB.Table((tables.TableVirtualKey{}).TableName()).
+		Select("is_active").Where("id = ?", newID).Take(&pending).Error)
+	require.Nil(t, pending.IsActive, "the row must still be NULL before restart")
+	var markerCount int64
+	require.NoError(t, seedDB.Table("migrations").Where("id = ?", repairMigration).Count(&markerCount).Error)
+	require.Zero(t, markerCount, "repair must still be pending before restart")
+	require.NoError(t, seedPool.Close())
+
 	cfg = load()
 	// Repair is asynchronous; wait for its durable completion before asserting SQL.
 	require.Eventually(t, func() bool {
 		var count int64
-		err := cfg.ConfigStore.(*configstore.RDBConfigStore).DB().Table("migrations").Where("id = ?", "normalize_virtual_key_is_active").Count(&count).Error
+		err := cfg.ConfigStore.(*configstore.RDBConfigStore).DB().Table("migrations").Where("id = ?", repairMigration).Count(&count).Error
 		return err == nil && count == 1
 	}, 5*time.Second, 10*time.Millisecond)
 	repaired := check(cfg, newID, "legacy NULL with unchanged config", true)
@@ -10284,7 +10330,9 @@ func TestVirtualKeyConfigSyncOmittedIsActive(t *testing.T) {
 	check(cfg, id, "repeated startup preserves disabled key", false)
 	// An older replica writes NULL after this migration is already recorded.
 	// The unchanged file must preserve its hash while reads expose active=true.
-	db = cfg.ConfigStore.(*configstore.RDBConfigStore).DB()
+	db := cfg.ConfigStore.(*configstore.RDBConfigStore).DB()
+	require.NoError(t, db.Table("migrations").Where("id = ?", repairMigration).Count(&markerCount).Error)
+	require.EqualValues(t, 1, markerCount, "the late write must follow a completed repair")
 	require.NoError(t, db.Exec("UPDATE governance_virtual_keys SET is_active = NULL WHERE id = ?", newID).Error)
 	cfg.Close(ctx)
 	cfg = load()

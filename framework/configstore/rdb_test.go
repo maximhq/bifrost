@@ -1683,10 +1683,12 @@ func TestUpdateVirtualKeyDefaultsIsActive(t *testing.T) {
 				vk.IsActive = incoming
 				vk.Description = "updated"
 				require.NoError(t, store.UpdateVirtualKey(ctx, vk))
-				got, err := store.GetVirtualKey(ctx, vk.ID)
-				require.NoError(t, err)
+				// Read the column directly because AfterFind defaults SQL NULL to true.
+				var row struct{ IsActive *bool }
+				require.NoError(t, store.DB().WithContext(ctx).Table((tables.TableVirtualKey{}).TableName()).
+					Select("is_active").Where("id = ?", vk.ID).Take(&row).Error)
 				want := incoming == nil || *incoming
-				assert.Equal(t, &want, got.IsActive)
+				assert.Equal(t, &want, row.IsActive, "SQL must store the active state explicitly")
 				assert.Equal(t, &want, vk.IsActive, "caller must see the persisted default")
 			})
 		}
@@ -7722,19 +7724,30 @@ func TestVirtualKeyRepairCloseCancelsWorker(t *testing.T) {
 	require.NoError(t, migrationNormalizeVirtualKeyIsActive(context.Background(), db, testMigrationLogger))
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = 'normalize_virtual_key_is_active'").Error)
 	require.NoError(t, db.Exec("INSERT INTO governance_virtual_keys VALUES ('legacy', NULL)").Error)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
 	entered := make(chan struct{})
+	release := make(chan struct{})
 	var once sync.Once
 	require.NoError(t, db.Callback().Update().Before("gorm:update").Register("block_virtual_key_repair", func(tx *gorm.DB) {
 		if tx.Statement.Table == "governance_virtual_keys" {
 			once.Do(func() { close(entered) })
-			<-tx.Statement.Context.Done()
-			tx.AddError(tx.Statement.Context.Err())
+			select {
+			case <-tx.Statement.Context.Done():
+				tx.AddError(tx.Statement.Context.Err())
+			case <-release:
+			}
 		}
 	}))
 	store := &RDBConfigStore{logger: testMigrationLogger}
 	store.db.Store(db)
 	store.startVirtualKeyRepair()
-	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	t.Cleanup(func() {
+		// Unblock the callback even if the Close being tested never cancels it.
+		close(release)
+		store.virtualKeyRepairCancel()
+		_ = sqlDB.Close()
+	})
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
@@ -7753,7 +7766,5 @@ func TestVirtualKeyRepairCloseCancelsWorker(t *testing.T) {
 	default:
 		t.Fatal("Close returned before the repair worker stopped")
 	}
-	sqlDB, err := db.DB()
-	require.NoError(t, err)
 	require.Error(t, sqlDB.Ping(), "Close must release the database after joining the worker")
 }

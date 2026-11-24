@@ -1244,6 +1244,13 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	initVault(&configData)
 	// 1b. Bootstrap setup token (from config file or BIFROST_SETUP_TOKEN env var)
 	config.SetupToken = resolveSetupToken(&configData)
+	// LoadConfig owns opened resources until it returns a complete config.
+	loaded := false
+	defer func() {
+		if !loaded {
+			config.Close(ctx)
+		}
+	}()
 	// 2. Stores (config, logs, vector) — creates defaults for absent configs
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
 		return nil, err
@@ -1364,6 +1371,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			ReadBufferSize: 1024 * 64,
 		}
 	}
+	loaded = true
 	return config, nil
 }
 
