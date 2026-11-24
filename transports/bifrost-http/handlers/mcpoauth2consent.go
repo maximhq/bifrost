@@ -313,6 +313,7 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceApprovedURL(issuer)})
 		return
 	}
+	lib.RecordAuditChange(ctx, "oauth2_consent.granted", "oauth2_consent", flowID, req.ClientID, nil, consent)
 	redirectURL, err := buildRedirectURL(req.RedirectURI, map[string]string{
 		"code":  code,
 		"state": req.State,
@@ -323,7 +324,6 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	lib.RecordAuditChange(ctx, "oauth2_consent.granted", "oauth2_consent", flowID, req.ClientID, nil, consent)
 	SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: redirectURL})
 }
 

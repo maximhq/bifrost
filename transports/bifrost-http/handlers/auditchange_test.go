@@ -12,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/valyala/fasthttp"
@@ -1266,4 +1267,175 @@ func TestCommitPoint_ProviderUpdateRecordedWhenRuntimeRebuildFails(t *testing.T)
 	changes := liveAuditChanges(ctx)
 	requireRecordedOrNone(t, changes, true, "provider.updated")
 	requireNoSecret(t, changes[0], commitPointProxySecret)
+}
+
+// runWithParams runs handler on a fresh request and returns its context.
+func runWithParams(handler fasthttp.RequestHandler, body string, params map[string]string) *fasthttp.RequestCtx {
+	ctx := newTestRequestCtx(body)
+	for key, value := range params {
+		ctx.SetUserValue(key, value)
+	}
+	handler(ctx)
+	return ctx
+}
+
+func TestCommitPoint_ModelRouterWritesRecordedWhenServingFails(t *testing.T) {
+	h, manager, _ := modelRouterHandler(t)
+	modelRouterOK(t, h.createModelRouter, routerBody("support", "Support"), nil)
+	manager.serveErr = errors.New("plugin is restarting")
+	support := modelRouterPath("support")
+
+	for _, step := range []struct {
+		event   string
+		handler fasthttp.RequestHandler
+		body    string
+		params  map[string]string
+	}{
+		{"model_router.created", h.createModelRouter, routerBody("late", "Late"), nil},
+		{"model_router.updated", h.updateModelRouter, `{"name":"Renamed"}`, support},
+		{"model_router.targets_updated", h.setModelRouterTargets, `{"targets":[{"tier":"SIMPLE","provider":"openai","model":"gpt-4o-mini","weight":1}]}`, support},
+		{"model_router.routing_updated", h.setModelRouterRouting, `{"enabled":true,"priority":5}`, support},
+		{"model_router.reset", h.resetModelRouter, "", support},
+		{"model_router.deleted", h.deleteModelRouter, "", support},
+	} {
+		t.Run(step.event, func(t *testing.T) {
+			ctx := runWithParams(step.handler, step.body, step.params)
+			requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+			changes := liveAuditChanges(ctx)
+			if len(changes) != 1 || changes[0].EventName != step.event {
+				t.Fatalf("want one %s change, got %+v", step.event, changes)
+			}
+		})
+	}
+}
+
+func TestCommitPoint_ModelRouterResetFallbackKeepsTargetsAndRouting(t *testing.T) {
+	h, manager, _ := modelRouterHandler(t)
+	modelRouterOK(t, h.createModelRouter, routerBody("support", "Support"), nil)
+	support := modelRouterPath("support")
+	modelRouterOK(t, h.setModelRouterTargets, `{"targets":[{"tier":"SIMPLE","provider":"openai","model":"gpt-4o-mini","weight":1}]}`, support)
+	modelRouterOK(t, h.setModelRouterRouting, `{"enabled":true,"priority":5}`, support)
+	manager.serveErr = errors.New("plugin is restarting")
+
+	ctx := runWithParams(h.resetModelRouter, "", support)
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "model_router.reset", "", nil)
+	if !strings.Contains(string(change.After), "gpt-4o-mini") || !strings.Contains(string(change.After), `"priority":5`) {
+		t.Fatalf("after = %s, want the stored targets and routing kept", change.After)
+	}
+}
+
+// routingRaceStore changes the router's routing right after the handler's first read of it.
+type routingRaceStore struct {
+	configstore.ConfigStore
+	raced bool
+}
+
+func (s *routingRaceStore) GetModelRouter(ctx context.Context, id string) (*configstore.ModelRouter, error) {
+	router, err := s.ConfigStore.GetModelRouter(ctx, id)
+	if err != nil || s.raced {
+		return router, err
+	}
+	s.raced = true
+	routing := *router.Routing
+	routing.Priority = 9
+	return router, s.ConfigStore.SetModelRouterRouting(ctx, id, routing)
+}
+
+func TestCommitPoint_ModelRouterResetFallbackHasTheRoutingCommitted(t *testing.T) {
+	h, manager, store := modelRouterHandler(t)
+	modelRouterOK(t, h.createModelRouter, routerBody("support", "Support"), nil)
+	support := modelRouterPath("support")
+	modelRouterOK(t, h.setModelRouterRouting, `{"enabled":true,"priority":5}`, support)
+	h.configStore = &routingRaceStore{ConfigStore: store}
+	manager.serveErr = errors.New("plugin is restarting")
+
+	ctx := runWithParams(h.resetModelRouter, "", support)
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "model_router.reset", "", nil)
+	if !strings.Contains(string(change.After), `"priority":9`) {
+		t.Fatalf("after = %s, want the routing stored when the reset committed", change.After)
+	}
+}
+
+func TestCommitPoint_ModelRouterUpdateSuccessRecordsReadBack(t *testing.T) {
+	h, _, _ := modelRouterHandler(t)
+	modelRouterOK(t, h.createModelRouter, routerBody("support", "Support"), nil)
+	ctx := runWithParams(h.updateModelRouter, `{"name":"Renamed"}`, modelRouterPath("support"))
+	requireStatus(t, ctx, fasthttp.StatusOK)
+	requireCommitPointChange(t, ctx, "model_router.updated", "name", "Renamed")
+}
+
+func TestCommitPoint_ComplexityResetRecordedWhenReloadFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	h := &RoutingHandler{configStore: store, routingManager: &mockRoutingManager{reloadErr: errors.New("plugin is not wired")}}
+	custom := complexity.DefaultAnalyzerConfig()
+	custom.TierBoundaries.MediumComplex = 0.55
+	if err := store.UpdateComplexityAnalyzerConfig(context.Background(), &custom); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	ctx := newTestRequestCtx("")
+	h.resetComplexityAnalyzerConfig(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	changes := liveAuditChanges(ctx)
+	if len(changes) != 1 || changes[0].EventName != "complexity_analyzer_config.reset" {
+		t.Fatalf("want one reset change, got %+v", changes)
+	}
+}
+
+// failingReloadPluginsLoader refuses every plugin load.
+type failingReloadPluginsLoader struct {
+	noopPluginsLoader
+}
+
+func (failingReloadPluginsLoader) ReloadPlugin(context.Context, string, *string, any, *schemas.PluginPlacement, *int) error {
+	return errors.New("plugin failed to load")
+}
+
+// restoreFailingPluginStore fails the delete that restoring the previous row starts with.
+type restoreFailingPluginStore struct {
+	configstore.ConfigStore
+}
+
+func (s *restoreFailingPluginStore) DeletePlugin(context.Context, string, ...*gorm.DB) error {
+	return errors.New("restore write failed")
+}
+
+func TestCommitPoint_PluginUpdateLoadFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		failRestore  bool
+		wantRecorded bool
+	}{
+		{"restored row records nothing", false, false},
+		{"failed restore keeps the event", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := setupPricingOverrideHandlerStore(t)
+			if err := store.CreatePlugin(context.Background(), &configstoreTables.TablePlugin{Name: "otel", Enabled: true, Config: map[string]any{}}); err != nil {
+				t.Fatalf("seed plugin: %v", err)
+			}
+			var cfgStore configstore.ConfigStore = store
+			if tc.failRestore {
+				cfgStore = &restoreFailingPluginStore{ConfigStore: store}
+			}
+			h := &PluginsHandler{pluginsLoader: failingReloadPluginsLoader{}, configStore: cfgStore}
+			ctx := newTestRequestCtx(`{"enabled":true,"config":{}}`)
+			ctx.Request.Header.SetMethod("PUT")
+			ctx.SetUserValue("name", "otel")
+			h.updatePlugin(ctx)
+
+			if ctx.Response.StatusCode() == fasthttp.StatusOK {
+				t.Fatalf("expected the load failure to fail the request: %s", ctx.Response.Body())
+			}
+			changes := liveAuditChanges(ctx)
+			if tc.wantRecorded != (len(changes) == 1 && changes[0].EventName == "plugin.updated") {
+				t.Fatalf("recorded=%v, changes=%+v", tc.wantRecorded, changes)
+			}
+		})
+	}
 }
