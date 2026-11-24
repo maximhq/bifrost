@@ -1203,6 +1203,7 @@ bifrost:
         apply_to: "input"
         send_all_conversation_turns: false
         max_turns_to_send: 0
+        exclude_system_prompt: true
         provider_config_ids:
           - 1
     providers:
@@ -1229,6 +1230,7 @@ assert_field_value 'guardrails rule[0].stream_replay_event_interval_ms' '.guardr
 assert_field 'guardrails rule[0].provider_config_ids' '.guardrails_config.guardrail_rules.[0].provider_config_ids'
 assert_field_value 'guardrails rule[1].send_all_conversation_turns' '.guardrails_config.guardrail_rules.[1].send_all_conversation_turns' 'false'
 assert_field_value 'guardrails rule[1].max_turns_to_send' '.guardrails_config.guardrail_rules.[1].max_turns_to_send' '0'
+assert_field_value 'guardrails rule[1].exclude_system_prompt' '.guardrails_config.guardrail_rules.[1].exclude_system_prompt' 'true'
 
 assert_field 'guardrails_config.guardrail_providers' '.guardrails_config.guardrail_providers'
 assert_field_value 'guardrails provider[0].id' '.guardrails_config.guardrail_providers.[0].id' '1'
