@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -961,6 +962,44 @@ func TestCommitPoint_MCPClientUpdateRuntimeFailure(t *testing.T) {
 	}
 }
 
+// storedDiscoveryRollbackStore holds per_user_discovery on in the stored row and fails the rollback write.
+type storedDiscoveryRollbackStore struct {
+	rollbackStore
+}
+
+func (s *storedDiscoveryRollbackStore) GetMCPClientByID(_ context.Context, id string) (*configstoreTables.TableMCPClient, error) {
+	on := true
+	return &configstoreTables.TableMCPClient{ClientID: id, PerUserDiscovery: &on}, nil
+}
+
+func TestCommitPoint_MCPClientUpdateRuntimeFailureKeepsStoredDiscovery(t *testing.T) {
+	SetLogger(&mockLogger{})
+	off := false
+	existing := &schemas.MCPClientConfig{ID: "client-pud", Name: "pud_mcp", EndpointSlug: "pud-slug", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone, PerUserDiscovery: &off}
+	store := &lib.Config{
+		MCPConfig:    &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}},
+		ClientConfig: &configstore.ClientConfig{},
+	}
+	store.ConfigStore = &storedDiscoveryRollbackStore{rollbackStore{failRollback: true}}
+	h := &MCPHandler{store: store, mcpManager: &failingRuntimeUpdateMCPManager{}, mcpCredentialCacheManager: &evictionLog{}}
+
+	disabled := true
+	body, err := json.Marshal(MCPClientUpdateRequest{Disabled: &disabled})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("id", existing.ID)
+	ctx.Request.SetBody(body)
+	h.updateMCPClient(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "mcp_client.updated", "per_user_discovery", true)
+	if existing.PerUserDiscovery == nil || *existing.PerUserDiscovery {
+		t.Fatalf("runtime config must keep its own value, after = %s", change.After)
+	}
+}
+
 // readBackFailingMCPStore commits the client update and fails the read-back after it.
 type readBackFailingMCPStore struct {
 	configstore.ConfigStore
@@ -1138,6 +1177,49 @@ func TestCommitPoint_ProviderUpsertUpdateRejectedAfterAdd(t *testing.T) {
 	ctx.SetUserValue("provider", "audit-openai")
 	h.updateProvider(ctx)
 	requireCreatedProviderRecorded(t, ctx, cfg)
+}
+
+// providerUpdateRejectingStore refuses the provider update write.
+type providerUpdateRejectingStore struct {
+	configstore.ConfigStore
+}
+
+func (providerUpdateRejectingStore) UpdateProvider(context.Context, schemas.ModelProvider, configstore.ProviderConfig, ...*gorm.DB) error {
+	return errCommitPointInjected
+}
+
+func TestCommitPoint_ProviderUpdateRejectedWriteRecordsNothing(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{ClientConfig: &configstore.ClientConfig{}, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}, ConfigStore: store},
+		modelsManager: &mockModelsManager{},
+	}
+	addCtx := newTestRequestCtx(string(commitPointProviderBody(t)))
+	addCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	h.addProvider(addCtx)
+	requireStatus(t, addCtx, fasthttp.StatusOK)
+	before, err := store.GetProvidersConfig(context.Background())
+	if err != nil {
+		t.Fatalf("read providers: %v", err)
+	}
+	h.inMemoryStore.ConfigStore = providerUpdateRejectingStore{ConfigStore: store}
+
+	ctx := newTestRequestCtx(`{"concurrency_and_buffer_size":{"concurrency":3,"buffer_size":6},"custom_provider_config":{"base_provider_type":"openai","is_key_less":true}}`)
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.SetUserValue("provider", "audit-openai")
+	h.updateProvider(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	after, err := store.GetProvidersConfig(context.Background())
+	if err != nil {
+		t.Fatalf("read providers: %v", err)
+	}
+	if !reflect.DeepEqual(before["audit-openai"].ConcurrencyAndBufferSize, after["audit-openai"].ConcurrencyAndBufferSize) {
+		t.Fatalf("stored concurrency changed from %+v to %+v after a rejected write", before["audit-openai"].ConcurrencyAndBufferSize, after["audit-openai"].ConcurrencyAndBufferSize)
+	}
+	requireRecordedOrNone(t, liveAuditChanges(ctx), false, "provider.updated")
 }
 
 func TestCommitPoint_ProviderUpdateRecordedWhenRuntimeRebuildFails(t *testing.T) {

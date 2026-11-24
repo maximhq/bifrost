@@ -4056,7 +4056,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	wasPerCallConnection := h.mcpManager.RequiresPerCallConnection(existingConfig)
 	isPerCallConnection := h.mcpManager.RequiresPerCallConnection(schemasConfig)
 	// Snapshotted now: existingConfig is the live entry the runtime update replaces.
-	after := auditMCPClient(h.store, mcpClientAfterUpdate(existingConfig, schemasConfig))
+	afterConfig := *mcpClientAfterUpdate(existingConfig, schemasConfig)
+	if req.PerUserDiscovery == nil && oldDBConfig != nil {
+		afterConfig.PerUserDiscovery = oldDBConfig.PerUserDiscovery // an omitted flag keeps the stored value, which can differ from the runtime's
+	}
+	after := auditMCPClient(h.store, &afterConfig)
 
 	// Update MCP client config in memory (always — applies name/tools/header changes,
 	// sharedConnectErr records a needs_session_stickiness=true dial failure without
