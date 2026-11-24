@@ -182,6 +182,38 @@ func TestMergeUpdatedKey_Value(t *testing.T) {
 // every later name-omitting update behind a 409 (observed in a downstream
 // production deployment: a single edit that omitted name broke every
 // subsequent key edit going through this path).
+// A key update replaces the key whole, as it does for every other flag on it: the decision the
+// update carries is the one stored, and an update that omits it clears the key back to inherit.
+// Decoded the way the handler decodes the body, so the wire name is pinned too.
+func TestMergeUpdatedKey_ContentLogging(t *testing.T) {
+	h := &ProviderHandler{}
+	stored := schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar("sk-realkey1234567890abcdefghij"), DisableContentLogging: new(true)}
+	for _, tc := range []struct {
+		name string
+		body string
+		want *bool
+	}{
+		{name: "false forces content on", body: `{"id":"key-1","disable_content_logging":false}`, want: new(false)},
+		{name: "true forces content off", body: `{"id":"key-1","disable_content_logging":true}`, want: new(true)},
+		{name: "omitted inherits", body: `{"id":"key-1"}`, want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var update schemas.Key
+			if err := sonic.Unmarshal([]byte(tc.body), &update); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			merged, err := h.mergeUpdatedKey(stored, update)
+			if err != nil {
+				t.Fatalf("mergeUpdatedKey returned error: %v", err)
+			}
+			if (merged.DisableContentLogging == nil) != (tc.want == nil) ||
+				(tc.want != nil && *merged.DisableContentLogging != *tc.want) {
+				t.Fatalf("DisableContentLogging = %v, want %v", merged.DisableContentLogging, tc.want)
+			}
+		})
+	}
+}
+
 func TestMergeUpdatedKey_Name(t *testing.T) {
 	h := &ProviderHandler{}
 	merge := func(oldRaw, update schemas.Key) schemas.Key {
@@ -1489,6 +1521,17 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			},
 			body:    `{"value":"azure-api-key","weight":1,"azure_key_config":{"endpoint":"https://myres.openai.azure.com"},"aliases":{"gpt-4o":{"model_id":"gpt-4o","endpoint":"https://evil.example.com"}}}`,
 			want403: true,
+		},
+		{
+			name:     "update baseten key adding a per-alias deployment url",
+			provider: schemas.Baseten,
+			stored: &schemas.Key{
+				ID: "key-1", Name: "baseten-key", Weight: 1,
+				Value: *schemas.NewSecretVar("baseten-api-key"),
+			},
+			body:      `{"value":"baseten-api-key","weight":1,"aliases":{"dedicated":{"model_id":"not-required","deployment_url":"https://evil.example.com/sync/v1"}}}`,
+			want403:   true,
+			wantNamed: "aliases.dedicated.deployment_url",
 		},
 		{
 			name:      "create vertex key with a credential json",

@@ -5,16 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	bifrost "github.com/maximhq/bifrost/core"
 	coremcp "github.com/maximhq/bifrost/core/mcp"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -421,6 +426,35 @@ func TestCustomUserAgentMappingOverridesBuiltInDetection(t *testing.T) {
 
 	if got := plugin.detectAppFromUserAgent("claude-cli/2.1.168 (external, cli)"); got != "Internal Claude Wrapper" {
 		t.Fatalf("expected custom app mapping, got %q", got)
+	}
+}
+
+// Values longer than their columns (and the schema's maxLength) are a client
+// fault, refused before they reach the store; limits count characters, as
+// varchar does.
+func TestValidateUserAgentMappingRejectsOversizedValues(t *testing.T) {
+	mime := func(s string) *string { return &s }
+	cases := []struct {
+		name    string
+		mapping logstore.UserAgentMapping
+		wantErr bool
+	}{
+		{"pattern at limit", logstore.UserAgentMapping{Pattern: strings.Repeat("p", 512), MatchType: "contains", App: "a"}, false},
+		{"pattern over limit", logstore.UserAgentMapping{Pattern: strings.Repeat("p", 513), MatchType: "contains", App: "a"}, true},
+		{"app at limit in characters", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: strings.Repeat("é", 128)}, false},
+		{"app over limit", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: strings.Repeat("a", 129)}, true},
+		{"logo_mime at limit", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: "a", LogoMime: mime(strings.Repeat("m", 128))}, false},
+		{"logo_mime over limit", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: "a", LogoMime: mime(strings.Repeat("m", 129))}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateUserAgentMapping(&tc.mapping)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, ErrInvalidUserAgentMapping)
+		})
 	}
 }
 
@@ -1374,6 +1408,57 @@ func TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed(t 
 	}
 	if d := entry.OutputCost - wantOut; d < -1e-9 || d > 1e-9 {
 		t.Fatalf("output_cost %v != %v", entry.OutputCost, wantOut)
+	}
+}
+
+// TestApplyErrorBillingFromBilledUsage_PricesEstimatedUsage covers a cancelled
+// stream whose usage was estimated: the estimate replaces the accumulator's
+// partial usage and its cost, and is priced at the same catalog rates with the
+// input/output split carried on the stored usage.
+func TestApplyErrorBillingFromBilledUsage_PricesEstimatedUsage(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, newTestPricingManager(t), nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	// The accumulator saw no usage chunk, so it priced zero completion tokens.
+	staleCost := 1e-6
+	entry := &logstore.Log{
+		Provider:         string(schemas.OpenAI),
+		Model:            "gpt-4o",
+		PromptTokens:     0,
+		Cost:             &staleCost,
+		TokenUsageParsed: &schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{TotalCost: staleCost}},
+	}
+	const promptTokens, completionTokens = 120, 40
+	billed := &schemas.BifrostLLMUsage{
+		PromptTokens: promptTokens, CompletionTokens: completionTokens, TotalTokens: promptTokens + completionTokens,
+		Estimation: &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plugin.applyErrorBillingFromBilledUsage(ctx, entry, billed, schemas.ChatCompletionStreamRequest)
+
+	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
+	wantIn, wantOut := float64(promptTokens)*2.5e-6, float64(completionTokens)*1e-5
+	if entry.Cost == nil {
+		t.Fatal("no cost computed for the estimated usage")
+	}
+	if math.Abs(*entry.Cost-(wantIn+wantOut)) > 1e-9 {
+		t.Fatalf("cost = %v, want %v from the estimated tokens", *entry.Cost, wantIn+wantOut)
+	}
+	if entry.PromptTokens != promptTokens || entry.CompletionTokens != completionTokens || entry.TotalTokens != promptTokens+completionTokens {
+		t.Fatalf("tokens = %d/%d/%d, want the estimate", entry.PromptTokens, entry.CompletionTokens, entry.TotalTokens)
+	}
+	if entry.TokenUsageParsed.Estimation == nil || entry.TokenUsageParsed.Cost == nil {
+		t.Fatalf("stored usage = %+v, want the estimation provenance and a cost breakdown", entry.TokenUsageParsed)
+	}
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields: %v", err)
+	}
+	if math.Abs(entry.InputCost-wantIn) > 1e-9 || math.Abs(entry.OutputCost-wantOut) > 1e-9 {
+		t.Fatalf("split = %v/%v, want %v/%v", entry.InputCost, entry.OutputCost, wantIn, wantOut)
 	}
 }
 
@@ -2809,6 +2894,136 @@ func TestKeyTurningContentOnOverClientFlagKeepsEarlyCapturedContent(t *testing.T
 	})
 }
 
+// TestLayersStampedAfterPreHooksDecideCapturedContent pins the layers the virtual key's pending check
+// missed. A caller who authenticated without a virtual key (an MCP token in user mode) is resolved
+// by governance after our PreMCPHook, so its arguments are held until the final policy; and on the
+// LLM path core picks the provider key after every PreLLMHook, so a provider key that turns content
+// on over a disabled client flag keeps the input captured before it was known.
+func TestLayersStampedAfterPreHooksDecideCapturedContent(t *testing.T) {
+	toolName := "docs-search"
+	userCtx := func(requestID, mcpLogID string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetGrant(grant.New())
+		ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialMCPToken, "mcp-jwt"), nil, nil, nil, nil, nil, nil))
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, mcpLogID)
+		return ctx
+	}
+	runMCP := func(t *testing.T, plugin *LoggerPlugin, ctx *schemas.BifrostContext, stampLayers func()) *logstore.MCPToolLog {
+		t.Helper()
+		_, _, err := plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+			RequestType: schemas.MCPRequestTypeChatToolCall,
+			ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{"query":"find this"}`},
+			},
+		})
+		if err != nil {
+			t.Fatalf("PreMCPHook() error = %v", err)
+		}
+		mcpLogID := ctx.Value(schemas.BifrostContextKeyMCPLogID).(string)
+		pendingValue, ok := plugin.pendingMCPLogsToInject.Load(mcpLogID)
+		if !ok {
+			t.Fatal("expected pending MCP log entry")
+		}
+		if args := pendingValue.(*logstore.MCPToolLog).ArgumentsParsed; args != nil {
+			t.Fatalf("arguments must be held aside while the user's layers are unresolved, got %#v", args)
+		}
+		// Governance's PreMCPHook runs after ours: it stamps the user's layers and marks them resolved.
+		stampLayers()
+		schemas.MarkCallerContentLoggingResolved(ctx)
+		result := `{"answer":"done"}`
+		_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+			ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+		}, nil)
+		if err != nil {
+			t.Fatalf("PostMCPHook() error = %v", err)
+		}
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := plugin.store.FindMCPToolLog(context.Background(), mcpLogID)
+		if err != nil {
+			t.Fatalf("FindMCPToolLog() error = %v", err)
+		}
+		return logEntry
+	}
+
+	t.Run("mcp user layer off drops held arguments", func(t *testing.T) {
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := userCtx("req-user-off", "mcp-user-off")
+		logEntry := runMCP(t, plugin, ctx, func() {
+			schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyUserDisableContentLogging, true)
+		})
+		if logEntry.ArgumentsParsed != nil || logEntry.ResultParsed != nil {
+			t.Fatalf("a user who turned content off must persist no arguments or result, got args=%#v result=%#v", logEntry.ArgumentsParsed, logEntry.ResultParsed)
+		}
+	})
+
+	t.Run("mcp user layer on keeps held arguments over a disabled client flag", func(t *testing.T) {
+		plugin, err := Init(context.Background(), &Config{DisableContentLogging: new(true)}, testLogger{}, newTestStore(t), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := userCtx("req-user-on", "mcp-user-on")
+		logEntry := runMCP(t, plugin, ctx, func() {
+			schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyUserDisableContentLogging, false)
+		})
+		if logEntry.ArgumentsParsed == nil {
+			t.Fatal("a user who turned content on must keep the arguments held for them")
+		}
+	})
+
+	t.Run("provider key on keeps input over a disabled client flag", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{DisableContentLogging: new(true)}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-provider-key-on")
+		_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+			RequestType: schemas.PassthroughRequest,
+			PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Provider:    schemas.OpenAI,
+				Method:      "POST",
+				Path:        "/v1/fine-tuning/jobs",
+				Body:        []byte(`{"training_file":"file-kept"}`),
+				SafeHeaders: map[string]string{"content-type": "application/json"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("PreLLMHook() error = %v", err)
+		}
+		// Core picks the key after every PreLLMHook and stamps its decision.
+		schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyProviderKeyDisableContentLogging, false)
+		_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				StatusCode:  200,
+				Body:        []byte(`{"id":"ftjob-1"}`),
+				Path:        "/v1/fine-tuning/jobs",
+				ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("PostLLMHook() error = %v", err)
+		}
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindByID(context.Background(), "req-provider-key-on")
+		if err != nil {
+			t.Fatalf("FindByID() error = %v", err)
+		}
+		if logEntry.PassthroughRequestBody != `{"training_file":"file-kept"}` {
+			t.Fatalf("expected the body kept for a content-on provider key, got %q", logEntry.PassthroughRequestBody)
+		}
+	})
+}
+
 // projectNamingCtx is a request with no virtual key that names a project through the request
 // header, before governance has admitted it: the caller is a dashboard session.
 func projectNamingCtx(requestID string, header string) *schemas.BifrostContext {
@@ -2821,52 +3036,57 @@ func projectNamingCtx(requestID string, header string) *schemas.BifrostContext {
 }
 
 // admitProject leaves the context the way the documented contract describes a request once its
-// named project is admitted: the identity carries the project, and the governance content
-// decision key carries the project's decision when it has one.
+// named project is admitted: the identity carries the project, the governance content decision key
+// carries the project's decision when it has one, and the caller is marked resolved, since
+// governance admits the project while it resolves the caller.
 func admitProject(ctx *schemas.BifrostContext, disableContentLogging *bool) {
 	project := &schemas.EntityRef{ID: "proj-1", Name: "Project One"}
 	ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialSessionToken, "session"), nil, nil, nil, nil, nil, project))
 	if disableContentLogging != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, *disableContentLogging)
 	}
+	schemas.MarkCallerContentLoggingResolved(ctx)
 }
 
-// TestGovernanceDecisionPending pins when the logging hooks treat the content decision on the
-// context as not final yet: while a presented virtual key or a named project is still unresolved.
-func TestGovernanceDecisionPending(t *testing.T) {
+// TestContentDecisionPendingOnNamedProject pins when the logging hooks treat the content decision on
+// the context as not final yet because of a named project: until governance marks the caller
+// resolved, which it does in the same step that admits the project.
+func TestContentDecisionPendingOnNamedProject(t *testing.T) {
+	pending := func(ctx *schemas.BifrostContext) bool { return contentDecisionPending(ctx, contentScopeMCP) }
 	t.Run("nothing presented or named", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		require.False(t, governanceDecisionPending(ctx))
+		require.False(t, pending(ctx))
 	})
 	t.Run("project named by id", func(t *testing.T) {
-		require.True(t, governanceDecisionPending(projectNamingCtx("req-pending-id", schemas.HeaderGovernanceProjectID)))
+		require.True(t, pending(projectNamingCtx("req-pending-id", schemas.HeaderGovernanceProjectID)))
 	})
 	t.Run("project named by name", func(t *testing.T) {
-		require.True(t, governanceDecisionPending(projectNamingCtx("req-pending-name", schemas.HeaderGovernanceProjectName)))
+		require.True(t, pending(projectNamingCtx("req-pending-name", schemas.HeaderGovernanceProjectName)))
 	})
 	t.Run("an empty project header still names one", func(t *testing.T) {
 		// The governance funnel treats an empty header as having asked, and refuses the request
 		// when nothing was admitted behind it; until then its decision is not known either.
 		ctx := projectNamingCtx("req-pending-empty", schemas.HeaderGovernanceProjectID)
 		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{schemas.HeaderGovernanceProjectID: ""})
-		require.True(t, governanceDecisionPending(ctx))
+		require.True(t, pending(ctx))
 	})
 	t.Run("an admitted project is settled", func(t *testing.T) {
 		ctx := projectNamingCtx("req-pending-admitted", schemas.HeaderGovernanceProjectID)
 		admitProject(ctx, nil)
-		require.False(t, governanceDecisionPending(ctx))
+		require.False(t, pending(ctx))
 	})
-	t.Run("an admitted project still waits on an unresolved key", func(t *testing.T) {
+	t.Run("a named project and a presented key wait on one resolution", func(t *testing.T) {
 		ctx := projectNamingCtx("req-pending-key", schemas.HeaderGovernanceProjectID)
-		admitProject(ctx, nil)
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
-		require.True(t, governanceDecisionPending(ctx))
+		require.True(t, pending(ctx))
+		schemas.MarkCallerContentLoggingResolved(ctx)
+		require.False(t, pending(ctx), "governance admits the project while it resolves the caller")
 	})
-	t.Run("a stamped key with no project named is settled", func(t *testing.T) {
+	t.Run("a resolved key with no project named is settled", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
-		require.False(t, governanceDecisionPending(ctx))
+		schemas.MarkCallerContentLoggingResolved(ctx)
+		require.False(t, pending(ctx))
 	})
 }
 
@@ -4392,7 +4612,7 @@ func TestGuardrailMetadataForLogReadsContextWithoutResponse(t *testing.T) {
 	if metadata == nil || len(metadata.JudgeCalls) != 1 {
 		t.Fatalf("guardrail metadata = %#v; want one context judge call", metadata)
 	}
-	if metadata.JudgeCalls[0] != requireCall {
+	if !reflect.DeepEqual(metadata.JudgeCalls[0], requireCall) {
 		t.Fatalf("guardrail call = %#v; want %#v", metadata.JudgeCalls[0], requireCall)
 	}
 }
@@ -5474,6 +5694,37 @@ func TestA2AResponseCorrelationPreservesRequestValuesWhenResponseOmitsThem(t *te
 	require.Equal(t, "response-attempt", *entry.AttemptID)
 }
 
+// TestA2AHooksCaptureCallerCorrelationID verifies that a delegating agent's x-bf-agent-correlation-id is stored on
+// the subagent's operation, both when the pre-hook ran and when only the post-hook saw the request.
+func TestA2AHooksCaptureCallerCorrelationID(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		preHook bool
+	}{
+		{name: "pre and post hooks", preHook: true},
+		{name: "post hook only", preHook: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plugin := &LoggerPlugin{writeQueue: make(chan *writeQueueEntry, 1)}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-caller-"+test.name)
+			ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"x-bf-agent-correlation-id": "task-parent"})
+			if test.preHook {
+				_, short, err := plugin.PreA2AHook(ctx, &schemas.BifrostA2ARequest{RequestType: schemas.A2ARequestTypeSendMessage, AgentName: "support-analyst"})
+				require.NoError(t, err)
+				require.Nil(t, short)
+			}
+			_, _, err := plugin.PostA2AHook(ctx, &schemas.BifrostA2AResponse{
+				ExtraFields: schemas.BifrostA2AResponseExtraFields{A2ARequestType: schemas.A2ARequestTypeSendMessage, AgentName: "support-analyst"},
+			}, nil)
+			require.NoError(t, err)
+			entry := (<-plugin.writeQueue).agentLog
+			require.NotNil(t, entry.CallerCorrelationID)
+			require.Equal(t, "task-parent", *entry.CallerCorrelationID)
+		})
+	}
+}
+
 func TestA2AHooksCaptureRequestPayload(t *testing.T) {
 	plugin := &LoggerPlugin{}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -6423,7 +6674,7 @@ func TestRelayLogContentPolicy(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-policy")
 		if decision != nil {
 			// A presented key governance has not resolved yet: the body is captured provisionally,
-			// as PreLLMHook captures input while governanceDecisionPending.
+			// as PreLLMHook captures input while contentDecisionPending.
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
 		}
 		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
@@ -6543,7 +6794,7 @@ func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
 	t.Run("off once governance has decided against it", func(t *testing.T) {
 		ctx := policyCtx(false, map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: true})
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-presented")
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-presented")
+		schemas.MarkCallerContentLoggingResolved(ctx)
 		require.False(t, capture(t, policyTestPlugin(nil, nil, false), ctx))
 	})
 	for _, tc := range []struct {
@@ -6935,4 +7186,334 @@ func TestRelayReconcileCarriesRetainedContent(t *testing.T) {
 
 	visible := relayLogUpdateColumns(&logstore.RelayLog{ID: "row", Path: "/search?q=1"}, false)
 	require.NotContains(t, visible, logstore.RelayRetainedPathUpdate, "a visible row carries nothing extra")
+}
+
+// streamAccount serves one provider whose upstream is a test server.
+type streamAccount struct {
+	provider schemas.ModelProvider
+	config   schemas.ProviderConfig
+}
+
+func (a *streamAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{a.provider}, nil
+}
+
+func (a *streamAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("mock"), Models: schemas.WhiteList{"*"}, Weight: 100}}, nil
+}
+
+func (a *streamAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if provider != a.provider {
+		return nil, fmt.Errorf("provider %s not configured", provider)
+	}
+	config := a.config
+	return &config, nil
+}
+
+// failedUsageRecorder keeps the billed usage of every stream failure its post-hook sees.
+type failedUsageRecorder struct {
+	usage chan *schemas.BifrostLLMUsage
+}
+
+func (r *failedUsageRecorder) GetName() string { return "failed-usage-recorder" }
+
+func (r *failedUsageRecorder) Cleanup() error { return nil }
+
+func (r *failedUsageRecorder) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (r *failedUsageRecorder) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+func (r *failedUsageRecorder) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if err != nil && err.Error != nil {
+		select {
+		case r.usage <- err.ExtraFields.BilledUsage.DeepCopy():
+		default:
+		}
+	}
+	return resp, err, nil
+}
+
+// stallingUpstream writes events, flushes, and holds the stream open until the client leaves.
+func stallingUpstream(t *testing.T, events ...string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// net/http notices a client hang-up only once the request body is consumed.
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, e := range events {
+			fmt.Fprint(w, e+"\n\n")
+		}
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+const openAIStallingChunk = `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"o"}}]}`
+
+// newEstimatingClient runs Bifrost with the real tracer and its stream accumulator,
+// fed by the logging plugin as in production, plus a recorder of failed-stream usage.
+func newEstimatingClient(t *testing.T, provider schemas.ModelProvider, baseURL string, custom bool, idleTimeout int) (*bifrost.Bifrost, *failedUsageRecorder) {
+	t.Helper()
+	logger := testLogger{}
+	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, logger), nil, logger)
+	t.Cleanup(tracer.Stop)
+	plugin, err := Init(context.Background(), &Config{}, logger, newTestStore(t), nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	account := &streamAccount{provider: provider, config: schemas.ProviderConfig{
+		NetworkConfig:            schemas.NetworkConfig{BaseURL: baseURL, DefaultRequestTimeoutInSeconds: 30, StreamIdleTimeoutInSeconds: idleTimeout},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 16},
+	}}
+	if custom {
+		account.config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}
+	}
+	recorder := &failedUsageRecorder{usage: make(chan *schemas.BifrostLLMUsage, 4)}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: logger, Tracer: tracer, LLMPlugins: []schemas.LLMPlugin{plugin, recorder},
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	return client, recorder
+}
+
+func hiRequest(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{Provider: provider, Model: model, Params: &schemas.ChatParameters{},
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}}
+}
+
+func awaitFailedUsage(t *testing.T, recorder *failedUsageRecorder, wait time.Duration) *schemas.BifrostLLMUsage {
+	t.Helper()
+	select {
+	case usage := <-recorder.usage:
+		return usage
+	case <-time.After(wait):
+		t.Fatal("the stream failure never reached the post-hooks")
+		return nil
+	}
+}
+
+// A cancelled stream is billed from what the real accumulator received before the
+// cancel: the worker estimates it ahead of every post-hook.
+func TestCancelledStreamEstimatedFromRealAccumulator(t *testing.T) {
+	const provider schemas.ModelProvider = "cancel-estimate"
+	client, recorder := newEstimatingClient(t, provider, stallingUpstream(t, openAIStallingChunk), true, 0)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	stream, streamErr := client.ChatCompletionStreamRequest(ctx, hiRequest(provider, "m"))
+	require.Nil(t, streamErr)
+	for chunk := range stream {
+		if chunk.BifrostError == nil {
+			cancel()
+		}
+	}
+	usage := awaitFailedUsage(t, recorder, 3*time.Second)
+	require.NotNil(t, usage, "cancelled stream carries no billed usage")
+	require.Equal(t, 8, usage.PromptTokens, "cl100k_base fallback prompt count")
+	require.Equal(t, 1, usage.CompletionTokens)
+	require.Equal(t, 9, usage.TotalTokens)
+	require.NotNil(t, usage.Estimation)
+}
+
+// Claude's message_start output count is provisional, so a stream cancelled after
+// more output is re-counted from the accumulated text, on chat and responses.
+func TestAnthropicCancelledStreamEstimatedFromRealAccumulator(t *testing.T) {
+	output := strings.Repeat("hello world ", 1000)
+	for _, responses := range []bool{false, true} {
+		t.Run(map[bool]string{false: "chat", true: "responses"}[responses], func(t *testing.T) {
+			url := stallingUpstream(t,
+				"event: message_start\n"+`data: {"type":"message_start","message":{"id":"msg_cancel","type":"message","role":"assistant","model":"claude-3-haiku","content":[],"usage":{"input_tokens":26,"output_tokens":4}}}`,
+				"event: content_block_start\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				"event: content_block_delta\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+output+`"}}`)
+			client, recorder := newEstimatingClient(t, schemas.Anthropic, url, false, 0)
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			request := hiRequest(schemas.Anthropic, "claude-3-haiku")
+			var stream chan *schemas.BifrostStreamChunk
+			var streamErr *schemas.BifrostError
+			if responses {
+				stream, streamErr = client.ResponsesStreamRequest(ctx, request.ToResponsesRequest())
+			} else {
+				stream, streamErr = client.ChatCompletionStreamRequest(ctx, request)
+			}
+			require.Nil(t, streamErr)
+			seen := 0
+			for chunk := range stream {
+				if chunk.BifrostChatResponse != nil {
+					for _, c := range chunk.BifrostChatResponse.Choices {
+						if c.ChatStreamResponseChoice != nil && c.Delta != nil && c.Delta.Content != nil {
+							seen += len(*c.Delta.Content)
+						}
+					}
+				}
+				if c := chunk.BifrostResponsesStreamResponse; c != nil && c.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && c.Delta != nil {
+					seen += len(*c.Delta)
+				}
+				if seen >= len(output) {
+					cancel()
+				}
+			}
+			usage := awaitFailedUsage(t, recorder, 3*time.Second)
+			require.NotNil(t, usage)
+			require.Equal(t, 26, usage.PromptTokens, "the provider's prompt count is kept")
+			require.Greater(t, usage.CompletionTokens, 4, "the provisional output count was not replaced: %+v", usage)
+			require.NotNil(t, usage.Estimation)
+			require.True(t, usage.Estimation.Completion)
+			require.Equal(t, usage.PromptTokens+usage.CompletionTokens, usage.TotalTokens)
+		})
+	}
+}
+
+// The Anthropic handlers' provisional-usage mark belongs to the attempt that set it;
+// one left on the context must not mark real provider usage as provisional.
+func TestCancelledStreamIgnoresStaleProvisionalUsage(t *testing.T) {
+	const provider schemas.ModelProvider = "stale-counter"
+	url := stallingUpstream(t, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"o"}}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`)
+	client, recorder := newEstimatingClient(t, provider, url, true, 0)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, true) // left by an earlier Anthropic-handler attempt
+	stream, streamErr := client.ChatCompletionStreamRequest(ctx, hiRequest(provider, "m"))
+	require.Nil(t, streamErr)
+	for chunk := range stream {
+		if chunk.BifrostError == nil {
+			cancel()
+		}
+	}
+	usage := awaitFailedUsage(t, recorder, 3*time.Second)
+	require.NotNil(t, usage)
+	require.Nil(t, usage.Estimation, "provider usage replaced by a stale provisional mark: %+v", usage)
+	require.Equal(t, 5, usage.PromptTokens)
+	require.Equal(t, 7, usage.CompletionTokens)
+}
+
+// A stream that produces output and then goes silent fails on the per-chunk idle
+// timeout with an untyped error; its received output is still estimated.
+func TestIdleTimedOutStreamEstimatedFromRealAccumulator(t *testing.T) {
+	const provider schemas.ModelProvider = "idle-estimate"
+	client, recorder := newEstimatingClient(t, provider, stallingUpstream(t, openAIStallingChunk), true, 1)
+	stream, streamErr := client.ChatCompletionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), hiRequest(provider, "m"))
+	require.Nil(t, streamErr)
+	var failure *schemas.BifrostError
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			failure = chunk.BifrostError
+		}
+	}
+	require.NotNil(t, failure)
+	require.NotNil(t, failure.Error)
+	require.ErrorIs(t, failure.Error.Error, providerUtils.ErrStreamIdleTimeout)
+	usage := awaitFailedUsage(t, recorder, 5*time.Second)
+	require.NotNil(t, usage)
+	require.Equal(t, 8, usage.PromptTokens)
+	require.Equal(t, 1, usage.CompletionTokens)
+	require.NotNil(t, usage.Estimation)
+}
+
+// A speech session knows the text it spoke only when it ends, so it reports it with its final response, and that
+// text is the row's input, as the text of a speech request is.
+func TestApplySpeechSessionInputRecordsTheTextTheSessionSpoke(t *testing.T) {
+	final := &schemas.BifrostResponse{SpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{
+		Type:         schemas.SpeechStreamResponseTypeDone,
+		SessionInput: "Hello world.",
+	}}
+
+	entry := &logstore.Log{}
+	applySpeechSessionInput(entry, final, true)
+	require.NotNil(t, entry.SpeechInputParsed)
+	require.Equal(t, "Hello world.", entry.SpeechInputParsed.Input)
+
+	hidden := &logstore.Log{}
+	applySpeechSessionInput(hidden, final, false)
+	require.Nil(t, hidden.SpeechInputParsed, "content logging is off")
+
+	silent := &logstore.Log{}
+	applySpeechSessionInput(silent, &schemas.BifrostResponse{SpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{}}, true)
+	applySpeechSessionInput(silent, &schemas.BifrostResponse{}, true)
+	applySpeechSessionInput(silent, nil, true)
+	require.Nil(t, silent.SpeechInputParsed, "a response that reports no text leaves the input alone")
+}
+
+// A speech stream with no audio has no speech output to keep: a speech session streams its audio to the client and
+// keeps none, so its row would otherwise carry an empty output that the logs page shows as a player with nothing to play.
+func TestApplyStreamingOutputToEntryKeepsSpeechOutputOnlyWhenThereIsAudio(t *testing.T) {
+	plugin := &LoggerPlugin{}
+
+	spoken := &logstore.Log{}
+	plugin.applyStreamingOutputToEntry(spoken, &streaming.ProcessedStreamResponse{
+		Data: &streaming.AccumulatedData{AudioOutput: &schemas.BifrostSpeechResponse{Audio: []byte("ABC")}},
+	}, false, true)
+	require.NotNil(t, spoken.SpeechOutputParsed)
+	require.Equal(t, []byte("ABC"), spoken.SpeechOutputParsed.Audio)
+
+	silent := &logstore.Log{}
+	plugin.applyStreamingOutputToEntry(silent, &streaming.ProcessedStreamResponse{
+		Data: &streaming.AccumulatedData{AudioOutput: &schemas.BifrostSpeechResponse{}},
+	}, false, true)
+	require.Nil(t, silent.SpeechOutputParsed, "no audio, nothing to keep")
+}
+
+// A speech session is a socket that stays open as long as its client likes, which an HTTP speech stream is not, so its
+// row has an object of its own and the logs page can tell the two apart.
+func TestPreLLMHookLogsASpeechSessionUnderItsOwnObject(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	req := &schemas.BifrostRequest{RequestType: schemas.SpeechStreamRequest, SpeechRequest: &schemas.BifrostSpeechRequest{
+		Provider: schemas.Elevenlabs, Model: "eleven_v4_turbo", Input: &schemas.SpeechInput{},
+	}}
+
+	for _, tc := range []struct {
+		requestID string
+		session   bool
+		want      string
+	}{
+		{"speech-session-1", true, "speech.session"},
+		{"speech-http-stream-1", false, "speech_stream"},
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, tc.requestID)
+		if tc.session {
+			ctx.SetValue(schemas.BifrostContextKeySpeechSession, true)
+		}
+		_, _, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		pending, ok := plugin.pendingLogsEntries.Load(tc.requestID)
+		require.True(t, ok, tc.requestID)
+		require.Equal(t, tc.want, pending.(*PendingLogData).InitialData.Object, tc.requestID)
+	}
+	require.NoError(t, plugin.Cleanup())
+}
+
+// BenchmarkSpeechSessionContextLookup is the only work the session's own object adds to the request path: one
+// context read for a speech stream, and none for any other request type.
+func BenchmarkSpeechSessionContextLookup(b *testing.B) {
+	for _, tc := range []struct {
+		name    string
+		session bool
+	}{{"session", true}, {"http stream", false}} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-1")
+			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-1")
+			if tc.session {
+				ctx.SetValue(schemas.BifrostContextKeySpeechSession, true)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if speechSession, _ := ctx.Value(schemas.BifrostContextKeySpeechSession).(bool); speechSession != tc.session {
+					b.Fatal("wrong object")
+				}
+			}
+		})
+	}
 }

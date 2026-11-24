@@ -1,6 +1,9 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from '../../core/fixtures/base.fixture'
 
+// At 720px the metric strip and volume chart leave the table no room for a clickable row.
+test.use({ viewport: { width: 1440, height: 900 } })
+
 const listLog = {
   id: 'mcp-detail-e2e',
   request_id: 'req-mcp-detail-e2e',

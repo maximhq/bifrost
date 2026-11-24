@@ -12,6 +12,8 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
 import { CopyableId } from "@/components/copyableId";
+import { ContentLoggingSelect } from "@/components/contentLoggingSelect";
+import { type ContentLoggingChoice, contentLoggingChoice, contentLoggingValue } from "@/components/contentLoggingSelect.utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -69,6 +71,7 @@ interface TeamFormData {
 	requestResetDuration: string;
 	// Team-wide: applies to all team budgets and the team rate limit
 	calendarAligned: boolean;
+	contentLogging: ContentLoggingChoice;
 	isDirty: boolean;
 }
 
@@ -90,6 +93,7 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 		requestMaxLimit: team?.rate_limit?.request_max_limit ?? undefined,
 		requestResetDuration: team?.rate_limit?.request_reset_duration || "1h",
 		calendarAligned: team?.calendar_aligned ?? false,
+		contentLogging: contentLoggingChoice(team?.disable_content_logging),
 	};
 };
 
@@ -164,6 +168,35 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 		}));
 	};
 
+	// Whether anything on the form can align to a calendar: a filled budget or rate limit on a window
+	// with a calendar boundary. The toggle is shown only then.
+	const canCalendarAlign = useMemo(() => {
+		const hasAlignableBudget = formData.budgets.some(
+			(b) =>
+				b.maxLimit !== undefined &&
+				b.maxLimit !== null &&
+				(supportsCalendarAlignment(b.resetDuration) || isMultiUnitDuration(b.resetDuration)),
+		);
+		const hasAlignableRateLimit =
+			(formData.tokenMaxLimit !== undefined &&
+				formData.tokenMaxLimit !== null &&
+				(supportsCalendarAlignment(formData.tokenResetDuration) || isMultiUnitDuration(formData.tokenResetDuration))) ||
+			(formData.requestMaxLimit !== undefined &&
+				formData.requestMaxLimit !== null &&
+				(supportsCalendarAlignment(formData.requestResetDuration) || isMultiUnitDuration(formData.requestResetDuration)));
+		return hasAlignableBudget || hasAlignableRateLimit;
+	}, [formData.budgets, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration]);
+
+	// With nothing left that can align, the team is not calendar aligned in any meaningful sense, so
+	// the hidden toggle is turned off rather than left to submit calendar_aligned: true - the same as
+	// the customer and virtual key sheets do.
+	useEffect(() => {
+		if (formData.calendarAligned && !canCalendarAlign) {
+			updateField("calendarAligned", false);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [canCalendarAlign, formData.calendarAligned]);
+
 	const handleCalendarAlignedChange = (checked: boolean) => {
 		// Warn only on the persisted false→true transition. Toggling off then
 		// back on within the same edit session doesn't reset on save (the backend
@@ -186,6 +219,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 			requestMaxLimit: formData.requestMaxLimit,
 			requestResetDuration: formData.requestResetDuration,
 			calendarAligned: formData.calendarAligned,
+			contentLogging: formData.contentLogging,
 		};
 		setFormData((prev) => ({
 			...prev,
@@ -200,6 +234,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 		formData.requestMaxLimit,
 		formData.requestResetDuration,
 		formData.calendarAligned,
+		formData.contentLogging,
 		initialState,
 	]);
 
@@ -310,6 +345,8 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 					calendar_aligned: formData.calendarAligned,
 					// Only sent when the operator explicitly chose to clear spend.
 					reset_budget_usage: resetBudgetUsage || undefined,
+					// Always sent: null clears a decision back to inherit.
+					disable_content_logging: contentLoggingValue(formData.contentLogging),
 				};
 
 				// Detect rate limit changes using had/has pattern
@@ -339,6 +376,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 					budgets: submittableBudgets.length > 0 ? submittableBudgets : undefined,
 					// Team-wide setting that governs both team budgets and the team rate limit.
 					calendar_aligned: formData.calendarAligned,
+					...(formData.contentLogging !== "inherit" ? { disable_content_logging: formData.contentLogging === "disabled" } : {}),
 				};
 
 				// Add rate limit if enabled (token or request limits)
@@ -372,6 +410,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 	return (
 		<Sheet open onOpenChange={(open) => !open && onCancel()}>
 			<SheetContent
+				resizeKey="team"
 				className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4"
 				data-testid="team-sheet-content"
 				onInteractOutside={(e) => e.preventDefault()}
@@ -531,20 +570,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 						/>
 						{/* Calendar alignment — team-wide setting that applies to all team budgets and the team rate limit */}
 						{(() => {
-							const hasAlignableBudget = formData.budgets.some(
-								(b) =>
-									b.maxLimit !== undefined &&
-									b.maxLimit !== null &&
-									(supportsCalendarAlignment(b.resetDuration) || isMultiUnitDuration(b.resetDuration)),
-							);
-							const hasAlignableRateLimit =
-								(formData.tokenMaxLimit !== undefined &&
-									formData.tokenMaxLimit !== null &&
-									(supportsCalendarAlignment(formData.tokenResetDuration) || isMultiUnitDuration(formData.tokenResetDuration))) ||
-								(formData.requestMaxLimit !== undefined &&
-									formData.requestMaxLimit !== null &&
-									(supportsCalendarAlignment(formData.requestResetDuration) || isMultiUnitDuration(formData.requestResetDuration)));
-							if (!hasAlignableBudget && !hasAlignableRateLimit) return null;
+							if (!canCalendarAlign) return null;
 							return (
 								<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
 									<div className="space-y-0.5">
@@ -562,6 +588,22 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 								</div>
 							);
 						})()}
+
+						<div className="space-y-2">
+							<Label htmlFor="team-content-logging">{t("sheet.contentLogging")}</Label>
+							<ContentLoggingSelect
+								id="team-content-logging"
+								value={formData.contentLogging}
+								onValueChange={(choice) => updateField("contentLogging", choice)}
+								labels={{
+									inherit: t("sheet.contentLoggingInherit"),
+									off: t("sheet.contentLoggingOff"),
+									on: t("sheet.contentLoggingOn"),
+								}}
+								testIdPrefix="team-content-logging"
+							/>
+							<p className="text-muted-foreground text-xs">{t("sheet.contentLoggingHelp")}</p>
+						</div>
 
 						{/* Warning dialog shown when enabling calendar alignment on an existing team */}
 						<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>

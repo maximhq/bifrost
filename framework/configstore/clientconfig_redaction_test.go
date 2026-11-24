@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -50,6 +51,7 @@ func TestProviderConfig_Redacted_NestedSecretVars(t *testing.T) {
 						AzureAliasCfg:   &schemas.AzureAliasCfg{Endpoint: secret()},
 						VertexAliasCfg:  &schemas.VertexAliasCfg{ProjectNumber: secret()},
 						BedrockAliasCfg: &schemas.BedrockAliasCfg{InferenceProfileARN: secret()},
+						BasetenAliasCfg: &schemas.BasetenAliasCfg{DeploymentURL: secret()},
 					},
 					"legacy-project": {ModelID: "legacy-model", VertexAliasCfg: &schemas.VertexAliasCfg{ProjectID: secret()}},
 					"simple":         {ModelID: "simple-model"},
@@ -64,6 +66,7 @@ func TestProviderConfig_Redacted_NestedSecretVars(t *testing.T) {
 					"alias.region": alias.Region, "alias.project_id": alias.ProjectID,
 					"alias.endpoint": alias.AzureAliasCfg.Endpoint, "alias.project_number": alias.VertexAliasCfg.ProjectNumber,
 					"alias.inference_profile_arn": alias.BedrockAliasCfg.InferenceProfileARN,
+					"alias.deployment_url":        alias.BasetenAliasCfg.DeploymentURL,
 					"alias.legacy_project_id":     key.Aliases["legacy-project"].VertexAliasCfg.ProjectID,
 					"bedrock.project_id":          key.BedrockKeyConfig.ProjectID,
 					"mantle.project_id":           key.BedrockMantleKeyConfig.ProjectID,
@@ -314,6 +317,18 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 	assert.Equal(t, "https://foo.openai.azure.com", out.Value,
 		"plain Endpoint was incorrectly redacted")
 	assert.Equal(t, out.SecretType, string(schemas.SecretTypePlainText))
+}
+
+// The redacted config is what the providers API serves and what the UI edits, and it rebuilds each
+// key field by field, so a key's content-logging decision must be carried over as is (nil stays
+// inherit, not false).
+func TestProviderConfig_Redacted_KeepsContentLoggingDecision(t *testing.T) {
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		config := ProviderConfig{Keys: []schemas.Key{{ID: "k1", Name: "test", Value: *schemas.NewSecretVar("sk-test"), DisableContentLogging: decision}}}
+		redacted := config.Redacted()
+		require.Len(t, redacted.Keys, 1)
+		assert.Equal(t, decision, redacted.Keys[0].DisableContentLogging)
+	}
 }
 
 // TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex verifies that
@@ -639,4 +654,51 @@ func TestProviderConfig_PassthroughSurvivesRedactionAndHash(t *testing.T) {
 	off, err := (&ProviderConfig{Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{}}}).GenerateConfigHash("openai")
 	require.NoError(t, err)
 	assert.NotEqual(t, without, off, "an empty allowlist is a different config from no policy")
+}
+
+// TestClientConfig_Redacted_ClientGatewayTelemetry pins that the config API never
+// returns a client gateway telemetry credential: header values and an env-backed
+// endpoint are fully masked with their references kept, a plain endpoint URL
+// stays readable, and the live configuration is not modified.
+func TestClientConfig_Redacted_ClientGatewayTelemetry(t *testing.T) {
+	const canary = "synthetic-otel-token-canary-0123456789"
+	t.Setenv("BIFROST_TEST_OTEL_TOKEN", canary)
+	t.Setenv("BIFROST_TEST_OTEL_ENDPOINT", "https://collector.internal.example.com")
+	live := &ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+		IssuerURL: schemas.NewSecretVar("https://bifrost.example.com"),
+		Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{
+			Enabled: true,
+			Telemetry: &tables.ClientGatewayTelemetryConfig{
+				Enabled: true,
+				Destinations: []tables.ClientGatewayTelemetryDestination{
+					{Endpoint: schemas.NewSecretVar("https://otel.example.com"), Headers: map[string]*schemas.SecretVar{"authorization": schemas.NewSecretVar("env.BIFROST_TEST_OTEL_TOKEN")}},
+					{Endpoint: schemas.NewSecretVar("env.BIFROST_TEST_OTEL_ENDPOINT")},
+				},
+			},
+		}},
+	}}
+
+	redacted := live.Redacted()
+	out, err := json.Marshal(redacted)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), canary, "a header credential leaked")
+	assert.NotContains(t, string(out), "collector.internal.example.com", "an env-backed endpoint leaked")
+	assert.Contains(t, string(out), "https://otel.example.com", "a plain endpoint URL stays readable")
+	assert.Contains(t, string(out), "env.BIFROST_TEST_OTEL_TOKEN", "the header reference stays visible")
+
+	liveTelemetry := live.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry
+	assert.Equal(t, canary, liveTelemetry.Destinations[0].Headers["authorization"].GetValue(), "redaction modified the live config")
+	assert.Equal(t, "https://collector.internal.example.com", liveTelemetry.Destinations[1].Endpoint.GetValue())
+
+	// A redacted header read back from the dashboard resolves from its reference again.
+	var roundTrip tables.ClientGatewayTelemetryDestination
+	require.NoError(t, json.Unmarshal(mustMarshal(t, redacted.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry.Destinations[0]), &roundTrip))
+	assert.Equal(t, canary, roundTrip.Headers["authorization"].GetValue())
+}
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
 }

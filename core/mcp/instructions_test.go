@@ -521,6 +521,16 @@ func TestCallerDiscoveryInstructionsExcludesCodeModeClients(t *testing.T) {
 		"a code mode client must not contribute to the aggregate; got %v", names)
 }
 
+// A code mode client served directly on its own slug forwards its instructions there, and only there.
+func TestCallerDiscoveryInstructionsFollowServerTypeOnSlug(t *testing.T) {
+	m := newManagerWithInstructions(t)
+	addCodeModeClient(t, m, "codey")
+	setServerTypeOnSlug(m, "codey", schemas.MCPServerTypeOnSlugDisabled)
+
+	assert.Contains(t, m.GetAggregatedServerInstructions(onClientSlug("codey")), "codey rule")
+	assert.NotContains(t, m.GetAggregatedServerInstructions(context.Background()), "codey rule")
+}
+
 // Code-mode-only: the aggregate is empty, which callers must render as an absent field.
 func TestCallerDiscoveryInstructionsEmptyWhenEveryClientIsCodeMode(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)

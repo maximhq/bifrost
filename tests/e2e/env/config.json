@@ -82,6 +82,12 @@
         "tools_to_execute": ["*"],
         "tools_to_auto_execute": ["*"]
       }
+    ],
+    "virtual_mcps": [
+      {
+        "name": "e2e_config_issues_vmcp",
+        "tools": [{ "mcp_client_name": "e2e_config_issues_client", "tool_names": ["*"] }]
+      }
     ]
   }
 }

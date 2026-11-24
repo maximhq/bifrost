@@ -50,6 +50,11 @@ const (
 
 var terminalLogStatuses = []string{"success", "error", "cancelled"}
 
+// maxRankingPairFilter is the most (model, provider) pairs a previous-period
+// ranking query filters on term by term; beyond it the query reads every
+// pair, well inside SQLite's 1,000-deep expression limit.
+const maxRankingPairFilter = 200
+
 // applyRankingLimit caps a ranking query at the caller-requested number of rows,
 // falling back to defaultMaxRankingsLimit. The query is left unbounded when the
 // caller explicitly asked for every ranked entity (RankingLimit <= 0), which is
@@ -439,6 +444,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.ComplexityMechanisms) > 0 {
 		baseQuery = baseQuery.Where("complexity_mechanism IN ?", filters.ComplexityMechanisms)
 	}
+	if len(filters.ModelRouterIDs) > 0 {
+		baseQuery = baseQuery.Where("model_router_id IN ?", filters.ModelRouterIDs)
+	}
 	if len(filters.AgentNames) > 0 {
 		baseQuery = s.applyAgentContextFilter(baseQuery, filters.AgentNames, filters.StartTime, filters.EndTime)
 	}
@@ -456,6 +464,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// a self-referencing row already lists as a root (see applyRootsOnlyFilter),
 		// so without this it would also appear inside its own expansion.
 		baseQuery = baseQuery.Where("parent_request_id = ? AND id <> parent_request_id", filters.ParentRequestID)
+		if filters.FallbackHopsOnly {
+			baseQuery = baseQuery.Where("fallback_index > 0")
+		}
 	} else if filters.RootsOnly && filters.RequestID == "" {
 		// An explicit ID lookup targets exactly one row; collapsing it as a
 		// non-root would hide the very row that was pasted.
@@ -1304,6 +1315,8 @@ func logsOrderClause(sortBy, order string) string {
 		return "total_tokens " + direction + ", id " + direction
 	case "cost":
 		return "cost " + direction + " NULLS LAST, id " + direction
+	case "fallback_index":
+		return "fallback_index " + direction + ", id " + direction
 	default:
 		return "timestamp " + direction + ", id " + direction
 	}
@@ -1731,6 +1744,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
 		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
+		"model_router_id", "model_router_name",
 		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
@@ -1742,7 +1756,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
 		// Only guardrail blocks, whose errors are bounded, are listed (see below).
-		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
+		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream", "stop_reason",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", MaxContentSummaryBytes),
 		"metadata", "cache_debug",
 		"batch_debug",
@@ -3226,8 +3240,11 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 
 		// Only fetch previous-period data for (model, provider) pairs that
 		// appear in the current ranking so trend computation is accurate even
-		// when the previous period has more groups than the limit.
-		if len(currentResults) > 0 {
+		// when the previous period has more groups than the limit. Each pair is
+		// one OR term, and SQLite rejects an expression deeper than 1,000, so
+		// past maxRankingPairFilter pairs the filter is dropped: previous rows
+		// are matched to current ones by pair below, so extra rows are ignored.
+		if len(currentResults) > 0 && len(currentResults) <= maxRankingPairFilter {
 			pairConditions := make([]string, len(currentResults))
 			pairArgs := make([]interface{}, 0, len(currentResults)*2)
 			for i, r := range currentResults {
@@ -5357,6 +5374,9 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 		if !acquired {
 			return ErrRetentionBusy
 		}
+		if err := raiseRetentionStatementTimeout(tx); err != nil {
+			return err
+		}
 		result := tx.Exec(stmt, cutoff, batchSize)
 		if result.Error != nil {
 			return result.Error
@@ -5368,6 +5388,16 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 		return 0, err
 	}
 	return deleted, nil
+}
+
+// retentionStatementTimeout is the statement_timeout floor for one retention batch: wide rows carry megabytes of TOAST each.
+const retentionStatementTimeout = "10min"
+
+// raiseRetentionStatementTimeout lifts a shorter statement_timeout for the rest of tx and leaves 0 (no limit) or a longer one alone.
+func raiseRetentionStatementTimeout(tx *gorm.DB) error {
+	return tx.Exec(`SELECT set_config('statement_timeout', ?, true)
+		WHERE current_setting('statement_timeout')::interval > interval '0'
+		AND current_setting('statement_timeout')::interval < ?::interval`, retentionStatementTimeout, retentionStatementTimeout).Error
 }
 
 // RetentionInterval is hourly on Postgres, where the advisory lock makes idle replicas' ticks one cheap probe.
@@ -5457,6 +5487,9 @@ func (s *RDBLogStore) DeleteLog(ctx context.Context, id string) error {
 	})
 }
 
+// deleteLogsChunkSize bounds one DELETE in DeleteLogs so a large id list of wide rows stays inside statement_timeout.
+const deleteLogsChunkSize = 100
+
 // DeleteLogs deletes multiple log entries from the database by their IDs, and
 // with them what Warp's topic tables hold about them, in one transaction.
 func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
@@ -5464,8 +5497,10 @@ func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 		return nil
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
-			return err
+		for chunk := range slices.Chunk(ids, deleteLogsChunkSize) {
+			if err := tx.Where("id IN ?", chunk).Delete(&Log{}).Error; err != nil {
+				return err
+			}
 		}
 		return deleteWarpTopicRowsForLogs(tx, ids)
 	})
@@ -5717,7 +5752,7 @@ func (s *RDBLogStore) ListAgentLogHistory(ctx context.Context, filter AgentLogHi
 		orderClause = "latency " + direction + " NULLS LAST, id " + direction
 	}
 	inputPreview := fmt.Sprintf("substr(request_body, 1, %d) AS input", maxA2APayloadPreviewRunes)
-	if err := query.Select("id", "timestamp", "record_kind", "operation", "status", "agent_name", "user_id", "user_name", "virtual_key_id", "virtual_key_name", "team_id", "team_name", "team_ids", "team_names", "customer_id", "customer_name", "customer_ids", "customer_names", "business_unit_id", "business_unit_name", "business_unit_ids", "business_unit_names", "project_id", "project_name", "budget_ids", "rate_limit_ids", "request_id", "trace_id", "task_id", "context_id", "message_id", "request_message_id", "response_message_id", "artifact_id", "push_config_id", "delivery_id", "attempt_id", "event_sequence", "event_type", "task_state", "downstream_transport", "upstream_transport", "latency", "upstream_latency", "overhead_latency", "overhead_breakdown", "content_type", inputPreview).Order(orderClause).Offset(pagination.Offset).Limit(pagination.Limit).Scan(&rows).Error; err != nil {
+	if err := query.Select("id", "timestamp", "record_kind", "operation", "status", "agent_name", "user_id", "user_name", "virtual_key_id", "virtual_key_name", "team_id", "team_name", "team_ids", "team_names", "customer_id", "customer_name", "customer_ids", "customer_names", "business_unit_id", "business_unit_name", "business_unit_ids", "business_unit_names", "project_id", "project_name", "budget_ids", "rate_limit_ids", "request_id", "trace_id", "task_id", "context_id", "message_id", "request_message_id", "response_message_id", "artifact_id", "push_config_id", "caller_correlation_id", "delivery_id", "attempt_id", "event_sequence", "event_type", "task_state", "downstream_transport", "upstream_transport", "latency", "upstream_latency", "overhead_latency", "overhead_breakdown", "content_type", inputPreview).Order(orderClause).Offset(pagination.Offset).Limit(pagination.Limit).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	for i := range rows {
@@ -5921,6 +5956,7 @@ func (s *RDBLogStore) applyAgentHistoryFilters(query *gorm.DB, filter AgentLogHi
 		"request_id": filter.RequestID, "trace_id": filter.TraceID,
 		"task_id": filter.TaskID, "context_id": filter.ContextID, "push_config_id": filter.PushConfigID,
 		"delivery_id": filter.DeliveryID, "attempt_id": filter.AttemptID,
+		"caller_correlation_id": filter.CallerCorrelationID,
 	} {
 		if value != "" {
 			query = query.Where(column+" = ?", value)

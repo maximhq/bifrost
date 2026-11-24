@@ -2,6 +2,31 @@
 
 End-to-end API tests for the Bifrost API using Postman collections and [Newman](https://www.npmjs.com/package/newman) (CLI).
 
+## Immediate registration of management-created provider prefixes
+
+Folder 378 (`provider-prefix-registration`) creates fresh providers with discovery
+disabled and a virtual key weighted toward a competitor. The first native chat
+and streamed `/openai` Responses requests must retain the new provider prefix,
+even when the upstream returns `503`. A missing-key case must return `400` without
+rerouting. Each case removes its providers and virtual key.
+
+Start the local fixture and isolated gateway described in
+[Provider 5xx failover](#provider-5xx-failover-and-429-retry-hint-propagation), setting
+`BIFROST_SETUP_TOKEN=provider-registration-local-token` on that gateway. Then run:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "378. Management-created provider prefixes route immediately (provider-prefix-registration)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791 \
+  --env-var setupToken=provider-registration-local-token \
+  --timeout-request 15000 --timeout-script 15000
+```
+
+The folder is skipped unless `providerErrorFixture=1`. Inline-script regression
+checks are included in `node tests/e2e/api/collections/collection-scripts.test.mjs`.
+
 ## Provider secret redaction
 
 The API management collection's `Provider Secret Redaction` folder covers every
@@ -261,6 +286,11 @@ fallback once. A model may carry a `~tag` suffix (`upstream-500~run-1-a1`): the 
 picks the behaviour and the hit is counted under the full name, so a case counts its own attempts.
 `test-key` is the only credential it accepts: a request whose `Authorization` header carries any
 other bearer is refused with 401, as a provider refuses a caller's direct key.
+
+The fixture also answers `POST /v1/audio/transcriptions` the way OpenAI answers audio with no
+speech: `upstream-transcribe-empty` returns 200 with an empty body and `upstream-transcribe-newline`
+returns 200 with `"\n"`, whatever the `response_format`. Folder 341 runs on these, so swap its name
+into `--folder` above to run it.
 The same gateway config also registers an Azure key; the fixture answers model `azure-filtered` on
 `/openai/v1/chat/completions` with Azure `prompt_filter_results` and per-choice `content_filter_results`,
 which is how the dropped-annotation defect was measured.

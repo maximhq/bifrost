@@ -12,6 +12,8 @@ Provider/model examples:
 - OpenRouter: `Provider: schemas.OpenRouter`, `Model: "~typesafe/jev-latest"`
 - Cloudflare: `Provider: schemas.Cloudflare`, `Model: "clef-flash"` (the key needs `CloudflareKeyConfig.AccountID`)
 - Perplexity: `Provider: schemas.Perplexity`, `Model: "pplx-decider-v1.1-27b"` or `"pplx-decider-v1-27b"`
+- Baseten: `Provider: schemas.Baseten`, `Model: "decision-models/baseten-joey-2b-latest"` (or `baseten-elephant-9b-latest`, `baseten-mammoth-27b-latest`)
+- Gemini: `Provider: schemas.Gemini`, `Model: "gemini-decision-1"`
 - Ollama: `Provider: schemas.Ollama`, `Model: "nimble"` (any pulled System One model)
 - Azure: `Provider: schemas.Azure`, `Model: "Microsoft-Decision-1"` (a key alias maps it to your deployment)
 - Databricks: `Provider: schemas.Databricks`, `Model: "ai_decide"` or a System One model such as `"system.ai.openjev-qwen35-4b"` or `"system.ai.typesafeai-jev-1-14-0"` (the key needs `DatabricksKeyConfig.WorkspaceURL`)
@@ -130,7 +132,7 @@ func main() {
 
 | Field | Meaning |
 |-------|---------|
-| `Input` | The evidence: `Text`, `Messages` (text and image parts; an image's `ImageURL` is a base64 data URL or an HTTP(S) URL, with an optional `Detail`), or `Structured` (an object or array, passed to TypeSafe-based models as their state). Leave it empty to send a `null` state |
+| `Input` | The evidence: `Text`, `Messages` (text, image, and file parts; an image's `ImageURL` is a base64 data URL or an HTTP(S) URL, with an optional `Detail`; a file part, `schemas.DecisionInputPartTypeFile`, carries its bytes in `Data.File` or a location in `URL`, and its media type in `MimeType`, and is read by Gemini), or `Structured` (an object or array, passed to TypeSafe-based models as their state). Leave it empty to send a `null` state |
 | `Questions[].Type` | `DecisionTypePredicate` (TypeSafe's `noul`), `DecisionTypeChoice`, or `DecisionTypeScore` |
 | `Questions[].Name` | Optional; answers carry it back |
 | `Questions[].Instructions` | `*schemas.DecisionText`: text (`schemas.NewDecisionText("...")`), or a structured value (`&schemas.DecisionText{Structured: map[string]interface{}{...}}`) that TypeSafe-based models receive as given and other models as JSON text |

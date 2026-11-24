@@ -93,6 +93,7 @@ func buildOperationV2(method, path string, op map[string]any, pathParamsRaw []an
 		Description: strings.TrimSpace(asString(op["description"])),
 		Deprecated:  asBool(op["deprecated"]),
 		Tags:        asStringSlice(op["tags"]),
+		Extensions:  operationExtensions(op),
 	}
 	if _, has := op["security"]; has {
 		operation.HasSecurity = true

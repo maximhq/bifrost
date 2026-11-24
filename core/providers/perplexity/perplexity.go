@@ -164,7 +164,7 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*PerplexityChatRequest, error) {
 			return ToPerplexityChatCompletionRequest(request), nil
 		})
 	if err != nil {
@@ -212,6 +212,9 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	customRequestConverter := func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
 		reqBody := ToPerplexityChatCompletionRequest(request)
+		if reqBody == nil {
+			return nil, nil // a literal nil: a nil pointer would pass the interface nil check
+		}
 		reqBody.Stream = schemas.Ptr(true)
 		return reqBody, nil
 	}

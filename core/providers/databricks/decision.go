@@ -79,7 +79,7 @@ func (provider *DatabricksProvider) Decision(ctx *schemas.BifrostContext, key sc
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*DatabricksDecisionRequest, error) {
 			return ToDatabricksDecisionRequest(request)
 		})
 	if bifrostErr != nil {

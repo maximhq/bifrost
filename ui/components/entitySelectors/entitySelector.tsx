@@ -90,6 +90,8 @@ export interface EntitySelectorCommonProps {
 	disabled?: boolean;
 	placeholder?: string;
 	className?: string;
+	/** Id for the default single/add trigger, so a `<label htmlFor>` names it. A caller-supplied `trigger` keeps its own. */
+	id?: string;
 	/**
 	 * Guarantees an already-selected entity renders a real label even when it
 	 * falls outside the fetched search results — callers pass the edited row's
@@ -102,7 +104,8 @@ export interface EntitySelectorCommonProps {
 	/**
 	 * Extra classes for the default combobox trigger — e.g. `h-9` to line up
 	 * with a taller control beside it. Ignored when `trigger` is supplied.
-	 * Single mode only.
+	 * In multi mode it styles the react-select control, which grows with its
+	 * chips, so pass a min-height (e.g. `!min-h-9`) rather than a fixed height.
 	 */
 	triggerClassName?: string;
 	/** Icon shown before the label in the default combobox trigger. Single mode only. */
@@ -224,6 +227,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 		searchPlaceholder,
 		LabelResolver,
 		disabled = false,
+		id,
 		placeholder,
 		className,
 		fallbackOption,
@@ -369,6 +373,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 				{labelResolvers}
 				<AsyncMultiSelect<EntityOptionMeta>
 					className={className}
+					triggerClassName={triggerClassName}
 					disabled={disabled}
 					placeholder={resolvedPlaceholder}
 					defaultOptions={multiOptions}
@@ -443,6 +448,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 				type="button"
 				variant="outline"
 				role="combobox"
+				id={id}
 				disabled={disabled}
 				className={cn(
 					"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",

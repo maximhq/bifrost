@@ -228,10 +228,13 @@ var (
 
 	// Maps Bifrost finish reasons to provider-specific format
 	bifrostToAnthropicFinishReason = map[string]AnthropicStopReason{
-		"stop":       AnthropicStopReasonEndTurn, // canonical default
-		"length":     AnthropicStopReasonMaxTokens,
-		"tool_calls": AnthropicStopReasonToolUse,
-		"compaction": AnthropicStopReasonCompaction,
+		"stop":           AnthropicStopReasonEndTurn, // canonical default
+		"length":         AnthropicStopReasonMaxTokens,
+		"tool_calls":     AnthropicStopReasonToolUse,
+		"compaction":     AnthropicStopReasonCompaction,
+		"content_filter": AnthropicStopReasonRefusal,
+		// Bedrock Converse guardrail block; Anthropic's value for a policy-blocked turn.
+		"guardrail_intervened": AnthropicStopReasonRefusal,
 	}
 )
 
@@ -352,9 +355,9 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		req.MCPServers = nil
 	}
 	// Speed is both provider-gated (FastMode flag) and model-gated
-	// (Opus 4.6 and Opus 4.7+ per SupportsFastMode). Strip if either gate
-	// fails — Anthropic's API rejects speed:"fast" elsewhere with a 400.
-	if req.Speed != nil && (!features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(caps.Model()))) {
+	// (per-provider model list in DefaultSupportsFastMode). Strip if either
+	// gate fails — the upstream rejects speed:"fast" elsewhere with a 400.
+	if req.Speed != nil && (!features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model()))) {
 		req.Speed = nil
 	}
 	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil && !caps.SupportsTaskBudgets(features.TaskBudgets) {
@@ -449,6 +452,12 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	if req.Thinking != nil && req.Thinking.Display != nil && *req.Thinking.Display == AnthropicThinkingDisplayUpdates &&
 		!SupportsThinkingDisplayUpdates(caps) {
 		req.Thinking.Display = new("omitted")
+	}
+	// Runs after every thinking.type rewrite above so a block_binding left on a mode that
+	// cannot carry it (or on a host without the beta) is dropped instead of 400ing.
+	if req.Thinking != nil && req.Thinking.BlockBinding != nil &&
+		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(req.Thinking.Type)) {
+		req.Thinking.BlockBinding = nil
 	}
 	if req.InferenceGeo != nil && !caps.SupportsInferenceGeo(features.InferenceGeo) {
 		req.InferenceGeo = nil
@@ -663,7 +672,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// speed — provider AND model gate
 	if providerUtils.JSONFieldExists(jsonBody, "speed") {
-		if !features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(caps.Model())) {
+		if !features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model())) {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "speed")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw speed: %w", err)
@@ -780,8 +789,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// tool_addition / tool_removal blocks — mid-conversation tool changes (beta
 	// mid-conversation-tool-changes). Claude Code sends them in role:"system" messages, and a
-	// surface without the beta rejects the unknown content block (Vertex: "Input tag
-	// 'tool_addition' found using 'type' does not match any of the expected tags"). They are
+	// surface without the beta rejects the unknown content block. They are
 	// removed, as is a replayed compaction block's tool_changes; the text next to them stays,
 	// and a message left with no content is dropped whole rather than sent empty.
 	//
@@ -1041,6 +1049,16 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.display", "omitted")
 		if err != nil {
 			return nil, fmt.Errorf("rewrite raw thinking.display to omitted: %w", err)
+		}
+	}
+
+	// thinking.block_binding — mirrors the typed path. Placed here, after the
+	// thinking.type rewrites above, so it sees the type that is actually sent.
+	if providerUtils.JSONFieldExists(jsonBody, "thinking.block_binding") &&
+		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(providerUtils.GetJSONField(jsonBody, "thinking.type").String())) {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.block_binding")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw thinking.block_binding: %w", err)
 		}
 	}
 
@@ -1350,11 +1368,21 @@ func IsHaiku5Plus(model string) bool {
 //     ("Claude Fable 5 and Claude Mythos 5 use adaptive thinking, which is
 //     always on ... thinking: {type: "disabled"} is rejected.")
 //   - https://platform.claude.com/docs/en/build-with-claude/fast-mode
-//     (fast mode is NOT supported on Fable — Opus 4.6/4.7/4.8 only; this is why
-//     Fable is kept separate from IsOpus47Plus, which gates SupportsFastMode).
+//     (Fable is kept separate from IsOpus47Plus, which gates the Claude API
+//     fast-mode fallback; per-host Fable support comes from DefaultSupportsFastMode
+//     and the datasheet's supports_speed).
 func IsFableFamily(model string) bool {
 	m := strings.ToLower(model)
 	return strings.Contains(m, "fable") || strings.Contains(m, "mythos")
+}
+
+// DefaultStripsUserTurnTrailingWhitespace is the name-based fallback for
+// ModelCaps.StripsUserTurnTrailingWhitespace: the Claude 5 generation. Measured live on Haiku 5.5,
+// Opus 5.5 and (from customer traffic) Fable 5.1; Haiku 4.5 and Sonnet 4.6 keep the whitespace, so
+// trimming there makes a block stop matching its own history on the next turn. A model this does
+// not recognise is not trimmed, which is the behaviour before the trim existed.
+func DefaultStripsUserTurnTrailingWhitespace(model string) bool {
+	return IsFableFamily(model) || IsOpus5Plus(model) || IsSonnet5Plus(model) || IsHaiku5Plus(model)
 }
 
 // IsMythosPreview returns true for Claude Mythos Preview, the one member of the
@@ -1422,15 +1450,31 @@ func RejectsDisabledThinking(caps schemas.ModelCaps, effort *string) bool {
 	return false
 }
 
-// DefaultSupportsFastMode: speed:"fast" is a research preview on Opus 4.6 and
-// Opus 4.7+ (which covers 4.8 and 5); every other model rejects it with a 400.
-func DefaultSupportsFastMode(model string) bool {
+// DefaultSupportsFastMode reports whether speed:"fast" is accepted for a
+// (provider, model) pair when the datasheet has no supports_fast_mode value.
+// The model lists differ per host, so the provider decides which one applies:
+//   - Vertex: Claude Fable 5.2 only (cite: V-fast). Google serves fast mode on the
+//     latest version of a family plus a 30-day window for the retiring one; a
+//     later model is carried by the datasheet rather than this fallback.
+//   - Everywhere else: the Claude API research preview on Opus 4.6 and Opus 4.7+
+//     (which covers 4.8 and 5). Every other model rejects it with a 400.
+func DefaultSupportsFastMode(provider schemas.ModelProvider, model string) bool {
+	if provider == schemas.Vertex {
+		return isFable52(model)
+	}
 	if IsOpus47Plus(model) {
 		return true
 	}
 	m := strings.ToLower(model)
 	return strings.Contains(m, "opus") &&
 		(strings.Contains(m, "4-6") || strings.Contains(m, "4.6"))
+}
+
+// isFable52 matches Claude Fable 5.2 in its plain, dotted, Vertex "@date" and
+// date-suffixed forms.
+func isFable52(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "fable") && (strings.Contains(m, "5-2") || strings.Contains(m, "5.2"))
 }
 
 // DefaultSupportsSafeguards is the name-detection fallback for the Claude Code
@@ -1663,6 +1707,13 @@ func SupportsThinkingDisplayUpdates(caps schemas.ModelCaps) bool {
 			DefaultSupportsThinkingDisplayUpdates(caps.Model()))
 }
 
+// thinkingTypeTakesBlockBinding reports whether thinking.block_binding is valid on a
+// thinking mode: it governs signed thinking blocks, so it is a 400 with thinking off
+// ("disabled", "between_tools") and meaningless without a type.
+func thinkingTypeTakesBlockBinding(thinkingType string) bool {
+	return thinkingType == "adaptive" || thinkingType == "enabled"
+}
+
 // DefaultSupportsBetweenToolsThinking: Sonnet 5.5 accepts thinking:{type:"between_tools"}
 // as its lowest setting (it rejects "disabled").
 //
@@ -1874,8 +1925,10 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 		return nil
 	}
 
+	// No trailing newline: a cached block ending in whitespace stops matching once the content
+	// after it in the same turn changes (Claude Code drops its trailing reminder on the next turn).
 	wrap := func(text string) string {
-		return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+		return "<system-reminder>\n" + text + "\n</system-reminder>"
 	}
 
 	var blocks []AnthropicContentBlock
@@ -1889,19 +1942,21 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 		// prompt_cache config. Conversion paths like this one never synthesize a marker, so a
 		// request either carries the caller's intent or the operator's, never a third thing
 		// invented mid-translation. Note that "never synthesizes" is the guarantee, not
-		// "never drops": the loop below deliberately collapses intermediate markers onto the
-		// last block, for the reasons stated there. Adding is what changes the caller's cost
-		// profile behind their back; collapsing a redundant marker does not.
+		// "never drops": the loop below deliberately drops intermediate markers, for the
+		// reasons stated there. Adding is what changes the caller's cost profile behind their
+		// back; dropping a redundant marker does not.
 		blocks = append(blocks, AnthropicContentBlock{
 			Type: AnthropicContentBlockTypeText,
 			Text: schemas.Ptr(wrap(*content.ContentStr)),
 		})
 	}
-	// Only the LAST breakpoint in the message is kept, matching the Bedrock converter. Within a
-	// single message an intermediate marker buys nothing — one on the final block already closes
-	// over every preceding block, and the message is atomic so no later request can diverge in its
-	// middle — while still consuming one of the four checkpoints the API allows per request.
+	// Only the LAST breakpoint in the message is kept, matching the Bedrock converter: an earlier
+	// marker in the same message closes over nothing the last one does not, and still consumes one
+	// of the four checkpoints the API allows per request. It stays on the block the caller marked.
+	// Text after it is not part of the checkpoint, and Claude Code drops such a trailing reminder on
+	// the next turn, so moving the marker onto it writes a prefix no later request matches.
 	var lastCacheControl *schemas.CacheControl
+	marked := -1
 	for _, block := range content.ContentBlocks {
 		if block.Text == nil || *block.Text == "" {
 			continue
@@ -1911,15 +1966,15 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 			Text: schemas.Ptr(wrap(*block.Text)),
 		})
 		if block.CacheControl != nil {
-			lastCacheControl = block.CacheControl
+			lastCacheControl, marked = block.CacheControl, len(blocks)-1
 		}
 	}
 
 	if len(blocks) == 0 {
 		return nil
 	}
-	if lastCacheControl != nil {
-		blocks[len(blocks)-1].CacheControl = lastCacheControl
+	if marked >= 0 {
+		blocks[marked].CacheControl = lastCacheControl
 	}
 
 	return &AnthropicMessage{
@@ -1928,29 +1983,64 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 	}
 }
 
+// trimUserTurnTail strips trailing whitespace from the text that ends a user turn, called before an
+// inlined reminder joins that turn on a model that strips it at the end of a turn
+// (ModelCaps.StripsUserTurnTrailingWhitespace). Applied whether or not the block carries the
+// breakpoint: it gives the block the bytes the model sees when it ends its turn, so they match
+// whether a later request keeps the reminder after it, drops it, or moves the breakpoint on.
+func trimUserTurnTail(msgs []AnthropicMessage) {
+	n := len(msgs)
+	if n == 0 || msgs[n-1].Role != AnthropicMessageRoleUser {
+		return
+	}
+	content := &msgs[n-1].Content
+	tail := &content.ContentStr
+	if *tail == nil {
+		k := len(content.ContentBlocks) - 1
+		if k < 0 || content.ContentBlocks[k].Type != AnthropicContentBlockTypeText {
+			return
+		}
+		tail = &content.ContentBlocks[k].Text
+	}
+	// The pointer is replaced, not written through: it can alias the caller's request.
+	if *tail != nil {
+		if trimmed := strings.TrimRight(**tail, " \n\r\t"); trimmed != "" && len(trimmed) < len(**tail) {
+			*tail = new(trimmed)
+		}
+	}
+}
+
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
-// system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus 4.8+ (including Opus 5 and 5.5), Claude
-// Sonnet 5.5 (not Sonnet 5), and the Claude Fable/Mythos family. No beta header
-// is required.
-//
-// Override-aware on the MODEL gate only: after the hardcoded Anthropic provider
-// gate, prefers the datasheet's supports_mid_conversation_system_messages
-// boolean; falls back to substring detection. The provider gate stays hardcoded
-// because a bare-model override lookup can't distinguish provider.
+// system messages). Anthropic API: Opus 4.8+, Sonnet 5.5 (not Sonnet 5), Haiku 5.5
+// and Fable/Mythos. Vertex, Bedrock InvokeModel, Mantle and Azure: Claude 5 Opus,
+// Sonnet 5.5, Haiku 5.5 and Fable. Fallback only; the datasheet's
+// supports_native_mid_conversation_system wins when set (midConversationSystemSupported).
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
-	if provider != schemas.Anthropic {
-		return false
-	}
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
-		return true
+	switch provider {
+	case schemas.Anthropic:
+		if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) || IsHaiku5Plus(m) {
+			return true
+		}
+		return strings.Contains(m, "opus") &&
+			(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+	case schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure:
+		return IsOpus5Plus(m) || IsSonnet55Plus(m) || IsHaiku5Plus(m) ||
+			(IsFableFamily(m) && !strings.Contains(m, "mythos"))
 	}
-	return strings.Contains(m, "opus") &&
-		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+	return false
+}
+
+// midConversationSystemSupported resolves whether a mid-conversation system message may be
+// emitted as role:"system": the datasheet's supports_native_mid_conversation_system, then
+// DefaultSupportsMidConversationSystem. The older key is not read here: gateways without
+// enforceMidConversationSystemPlacement (core <= v1.15.2) read it and flip a tail reminder
+// between native and wrapped across turns, so it is held false for them; they ignore this key.
+func midConversationSystemSupported(caps schemas.ModelCaps) bool {
+	return caps.SupportsNativeMidConversationSystem(DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
 }
 
 // DefaultSupportsMidConversationOutputConfig reports whether the provider+model pair
@@ -2061,9 +2151,9 @@ func toolsetOnlyComputerUseProvider(provider schemas.ModelProvider) bool {
 //
 // Override-aware: the datasheet's supports_computer_toolset decides when set, so
 // a model gaining the toolset is a catalog change. The provider gate stays in
-// code because the toolset is GA on the Claude API and Google Cloud only.
+// code because only the Claude API, Google Cloud and Bedrock serve the toolset.
 func AcceptsComputerToolset(caps schemas.ModelCaps) bool {
-	if !toolsetOnlyComputerUseProvider(caps.Provider()) {
+	if !toolsetOnlyComputerUseProvider(caps.Provider()) && caps.Provider() != schemas.Bedrock {
 		return false
 	}
 	return caps.SupportsComputerToolset(DefaultSupportsComputerToolset(caps.Model()))
@@ -2605,11 +2695,19 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicThinkingDisplayUpdatesBetaHeader)
 		}
 	}
+	// thinking.block_binding is a 400 without its beta, and SDK clients on the neutral
+	// routes cannot set anthropic-beta themselves.
+	if req.Thinking != nil && req.Thinking.BlockBinding != nil && thinkingTypeTakesBlockBinding(req.Thinking.Type) {
+		if !hasProvider || features.ThinkingBinding {
+			headers = appendUniqueHeader(headers, AnthropicThinkingBindingControlsBetaHeader)
+		}
+	}
 	// Check for fast mode. Only add the beta header when both the provider
-	// supports fast mode AND the model does (Opus 4.6 and Opus 4.7+ per
-	// SupportsFastMode); otherwise sending the header guarantees a 400.
-	if req.Speed != nil {
-		if (!hasProvider || features.FastMode) && caps.SupportsFastMode(DefaultSupportsFastMode(caps.Model())) {
+	// supports fast mode AND the model does (DefaultSupportsFastMode); otherwise
+	// sending the header guarantees a 400. Headerless hosts (Vertex) take the
+	// speed field alone.
+	if req.Speed != nil && !features.FastModeHeaderless {
+		if (!hasProvider || features.FastMode) && caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model())) {
 			headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 		}
 	}
@@ -2617,9 +2715,9 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	// can carry no top-level speed at all. Gate on the entry's own model — that is the
 	// one that would run fast — and take it verbatim rather than alias-resolving it,
 	// since it names an Anthropic model directly, not a Bifrost alias.
-	if !hasProvider || features.FastMode {
+	if (!hasProvider || features.FastMode) && !features.FastModeHeaderless {
 		for _, fb := range req.nativeFallbacks() {
-			if fb.Speed != nil && schemas.ResolveModelCaps(provider, fb.Model).SupportsFastMode(DefaultSupportsFastMode(fb.Model)) {
+			if fb.Speed != nil && schemas.ResolveModelCaps(provider, fb.Model).SupportsFastMode(DefaultSupportsFastMode(provider, fb.Model)) {
 				headers = appendUniqueHeader(headers, AnthropicFastModeBetaHeader)
 				break
 			}
@@ -2780,6 +2878,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix,
 	AnthropicInlineToolsBetaHeaderPrefix,
 	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix,
+	AnthropicThinkingBindingControlsBetaHeaderPrefix,
 }
 
 // stripBifrostFallbacksFromBody removes Bifrost cross-provider fallback entries
@@ -3377,7 +3476,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicInterleavedThinkingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.InterleavedThinking },
 	AnthropicSkillsBetaHeaderPrefix:              func(f ProviderFeatureSupport) bool { return f.Skills },
 	AnthropicContext1MBetaHeaderPrefix:           func(f ProviderFeatureSupport) bool { return f.Context1M },
-	AnthropicFastModeBetaHeaderPrefix:            func(f ProviderFeatureSupport) bool { return f.FastMode },
+	AnthropicFastModeBetaHeaderPrefix:            func(f ProviderFeatureSupport) bool { return f.FastMode && !f.FastModeHeaderless },
 	AnthropicRedactThinkingBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.RedactThinking },
 	AnthropicTaskBudgetsBetaHeaderPrefix:         func(f ProviderFeatureSupport) bool { return f.TaskBudgets },
 	AnthropicEagerInputStreamingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.EagerInputStreaming },
@@ -3390,6 +3489,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvOutputConfig },
 	AnthropicInlineToolsBetaHeaderPrefix:                 func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
 	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.ThinkingDisplayUpdates },
+	AnthropicThinkingBindingControlsBetaHeaderPrefix:     func(f ProviderFeatureSupport) bool { return f.ThinkingBinding },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
@@ -3936,12 +4036,23 @@ func ConvertAnthropicFinishReasonToBifrost(providerReason AnthropicStopReason) s
 	return string(providerReason)
 }
 
-// ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format
+// ConvertBifrostFinishReasonToAnthropic converts Bifrost finish reasons to provider format.
+// The result is always a stop_reason Anthropic defines (or empty for an unset reason).
+// A policy block (content_filter, Bedrock's guardrail_intervened) is refusal, so a client
+// on /anthropic/v1/messages, which has no guardrail header, can still tell it apart from a
+// finished turn. Any other reason with no Anthropic equivalent, such as Bedrock's
+// malformed_model_output, becomes end_turn instead of leaking to the client.
 func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopReason {
 	if providerReason, ok := bifrostToAnthropicFinishReason[bifrostReason]; ok {
 		return providerReason
 	}
-	return AnthropicStopReason(bifrostReason)
+	switch reason := AnthropicStopReason(bifrostReason); reason {
+	case "", AnthropicStopReasonEndTurn, AnthropicStopReasonMaxTokens, AnthropicStopReasonStopSequence,
+		AnthropicStopReasonToolUse, AnthropicStopReasonPauseTurn, AnthropicStopReasonRefusal,
+		AnthropicStopReasonModelContextWindowExceeded, AnthropicStopReasonCompaction:
+		return reason
+	}
+	return AnthropicStopReasonEndTurn
 }
 
 // anthropicStopReasonWithSequence restores Anthropic's stop_sequence stop reason, which
@@ -3976,9 +4087,9 @@ func anthropicResponsesStatus(stopReason *string) (*string, *schemas.ResponsesRe
 	return &status, details
 }
 
-// anthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
+// AnthropicStopReasonFromIncompleteDetails maps a Responses incomplete reason to the
 // Anthropic stop_reason, for terminal events that carry no explicit stop reason.
-func anthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
+func AnthropicStopReasonFromIncompleteDetails(details *schemas.ResponsesResponseIncompleteDetails) AnthropicStopReason {
 	if details == nil {
 		return ""
 	}
@@ -4076,6 +4187,13 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 		documentBlock.Title = file.Filename
 	}
 
+	// file_content wins over file_id, file_data and file_url: an Anthropic document has exactly one
+	// source and this converter has no error path. Bedrock rejects the same mix with a 400.
+	if len(file.FileContent) > 0 {
+		documentBlock.Source.SourceObj = &AnthropicSource{Type: "content", Content: file.FileContent}
+		return documentBlock
+	}
+
 	// Handle uploaded file references from OpenAI-compatible file blocks.
 	if file.FileID != nil && *file.FileID != "" {
 		documentBlock.Source.SourceObj.Type = "file"
@@ -4166,6 +4284,12 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 	// Set title if provided
 	if fileBlock != nil && fileBlock.Filename != nil {
 		documentBlock.Title = fileBlock.Filename
+	}
+
+	// file_content takes precedence over the other sources, as in ConvertToAnthropicDocumentBlock.
+	if fileBlock != nil && len(fileBlock.FileContent) > 0 {
+		documentBlock.Source.SourceObj = &AnthropicSource{Type: "content", Content: fileBlock.FileContent}
+		return documentBlock
 	}
 
 	// Handle file_id reference
@@ -5193,9 +5317,61 @@ func sanitizeWebSearchArguments(argumentsJSON string) string {
 	return argumentsJSON
 }
 
+// anthropicServerToolUseIDPrefix starts every id Anthropic gives a server_tool_use block.
+const anthropicServerToolUseIDPrefix = "srvtoolu_"
+
+// isWebSearchPendingCall reports whether a web_search_call is a search Anthropic has not
+// run yet (deferred beside a client tool, or a paused turn): it is replayed as a bare
+// server_tool_use.
+func isWebSearchPendingCall(msg *schemas.ResponsesMessage) bool {
+	return msg.Status != nil && *msg.Status == "in_progress"
+}
+
+// isWebSearchResultOnlyCall reports whether a web_search_call carries only the result of a
+// search whose server_tool_use was sent in an earlier assistant message. Anthropic returns
+// a deferred search's web_search_tool_result at the start of the next assistant message;
+// newWebSearchResultOnlyCall represents it as a finished web_search_call with the same id
+// and no query. An Anthropic server_tool_use always has a query (its input requires one),
+// so a finished Anthropic search (srvtoolu_ id) with none can only be a result. Other
+// providers' calls (OpenAI ws_ ids) may legitimately omit the query and are never
+// result-only: they keep the server_tool_use plus result rebuild.
+func isWebSearchResultOnlyCall(msg *schemas.ResponsesMessage) bool {
+	if msg == nil || msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeWebSearchCall ||
+		msg.ID == nil || !strings.HasPrefix(*msg.ID, anthropicServerToolUseIDPrefix) ||
+		msg.Status == nil || isWebSearchPendingCall(msg) ||
+		msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Action == nil {
+		return false
+	}
+	action := msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+	return action != nil && action.Type == "search" &&
+		(action.Query == nil || *action.Query == "") && len(action.Queries) == 0
+}
+
+// newWebSearchResultOnlyCall builds the web_search_call for a web_search_tool_result whose
+// server_tool_use is not in the same message (see isWebSearchResultOnlyCall).
+func newWebSearchResultOnlyCall(toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) schemas.ResponsesMessage {
+	action := &schemas.ResponsesWebSearchToolCallAction{Type: "search"}
+	if resultBlock.Content != nil && len(resultBlock.Content.ContentBlocks) > 0 {
+		action.Sources = extractWebSearchSources(resultBlock.Content.ContentBlocks, includeExtendedFields)
+	}
+	toolMsg := &schemas.ResponsesToolMessage{
+		Action: &schemas.ResponsesToolMessageActionStruct{ResponsesWebSearchToolCallAction: action},
+	}
+	if resultBlock.Caller != nil {
+		toolMsg.Caller = &schemas.ResponsesToolCaller{Type: string(resultBlock.Caller.Type), ToolID: resultBlock.Caller.ToolID}
+	}
+	return schemas.ResponsesMessage{
+		ID:                   schemas.Ptr(toolUseID),
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+		Status:               schemas.Ptr("completed"),
+		ResponsesToolMessage: toolMsg,
+	}
+}
+
 // attachWebSearchSourcesToCall finds a web_search_call by tool_use_id and attaches sources to it.
-// It searches backwards through bifrostMessages to find the matching call and updates its action.
-func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) {
+// It searches backwards through bifrostMessages to find the matching call and updates its action,
+// and reports whether it found one.
+func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) bool {
 	// Search backwards to find matching web_search_call
 	for i := len(bifrostMessages) - 1; i >= 0; i-- {
 		msg := &bifrostMessages[i]
@@ -5205,6 +5381,12 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 
 			if msg.ResponsesToolMessage == nil {
 				msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+			}
+
+			// The result is here, so the search is no longer pending. Written in place:
+			// the status was allocated for this item when its server_tool_use was converted.
+			if msg.Status != nil && *msg.Status == "in_progress" {
+				*msg.Status = "completed"
 			}
 
 			// Found the matching web_search_call, add sources
@@ -5222,9 +5404,10 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 				}
 				msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Sources = sources
 			}
-			break
+			return true
 		}
 	}
+	return false
 }
 
 // attachToolSearchReferencesToCall finds the tool_search_call emitted for this

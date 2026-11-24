@@ -45,6 +45,7 @@ type mockModelsManager struct {
 	narrowCalls  int
 	// reloadNew is, for each reload, whether it was told the provider was just added.
 	reloadNew []bool
+	remove    func(context.Context, schemas.ModelProvider) error // stands in for the server's config removal
 }
 
 func (m *mockModelsManager) ResolveAccess(_ *schemas.BifrostContext) (schemas.Access, error) {
@@ -78,7 +79,10 @@ func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.M
 	return nil, nil
 }
 
-func (m *mockModelsManager) RemoveProvider(_ context.Context, _ schemas.ModelProvider) error {
+func (m *mockModelsManager) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
+	if m.remove != nil {
+		return m.remove(ctx, provider)
+	}
 	return nil
 }
 
@@ -180,6 +184,51 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	}
 	if _, exists := h.inMemoryStore.Providers["mock-openai"]; !exists {
 		t.Fatalf("expected provider to be added to in-memory store")
+	}
+}
+
+// A custom provider created with no keys (direct-key callers bring their own) must resolve
+// by its "name/model" prefix from creation, and stop resolving once deleted.
+func TestAddProvider_ZeroKeyCustomProviderResolvesByPrefix(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	const name = schemas.ModelProvider("harness-zero-key-direct")
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(name) })
+	cfg := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}}
+	h := &ProviderHandler{
+		inMemoryStore: cfg,
+		// The server removes the configuration, which is what unregisters the prefix.
+		modelsManager: &mockModelsManager{remove: cfg.RemoveProvider},
+	}
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider:             name,
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+
+	h.addProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if provider, model := schemas.ParseModelString(string(name)+"/gpt-4o-mini", ""); provider != name || model != "gpt-4o-mini" {
+		t.Fatalf("after create: ParseModelString = (%q, %q), want (%q, %q)", provider, model, name, "gpt-4o-mini")
+	}
+
+	delCtx := &fasthttp.RequestCtx{}
+	delCtx.Request.Header.SetMethod(fasthttp.MethodDelete)
+	delCtx.SetUserValue("provider", string(name))
+	h.deleteProvider(delCtx)
+
+	if provider, _ := schemas.ParseModelString(string(name)+"/gpt-4o-mini", ""); provider != "" {
+		t.Fatalf("after delete: prefix still resolves to %q", provider)
 	}
 }
 
@@ -1002,6 +1051,9 @@ func TestAddProvider_ReturnsErrorWhenRuntimeReloadFails(t *testing.T) {
 	if _, exists := h.inMemoryStore.Providers["mock-openai"]; exists {
 		t.Fatalf("expected provider rollback after reload failure")
 	}
+	if schemas.IsKnownProvider("mock-openai") {
+		t.Fatal("failed reload left a registered provider prefix")
+	}
 }
 
 // TestUpdateProvider_RejectsKeysInBody guards against a silent-discard regression
@@ -1687,6 +1739,79 @@ func TestListModels_DecisionsOllamaListsSystemOneModels(t *testing.T) {
 	slices.Sort(names)
 	if want := []string{"clef-flash", "nimble", "tev1:0.8b"}; !slices.Equal(names, want) {
 		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsBasetenListsDecisionModels pins that decisions=true lists
+// Baseten's decision-models/ slugs, which its Decision call serves on /v1/systemone,
+// and not its chat models.
+func TestListModels_DecisionsBasetenListsDecisionModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"decision-models/baseten-joey-2b-latest", "decision-models/baseten-elephant-9b-latest", "zai-org/GLM-5.3"}
+	h := providerHandlerForTest(schemas.Baseten, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=baseten&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"decision-models/baseten-elephant-9b-latest", "decision-models/baseten-joey-2b-latest"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsGeminiListsDecisionModels pins that decisions=true lists
+// Gemini's Decision models, which its Decision call serves on /v1beta/decisions, and
+// not its chat models, for Gemini itself and for a custom provider on the Gemini
+// base, which its Decision gates by the same name.
+func TestListModels_DecisionsGeminiListsDecisionModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	for _, provider := range []schemas.ModelProvider{schemas.Gemini, "my-gemini"} {
+		models := []string{"gemini-decision-1", "gemini-3-flash", "gemini-embedding-001"}
+		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
+		if provider != schemas.Gemini {
+			config := h.inMemoryStore.Providers[provider]
+			config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
+			h.inMemoryStore.Providers[provider] = config
+		}
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
+		h.listModels(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", provider, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		names := make([]string, 0, len(resp.Models))
+		for _, model := range resp.Models {
+			names = append(names, model.Name)
+		}
+		if want := []string{"gemini-decision-1"}; !slices.Equal(names, want) {
+			t.Fatalf("%s: expected %v, got %v", provider, want, names)
+		}
 	}
 }
 
@@ -2899,7 +3024,7 @@ func TestParseVKValueFromRequest(t *testing.T) {
 // express what the caller may reach rather than a copy of the key's rows.
 func accessForProviderPermits(permits ...schemas.ProviderPermit) schemas.Access {
 	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-test", "Test VK", true, false, permits, nil)
-	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	return grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 }
 
 // accessAllowingAllProviders builds the access a caller permitted every provider carries, the way
@@ -2909,7 +3034,7 @@ func accessAllowingAllProviders(configured []string, permits ...schemas.Provider
 	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-test", "Test VK", true, false,
 		governanceplugin.AppendAllProviderPermits(permits, configured), nil,
 		grant.WithAllowAllProviders(true))
-	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	return grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 }
 
 // A caller permitted every provider is listed every provider, including ones it holds no provider
@@ -3334,7 +3459,7 @@ func TestListModels_UnfilteredListingSkipsCallerAccess(t *testing.T) {
 
 	sessionAccess := func(permits ...schemas.ProviderPermit) schemas.Access {
 		permit := grant.NewPermit(grant.PermitAccessProfile, "profile-test", "Test Profile", true, false, permits, nil)
-		return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+		return grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 	}
 	signedIn := func(ctx *fasthttp.RequestCtx) {
 		ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialSessionToken, "session-token"))

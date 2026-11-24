@@ -19,9 +19,16 @@
 		"budgetsLimits": "Budget e limiti",
 		"routingRules": "Regole di routing",
 		"complexityRouter": "Router di complessità",
+		"routers": "Router",
 		"circuitBreaker": "Circuit Breaker",
 		"pricingOverrides": "Override dei prezzi",
 		"modelSettings": "Impostazioni modelli",
+		"finops": "FinOps",
+		"finopsOverview": "Panoramica",
+		"finopsConnections": "Connessioni",
+		"finopsExplorer": "Esplora costi",
+		"finopsForecast": "Previsione",
+		"finopsAnomalies": "Anomalie",
 		"mcpGateway": "Server MCP",
 		"mcpCatalog": "Catalogo MCP",
 		"mcpLibrary": "Libreria MCP",
@@ -66,6 +73,7 @@
 		"caching": "Cache",
 		"security": "Sicurezza",
 		"warp": "Warp",
+		"gateways": "Gateway",
 		"proxy": "Proxy",
 		"apiKeys": "Chiavi API",
 		"performanceTuning": "Ottimizzazione prestazioni",
@@ -105,6 +113,7 @@
 		"circuitBreaker": "Fallback automatico quando gli endpoint primari falliscono",
 		"pricingOverrides": "Override dei prezzi con ambito",
 		"modelSettings": "Configurazione modelli e routing",
+		"finops": "Spesa IA su tutti gli account dei provider",
 		"mcpGateway": "Configurazione MCP",
 		"mcpCatalog": "Catalogo strumenti MCP",
 		"mcpLibrary": "Installa server MCP selezionati",
@@ -149,6 +158,7 @@
 		"caching": "Configurazione della cache",
 		"security": "Impostazioni di sicurezza",
 		"warp": "Configurazione dell'agente Warp",
+		"gateways": "Accesso dei client di sviluppo",
 		"proxy": "Configurazione proxy",
 		"apiKeys": "Gestione chiavi API",
 		"performanceTuning": "Impostazioni di ottimizzazione delle prestazioni",
@@ -353,6 +363,12 @@
 		"descriptionStuckEnterprise": "Il rilascio è ancora in corso. Ricarica tra un minuto per ricontrollare. Se non funziona, contatta l'amministratore della tua distribuzione Bifrost.",
 		"waitingEnterprise": "In attesa del completamento del rilascio…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "Non è stato possibile caricare una parte della dashboard",
+		"bannerDescription": "Controlla la rete, il proxy o le estensioni del browser, poi ricarica.",
+		"screenTitle": "Non è stato possibile caricare questa pagina",
+		"screenDescription": "Il browser non è riuscito a scaricare alcuni file della dashboard. Un proxy, un firewall o un'estensione del browser potrebbe bloccarli. Controlla la rete e ricarica."
+	},
 	"onboarding": {
 		"expandSetupChecklist": "Espandi checklist di configurazione",
 		"setupChecklist": "Checklist di configurazione",
@@ -423,6 +439,10 @@
 			"indexStatusUnavailable": "Stato dell'indice non disponibile",
 			"askAdminTurnOn": "Chiedi a un amministratore di attivare Warp.",
 			"askAdminSetUp": "Chiedi a un amministratore di configurare Warp.",
+			"needsBifrostMCP": "Warp richiede il Bifrost MCP",
+			"needsBifrostMCPHint": "Imposta l'URL di Bifrost perché Warp possa leggere la configurazione di questo deployment.",
+			"setUpBifrostMCP": "Configura",
+			"askAdminBifrostMCP": "Chiedi a un amministratore di configurare il Bifrost MCP per Warp.",
 			"sendsWhenFinished": "Viene inviato al termine di questa risposta",
 			"remove": "Rimuovi"
 		},
@@ -446,7 +466,15 @@
 			"label": "Domanda",
 			"skip": "Salta",
 			"orType": "Oppure digita la tua risposta qui sotto.",
-			"skipAnswer": "Usa il tuo miglior giudizio e indica cosa hai ipotizzato."
+			"skipAnswer": "Usa il tuo miglior giudizio e indica cosa hai ipotizzato.",
+			"confirm": {
+				"subtitle": "Warp applicherà questa modifica dopo la tua conferma.",
+				"destructiveSubtitle": "Warp applicherà questa modifica dopo la tua conferma. Controllala con attenzione.",
+				"cannotUndo": "Questa operazione non può essere annullata.",
+				"noArguments": "Nessun argomento.",
+				"cancel": "Annulla",
+				"confirm": "Conferma"
+			}
 		},
 		"message": {
 			"whatThisCovers": "Cosa copre",
@@ -537,6 +565,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "Warp non è configurato su questo deployment.",
+				"cause": "Warp richiede il Bifrost MCP per leggere la configurazione di questo deployment, e non è caricato.",
+				"suggestions": ["Chiedi a un amministratore di impostare l'URL di Bifrost in Impostazioni client."]
+			},
 			"not_configured": {
 				"summary": "Warp non è ancora configurato.",
 				"cause": "Nessun fornitore e modello impostati, oppure Warp è disattivato nelle impostazioni.",

@@ -103,6 +103,15 @@ func (m *mockOAuth2Store) ConsentOAuth2AuthorizeRequest(_ context.Context, req *
 	return nil
 }
 
+func (m *mockOAuth2Store) DenyOAuth2AuthorizeRequest(_ context.Context, id string) error {
+	existing, ok := m.authReqs[id]
+	if !ok || existing.Status != configtables.OAuth2AuthorizeRequestStatusPending {
+		return configstore.ErrNotFound
+	}
+	existing.Status = configtables.OAuth2AuthorizeRequestStatusRevoked
+	return nil
+}
+
 func (m *mockOAuth2Store) GetOAuth2SigningKey(_ context.Context) (*configtables.OAuth2SigningKey, error) {
 	if m.signingErr != nil {
 		return nil, m.signingErr
@@ -159,7 +168,7 @@ func newTestOAuth2Config(store configstore.ConfigStore, authMode configtables.MC
 // mintTestToken signs a token with valid defaults (vk mode), applying mutate to
 // override claims/header for negative cases. signMethod and signKey let callers
 // force a non-RS256 algorithm or a wrong signing key.
-func mintTestToken(t *testing.T, priv *rsa.PrivateKey, kid string, mutate func(jwt.MapClaims)) string {
+func mintTestToken(t testing.TB, priv *rsa.PrivateKey, kid string, mutate func(jwt.MapClaims)) string {
 	t.Helper()
 	now := time.Now()
 	claims := jwt.MapClaims{
@@ -356,6 +365,7 @@ func TestVerifyMCPJWT_Rejections(t *testing.T) {
 			claims, err := verifyMCPJWT(ctx, tc.raw(), cfg, key)
 			require.Error(t, err)
 			assert.Nil(t, claims)
+			assert.ErrorIs(t, err, errOAuth2TokenRejected, "a bad token must be reported as a rejected token")
 		})
 	}
 }
@@ -374,6 +384,7 @@ func TestVerifyMCPJWT_NilSigningKeyNotLabeledInvalidToken(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "signing key unavailable")
 	assert.NotContains(t, err.Error(), "invalid token")
+	assert.NotErrorIs(t, err, errOAuth2TokenRejected)
 }
 
 // TestCachedSigningKey_ConfigFaults pins that the handler's key loader — which

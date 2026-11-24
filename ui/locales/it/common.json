@@ -77,7 +77,8 @@
 		"modelLimits": "limiti del modello",
 		"agent": "agente",
 		"relay": "relay",
-		"relays": "relay"
+		"relays": "relay",
+		"modelRouters": "router"
 	},
 	"aboutField": "Informazioni su {{field}}",
 	"thisField": "questo campo",
@@ -121,7 +122,8 @@
 		"searching": "Ricerca…",
 		"loadingMore": "Caricamento altri…",
 		"useModel": "Usa <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloccati"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloccati",
+		"templateUnknownGroup": "Fa riferimento al gruppo di cattura {{group}}, che il pattern non definisce"
 	},
 	"providerSelect": {
 		"select": "Seleziona fornitore",
@@ -189,8 +191,7 @@
 		"toggle": "Mostra/nascondi barra laterale"
 	},
 	"sheet": {
-		"collapse": "Comprimi",
-		"expand": "Espandi"
+		"resizeHandle": "Ridimensiona il pannello"
 	},
 	"tabs": {
 		"showMore_one": "Mostra {{count}} altra scheda",
@@ -261,7 +262,8 @@
 	"budgetDisplay": {
 		"usageAria": "Utilizzo del budget",
 		"override": "override",
-		"baseTooltip": "Base {{base}} + override {{override}}"
+		"baseTooltip": "Base {{base}} + override {{override}}",
+		"sharedTag": "condiviso"
 	},
 	"rateLimit": {
 		"tokens": "token",
@@ -300,6 +302,11 @@
 	},
 	"configSyncAlert": {
 		"message": "Questa configurazione è sincronizzata da <code0>config.json</code0>. Gli aggiornamenti futuri a config.json sovrascriveranno le modifiche apportate nell'interfaccia. Se usi config.json per inizializzare la configurazione, puoi ignorare questo avviso."
+	},
+	"configIssuesAlert": {
+		"title": "Parte della dichiarazione di config.json non è stata applicata",
+		"badge": "Problemi di configurazione",
+		"hint": "Il resto della dichiarazione è applicato. Ogni voce qui sopra scompare da sola quando ciò che nomina esiste, ad esempio quando il client MCP mancante viene registrato."
 	},
 	"breadcrumb": {
 		"label": "percorso di navigazione",
@@ -507,10 +514,14 @@
 		"maxNumber": "Il valore deve essere al massimo {{maximum}}",
 		"maxChars": "Il valore può contenere al massimo {{maximum}} caratteri",
 		"validUrl": "Inserisci un URL valido",
+		"publicUrlNoUserinfoQueryOrFragment": "Non deve contenere informazioni utente, una query o un frammento",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "Deve essere un URL http(s) o un percorso relativo alla directory dell'app",
+		"openapiUrlMustStayInAppDir": "Deve essere un percorso relativo alla directory dell'app che resti al suo interno",
 		"validEmail": "Inserisci un indirizzo email valido",
 		"grpcHostPortFormat": "Per gRPC, il formato deve essere <host>:<port> (ad es. {{example}})",
 		"invalidInput": "Input non valido",
 		"vertexEndpointId": "Inserisci un ID endpoint Vertex o incolla un URL endpoint supportato",
+		"basetenDeploymentUrl": "L'URL del deployment deve essere un URL https assoluto senza credenziali, query o frammento",
 		"mcp": {
 			"privateKeyRequired": "Per private_key_jwt è richiesta una chiave privata",
 			"secretRequiredForMethod": "Per scegliere come viene inviato è richiesto un client secret",
@@ -580,7 +591,8 @@
 		"baseUrlIsRequiredForThisProvider": "L'URL di base è obbligatorio per questo provider",
 		"baseUrlMustStartWithHttpOrHttps": "L'URL di base deve iniziare con http:// o https://",
 		"atLeastOneApiKeyIsRequired": "È richiesta almeno una chiave API",
-		"apiKeyValueCannotBeEmpty": "Il valore della chiave API non può essere vuoto"
+		"apiKeyValueCannotBeEmpty": "Il valore della chiave API non può essere vuoto",
+		"deploymentPatternInvalid": "Un pattern di deployment non è valido o il suo ID modello usa un gruppo di cattura che il pattern non definisce"
 	},
 	"permissionDenied": {
 		"create": "Non hai l'autorizzazione per creare {{entity}}.",

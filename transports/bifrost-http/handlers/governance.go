@@ -634,7 +634,7 @@ func teamUpdateSetsOwnLimits(req *UpdateTeamRequest) bool {
 //
 // Only an outright removal does not count - an empty list, a rate limit with neither maximum, or a
 // deprecated budget carrying neither field. A deprecated budget that names just one field is not a
-// removal: coerceLegacyBudget merges it with the stored budget and keeps the maximum already there.
+// removal: BudgetsFromSingleBudgetUpdate merges it with the stored budget and keeps the maximum already there.
 func customerUpdateSetsOwnLimits(req *UpdateCustomerRequest) bool {
 	if req.Budgets != nil && len(*req.Budgets) > 0 {
 		return true
@@ -803,11 +803,15 @@ func findExistingBudget(request CreateBudgetRequest, byID map[string]configstore
 	return existing, found, nil
 }
 
-// coerceLegacyBudget converts a single UpdateBudgetRequest into a *[]CreateBudgetRequest
-// so it can be handled uniformly via reconcileModelConfigBudgets. Returns nil when the
-// request carries no actionable change (e.g. only one field set but no existing budget to
-// merge with, leaving the budget list unchanged).
-func coerceLegacyBudget(req *UpdateBudgetRequest, existing *configstoreTables.TableBudget) *[]CreateBudgetRequest {
+// BudgetsFromSingleBudgetUpdate turns the deprecated single "budget" field of an update into the
+// budget list the reconciler takes, so it is handled exactly as a "budgets" list would be. Fields
+// the request leaves out are taken from existing, the one budget the owner holds (nil when it holds
+// none). A request naming no field at all asks for the budget to be removed and yields an empty
+// list. Returns nil when the merged budget would still lack a maximum or a window - a create that
+// names only one of them - which callers answer as a bad request.
+//
+// Exported for routes outside this package that still accept the deprecated field.
+func BudgetsFromSingleBudgetUpdate(req *UpdateBudgetRequest, existing *configstoreTables.TableBudget) *[]CreateBudgetRequest {
 	if isBudgetRemovalRequest(req) {
 		empty := []CreateBudgetRequest{}
 		return &empty
@@ -830,12 +834,47 @@ func coerceLegacyBudget(req *UpdateBudgetRequest, existing *configstoreTables.Ta
 	}
 	if req.ResetConfig != nil {
 		b.ResetConfig = req.ResetConfig
+	} else if !configstoreTables.IsQuarterlyDuration(b.ResetDuration) {
+		// The kept quarter setting only means something on a quarterly window. An update that moves
+		// the budget to another window without naming reset_config leaves it behind, rather than
+		// carry it onto a window it is invalid for and have the save refuse the whole request.
+		b.ResetConfig = nil
 	}
 	if b.MaxLimit == 0 || b.ResetDuration == "" {
 		return nil
 	}
 	result := []CreateBudgetRequest{b}
 	return &result
+}
+
+// IsBudgetRemovalRequest is the exported form of isBudgetRemovalRequest.
+func IsBudgetRemovalRequest(req *UpdateBudgetRequest) bool {
+	return isBudgetRemovalRequest(req)
+}
+
+// ValidateRateLimit is the exported form of validateRateLimit: a limit set to zero or below, or a
+// window missing or unparsable on a set limit, is refused.
+func ValidateRateLimit(rateLimit *configstoreTables.TableRateLimit) error {
+	return validateRateLimit(rateLimit)
+}
+
+// applyRateLimitUpdate applies an update's rate limit onto the stored one. The request states the
+// limits the owner keeps: a maximum left out is cleared along with its window, which is how an
+// editor drops one limit and keeps the other. A maximum sent without a window keeps the window
+// already stored rather than leaving the limit with none, which validation would refuse.
+func applyRateLimitUpdate(rateLimit *configstoreTables.TableRateLimit, req *UpdateRateLimitRequest) {
+	rateLimit.TokenMaxLimit = req.TokenMaxLimit
+	if req.TokenMaxLimit == nil {
+		rateLimit.TokenResetDuration = nil
+	} else if req.TokenResetDuration != nil {
+		rateLimit.TokenResetDuration = req.TokenResetDuration
+	}
+	rateLimit.RequestMaxLimit = req.RequestMaxLimit
+	if req.RequestMaxLimit == nil {
+		rateLimit.RequestResetDuration = nil
+	} else if req.RequestResetDuration != nil {
+		rateLimit.RequestResetDuration = req.RequestResetDuration
+	}
 }
 
 func isRateLimitRemovalRequest(req *UpdateRateLimitRequest) bool {
@@ -858,6 +897,25 @@ func isRateLimitRemovalRequest(req *UpdateRateLimitRequest) bool {
 type budgetUsageReset struct {
 	requested bool
 	budgetIDs []string
+}
+
+// BudgetUsageReset is the exported name of the usage-reset carrier, for builds that reconcile
+// budgets on owners of their own through ReconcileOwnedBudgets.
+type BudgetUsageReset = budgetUsageReset
+
+// NewBudgetUsageReset builds a carrier that zeroes usage on every reconciled budget when requested
+// is true, and does nothing otherwise.
+func NewBudgetUsageReset(requested bool) *BudgetUsageReset {
+	return &budgetUsageReset{requested: requested}
+}
+
+// BudgetIDs lists the budgets whose persisted usage was zeroed, for the in-memory pass that follows
+// the transaction. Empty when nothing was reset.
+func (r *budgetUsageReset) BudgetIDs() []string {
+	if r == nil {
+		return nil
+	}
+	return r.budgetIDs
 }
 
 // apply zeroes one budget's persisted usage and records it for the in-memory
@@ -905,73 +963,125 @@ func (h *GovernanceHandler) adoptCalendarAlignment(ctx context.Context, switched
 	return h.governanceManager.AdoptCalendarAlignmentInMemory(ctx, owner, budgetIDs, rateLimitIDs)
 }
 
-// reconcileModelConfigBudgets upserts the desired set of budgets owned by a model config
-// (via TableBudget.ModelConfigID), preserving usage on matched rows and deleting removed
-// ones. It mutates mc.Budgets to the reconciled set. The model config row must already
-// exist (callers create it first). Mirrors the VK/team multi-budget reconciliation.
-func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx *gorm.DB, mc *configstoreTables.TableModelConfig, requests []CreateBudgetRequest, usageReset *budgetUsageReset) error {
+// NewBudgetUsage says what usage a budget the reconciler creates starts with.
+type NewBudgetUsage int
+
+const (
+	// NewBudgetStartsAtZero starts every new budget at zero usage. Teams have always worked this way.
+	NewBudgetStartsAtZero NewBudgetUsage = iota
+	// NewBudgetInheritsShorterWindow starts a new budget with the usage of the owner's closest shorter
+	// window, since that spend happened inside the new window too. Customers and model configs have
+	// always worked this way.
+	NewBudgetInheritsShorterWindow
+)
+
+// ReconcileOwnedBudgets upserts the desired set of budgets one owner holds, preserving usage on
+// matched rows (by id, else by reset window), starting new rows as newBudgetUsage says, and deleting
+// rows the request no longer names. It returns the reconciled set; the caller stores it on the owner.
+// setOwner stamps the owner column on every newly created row.
+//
+// Exported for builds whose owners live outside this package: an owner reconciled through this one
+// path gets the same matching, validation and usage-reset rules a team or customer does, so a field
+// added here is carried for every owner rather than for the ones someone remembered.
+//
+// The request-shape checks (a negative limit, an unparsable or repeated window, an id the owner does
+// not hold) come back as bad-request errors (see IsBadRequestError), exactly as the customer and
+// model-config routes have always answered them. A row the store's own validation refuses comes back
+// as returned, as it always has; a caller wanting a 400 for that validates the request first.
+//
+// Must run inside the caller's transaction, the one that saves the owner: the budget writes and the
+// owner's row commit or roll back together. A nil tx is refused rather than handed to the store, which
+// reads an explicit nil as a transaction it was given and would dereference it.
+func ReconcileOwnedBudgets(ctx context.Context, store configstore.ConfigStore, tx *gorm.DB, existing []configstoreTables.TableBudget, requests []CreateBudgetRequest, calendarAligned bool, setOwner func(*configstoreTables.TableBudget), usageReset *BudgetUsageReset, newBudgetUsage NewBudgetUsage) ([]configstoreTables.TableBudget, error) {
+	if tx == nil {
+		return nil, errors.New("reconciling an owner's budgets requires the transaction that saves the owner")
+	}
 	seenDurations := make(map[string]bool, len(requests))
 	for _, b := range requests {
-		if b.MaxLimit < 0 {
-			return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
+		// Zero is refused here too: the row validation below refuses it anyway, but as a plain error that
+		// routes answer with 500, and a zero limit is the caller's mistake, not the server's.
+		if b.MaxLimit <= 0 {
+			return nil, &badRequestError{err: fmt.Errorf("budget max_limit must be greater than zero: %.2f", b.MaxLimit)}
 		}
 		if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
-			return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
+			return nil, &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
 		}
 		if seenDurations[b.ResetDuration] {
-			return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
+			return nil, &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
 		}
 		seenDurations[b.ResetDuration] = true
 	}
 
-	existingByID, existingByDuration := buildBudgetLookup(mc.Budgets, requests)
+	existingByID, existingByDuration := buildBudgetLookup(existing, requests)
 	var reconciled []configstoreTables.TableBudget
 	matchedIDs := make(map[string]bool)
 	for _, b := range requests {
-		existing, found, err := findExistingBudget(b, existingByID, existingByDuration)
+		match, found, err := findExistingBudget(b, existingByID, existingByDuration)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if found {
-			existing.MaxLimit = b.MaxLimit
-			existing.ResetDuration = b.ResetDuration
-			applyResetConfigToExistingBudget(&existing, b)
-			if err := validateBudget(&existing); err != nil {
-				return err
+			match.MaxLimit = b.MaxLimit
+			match.ResetDuration = b.ResetDuration
+			applyResetConfigToExistingBudget(&match, b)
+			if err := validateBudget(&match); err != nil {
+				return nil, err
 			}
-			if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
-				return err
+			if err := store.UpdateBudget(ctx, &match, tx); err != nil {
+				return nil, err
 			}
 			// Usage is runtime-owned, so UpdateBudget above cannot clear it. Route
 			// the operator's explicit choice through the method that owns the column.
-			if err := usageReset.apply(ctx, h.configStore, existing.ID, tx); err != nil {
-				return err
+			if err := usageReset.apply(ctx, store, match.ID, tx); err != nil {
+				return nil, err
 			}
 			if usageReset != nil && usageReset.requested {
-				existing.CurrentUsage = 0
+				match.CurrentUsage = 0
 			}
-			reconciled = append(reconciled, existing)
-			matchedIDs[existing.ID] = true
+			reconciled = append(reconciled, match)
+			matchedIDs[match.ID] = true
 		} else {
-			budget := newBudgetFromRequest(b, mc.CalendarAligned)
-			budget.ModelConfigID = &mc.ID
-			inheritUsageFromClosestShorterBudget(&budget, mc.Budgets, false)
-			if err := validateBudget(&budget); err != nil {
-				return err
+			budget := newBudgetFromRequest(b, calendarAligned)
+			if setOwner != nil {
+				setOwner(&budget)
 			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
+			// When the owner inherits, a new window starts with the spend already counted in the closest
+			// shorter window it contains, since that money was spent inside it too - unless the operator
+			// chose to reset usage on this edit, which starts every budget it touches, new ones included,
+			// at zero.
+			if newBudgetUsage == NewBudgetInheritsShorterWindow {
+				inheritUsageFromClosestShorterBudget(&budget, existing, usageReset != nil && usageReset.requested)
+			}
+			if err := validateBudget(&budget); err != nil {
+				return nil, err
+			}
+			if err := store.CreateBudget(ctx, &budget, tx); err != nil {
+				return nil, err
 			}
 			reconciled = append(reconciled, budget)
 		}
 	}
 	// Delete budgets no longer present.
-	for _, existing := range mc.Budgets {
-		if !matchedIDs[existing.ID] {
-			if err := h.configStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
-				return fmt.Errorf("failed to delete removed model config budget: %w", err)
+	for _, old := range existing {
+		if !matchedIDs[old.ID] {
+			if err := store.DeleteBudget(ctx, old.ID, tx); err != nil {
+				return nil, fmt.Errorf("failed to delete removed budget: %w", err)
 			}
 		}
+	}
+	return reconciled, nil
+}
+
+// reconcileModelConfigBudgets upserts the desired set of budgets owned by a model config
+// (via TableBudget.ModelConfigID), preserving usage on matched rows and deleting removed
+// ones. It mutates mc.Budgets to the reconciled set. The model config row must already
+// exist (callers create it first). Mirrors the VK/team multi-budget reconciliation.
+func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx *gorm.DB, mc *configstoreTables.TableModelConfig, requests []CreateBudgetRequest, usageReset *budgetUsageReset) error {
+	reconciled, err := ReconcileOwnedBudgets(ctx, h.configStore, tx, mc.Budgets, requests, mc.CalendarAligned, func(b *configstoreTables.TableBudget) {
+		b.ModelConfigID = &mc.ID
+	}, usageReset, NewBudgetInheritsShorterWindow)
+	if err != nil {
+		return err
 	}
 	mc.Budgets = reconciled
 	return nil
@@ -981,66 +1091,12 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 // (via TableBudget.CustomerID), preserving usage on matched rows and deleting removed ones.
 // It mutates customer.Budgets to the reconciled set. Mirrors reconcileModelConfigBudgets.
 func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *gorm.DB, customer *configstoreTables.TableCustomer, requests []CreateBudgetRequest, usageReset *budgetUsageReset) error {
-	seenDurations := make(map[string]bool, len(requests))
-	for _, b := range requests {
-		if b.MaxLimit < 0 {
-			return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
-		}
-		if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
-			return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
-		}
-		if seenDurations[b.ResetDuration] {
-			return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
-		}
-		seenDurations[b.ResetDuration] = true
-	}
-
-	existingByID, existingByDuration := buildBudgetLookup(customer.Budgets, requests)
-	var reconciled []configstoreTables.TableBudget
-	matchedIDs := make(map[string]bool)
-	for _, b := range requests {
-		existing, found, err := findExistingBudget(b, existingByID, existingByDuration)
-		if err != nil {
-			return err
-		}
-		if found {
-			existing.MaxLimit = b.MaxLimit
-			existing.ResetDuration = b.ResetDuration
-			applyResetConfigToExistingBudget(&existing, b)
-			if err := validateBudget(&existing); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
-				return err
-			}
-			if err := usageReset.apply(ctx, h.configStore, existing.ID, tx); err != nil {
-				return err
-			}
-			if usageReset != nil && usageReset.requested {
-				existing.CurrentUsage = 0
-			}
-			reconciled = append(reconciled, existing)
-			matchedIDs[existing.ID] = true
-		} else {
-			cid := customer.ID
-			budget := newBudgetFromRequest(b, customer.CalendarAligned)
-			budget.CustomerID = &cid
-			inheritUsageFromClosestShorterBudget(&budget, customer.Budgets, false)
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			reconciled = append(reconciled, budget)
-		}
-	}
-	for _, existing := range customer.Budgets {
-		if !matchedIDs[existing.ID] {
-			if err := h.configStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
-				return fmt.Errorf("failed to delete removed customer budget: %w", err)
-			}
-		}
+	cid := customer.ID
+	reconciled, err := ReconcileOwnedBudgets(ctx, h.configStore, tx, customer.Budgets, requests, customer.CalendarAligned, func(b *configstoreTables.TableBudget) {
+		b.CustomerID = &cid
+	}, usageReset, NewBudgetInheritsShorterWindow)
+	if err != nil {
+		return err
 	}
 	customer.Budgets = reconciled
 	return nil
@@ -1282,11 +1338,14 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			for i, b := range vk.Budgets {
 				ids[i] = b.ID
 			}
-			if err := tx.Model(&configstoreTables.TableBudget{}).
+			// Only the owner moves. Skip hooks: TableBudget.BeforeSave would validate the zero-value
+			// model passed to Model() and reject its empty ResetDuration.
+			if err := tx.Session(&gorm.Session{SkipHooks: true}).Model(&configstoreTables.TableBudget{}).
 				Where("id IN ? AND virtual_key_id = ?", ids, vk.ID).
 				Updates(map[string]interface{}{
 					"model_config_id": mc.ID,
 					"virtual_key_id":  nil,
+					"updated_at":      time.Now(),
 				}).Error; err != nil {
 				return fmt.Errorf("failed to adopt standalone VK budgets into model config: %w", err)
 			}
@@ -1743,6 +1802,10 @@ type CreateTeamRequest struct {
 	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`          // Multi-budget: each must have a unique reset_duration
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`       // Team can have its own rate limit
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // Team-wide: snap all team budgets and rate-limit resets to calendar boundaries
+	// DisableContentLogging is the team's own content-logging decision. Omit to inherit; true forces
+	// content off for the team's traffic, false forces it on. It outranks every virtual key and
+	// provider key the team's traffic comes in with.
+	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 }
 
 // UpdateTeamRequest represents the request body for updating a team
@@ -1755,6 +1818,23 @@ type UpdateTeamRequest struct {
 	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
 	// The reset boundary is left alone; only accumulated spend is cleared.
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
+	// DisableContentLogging is tri-state on the wire: omitted leaves the current decision, null
+	// clears it back to inheriting, true/false set it.
+	DisableContentLogging schemas.OptionalJSON[bool] `json:"disable_content_logging,omitempty"`
+}
+
+// applyTeamContentLoggingUpdate applies the tri-state disable_content_logging field of a team
+// update: omitted leaves the team's decision as it is, null clears it back to inheriting, true or
+// false set it.
+func applyTeamContentLoggingUpdate(team *configstoreTables.TableTeam, req *UpdateTeamRequest) {
+	if !req.DisableContentLogging.Set {
+		return
+	}
+	if req.DisableContentLogging.Null {
+		team.DisableContentLogging = nil
+		return
+	}
+	team.DisableContentLogging = new(req.DisableContentLogging.Value)
 }
 
 // CreateCustomerRequest represents the request body for creating a customer
@@ -2156,6 +2236,26 @@ func classifyAgentGrantReplacementError(err error) error {
 	return err
 }
 
+// validateVirtualKeyProviders refuses provider configs that name one provider more than once. A
+// virtual key holds one config per provider: its per-provider budgets and rate limits are keyed by
+// the provider, and access answers for a provider from that one config's models and keys. Names are
+// compared as the configs are stored, with surrounding whitespace trimmed; a blank name is left to
+// the provider check that refuses it.
+func validateVirtualKeyProviders(providers []string) error {
+	seen := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		name := strings.TrimSpace(provider)
+		if name == "" {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("provider_configs names provider %q more than once: a virtual key holds one config per provider", name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
 // createVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key
 func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	var req CreateVirtualKeyRequest
@@ -2211,6 +2311,14 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if err := configstoreTables.ValidateVirtualKeyMetadata(req.Metadata); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	createProviders := make([]string, 0, len(req.ProviderConfigs))
+	for _, pc := range req.ProviderConfigs {
+		createProviders = append(createProviders, pc.Provider)
+	}
+	if err := validateVirtualKeyProviders(createProviders); err != nil {
 		SendError(ctx, 400, err.Error())
 		return
 	}
@@ -2625,6 +2733,16 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 400, err.Error())
 			return
 		}
+	}
+	// provider_configs is the full desired set (configs it leaves out are deleted), so checking the
+	// request alone covers what the key will hold.
+	updateProviders := make([]string, 0, len(req.ProviderConfigs))
+	for _, pc := range req.ProviderConfigs {
+		updateProviders = append(updateProviders, pc.Provider)
+	}
+	if err := validateVirtualKeyProviders(updateProviders); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
 	}
 	// The operator's explicit "reset usage" choice, surfaced by the UI's
 	// Preserve / Reset dialog. Carried into budget reconciliation and collected
@@ -3404,6 +3522,8 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			Name:            req.Name,
 			CustomerID:      req.CustomerID,
 			CalendarAligned: req.CalendarAligned,
+			// Stored as given: nil is inherit, so no defaulting here.
+			DisableContentLogging: req.DisableContentLogging,
 		}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
@@ -3573,6 +3693,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 			alignmentSwitchedOn = !team.CalendarAligned && *req.CalendarAligned
 			team.CalendarAligned = *req.CalendarAligned
 		}
+		applyTeamContentLoggingUpdate(team, &req)
 		// Snap-to-calendar-period happens after budget/rate-limit reconciliation
 		// below, so combined `calendar_aligned + budgets/rate_limit` updates see
 		// the final persisted state.
@@ -3581,74 +3702,18 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		// reset_duration for clients that do not send them. Preserve usage on
 		// update, create new budgets, and delete unmatched existing budgets.
 		if req.Budgets != nil {
-			// Validate incoming budgets
-			seenDurations := make(map[string]bool)
-			for _, b := range req.Budgets {
-				if b.MaxLimit < 0 {
-					return &badRequestError{err: fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)}
-				}
-				if d, err := configstoreTables.ParseDuration(b.ResetDuration); err != nil || d <= 0 {
-					return &badRequestError{err: fmt.Errorf("invalid reset duration (must be a positive duration): %s", b.ResetDuration)}
-				}
-				if seenDurations[b.ResetDuration] {
-					return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
-				}
-				seenDurations[b.ResetDuration] = true
+			// The shared reconciler a customer's budgets go through: matching by id then window, usage
+			// kept on a matched row (or zeroed when the operator asked for a reset), and removed rows
+			// deleted. A new window starts at zero, as a team's always has, rather than inheriting the
+			// shorter window's spend the way a customer's does.
+			teamID := team.ID
+			reconciled, err := ReconcileOwnedBudgets(ctx, h.configStore, tx, team.Budgets, req.Budgets, team.CalendarAligned, func(b *configstoreTables.TableBudget) {
+				b.TeamID = &teamID
+			}, usageReset, NewBudgetStartsAtZero)
+			if err != nil {
+				return err
 			}
-
-			existingByID, existingByDuration := buildBudgetLookup(team.Budgets, req.Budgets)
-
-			var reconciledBudgets []configstoreTables.TableBudget
-			matchedIDs := make(map[string]bool)
-			for _, b := range req.Budgets {
-				existing, found, err := findExistingBudget(b, existingByID, existingByDuration)
-				if err != nil {
-					return err
-				}
-				if found {
-					existing.MaxLimit = b.MaxLimit
-					existing.ResetDuration = b.ResetDuration
-					applyResetConfigToExistingBudget(&existing, b)
-					// LastReset is preserved on update: the reset boundary only ever
-					// moves forward, and never as a side effect of a config write.
-					// CurrentUsage is preserved too unless the operator explicitly
-					// asked for a reset, which UpdateBudget cannot carry and so goes
-					// through the store method that owns the column.
-					if err := validateBudget(&existing); err != nil {
-						return err
-					}
-					if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
-						return err
-					}
-					if err := usageReset.apply(ctx, h.configStore, existing.ID, tx); err != nil {
-						return err
-					}
-					if usageReset.requested {
-						existing.CurrentUsage = 0
-					}
-					reconciledBudgets = append(reconciledBudgets, existing)
-					matchedIDs[existing.ID] = true
-				} else {
-					budget := newBudgetFromRequest(b, team.CalendarAligned)
-					budget.TeamID = &team.ID
-					if err := validateBudget(&budget); err != nil {
-						return err
-					}
-					if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-						return err
-					}
-					reconciledBudgets = append(reconciledBudgets, budget)
-				}
-			}
-			// Delete budgets that are no longer present
-			for _, existing := range team.Budgets {
-				if !matchedIDs[existing.ID] {
-					if err := h.configStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
-						return fmt.Errorf("failed to delete removed team budget: %w", err)
-					}
-				}
-			}
-			team.Budgets = reconciledBudgets
+			team.Budgets = reconciled
 		}
 		// Handle rate limit updates
 		if req.RateLimit != nil {
@@ -3667,10 +3732,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if err := tx.First(&rateLimit, "id = ?", *team.RateLimitID).Error; err != nil {
 					return err
 				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				applyRateLimitUpdate(&rateLimit, req.RateLimit)
 				if err := validateRateLimit(&rateLimit); err != nil {
 					return err
 				}
@@ -4036,7 +4098,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 			if len(customer.Budgets) == 1 {
 				existingBudget = &customer.Budgets[0]
 			}
-			effectiveBudgets = coerceLegacyBudget(req.Budget, existingBudget)
+			effectiveBudgets = BudgetsFromSingleBudgetUpdate(req.Budget, existingBudget)
 			if effectiveBudgets == nil && !isBudgetRemovalRequest(req.Budget) {
 				return &badRequestError{err: fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")}
 			}
@@ -4063,10 +4125,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				if err := tx.First(&rateLimit, "id = ?", *customer.RateLimitID).Error; err != nil {
 					return err
 				}
-				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
-				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
-				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
-				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				applyRateLimitUpdate(&rateLimit, req.RateLimit)
 				if err := validateRateLimit(&rateLimit); err != nil {
 					return err
 				}
@@ -4447,13 +4506,24 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Non-paginated path: return all model configs
-	modelConfigs, err := h.configStore.GetModelConfigs(ctx)
-	if err != nil {
-		logger.Error("failed to retrieve model configs: %v", err)
-		SendError(ctx, 500, "Failed to retrieve model configs")
-		return
+	// Non-paginated path: return every model config the caller may see. It pages through the
+	// paginated read, which applies the caller's row-visibility scope; GetModelConfigs does not.
+	modelConfigs := []configstoreTables.TableModelConfig{}
+	for offset := 0; ; {
+		page, total, err := h.configStore.GetModelConfigsPaginated(ctx, configstore.ModelConfigsQueryParams{Limit: 100, Offset: offset})
+		if err != nil {
+			logger.Error("failed to retrieve model configs: %v", err)
+			SendError(ctx, 500, "Failed to retrieve model configs")
+			return
+		}
+		modelConfigs = append(modelConfigs, page...)
+		offset += len(page)
+		if len(page) == 0 || int64(offset) >= total {
+			break
+		}
 	}
+	// Pages come newest first; this route has always answered in id order.
+	sort.Slice(modelConfigs, func(i, j int) bool { return modelConfigs[i].ID < modelConfigs[j].ID })
 	h.enrichModelConfigScopeNames(ctx, modelConfigs)
 	h.enrichModelConfigManagedBy(ctx, modelConfigs)
 	SendJSON(ctx, map[string]any{
@@ -5174,7 +5244,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			if len(mc.Budgets) > 1 {
 				return &badRequestError{err: fmt.Errorf("deprecated 'budget' field cannot be used when multiple budgets already exist; use 'budgets'")}
 			}
-			effectiveBudgets = coerceLegacyBudget(req.Budget, existingBudget)
+			effectiveBudgets = BudgetsFromSingleBudgetUpdate(req.Budget, existingBudget)
 			if effectiveBudgets == nil && !isBudgetRemovalRequest(req.Budget) {
 				return &badRequestError{err: fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")}
 			}

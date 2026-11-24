@@ -77,7 +77,8 @@
 		"modelLimits": "モデル制限",
 		"agent": "エージェント",
 		"relay": "リレー",
-		"relays": "リレー"
+		"relays": "リレー",
+		"modelRouters": "ルーター"
 	},
 	"aboutField": "{{field}}について",
 	"thisField": "このフィールド",
@@ -121,7 +122,8 @@
 		"searching": "検索中…",
 		"loadingMore": "さらに読み込み中…",
 		"useModel": "<name>{{name}}</name> を使用",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} ブロック"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} ブロック",
+		"templateUnknownGroup": "パターンで定義されていないキャプチャグループ {{group}} を参照しています"
 	},
 	"providerSelect": {
 		"select": "プロバイダーを選択",
@@ -189,8 +191,7 @@
 		"toggle": "サイドバーを切り替え"
 	},
 	"sheet": {
-		"collapse": "折りたたむ",
-		"expand": "展開"
+		"resizeHandle": "パネルのサイズを変更"
 	},
 	"tabs": {
 		"showMore_one": "さらに {{count}} 個のタブを表示",
@@ -261,7 +262,8 @@
 	"budgetDisplay": {
 		"usageAria": "予算使用状況",
 		"override": "オーバーライド",
-		"baseTooltip": "基本 {{base}} + オーバーライド {{override}}"
+		"baseTooltip": "基本 {{base}} + オーバーライド {{override}}",
+		"sharedTag": "共有"
 	},
 	"rateLimit": {
 		"tokens": "トークン",
@@ -300,6 +302,11 @@
 	},
 	"configSyncAlert": {
 		"message": "この設定は <code0>config.json</code0> から同期されています。今後 config.json が更新されると、UI での変更は上書きされます。config.json を初期設定のブートストラップにのみ使用している場合は、このアラートを無視して問題ありません。"
+	},
+	"configIssuesAlert": {
+		"title": "config.json の宣言の一部が適用されませんでした",
+		"badge": "設定の問題",
+		"hint": "宣言の残りは適用済みです。上の各項目は、参照先が存在するようになると自動的に消えます（例: 不足している MCP クライアントを登録したとき）。"
 	},
 	"breadcrumb": {
 		"label": "パンくずリスト",
@@ -507,10 +514,14 @@
 		"maxNumber": "{{maximum}} 以下にしてください",
 		"maxChars": "{{maximum}} 文字以内にしてください",
 		"validUrl": "有効な URL にしてください",
+		"publicUrlNoUserinfoQueryOrFragment": "ユーザー情報、クエリ、フラグメントを含めることはできません",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "http(s) URL またはアプリディレクトリからの相対パスである必要があります",
+		"openapiUrlMustStayInAppDir": "アプリディレクトリ内にとどまる相対パスである必要があります",
 		"validEmail": "有効なメールアドレスにしてください",
 		"grpcHostPortFormat": "gRPC では <host>:<port> の形式にしてください (例: {{example}})",
 		"invalidInput": "入力が無効です",
 		"vertexEndpointId": "Vertex エンドポイント ID を入力するか、対応するエンドポイント URL を貼り付けてください",
+		"basetenDeploymentUrl": "デプロイメント URL は、認証情報・クエリ・フラグメントを含まない絶対 https URL である必要があります",
 		"mcp": {
 			"privateKeyRequired": "private_key_jwt には秘密鍵が必要です",
 			"secretRequiredForMethod": "送信方法を選択するにはクライアントシークレットが必要です",
@@ -580,7 +591,8 @@
 		"baseUrlIsRequiredForThisProvider": "このプロバイダーにはベース URL が必要です",
 		"baseUrlMustStartWithHttpOrHttps": "ベース URL は http:// または https:// で始まる必要があります",
 		"atLeastOneApiKeyIsRequired": "API キーが少なくとも 1 つ必要です",
-		"apiKeyValueCannotBeEmpty": "API キーの値は空にできません"
+		"apiKeyValueCannotBeEmpty": "API キーの値は空にできません",
+		"deploymentPatternInvalid": "デプロイメントのパターンが無効か、モデル ID がパターンにないキャプチャグループを使用しています"
 	},
 	"permissionDenied": {
 		"create": "{{entity}}を作成する権限がありません。",

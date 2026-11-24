@@ -114,7 +114,7 @@ func TestResponsesAccumulator_MaxMergesRatherThanSums(t *testing.T) {
 		// Out-of-order/stale event must not regress the accumulated value.
 		`{"input_tokens": 23, "output_tokens": 50, "output_tokens_details": {"thinking_tokens": 30}}`,
 	} {
-		accumulateAnthropicResponsesUsage(usage, billed, mustParseUsage(t, raw))
+		accumulateResponsesUsageFromStruct(usage, billed, mustParseUsage(t, raw))
 	}
 
 	if usage.OutputTokensDetails == nil {
@@ -142,8 +142,8 @@ func TestResponsesAccumulator_KeepsExplicitZeroThinkingTokens(t *testing.T) {
 	usage := &schemas.ResponsesResponseUsage{}
 	billed := &schemas.BifrostLLMUsage{}
 
-	accumulateAnthropicResponsesUsage(usage, billed, mustParseUsage(t, `{"input_tokens": 63, "output_tokens": 1}`))
-	accumulateAnthropicResponsesUsage(usage, billed, mustParseUsage(t, zeroThinkingUsage))
+	accumulateResponsesUsageFromStruct(usage, billed, mustParseUsage(t, `{"input_tokens": 63, "output_tokens": 1}`))
+	accumulateResponsesUsageFromStruct(usage, billed, mustParseUsage(t, zeroThinkingUsage))
 
 	if usage.OutputTokensDetails == nil {
 		t.Fatal("OutputTokensDetails is nil; an explicit thinking_tokens: 0 breakdown was dropped in streaming")
@@ -158,7 +158,7 @@ func TestResponsesAccumulator_KeepsExplicitZeroThinkingTokens(t *testing.T) {
 
 func TestResponsesAccumulator_AbsentDetailsStayAbsent(t *testing.T) {
 	usage := &schemas.ResponsesResponseUsage{}
-	accumulateAnthropicResponsesUsage(usage, nil, mustParseUsage(t, `{"input_tokens": 10, "output_tokens": 5}`))
+	accumulateResponsesUsageFromStruct(usage, nil, mustParseUsage(t, `{"input_tokens": 10, "output_tokens": 5}`))
 	if usage.OutputTokensDetails != nil {
 		t.Errorf("OutputTokensDetails = %+v on a stream without a breakdown, want nil", usage.OutputTokensDetails)
 	}
