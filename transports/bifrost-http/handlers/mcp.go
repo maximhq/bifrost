@@ -3957,6 +3957,44 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 		dbUpdateRecord.DiscoveredTools = migrated
 	}
+	// Build in-memory config from resolved values. A 0 interval means no
+	// per-client override: the runtime resolves it against the live global
+	// setting, matching the persisted row above, so a later change to the
+	// global reaches this client too.
+	schemasConfig := &schemas.MCPClientConfig{
+		ID:                     id,
+		Name:                   name,
+		IsCodeModeClient:       isCodeMode,
+		ServerTypeOnSlug:       serverTypeOnSlug,
+		ConnectionType:         existingConfig.ConnectionType,
+		ConnectionString:       existingConfig.ConnectionString,
+		RequirePublicTarget:    requirePublicTarget,
+		StdioConfig:            existingConfig.StdioConfig,
+		TLSConfig:              tlsConfig,
+		ToolsToExecute:         resolvedToolsToExecute,
+		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
+		PromptsToExpose:        resolvedPromptsToExpose,
+		ResourcesToExpose:      resolvedResourcesToExpose,
+		Headers:                headers,
+		AllowedExtraHeaders:    allowedExtraHeaders,
+		AuthType:               existingConfig.AuthType,
+		OauthConfigID:          existingConfig.OauthConfigID,
+		IsPingAvailable:        isPingAvailable,
+		NeedsSessionStickiness: needsSessionStickiness,
+		ToolSyncInterval:       resolvedToolSyncInterval,
+		MaxProtocolVersion:     resolvedMaxProtocolVersion,
+		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
+		MaxInstructionsLength:  resolvedMaxInstructionsLength,
+		ToolPricing:            toolPricing,
+		AllowByDefault:         allowByDefault,
+		Disabled:               disabled,
+		PerUserHeaderKeys:      perUserHeaderKeys,
+		TokenExchange:          tokenExchange,
+		OpenAPIConfig:          resolvedOpenAPIConfig,
+		PerUserDiscovery:       perUserDiscovery,
+		PendingVerification:    pendingVerification,
+	}
+
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord); err != nil {
 			// The name is the only unique column an update can change (the endpoint
@@ -3997,11 +4035,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			}
 			stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, id)
 			if err != nil {
-				// The flip committed; the snapshot carries the name and flag this request wrote.
-				written := *existingConfig
-				written.Name = name
-				written.PerUserDiscovery = perUserDiscovery
-				lib.RecordAuditChange(ctx, "mcp_client.updated", "mcp_client", id, name, before, auditMCPClient(h.store, &written))
+				// The flip committed with every resolved field of this request.
+				lib.RecordAuditChange(ctx, "mcp_client.updated", "mcp_client", id, name, before, auditMCPClient(h.store, mcpClientAfterUpdate(existingConfig, schemasConfig)))
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("per_user_discovery was changed, but reading the client back failed, so the running client does not have the change yet; send the request again to apply it: %v", err))
 				return
 			}
@@ -4009,43 +4044,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	// Build in-memory config from resolved values. A 0 interval means no
-	// per-client override: the runtime resolves it against the live global
-	// setting, matching the persisted row above, so a later change to the
-	// global reaches this client too.
-	schemasConfig := &schemas.MCPClientConfig{
-		ID:                     id,
-		Name:                   name,
-		IsCodeModeClient:       isCodeMode,
-		ServerTypeOnSlug:       serverTypeOnSlug,
-		ConnectionType:         existingConfig.ConnectionType,
-		ConnectionString:       existingConfig.ConnectionString,
-		RequirePublicTarget:    requirePublicTarget,
-		StdioConfig:            existingConfig.StdioConfig,
-		TLSConfig:              tlsConfig,
-		ToolsToExecute:         resolvedToolsToExecute,
-		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
-		PromptsToExpose:        resolvedPromptsToExpose,
-		ResourcesToExpose:      resolvedResourcesToExpose,
-		Headers:                headers,
-		AllowedExtraHeaders:    allowedExtraHeaders,
-		AuthType:               existingConfig.AuthType,
-		OauthConfigID:          existingConfig.OauthConfigID,
-		IsPingAvailable:        isPingAvailable,
-		NeedsSessionStickiness: needsSessionStickiness,
-		ToolSyncInterval:       resolvedToolSyncInterval,
-		MaxProtocolVersion:     resolvedMaxProtocolVersion,
-		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
-		MaxInstructionsLength:  resolvedMaxInstructionsLength,
-		ToolPricing:            toolPricing,
-		AllowByDefault:         allowByDefault,
-		Disabled:               disabled,
-		PerUserHeaderKeys:      perUserHeaderKeys,
-		TokenExchange:          tokenExchange,
-		OpenAPIConfig:          resolvedOpenAPIConfig,
-		PerUserDiscovery:       perUserDiscovery,
-		PendingVerification:    pendingVerification,
-	}
+	schemasConfig.PendingVerification = pendingVerification
 
 	// Compare per-call-ness before/after so the response can tell the admin
 	// whether this update actually changed how the client connects (only

@@ -3831,3 +3831,42 @@ func TestOverlappingKeyReloadsKeepTheRotatedValue(t *testing.T) {
 		})
 	}
 }
+
+// TestRemoveProviderWithoutGovernanceOrCatalog pins that a delete with no governance plugin or
+// model catalog loaded is a plain success, not a saved-but-not-applied failure.
+func TestRemoveProviderWithoutGovernanceOrCatalog(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+	lib.SetLogger(noopTestLogger{})
+
+	for _, tc := range []struct {
+		name    string
+		catalog bool
+	}{{"with catalog", true}, {"without catalog", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			const provider schemas.ModelProvider = "removable-provider"
+			cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+				provider: {
+					NetworkConfig:        &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", DefaultRequestTimeoutInSeconds: 5},
+					CustomProviderConfig: &schemas.CustomProviderConfig{IsKeyLess: true, BaseProviderType: schemas.OpenAI},
+				},
+			})
+			if tc.catalog {
+				catalog, err := modelcatalog.NewTestCatalog(nil)
+				require.NoError(t, err)
+				cfg.ModelCatalog = catalog
+			}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: lib.NewBaseAccount(cfg),
+				Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			require.NoError(t, err)
+			defer client.Shutdown()
+
+			server := &BifrostHTTPServer{Config: cfg, Client: client, Ctx: schemas.NewBifrostContext(context.Background(), time.Time{})}
+			require.NoError(t, server.RemoveProvider(context.Background(), provider))
+			require.False(t, cfg.IsProviderConfigured(provider))
+		})
+	}
+}

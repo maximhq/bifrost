@@ -1316,14 +1316,15 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 		logger.Error("failed to remove provider from config: %v. Client and config may be out of sync, please restart bifrost", err)
 		return fmt.Errorf("failed to remove provider from config: %w. Client and config may be out of sync, please restart bifrost", err)
 	}
-	// Removing the provider from the config dropped it from the live store, and its budget and rate
-	// limit with it, so governance stops enforcing them. Without the governance plugin the removal
-	// still reports its error, as it always has.
-	if _, err := s.getGovernancePlugin(); err != nil {
-		return &lib.SavedNotAppliedError{Err: err}
+	// The provider is gone from the config store from here on. Removing it from the config dropped
+	// it from the live store, and its budget and rate limit with it, so governance stops enforcing them.
+	if s.Config.IsPluginLoaded(s.getGovernancePluginName()) {
+		if _, err := s.getGovernancePlugin(); err != nil {
+			return &lib.SavedNotAppliedError{Err: err}
+		}
 	}
-	if s.Config == nil || s.Config.ModelCatalog == nil {
-		return &lib.SavedNotAppliedError{Err: fmt.Errorf("pricing manager not found")}
+	if s.Config.ModelCatalog == nil {
+		return nil // no catalog means no cached pricing or live models to drop
 	}
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)

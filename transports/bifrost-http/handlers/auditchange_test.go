@@ -7,12 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 // auditChanges returns the audit changes a handler recorded on ctx.
@@ -616,6 +618,17 @@ func requireCommitPointChange(t *testing.T, ctx *fasthttp.RequestCtx, eventName,
 	return changes[0]
 }
 
+// requireRecordedOrNone asserts exactly one change named eventName when recorded, and none otherwise.
+func requireRecordedOrNone(t *testing.T, changes []configstore.AuditChange, recorded bool, eventName string) {
+	t.Helper()
+	if recorded && (len(changes) != 1 || changes[0].EventName != eventName) {
+		t.Fatalf("want one %s change, got %+v", eventName, changes)
+	}
+	if !recorded && len(changes) != 0 {
+		t.Fatalf("want no changes, got %+v", changes)
+	}
+}
+
 func requireStatus(t *testing.T, ctx *fasthttp.RequestCtx, want int) {
 	t.Helper()
 	if got := ctx.Response.StatusCode(); got != want {
@@ -880,9 +893,7 @@ func TestCommitPoint_DeleteProvider(t *testing.T) {
 
 			requireStatus(t, ctx, tc.status)
 			changes := liveAuditChanges(ctx)
-			if tc.recorded != (len(changes) == 1 && changes[0].EventName == "provider.deleted") {
-				t.Fatalf("recorded=%v, changes=%+v", tc.recorded, changes)
-			}
+			requireRecordedOrNone(t, changes, tc.recorded, "provider.deleted")
 		})
 	}
 }
@@ -945,9 +956,229 @@ func TestCommitPoint_MCPClientUpdateRuntimeFailure(t *testing.T) {
 				t.Fatalf("expected the write and its rollback, got %d writes", cfgStore.updates)
 			}
 			changes := liveAuditChanges(ctx)
-			if tc.recorded != (len(changes) == 1 && changes[0].EventName == "mcp_client.updated") {
-				t.Fatalf("recorded=%v, changes=%+v", tc.recorded, changes)
+			requireRecordedOrNone(t, changes, tc.recorded, "mcp_client.updated")
+		})
+	}
+}
+
+// readBackFailingMCPStore commits the client update and fails the read-back after it.
+type readBackFailingMCPStore struct {
+	configstore.ConfigStore
+	updated bool
+}
+
+func (s *readBackFailingMCPStore) UpdateMCPClientConfig(ctx context.Context, id string, row *configstoreTables.TableMCPClient) error {
+	s.updated = true
+	return s.ConfigStore.UpdateMCPClientConfig(ctx, id, row)
+}
+
+func (s *readBackFailingMCPStore) GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error) {
+	if s.updated {
+		return nil, errCommitPointInjected
+	}
+	return s.ConfigStore.GetMCPClientConfigByID(ctx, id)
+}
+
+func TestCommitPoint_MCPClientDiscoveryFlipReadBackFailure(t *testing.T) {
+	h, _ := newOpenAPITestHandler(t)
+	h.mcpCredentialCacheManager = &evictionLog{}
+	client := headersNotesClient()
+	createSignInClient(t, h.store.ConfigStore, client, false)
+	loadMCPClient(t, h, client.ID)
+	h.store.ConfigStore = &readBackFailingMCPStore{ConfigStore: h.store.ConfigStore}
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPut)
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"per_user_discovery":true,"disabled":true}`)
+	ctx := initCtx(&req)
+	ctx.SetUserValue("id", client.ID)
+	h.updateMCPClient(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "mcp_client.updated", "per_user_discovery", true)
+	var after map[string]any
+	if err := json.Unmarshal(change.After, &after); err != nil {
+		t.Fatalf("decode after: %v", err)
+	}
+	if after["disabled"] != true {
+		t.Fatalf("after.disabled = %v, want the committed true (after=%s)", after["disabled"], change.After)
+	}
+}
+
+// providerDeleteFailStore commits provider writes and fails the delete a rollback starts with, or reports deleteErr after it.
+type providerDeleteFailStore struct {
+	configstore.ConfigStore
+	failDelete bool
+	deleteErr  error
+}
+
+func (s *providerDeleteFailStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
+	if s.failDelete {
+		return errCommitPointInjected
+	}
+	if err := s.ConfigStore.DeleteProvider(ctx, provider, tx...); err != nil {
+		return err
+	}
+	return s.deleteErr
+}
+
+const commitPointProxySecret = "proxy-secret-commit-point"
+
+func commitPointProviderBody(t *testing.T) []byte {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"provider":               "audit-openai",
+		"custom_provider_config": map[string]any{"base_provider_type": "openai", "is_key_less": true},
+		"proxy_config":           map[string]any{"type": "http", "url": "http://proxy.internal:3128", "username": "proxy-user", "password": commitPointProxySecret},
+	})
+	if err != nil {
+		t.Fatalf("marshal provider body: %v", err)
+	}
+	return body
+}
+
+func TestCommitPoint_ProviderCreateRollback(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		failDelete   bool
+		deleteErr    error
+		wantRecorded bool
+	}{
+		{"rollback removes the provider", false, nil, false},
+		{"rollback fails so the provider stays", true, nil, true},
+		{"rollback removes the provider, then fails", false, &lib.SavedNotAppliedError{Err: errCommitPointInjected}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			lib.SetLogger(&mockLogger{})
+			cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil)
+			store := &providerDeleteFailStore{ConfigStore: cfg.ConfigStore, failDelete: tc.failDelete, deleteErr: tc.deleteErr}
+			cfg.ConfigStore = store
+			h := &ProviderHandler{
+				config:        cfg,
+				modelsManager: &mockModelsManager{reloadErr: errCommitPointInjected},
+			}
+			ctx := newTestRequestCtx(string(commitPointProviderBody(t)))
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			h.addProvider(ctx)
+
+			requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+			stored, err := store.ConfigStore.GetProvidersConfig(context.Background())
+			if err != nil {
+				t.Fatalf("read providers: %v", err)
+			}
+			if _, kept := stored["audit-openai"]; kept != tc.failDelete {
+				t.Fatalf("stored provider kept=%v, want %v", kept, tc.failDelete)
+			}
+			changes := liveAuditChanges(ctx)
+			requireRecordedOrNone(t, changes, tc.wantRecorded, "provider.created")
+			if tc.wantRecorded {
+				requireNoSecret(t, changes[0], commitPointProxySecret)
 			}
 		})
 	}
+}
+
+// newProviderRefreshFailingConfig saves providers to sqlite while its live store has no database to re-read them from.
+func newProviderRefreshFailingConfig(t *testing.T) *lib.Config {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	store := libtest.WithProviders(t, &lib.Config{}, nil, nil).ConfigStore
+	cfg := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil, nil)
+	cfg.ConfigStore = store
+	return cfg
+}
+
+func requireCreatedProviderRecorded(t *testing.T, ctx *fasthttp.RequestCtx, cfg *lib.Config) {
+	t.Helper()
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	stored, err := cfg.ConfigStore.GetProvidersConfig(context.Background())
+	if err != nil {
+		t.Fatalf("read providers: %v", err)
+	}
+	if _, ok := stored["audit-openai"]; !ok {
+		t.Fatal("the provider must be stored although the request failed")
+	}
+	changes := liveAuditChanges(ctx)
+	requireRecordedOrNone(t, changes, true, "provider.created")
+	requireNoSecret(t, changes[0], commitPointProxySecret)
+}
+
+func TestCommitPoint_ProviderCreateRefreshFailure(t *testing.T) {
+	cfg := newProviderRefreshFailingConfig(t)
+	h := &ProviderHandler{config: cfg, modelsManager: &mockModelsManager{}}
+	ctx := newTestRequestCtx(string(commitPointProviderBody(t)))
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	h.addProvider(ctx)
+	requireCreatedProviderRecorded(t, ctx, cfg)
+}
+
+func TestCommitPoint_ProviderUpsertRefreshFailure(t *testing.T) {
+	cfg := newProviderRefreshFailingConfig(t)
+	h := &ProviderHandler{config: cfg, modelsManager: &mockModelsManager{}}
+	body := strings.Replace(string(commitPointProviderBody(t)), "{", `{"concurrency_and_buffer_size":{"concurrency":1,"buffer_size":10},`, 1)
+	ctx := newTestRequestCtx(body)
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.SetUserValue("provider", "audit-openai")
+	h.updateProvider(ctx)
+	requireCreatedProviderRecorded(t, ctx, cfg)
+}
+
+func TestCommitPoint_ProviderUpsertUpdateRejectedAfterAdd(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil, nil)
+	cfg.ConfigStore = providerUpdateRejectingStore{ConfigStore: cfg.ConfigStore}
+	h := &ProviderHandler{config: cfg, modelsManager: &mockModelsManager{}}
+	body := strings.Replace(string(commitPointProviderBody(t)), "{", `{"concurrency_and_buffer_size":{"concurrency":1,"buffer_size":10},`, 1)
+	ctx := newTestRequestCtx(body)
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.SetUserValue("provider", "audit-openai")
+	h.updateProvider(ctx)
+	requireCreatedProviderRecorded(t, ctx, cfg)
+}
+
+func TestCommitPoint_ProviderUpdateRecordedWhenRuntimeRebuildFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil)
+	store := cfg.ConfigStore
+	h := &ProviderHandler{
+		config:        cfg,
+		modelsManager: &mockModelsManager{},
+	}
+	addCtx := newTestRequestCtx(string(commitPointProviderBody(t)))
+	addCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	h.addProvider(addCtx)
+	requireStatus(t, addCtx, fasthttp.StatusOK)
+
+	// A client that is shutting down refuses UpdateProvider, which runs after the store write.
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(cfg),
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("init client: %v", err)
+	}
+	client.Shutdown()
+	cfg.SetBifrostClient(client)
+
+	ctx := newTestRequestCtx(`{"concurrency_and_buffer_size":{"concurrency":3,"buffer_size":6},"custom_provider_config":{"base_provider_type":"openai","is_key_less":true},"proxy_config":{"type":"http","url":"http://proxy.internal:3128","username":"proxy-user","password":"` + commitPointProxySecret + `"}}`)
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.SetUserValue("provider", "audit-openai")
+	h.updateProvider(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	stored, err := store.GetProvidersConfig(context.Background())
+	if err != nil {
+		t.Fatalf("read providers: %v", err)
+	}
+	if got := stored["audit-openai"].ConcurrencyAndBufferSize; got == nil || got.Concurrency != 3 {
+		t.Fatalf("stored concurrency = %+v, want the committed update", got)
+	}
+	changes := liveAuditChanges(ctx)
+	requireRecordedOrNone(t, changes, true, "provider.updated")
+	requireNoSecret(t, changes[0], commitPointProxySecret)
 }
