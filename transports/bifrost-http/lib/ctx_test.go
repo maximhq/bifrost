@@ -1900,7 +1900,7 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 	ctx := context.Background()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
 	providers := map[schemas.ModelProvider]configstore.ProviderConfig{}
-	for provider, keys := range setup.keys {
+	for provider := range setup.keys {
 		maxRetries, ok := setup.maxRetries[provider]
 		if !ok {
 			maxRetries = 2
@@ -1910,7 +1910,6 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 			custom = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}
 		}
 		providers[provider] = configstore.ProviderConfig{
-			Keys: keys,
 			NetworkConfig: &schemas.NetworkConfig{
 				BaseURL:                        u.URL,
 				DefaultRequestTimeoutInSeconds: 30,
@@ -1922,7 +1921,7 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 			CustomProviderConfig:     custom,
 		}
 	}
-	config := providerStore(t, providers)
+	config := providerStore(t, providers, setup.keys)
 	config.ClientConfig = &configstore.ClientConfig{AllowDirectKeys: setup.allowDirectKeys}
 	storeGovernance(t, config, setup.governance)
 	governancePlugin, err := governance.Init(ctx, &governance.Config{}, logger, nil, config.LiveStore, setup.catalog, nil)

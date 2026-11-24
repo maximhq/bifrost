@@ -80,8 +80,8 @@ func TestFromConfigJoins(t *testing.T) {
 	}
 
 	g := FromConfig(FileInput{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1"}}}, schemas.Anthropic: {}, schemas.Gemini: {},
-	}, Governance: cfg})
+		schemas.OpenAI: {}, schemas.Anthropic: {}, schemas.Gemini: {},
+	}, ProviderKeys: map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: {{ID: "k1"}}}, Governance: cfg})
 	budgets, rateLimits := budgetsByID(g.Budgets), rateLimitsByID(g.RateLimits)
 	require.ElementsMatch(t, []string{"b-cust", "b-team", "b-team-listed", "b-mc1", "b-mc-listed", "b-mc-ignored", "b-prov", "b-anth", "b-vk", "b-pc", "b-unheld"}, keysOf(budgets),
 		"every listed budget is loaded, with the ones each holder holds")
@@ -173,19 +173,18 @@ func TestFromConfigWithoutGovernance(t *testing.T) {
 }
 
 // TestFromConfigProviderKeys checks that a provider's keys become key records under it, ordered by
-// their position in config.json, while its provider record holds its settings only and the
-// caller's config keeps its keys.
+// their position in config.json, while its provider record holds its configuration and the
+// caller's keys are left as they are.
 func TestFromConfigProviderKeys(t *testing.T) {
-	providers := map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "z-first"}, {ID: "a-second"}}, SendBackRawResponse: true},
-	}
-	g := FromConfig(FileInput{Providers: providers})
-	require.Equal(t, []*Provider{{Name: schemas.OpenAI, Settings: configstore.ProviderSettings{SendBackRawResponse: true}}}, g.Providers)
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {SendBackRawResponse: true}}
+	keys := map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: {{ID: "z-first"}, {ID: "a-second"}}}
+	g := FromConfig(FileInput{Providers: providers, ProviderKeys: keys})
+	require.Equal(t, []*Provider{{Name: schemas.OpenAI, Config: configstore.ProviderConfig{SendBackRawResponse: true}}}, g.Providers)
 	require.Equal(t, []*ProviderKey{
 		{Provider: schemas.OpenAI, Order: 0, Key: schemas.Key{ID: "z-first"}},
 		{Provider: schemas.OpenAI, Order: 1, Key: schemas.Key{ID: "a-second"}},
 	}, g.ProviderKeys, "a key's order is its position in config.json, not its ID")
-	require.Len(t, providers[schemas.OpenAI].Keys, 2, "the caller's config is not rewritten")
+	require.Len(t, keys[schemas.OpenAI], 2, "the caller's keys are not rewritten")
 }
 
 // keysOf lists a budget map's IDs.

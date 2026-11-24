@@ -23,7 +23,7 @@ import (
 // that disables it is read back disabled, and a delete drops it.
 func TestAgentRegistrationWritesReachTheLiveStore(t *testing.T) {
 	ctx := context.Background()
-	config := libtest.Config(t, nil)
+	config := libtest.Config(t, nil, nil)
 	h := &AgentGatewayHandler{config: config}
 	db := config.ConfigStore.DB()
 	agents := config.LiveStore.Collections.Agents
@@ -51,7 +51,7 @@ func TestAgentRegistrationWritesReachTheLiveStore(t *testing.T) {
 // retries returns the error and leaves the agent's record as it was, rather than dropping it.
 func TestAgentRefreshFailureKeepsTheRecord(t *testing.T) {
 	ctx := context.Background()
-	config := libtest.Config(t, nil)
+	config := libtest.Config(t, nil, nil)
 	h := &AgentGatewayHandler{config: config}
 	db := config.ConfigStore.DB()
 	agents := config.LiveStore.Collections.Agents
@@ -70,7 +70,7 @@ func TestAgentRefreshFailureKeepsTheRecord(t *testing.T) {
 // again, so a disable written just before still reaches memory instead of failing the write.
 func TestAgentRefreshRetriesAFailedRead(t *testing.T) {
 	ctx := context.Background()
-	config := libtest.Config(t, nil)
+	config := libtest.Config(t, nil, nil)
 	h := &AgentGatewayHandler{config: config}
 	db := config.ConfigStore.DB()
 	agents := config.LiveStore.Collections.Agents

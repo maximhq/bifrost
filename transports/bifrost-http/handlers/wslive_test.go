@@ -431,7 +431,7 @@ func TestLiveDialMapsProviderRefusals(t *testing.T) {
 
 	pool := bfws.NewPool(nil)
 	t.Cleanup(pool.Close)
-	h := &WSLiveHandler{config: libtest.FileOnly(t, &lib.Config{}, nil), pool: pool}
+	h := &WSLiveHandler{config: libtest.FileOnly(t, &lib.Config{}, nil, nil), pool: pool}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	key := schemas.Key{ID: "key-1"}
 
@@ -580,7 +580,7 @@ func TestLiveAttachRefusesBeforeUpgrade(t *testing.T) {
 	t.Parallel()
 
 	attach := func(enforceAuth bool, id string) *fasthttp.RequestCtx {
-		config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}}, nil)
+		config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}}, nil, nil)
 		h := &WSLiveHandler{gateway: &liveGateway{config: config}, config: config}
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.SetRequestURI("/v1/live/sessions/" + id + "/attach")

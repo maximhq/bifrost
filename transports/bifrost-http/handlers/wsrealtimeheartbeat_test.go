@@ -1394,7 +1394,7 @@ func newGeminiLiveGateway(t *testing.T, upstream *fakeGeminiLive, enforceAuth bo
 	})
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
-	config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}}, nil)
+	config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}}, nil, nil)
 	pool := bfws.NewPool(nil)
 	t.Cleanup(pool.Close)
 	handler := &WSRealtimeHandler{client: client, config: config, handlerStore: config, pool: pool, sessions: bfws.NewSessionManager(10)}

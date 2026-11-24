@@ -58,7 +58,9 @@ func runProviderKeyBenchmarks(b *testing.B, body func(b *testing.B, c *Config, c
 			b.Run(fmt.Sprintf("keys=%d/%s", n, mode), func(b *testing.B) {
 				keys := benchProviderKeys(n)
 				c := withProviders(b, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
-					schemas.OpenAI: {Keys: keys},
+					schemas.OpenAI: {},
+				}, map[schemas.ModelProvider][]schemas.Key{
+					schemas.OpenAI: keys,
 				})
 				ctx, admitted := benchKeyContext(keys, restricted)
 				body(b, c, ctx, admitted)

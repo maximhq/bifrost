@@ -1301,7 +1301,7 @@ func (s *BifrostHTTPServer) syncIgnoreProviderCost(provider schemas.ModelProvide
 		return
 	}
 	stored, ok := s.Config.LiveStore.Collections.Providers.Get(string(provider))
-	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, ok && stored.Settings.IgnoreProviderCost)
+	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, ok && stored.Config.IgnoreProviderCost)
 }
 
 // RemoveProvider removes a provider from the in-memory store
@@ -1421,10 +1421,10 @@ func isKeylessProvider(provider schemas.ModelProvider, cfg *lib.Config) bool {
 		return false
 	}
 	stored, ok := cfg.LiveStore.Collections.Providers.Get(string(provider))
-	if !ok || stored.Settings.CustomProviderConfig == nil {
+	if !ok || stored.Config.CustomProviderConfig == nil {
 		return false
 	}
-	return stored.Settings.CustomProviderConfig.IsKeyLess
+	return stored.Config.CustomProviderConfig.IsKeyLess
 }
 
 // SeedModelCatalog pushes every provider the live store holds into the catalog, as boot does before
@@ -1439,10 +1439,10 @@ func SeedModelCatalog(catalog *modelcatalog.ModelCatalog, live *livestore.Store)
 			keys = append(keys, (*list)...)
 		}
 		snapshot[p.Name] = keys
-		if p.Settings.IgnoreProviderCost {
+		if p.Config.IgnoreProviderCost {
 			ignoreProviderCost = append(ignoreProviderCost, p.Name)
 		}
-		if p.Settings.CustomProviderConfig != nil && p.Settings.CustomProviderConfig.IsKeyLess {
+		if p.Config.CustomProviderConfig != nil && p.Config.CustomProviderConfig.IsKeyLess {
 			keyless = append(keyless, p.Name)
 		}
 		return true
@@ -2376,8 +2376,8 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 	// allowed_requests — every per-(provider,keyID) call would just bounce with
 	// "operation not allowed", wasting two goroutines and one bfCtx per attempt.
 	if stored, ok := s.Config.LiveStore.Collections.Providers.Get(string(provider)); ok &&
-		stored.Settings.CustomProviderConfig != nil &&
-		!stored.Settings.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
+		stored.Config.CustomProviderConfig != nil &&
+		!stored.Config.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
 		return
 	}
 	// Captured before the upstream calls go out, and checked again by the

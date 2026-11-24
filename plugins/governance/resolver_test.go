@@ -1531,13 +1531,13 @@ func TestChatRequestNeverCopiesTheProviderMap(t *testing.T) {
 // keys, with their aliases, reach the model check from the configured provider. A name that is
 // neither allowed nor an alias of an allowed model is still refused.
 func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
-	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
 		// k2 is restricted to other models, so key selection never picks it for these names and
 		// its missing alias must not veto the request.
-		schemas.OpenAI: {Keys: []schemas.Key{
+		schemas.OpenAI: {
 			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
 			{ID: "k2", Models: schemas.WhiteList{"embedding-*"}},
-		}},
+		},
 	}}
 	vk := buildVirtualKeyWithProviders("vk-alias", mcpTestVKValue, "alias-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		withAllKeys(buildProviderConfig("openai", []string{"gpt-4o"})),
@@ -1611,11 +1611,11 @@ func withAllKeys(pc configstoreTables.TableVirtualKeyProviderConfig) configstore
 // best-gpt request within the limit is charged against it.
 func TestModelLimitOnAliasTargetGovernsTheAliasThroughTheHookChain(t *testing.T) {
 	newPlugin := func(t *testing.T, modelRL *configstoreTables.TableRateLimit) (*GovernancePlugin, *LocalGovernanceStore) {
-		store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+		store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
 				"best-gpt":  {ModelID: "gpt-4o"},
 				"cheap-gpt": {ModelID: "gpt-4o-mini"},
-			}}}},
+			}}},
 		}}
 		vk := buildVirtualKeyWithProviders("vk-alias-limit", mcpTestVKValue, "alias-limit-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 			withAllKeys(buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})),
@@ -1688,11 +1688,11 @@ func TestModelLimitOnAliasTargetGovernsTheAliasThroughTheHookChain(t *testing.T)
 // every target's limits, since key selection has not happened yet, but charged only against the
 // target of the key that ran: the other model never ran (#6620 review).
 func TestAliasRequestIsChargedOnlyAgainstTheTargetThatRan(t *testing.T) {
-	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {
 			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
 			{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o-mini"}}},
-		}},
+		},
 	}}
 	vk := buildVirtualKeyWithProviders("vk-alias-charge", mcpTestVKValue, "alias-charge-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		withAllKeys(buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})),
@@ -1805,11 +1805,11 @@ func TestLiteralAccessKeepsTheLevelsThatCapTheAccess(t *testing.T) {
 // that named no alias (one context read); "keys_agree" is an alias every key maps to one model, which
 // the key that ran did; "keys_disagree" re-gathers the limits for the key that ran.
 func BenchmarkLimitsForKeyThatRan(b *testing.B) {
-	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {
 			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}, "top-gpt": {ModelID: "gpt-4o"}}},
 			{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o-mini"}, "top-gpt": {ModelID: "gpt-4o"}}},
-		}},
+		},
 	}}
 	vk := buildVirtualKeyWithProviders("vk-alias-bench", mcpTestVKValue, "alias-bench-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		withAllKeys(buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})),
@@ -1875,7 +1875,7 @@ func TestAliasRulesFollowTheKeysThatCanServeTheRequest(t *testing.T) {
 	for name, pc := range vks {
 		tables = append(tables, *buildVirtualKeyWithProviders("vk-"+name, "sk-bf-"+name, name, []configstoreTables.TableVirtualKeyProviderConfig{pc}))
 	}
-	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: keys}}}
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: keys}}
 	logger := NewMockLogger()
 	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{VirtualKeys: tables}, nil, store)
 	require.NoError(t, err)
@@ -1958,7 +1958,7 @@ func TestAliasTargetLimitsFollowTheVirtualKeysKeys(t *testing.T) {
 	onlyK2 := buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})
 	onlyK2.Keys = []configstoreTables.TableKey{{KeyID: "k2", Provider: "openai"}}
 	exhausted := buildRateLimitWithUsage("rl-gpt-4o", 1_000_000, 0, 1, 1)
-	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: keys}}}
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: keys}}
 	logger := NewMockLogger()
 	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{
@@ -2002,11 +2002,11 @@ func TestAliasTargetLimitsFollowTheVirtualKeysKeys(t *testing.T) {
 // before the alias targets were consulted.
 func TestBlacklistHoldsAliasTargetsThroughTheHookChain(t *testing.T) {
 	const plainVKValue = "sk-bf-plain-alias-vk"
-	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
 			"best-model": {ModelID: "claude-opus-4-6"},
 			"good-model": {ModelID: "claude-sonnet-4-6"},
-		}}}},
+		}}},
 	}}
 	blocking := withAllKeys(buildProviderConfig("anthropic", []string{"regex:^claude-.*"}))
 	blocking.BlacklistedModels = schemas.BlackList{"claude-opus-4-6"}
@@ -2054,8 +2054,8 @@ func TestBlacklistHoldsAliasTargetsThroughTheHookChain(t *testing.T) {
 // one drops a permit whose blacklist names the alias target, and with it the permit's provider rate
 // limit, so an exhausted limit stopped applying to exactly the requests the literal check admits.
 func TestLiteralRequestsKeepProviderLimitsWhenAnAliasTargetIsBlacklisted(t *testing.T) {
-	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-mini"}}}}},
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-mini"}}}},
 	}}
 	exhausted := buildRateLimitWithUsage("rl-openai-exhausted", 1_000_000, 0, 1, 1)
 	pc := buildProviderConfigWithRateLimit("openai", []string{"gpt-4o"}, exhausted)
@@ -2135,8 +2135,8 @@ func BenchmarkLiteralAccessFor(b *testing.B) {
 // own model, never an item's. An item is therefore held to its literal name, so an alias of an
 // allowed model that is also a real upstream model cannot slip through as the allowed one.
 func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
-	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}},
 	}}
 	vk := buildVirtualKeyWithProviders("vk-batch", mcpTestVKValue, "batch-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		withAllKeys(buildProviderConfig("anthropic", []string{"claude-sonnet-4-6"})),
@@ -2194,8 +2194,8 @@ func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
 // and an exhausted limit on that target must not block it; the batch request's own model is the one
 // pass that is resolved through the alias, and the literal marking must not outlive the item passes.
 func TestBatchItemLiteralModelTakesNoAliasTargetLimits(t *testing.T) {
-	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}},
 	}}
 	vk := buildVirtualKeyWithProviders("vk-batch", mcpTestVKValue, "batch-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		withAllKeys(buildProviderConfig("anthropic", []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"})),
@@ -2312,9 +2312,9 @@ func BenchmarkPreLLMHookKeyAliases(b *testing.B) {
 		{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
 		{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
 	}
-	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI:    {Keys: aliased},
-		schemas.Anthropic: {Keys: []schemas.Key{{ID: "a1", Models: schemas.WhiteList{"*"}}}},
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}, schemas.Anthropic: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI:    aliased,
+		schemas.Anthropic: {{ID: "a1", Models: schemas.WhiteList{"*"}}},
 	}}
 	onK1 := buildProviderConfig("openai", []string{"gpt-4o"})
 	onK1.Keys = []configstoreTables.TableKey{{KeyID: "k1", Provider: "openai"}}

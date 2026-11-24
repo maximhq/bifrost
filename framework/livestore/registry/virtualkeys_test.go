@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/require"
 )
@@ -37,8 +36,8 @@ func virtualKeyIDsOf(rows []*VirtualKey) []string {
 // client's name, and the virtual MCPs in ascending order.
 func TestVirtualKeysPageAndRecord(t *testing.T) {
 	ctx := context.Background()
-	store := newProviderDB(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{key("k1"), key("k2"), key("k3")}},
+	store := newProviderDB(t, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {key("k1"), key("k2"), key("k3")},
 	})
 	db := store.DB()
 	require.NoError(t, store.CreateMCPClientConfig(ctx, mcpClient("c1")))

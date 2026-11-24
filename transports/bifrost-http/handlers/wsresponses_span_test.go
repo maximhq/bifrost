@@ -176,7 +176,7 @@ func TestNativeWSUpstreamProducesLLMCallSpan(t *testing.T) {
 
 	h := &WSResponsesHandler{
 		client:       client,
-		config:       libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}),
+		config:       libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, nil),
 		handlerStore: testWSHandlerStore{},
 		pool:         pool,
 		sessions:     bfws.NewSessionManager(10),
@@ -284,7 +284,7 @@ func TestNativeWSUpstreamFailedResponseProducesErroredLLMCallSpan(t *testing.T) 
 
 	h := &WSResponsesHandler{
 		client:       client,
-		config:       libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}),
+		config:       libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, nil),
 		handlerStore: testWSHandlerStore{},
 		pool:         pool,
 		sessions:     bfws.NewSessionManager(10),
@@ -391,7 +391,7 @@ func TestNativeWSUpstreamTimeoutProducesErroredLLMCallSpan(t *testing.T) {
 		// 1s idle timeout so the stalled upstream trips the read deadline quickly.
 		config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
 			schemas.OpenAI: {NetworkConfig: &schemas.NetworkConfig{StreamIdleTimeoutInSeconds: 1}},
-		}),
+		}, nil),
 		handlerStore: testWSHandlerStore{},
 		pool:         pool,
 		sessions:     bfws.NewSessionManager(10),

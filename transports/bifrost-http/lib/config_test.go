@@ -680,6 +680,7 @@ type MockConfigStore struct {
 
 	clientConfig     *configstore.ClientConfig
 	providers        map[schemas.ModelProvider]configstore.ProviderConfig
+	providerKeys     map[schemas.ModelProvider][]schemas.Key // each provider's key rows, in creation order
 	mcpConfig        *schemas.MCPConfig
 	mcpClients       []*schemas.MCPClientConfig
 	governanceConfig *configstore.GovernanceConfig
@@ -719,6 +720,7 @@ type MockConfigStore struct {
 func NewMockConfigStore() *MockConfigStore {
 	return &MockConfigStore{
 		providers:     make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		providerKeys:  make(map[schemas.ModelProvider][]schemas.Key),
 		configEntries: make(map[string]string),
 	}
 }
@@ -841,12 +843,25 @@ func (m *MockConfigStore) UpdateClientMetadata(ctx context.Context, patch map[st
 }
 
 // Provider config
-func (m *MockConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]configstore.ProviderConfig, tx ...*gorm.DB) error {
+
+// UpdateProvidersConfig replaces the stored providers and, like the real store, writes keys[p] for
+// each provider p with an entry in keys while a provider without one keeps its stored keys.
+func (m *MockConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]configstore.ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key, tx ...*gorm.DB) error {
+	storedKeys := make(map[schemas.ModelProvider][]schemas.Key, len(providers))
+	for provider := range providers {
+		if providerKeys, ok := keys[provider]; ok {
+			storedKeys[provider] = providerKeys
+		} else {
+			storedKeys[provider] = m.providerKeys[provider]
+		}
+	}
 	m.providers = providers
+	m.providerKeys = storedKeys
 	m.providersConfigUpdated = true
 	return nil
 }
 
+// GetProvidersConfig returns the stored providers, keyless as the real store returns them.
 func (m *MockConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]configstore.ProviderConfig, error) {
 	if len(m.providers) == 0 {
 		return nil, nil
@@ -854,63 +869,76 @@ func (m *MockConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.M
 	return m.providers, nil
 }
 
+// AddProvider stores a new provider without keys, as the real store does; CreateProviderKey adds them.
 func (m *MockConfigStore) AddProvider(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig, tx ...*gorm.DB) error {
 	m.providers[provider] = config
+	m.setProviderKeys(provider, nil)
 	return nil
 }
 
+// UpdateProvider replaces a provider's settings; its keys stay as stored.
 func (m *MockConfigStore) UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig, tx ...*gorm.DB) error {
 	m.providers[provider] = config
 	return nil
 }
 
+// DeleteProvider removes a provider and its keys.
 func (m *MockConfigStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
 	delete(m.providers, provider)
+	delete(m.providerKeys, provider)
 	return nil
 }
 
+// setProviderKeys stores a provider's keys, making the key map on first use so a mock built as a
+// bare literal works too.
+func (m *MockConfigStore) setProviderKeys(provider schemas.ModelProvider, keys []schemas.Key) {
+	if m.providerKeys == nil {
+		m.providerKeys = make(map[schemas.ModelProvider][]schemas.Key)
+	}
+	m.providerKeys[provider] = keys
+}
+
+// GetProviderKeys returns a copy of a provider's keys, or ErrNotFound when the provider is not stored.
 func (m *MockConfigStore) GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
-	config, ok := m.providers[provider]
-	if !ok {
+	if _, ok := m.providers[provider]; !ok {
 		return nil, configstore.ErrNotFound
 	}
-	return append([]schemas.Key(nil), config.Keys...), nil
+	return append([]schemas.Key(nil), m.providerKeys[provider]...), nil
 }
 
+// CreateProviderKey appends a key to a stored provider's keys.
 func (m *MockConfigStore) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
-	config, ok := m.providers[provider]
-	if !ok {
+	if _, ok := m.providers[provider]; !ok {
 		return configstore.ErrNotFound
 	}
-	config.Keys = append(config.Keys, key)
-	m.providers[provider] = config
+	m.setProviderKeys(provider, append(m.providerKeys[provider], key))
 	return nil
 }
 
+// UpdateProviderKey replaces the key with keyID in a stored provider's keys.
 func (m *MockConfigStore) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
-	config, ok := m.providers[provider]
-	if !ok {
+	if _, ok := m.providers[provider]; !ok {
 		return configstore.ErrNotFound
 	}
-	for i := range config.Keys {
-		if config.Keys[i].ID == keyID {
-			config.Keys[i] = key
-			m.providers[provider] = config
+	keys := m.providerKeys[provider]
+	for i := range keys {
+		if keys[i].ID == keyID {
+			keys[i] = key
 			return nil
 		}
 	}
 	return configstore.ErrNotFound
 }
 
+// DeleteProviderKey removes the key with keyID from a stored provider's keys.
 func (m *MockConfigStore) DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error {
-	config, ok := m.providers[provider]
-	if !ok {
+	if _, ok := m.providers[provider]; !ok {
 		return configstore.ErrNotFound
 	}
-	for i := range config.Keys {
-		if config.Keys[i].ID == keyID {
-			config.Keys = append(config.Keys[:i], config.Keys[i+1:]...)
-			m.providers[provider] = config
+	keys := m.providerKeys[provider]
+	for i := range keys {
+		if keys[i].ID == keyID {
+			m.setProviderKeys(provider, append(keys[:i:i], keys[i+1:]...))
 			return nil
 		}
 	}
@@ -2827,7 +2855,9 @@ func createTempDir(t *testing.T) string {
 	return dir
 }
 
-// createConfigFile creates a config.json file with the given data
+// createConfigFile creates a config.json file with the given data. ConfigData holds a provider's
+// keys in ProviderKeys, apart from its Providers entry, and marshals without them, so the
+// "providers" section is written here in the file's shape: each entry with its "keys" nested.
 func createConfigFile(t *testing.T, dir string, data *ConfigData) {
 	t.Helper()
 	configPath := filepath.Join(dir, "config.json")
@@ -2835,9 +2865,54 @@ func createConfigFile(t *testing.T, dir string, data *ConfigData) {
 	if err != nil {
 		t.Fatalf("failed to marshal config data: %v", err)
 	}
+	if data != nil && (data.Providers != nil || data.ProviderKeys != nil) {
+		var sections map[string]json.RawMessage
+		if err := json.Unmarshal(jsonData, &sections); err != nil {
+			t.Fatalf("failed to split config data into sections: %v", err)
+		}
+		providersJSON, err := json.Marshal(providerFileEntries(data.Providers, data.ProviderKeys))
+		if err != nil {
+			t.Fatalf("failed to marshal config.json providers: %v", err)
+		}
+		sections["providers"] = providersJSON
+		if jsonData, err = json.MarshalIndent(sections, "", "  "); err != nil {
+			t.Fatalf("failed to marshal config data: %v", err)
+		}
+	}
 	if err := os.WriteFile(configPath, jsonData, 0644); err != nil {
 		t.Fatalf("failed to write config file: %v", err)
 	}
+}
+
+// providerFileEntries joins ConfigData's Providers and ProviderKeys into config.json's
+// "providers" entries, each provider's keys nested inside its entry.
+func providerFileEntries(providers map[string]configstore.ProviderConfig, keys map[string][]schemas.Key) map[string]providerFileEntry {
+	entries := make(map[string]providerFileEntry, len(providers))
+	for name, config := range providers {
+		entries[name] = providerFileEntry{Keys: keys[name], ProviderConfig: config}
+	}
+	for name, providerKeys := range keys {
+		if _, ok := entries[name]; !ok {
+			entries[name] = providerFileEntry{Keys: providerKeys}
+		}
+	}
+	return entries
+}
+
+// splitProviderEntries splits config.json "providers" entries into ConfigData's Providers and
+// ProviderKeys, as ConfigData.UnmarshalJSON does. A nil map gives nil maps, so the file keeps no
+// "providers" entries.
+func splitProviderEntries(entries map[string]providerFileEntry) (map[string]configstore.ProviderConfig, map[string][]schemas.Key) {
+	if entries == nil {
+		return nil, nil
+	}
+	providers := make(map[string]configstore.ProviderConfig, len(entries))
+	keys := make(map[string][]schemas.Key, len(entries))
+	for name, entry := range entries {
+		providers[name] = entry.ProviderConfig
+		keys[name] = entry.Keys
+	}
+	return providers, keys
 }
 
 // TestValidateClientConfig_AuthCodeTTL covers the load-time invariant check that
@@ -3234,8 +3309,9 @@ func makeClientConfig(initialPoolSize int, enableLogging bool) *configstore.Clie
 	}
 }
 
-func makeProviderConfig(keyName, keyValue string) configstore.ProviderConfig {
-	return configstore.ProviderConfig{
+// makeProviderConfig creates a config.json provider entry with one key.
+func makeProviderConfig(keyName, keyValue string) providerFileEntry {
+	return providerFileEntry{
 		Keys: []schemas.Key{
 			{
 				ID:     uuid.NewString(),
@@ -3302,13 +3378,14 @@ func createTestSQLiteConfigStore(t *testing.T, dir string) configstore.ConfigSto
 }
 
 // makeConfigDataWithProviders creates a ConfigData with only providers configured
-func makeConfigDataWithProviders(providers map[string]configstore.ProviderConfig) *ConfigData {
+func makeConfigDataWithProviders(providers map[string]providerFileEntry) *ConfigData {
 	return makeConfigDataWithProvidersAndDir(providers, "")
 }
 
 // makeConfigDataWithProvidersAndDir creates a ConfigData with providers and a specific temp directory for the DB
-func makeConfigDataWithProvidersAndDir(providers map[string]configstore.ProviderConfig, tempDir string) *ConfigData {
+func makeConfigDataWithProvidersAndDir(providers map[string]providerFileEntry, tempDir string) *ConfigData {
 	dbPath := filepath.Join(tempDir, "config.db")
+	providerConfigs, providerKeys := splitProviderEntries(providers)
 	return &ConfigData{
 		Client: &configstore.ClientConfig{
 			InitialPoolSize:      10,
@@ -3323,18 +3400,20 @@ func makeConfigDataWithProvidersAndDir(providers map[string]configstore.Provider
 				Path: dbPath,
 			},
 		},
-		Providers: providers,
+		Providers:    providerConfigs,
+		ProviderKeys: providerKeys,
 	}
 }
 
 // makeConfigDataWithVirtualKeys creates a ConfigData with providers and virtual keys
-func makeConfigDataWithVirtualKeys(providers map[string]configstore.ProviderConfig, vks []tables.TableVirtualKey) *ConfigData {
+func makeConfigDataWithVirtualKeys(providers map[string]providerFileEntry, vks []tables.TableVirtualKey) *ConfigData {
 	return makeConfigDataWithVirtualKeysAndDir(providers, vks, "")
 }
 
 // makeConfigDataWithVirtualKeysAndDir creates a ConfigData with providers, virtual keys, and a specific temp directory
-func makeConfigDataWithVirtualKeysAndDir(providers map[string]configstore.ProviderConfig, vks []tables.TableVirtualKey, tempDir string) *ConfigData {
+func makeConfigDataWithVirtualKeysAndDir(providers map[string]providerFileEntry, vks []tables.TableVirtualKey, tempDir string) *ConfigData {
 	dbPath := filepath.Join(tempDir, "config.db")
+	providerConfigs, providerKeys := splitProviderEntries(providers)
 	return &ConfigData{
 		Client: &configstore.ClientConfig{
 			InitialPoolSize:      10,
@@ -3349,7 +3428,8 @@ func makeConfigDataWithVirtualKeysAndDir(providers map[string]configstore.Provid
 				Path: dbPath,
 			},
 		},
-		Providers: providers,
+		Providers:    providerConfigs,
+		ProviderKeys: providerKeys,
 		Governance: &configstore.GovernanceConfig{
 			VirtualKeys: vks,
 		},
@@ -3357,12 +3437,12 @@ func makeConfigDataWithVirtualKeysAndDir(providers map[string]configstore.Provid
 }
 
 // makeConfigDataFull creates a full ConfigData with all configurations
-func makeConfigDataFull(client *configstore.ClientConfig, providers map[string]configstore.ProviderConfig, governance *configstore.GovernanceConfig) *ConfigData {
+func makeConfigDataFull(client *configstore.ClientConfig, providers map[string]providerFileEntry, governance *configstore.GovernanceConfig) *ConfigData {
 	return makeConfigDataFullWithDir(client, providers, governance, "")
 }
 
 // makeConfigDataFullWithDir creates a full ConfigData with all configurations and a specific temp directory
-func makeConfigDataFullWithDir(client *configstore.ClientConfig, providers map[string]configstore.ProviderConfig, governance *configstore.GovernanceConfig, tempDir string) *ConfigData {
+func makeConfigDataFullWithDir(client *configstore.ClientConfig, providers map[string]providerFileEntry, governance *configstore.GovernanceConfig, tempDir string) *ConfigData {
 	if client == nil {
 		client = &configstore.ClientConfig{
 			InitialPoolSize:      10,
@@ -3372,6 +3452,7 @@ func makeConfigDataFullWithDir(client *configstore.ClientConfig, providers map[s
 		}
 	}
 	dbPath := filepath.Join(tempDir, "config.db")
+	providerConfigs, providerKeys := splitProviderEntries(providers)
 	return &ConfigData{
 		Client: client,
 		ConfigStoreConfig: &configstore.Config{
@@ -3381,14 +3462,15 @@ func makeConfigDataFullWithDir(client *configstore.ClientConfig, providers map[s
 				Path: dbPath,
 			},
 		},
-		Providers:  providers,
-		Governance: governance,
+		Providers:    providerConfigs,
+		ProviderKeys: providerKeys,
+		Governance:   governance,
 	}
 }
 
-// makeProviderConfigWithNetwork creates a provider config with network settings
-func makeProviderConfigWithNetwork(keyName, keyValue, baseURL string) configstore.ProviderConfig {
-	return configstore.ProviderConfig{
+// makeProviderConfigWithNetwork creates a config.json provider entry with one key and network settings
+func makeProviderConfigWithNetwork(keyName, keyValue, baseURL string) providerFileEntry {
+	return providerFileEntry{
 		Keys: []schemas.Key{
 			{
 				ID:     uuid.NewString(),
@@ -3397,18 +3479,22 @@ func makeProviderConfigWithNetwork(keyName, keyValue, baseURL string) configstor
 				Weight: 1,
 			},
 		},
-		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: baseURL,
+		ProviderConfig: configstore.ProviderConfig{
+			NetworkConfig: &schemas.NetworkConfig{
+				BaseURL: baseURL,
+			},
 		},
 	}
 }
 
-// makeProviderConfigWithMultipleKeys creates a provider config with multiple keys
-func makeProviderConfigWithMultipleKeys(keys []schemas.Key, baseURL string) configstore.ProviderConfig {
-	return configstore.ProviderConfig{
+// makeProviderConfigWithMultipleKeys creates a config.json provider entry with multiple keys
+func makeProviderConfigWithMultipleKeys(keys []schemas.Key, baseURL string) providerFileEntry {
+	return providerFileEntry{
 		Keys: keys,
-		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: baseURL,
+		ProviderConfig: configstore.ProviderConfig{
+			NetworkConfig: &schemas.NetworkConfig{
+				BaseURL: baseURL,
+			},
 		},
 	}
 }
@@ -3490,13 +3576,34 @@ func verifyProviderInDB(t *testing.T, store configstore.ConfigStore, provider sc
 	if err != nil {
 		t.Fatalf("failed to get providers from DB: %v", err)
 	}
-	cfg, exists := providers[provider]
-	if !exists {
+	if _, exists := providers[provider]; !exists {
 		t.Fatalf("provider %s not found in DB", provider)
 	}
-	if len(cfg.Keys) != expectedKeyCount {
-		t.Errorf("expected %d keys for provider %s, got %d", expectedKeyCount, provider, len(cfg.Keys))
+	keys, err := store.GetProviderKeys(ctx, provider)
+	if err != nil {
+		t.Fatalf("failed to get keys of provider %s from DB: %v", provider, err)
 	}
+	if len(keys) != expectedKeyCount {
+		t.Errorf("expected %d keys for provider %s, got %d", expectedKeyCount, provider, len(keys))
+	}
+}
+
+// dbProvidersAndKeys reads every provider store holds and, for each, its keys in creation order:
+// what GetProvidersConfig returned in one map before a provider's keys moved out of its config.
+func dbProvidersAndKeys(ctx context.Context, store configstore.ConfigStore) (map[schemas.ModelProvider]configstore.ProviderConfig, map[schemas.ModelProvider][]schemas.Key, error) {
+	providers, err := store.GetProvidersConfig(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	keys := make(map[schemas.ModelProvider][]schemas.Key, len(providers))
+	for provider := range providers {
+		providerKeys, err := store.GetProviderKeys(ctx, provider)
+		if err != nil {
+			return nil, nil, err
+		}
+		keys[provider] = providerKeys
+	}
+	return providers, keys, nil
 }
 
 // verifyVirtualKeyInDB checks that a virtual key exists in the database
@@ -3623,27 +3730,25 @@ func TestLoadConfig_ClientConfig_Merge(t *testing.T) {
 
 // TestLoadConfig_Providers_Merge tests provider keys merge from DB and file
 func TestLoadConfig_Providers_Merge(t *testing.T) {
-	// Setup DB providers
-	dbProviders := make(map[schemas.ModelProvider]configstore.ProviderConfig)
-	dbProviders[schemas.OpenAI] = configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:     "key-1",
-				Name:   "openai-db-key-1",
-				Value:  *schemas.NewSecretVar("sk-db-123"),
-				Weight: 1,
-			},
-			{
-				ID:     "key-2",
-				Name:   "openai-db-key-2",
-				Value:  *schemas.NewSecretVar("sk-db-456"),
-				Weight: 1,
-			},
+	// Setup DB provider keys
+	dbKeys := make(map[schemas.ModelProvider][]schemas.Key)
+	dbKeys[schemas.OpenAI] = []schemas.Key{
+		{
+			ID:     "key-1",
+			Name:   "openai-db-key-1",
+			Value:  *schemas.NewSecretVar("sk-db-123"),
+			Weight: 1,
+		},
+		{
+			ID:     "key-2",
+			Name:   "openai-db-key-2",
+			Value:  *schemas.NewSecretVar("sk-db-456"),
+			Weight: 1,
 		},
 	}
 
 	// Setup file providers with some overlapping and some new keys
-	fileProviders := map[string]configstore.ProviderConfig{
+	fileProviders := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{
@@ -3665,12 +3770,12 @@ func TestLoadConfig_Providers_Merge(t *testing.T) {
 	// Simulate merge logic
 	for providerName, fileCfg := range fileProviders {
 		provider := schemas.ModelProvider(providerName)
-		if existingCfg, exists := dbProviders[provider]; exists {
+		if existingKeys, exists := dbKeys[provider]; exists {
 			// Merge keys
 			keysToAdd := make([]schemas.Key, 0)
 			for _, newKey := range fileCfg.Keys {
 				found := false
-				for _, existingKey := range existingCfg.Keys {
+				for _, existingKey := range existingKeys {
 					if existingKey.Name == newKey.Name || existingKey.ID == newKey.ID || existingKey.Value == newKey.Value {
 						found = true
 						break
@@ -3680,20 +3785,19 @@ func TestLoadConfig_Providers_Merge(t *testing.T) {
 					keysToAdd = append(keysToAdd, newKey)
 				}
 			}
-			existingCfg.Keys = append(existingCfg.Keys, keysToAdd...)
-			dbProviders[provider] = existingCfg
+			dbKeys[provider] = append(existingKeys, keysToAdd...)
 		}
 	}
 
 	// Verify merge results
-	openaiCfg := dbProviders[schemas.OpenAI]
-	if len(openaiCfg.Keys) != 3 {
-		t.Errorf("Expected 3 keys after merge (2 from DB + 1 new from file), got %d", len(openaiCfg.Keys))
+	openaiKeys := dbKeys[schemas.OpenAI]
+	if len(openaiKeys) != 3 {
+		t.Errorf("Expected 3 keys after merge (2 from DB + 1 new from file), got %d", len(openaiKeys))
 	}
 
 	// Verify the keys
 	keyNames := make(map[string]bool)
-	for _, key := range openaiCfg.Keys {
+	for _, key := range openaiKeys {
 		keyNames[key.Name] = true
 	}
 
@@ -4162,9 +4266,6 @@ func TestLoadConfig_Governance_Merge(t *testing.T) {
 func TestGenerateProviderConfigHash(t *testing.T) {
 	// Create a provider config
 	config1 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -4181,11 +4282,8 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 		t.Error("Expected non-empty hash")
 	}
 
-	// Same config should produce same hash
+	// Same config should produce same hash (keys are not part of a provider config, so they cannot change it)
 	config2 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "different-id", Name: "different-name", Value: *schemas.NewSecretVar("different-value"), Weight: 2}, // Keys should NOT affect hash
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -4203,9 +4301,6 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 
 	// Different config should produce different hash
 	config3 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://different-api.example.com", // Different base URL
 		},
@@ -4233,9 +4328,6 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 
 	// Different SendBackRawResponse should produce different hash
 	config5 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -4253,9 +4345,6 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 
 	// Different ConcurrencyAndBufferSize should produce different hash
 	config6 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -4277,9 +4366,6 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 
 	// Different ProxyConfig should produce different hash
 	config7 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -4301,9 +4387,6 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 
 	// Different CustomProviderConfig should produce different hash
 	config8 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -4649,9 +4732,6 @@ func TestGenerateKeyHash(t *testing.T) {
 func TestProviderHashComparison_MatchingHash(t *testing.T) {
 	// Create a provider config (simulating what's in config.json)
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-file-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
@@ -4666,23 +4746,28 @@ func TestProviderHashComparison_MatchingHash(t *testing.T) {
 
 	// Create DB config with same hash (simulating unchanged config.json)
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-db-different"), Weight: 1}, // DB may have different key value (edited via dashboard)
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
 		SendBackRawResponse: false,
 		ConfigHash:          fileHash, // Same hash as file
 	}
+	// The file's key "openai-key" holds sk-file-123; the DB's was edited via the dashboard.
+	dbKeys := []schemas.Key{
+		{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-db-different"), Weight: 1}, // DB may have different key value (edited via dashboard)
+	}
 
 	// Simulate the hash comparison logic
 	providersInConfigStore := map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: dbConfig,
 	}
+	keysInConfigStore := map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: dbKeys,
+	}
 
 	// When hash matches, we should keep DB config
 	existingCfg := providersInConfigStore[schemas.OpenAI]
+	existingKeys := keysInConfigStore[schemas.OpenAI]
 	if existingCfg.ConfigHash == fileHash {
 		// Hash matches - keep DB config
 		// This is the expected path
@@ -4691,18 +4776,18 @@ func TestProviderHashComparison_MatchingHash(t *testing.T) {
 	}
 
 	// Verify DB config is preserved (key value from DB, not file)
-	if existingCfg.Keys[0].Value != *schemas.NewSecretVar("sk-db-different") {
-		t.Errorf("Expected DB key value to be preserved, got %v", existingCfg.Keys[0].Value)
+	if existingKeys[0].Value != *schemas.NewSecretVar("sk-db-different") {
+		t.Errorf("Expected DB key value to be preserved, got %v", existingKeys[0].Value)
 	}
 }
 
 // TestProviderHashComparison_DifferentHash tests that file config is used when hashes differ
 func TestProviderHashComparison_DifferentHash(t *testing.T) {
 	// Create a provider config (simulating what's in config.json - CHANGED)
+	fileKeys := []schemas.Key{
+		{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-file-123"), Weight: 1},
+	}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-file-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v2", // Changed URL
 		},
@@ -4718,31 +4803,34 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 
 	// Create DB config with different hash (config.json was changed)
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-db-123"), Weight: 1},
-			{ID: "key-2", Name: "dashboard-added-key", Value: *schemas.NewSecretVar("sk-dashboard"), Weight: 1}, // Key added via dashboard
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com", // Old URL
 		},
 		SendBackRawResponse: false, // Old setting
 		ConfigHash:          "old-different-hash",
 	}
+	dbKeys := []schemas.Key{
+		{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-db-123"), Weight: 1},
+		{ID: "key-2", Name: "dashboard-added-key", Value: *schemas.NewSecretVar("sk-dashboard"), Weight: 1}, // Key added via dashboard
+	}
 
 	// Simulate the hash comparison logic
 	providersInConfigStore := map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: dbConfig,
 	}
+	keysInConfigStore := map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: dbKeys,
+	}
 
 	existingCfg := providersInConfigStore[schemas.OpenAI]
 	if existingCfg.ConfigHash != fileHash {
 		// Hash mismatch - sync from file, but preserve dashboard-added keys
-		mergedKeys := fileConfig.Keys
+		mergedKeys := fileKeys
 
 		// Find keys in DB that aren't in file (added via dashboard)
-		for _, dbKey := range existingCfg.Keys {
+		for _, dbKey := range keysInConfigStore[schemas.OpenAI] {
 			found := false
-			for _, fileKey := range fileConfig.Keys {
+			for _, fileKey := range fileKeys {
 				dbKeyHash, _ := configstore.GenerateKeyHash(schemas.Key{
 					Name:   dbKey.Name,
 					Value:  dbKey.Value,
@@ -4762,7 +4850,7 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 		}
 
 		// Update the result
-		fileConfig.Keys = mergedKeys
+		keysInConfigStore[schemas.OpenAI] = mergedKeys
 		providersInConfigStore[schemas.OpenAI] = fileConfig
 	} else {
 		t.Error("Expected hash mismatch")
@@ -4770,6 +4858,7 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 
 	// Verify file config is now used
 	resultConfig := providersInConfigStore[schemas.OpenAI]
+	resultKeys := keysInConfigStore[schemas.OpenAI]
 
 	if resultConfig.NetworkConfig.BaseURL != "https://api.openai.com/v2" {
 		t.Errorf("Expected file BaseURL, got %s", resultConfig.NetworkConfig.BaseURL)
@@ -4780,13 +4869,13 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 	}
 
 	// Verify dashboard-added key is preserved
-	if len(resultConfig.Keys) != 2 {
-		t.Errorf("Expected 2 keys (1 from file + 1 dashboard-added), got %d", len(resultConfig.Keys))
+	if len(resultKeys) != 2 {
+		t.Errorf("Expected 2 keys (1 from file + 1 dashboard-added), got %d", len(resultKeys))
 	}
 
 	hasFileKey := false
 	hasDashboardKey := false
-	for _, key := range resultConfig.Keys {
+	for _, key := range resultKeys {
 		if key.Name == "openai-key" {
 			hasFileKey = true
 		}
@@ -4805,11 +4894,9 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 
 // TestProviderHashComparison_ProviderOnlyInDB tests that provider added via dashboard is preserved
 func TestProviderHashComparison_ProviderOnlyInDB(t *testing.T) {
-	// DB has a provider that was added via dashboard (not in config.json)
+	// DB has a provider that was added via dashboard (not in config.json), with key
+	// "dashboard-provider-key", which the provider hash does not cover.
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "dashboard-provider-key", Value: *schemas.NewSecretVar("sk-dashboard-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.custom-provider.com",
 		},
@@ -4829,7 +4916,7 @@ func TestProviderHashComparison_ProviderOnlyInDB(t *testing.T) {
 	}
 
 	// File providers (doesn't include custom-provider)
-	fileProviders := map[string]configstore.ProviderConfig{
+	fileProviders := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-openai-123"), Weight: 1},
@@ -4845,7 +4932,7 @@ func TestProviderHashComparison_ProviderOnlyInDB(t *testing.T) {
 
 		if _, exists := providersInConfigStore[provider]; !exists {
 			// New provider from file - add it
-			providersInConfigStore[provider] = fileCfg
+			providersInConfigStore[provider] = fileCfg.ProviderConfig
 		}
 		// Note: We don't delete providers that are only in DB
 	}
@@ -4870,9 +4957,6 @@ func TestProviderHashComparison_ProviderOnlyInDB(t *testing.T) {
 func TestProviderHashComparison_RoundTrip(t *testing.T) {
 	// First load: config.json content
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
@@ -4893,9 +4977,6 @@ func TestProviderHashComparison_RoundTrip(t *testing.T) {
 
 	// Second load: same config.json (no changes)
 	secondFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
@@ -4926,9 +5007,6 @@ func TestProviderHashComparison_RoundTrip(t *testing.T) {
 func TestProviderHashComparison_DashboardEditThenSameFile(t *testing.T) {
 	// Initial file config
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
@@ -4938,27 +5016,28 @@ func TestProviderHashComparison_DashboardEditThenSameFile(t *testing.T) {
 	fileHash, _ := fileConfig.GenerateConfigHash("openai")
 	fileConfig.ConfigHash = fileHash
 
-	// Simulate: user edits key value via dashboard (but provider config hash stays same)
+	// Simulate: user edits key value via dashboard (but provider config hash stays same).
+	// The file's key "openai-key" holds sk-original-123.
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-dashboard-modified-456"), Weight: 1}, // Modified via dashboard
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
 		SendBackRawResponse: false,
 		ConfigHash:          fileHash, // Hash based on provider config, not keys
 	}
+	dbKeys := []schemas.Key{
+		{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-dashboard-modified-456"), Weight: 1}, // Modified via dashboard
+	}
 
 	providersInConfigStore := map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: dbConfig,
 	}
+	keysInConfigStore := map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: dbKeys,
+	}
 
 	// Reload with same file config
 	reloadFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
@@ -4977,8 +5056,9 @@ func TestProviderHashComparison_DashboardEditThenSameFile(t *testing.T) {
 	}
 
 	// Verify dashboard-modified key value is preserved
-	if existingCfg.Keys[0].Value != *schemas.NewSecretVar("sk-dashboard-modified-456") {
-		t.Errorf("Expected dashboard-modified key value to be preserved, got %v", existingCfg.Keys[0].Value)
+	existingKeys := keysInConfigStore[schemas.OpenAI]
+	if existingKeys[0].Value != *schemas.NewSecretVar("sk-dashboard-modified-456") {
+		t.Errorf("Expected dashboard-modified key value to be preserved, got %v", existingKeys[0].Value)
 	}
 }
 
@@ -4986,7 +5066,6 @@ func TestProviderHashComparison_DashboardEditThenSameFile(t *testing.T) {
 func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 	// Config with no optional fields
 	configNoOptional := configstore.ProviderConfig{
-		Keys:                []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		SendBackRawResponse: false,
 	}
 
@@ -4997,7 +5076,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with NetworkConfig
 	configWithNetwork := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -5015,7 +5093,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with ProxyConfig
 	configWithProxy := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
 			URL:  schemas.NewSecretVar("http://proxy.example.com"),
@@ -5034,7 +5111,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with ConcurrencyAndBufferSize
 	configWithConcurrency := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 10,
 			BufferSize:  100,
@@ -5053,7 +5129,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with CustomProviderConfig
 	configWithCustom := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			BaseProviderType: "openai",
 		},
@@ -5071,7 +5146,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with SendBackRawResponse true vs false
 	configWithRawResponse := configstore.ProviderConfig{
-		Keys:                []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		SendBackRawResponse: true,
 	}
 
@@ -5086,7 +5160,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with ALL optional fields
 	configAllFields := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -5248,7 +5321,6 @@ func TestKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 	// Base config
 	baseConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -5259,7 +5331,6 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 
 	// Change BaseURL
 	configChangedURL := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.different.com", // Changed
 		},
@@ -5274,7 +5345,6 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 
 	// Add extra headers
 	configWithHeaders := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
@@ -5292,7 +5362,6 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 
 	// Change concurrency values
 	configWithConc1 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 10,
 			BufferSize:  100,
@@ -5302,7 +5371,6 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 	hashConc1, _ := configWithConc1.GenerateConfigHash("openai")
 
 	configWithConc2 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 20, // Changed
 			BufferSize:  100,
@@ -5325,7 +5393,6 @@ func stringPtr(s string) *string {
 func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 	// Original config with all fields
 	originalConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
@@ -5347,7 +5414,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// NetworkConfig removed
 	configNoNetwork := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		// NetworkConfig: nil (removed)
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 10,
@@ -5368,7 +5434,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// ConcurrencyAndBufferSize removed
 	configNoConcurrency := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
@@ -5391,7 +5456,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// ProxyConfig removed
 	configNoProxy := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
@@ -5414,7 +5478,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// SendBackRawResponse changed to false
 	configNoRawResponse := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
@@ -5440,7 +5503,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// ExtraHeaders removed from NetworkConfig
 	configNoHeaders := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			// ExtraHeaders removed
@@ -5464,7 +5526,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// All optional fields removed
 	configMinimal := configstore.ProviderConfig{
-		Keys:                []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		SendBackRawResponse: false,
 	}
 
@@ -5585,7 +5646,6 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 	// Base config
 	baseConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:                        "https://api.example.com",
 			DefaultRequestTimeoutInSeconds: 30,
@@ -5597,7 +5657,6 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 
 	// Timeout set to 0 (default/removed)
 	configNoTimeout := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:                        "https://api.example.com",
 			DefaultRequestTimeoutInSeconds: 0, // Removed/default
@@ -5613,7 +5672,6 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 
 	// MaxRetries set to 0 (default/removed)
 	configNoRetries := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:                        "https://api.example.com",
 			DefaultRequestTimeoutInSeconds: 30,
@@ -5629,7 +5687,6 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 
 	// Timeout value changed
 	configDifferentTimeout := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:                        "https://api.example.com",
 			DefaultRequestTimeoutInSeconds: 60, // Changed from 30
@@ -5648,7 +5705,6 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 func TestProviderHashComparison_FullLifecycle(t *testing.T) {
 	// === STEP 1: Initial state - provider exists in DB from previous config.json ===
 	initialConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-initial-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -5667,7 +5723,6 @@ func TestProviderHashComparison_FullLifecycle(t *testing.T) {
 
 	// === STEP 2: New config.json comes with changes ===
 	newFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-new-456"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v2", // Changed!
 			MaxRetries: 5,                           // Added!
@@ -5708,7 +5763,6 @@ func TestProviderHashComparison_FullLifecycle(t *testing.T) {
 
 	// === STEP 4: Same config.json loaded again - should NOT update ===
 	sameFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-new-456"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v2",
 			MaxRetries: 5,
@@ -5756,7 +5810,6 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 
 	// === Round 1: Initial config ===
 	config1 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v1"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.v1.com",
 		},
@@ -5773,7 +5826,6 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 
 	// === Round 2: Update config.json ===
 	config2 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v2"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.v2.com", // Changed
 		},
@@ -5793,7 +5845,6 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 
 	// === Round 3: Another update ===
 	config3 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v3"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.v3.com", // Changed again
 			MaxRetries: 3,                    // Added
@@ -5815,7 +5866,6 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 
 	// === Round 4: Same as Round 3 (no change) ===
 	config4 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v3"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.v3.com",
 			MaxRetries: 3,
@@ -5834,7 +5884,6 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 
 	// === Round 5: Revert to Round 1 config ===
 	config5 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v1"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.v1.com",
 		},
@@ -5881,8 +5930,8 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	}
 	originalKeyHash, _ := configstore.GenerateKeyHash(originalKey)
 
+	dbKeys := []schemas.Key{originalKey}
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v1",
 			MaxRetries: 3,
@@ -5906,7 +5955,6 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	sameKeyHash, _ := configstore.GenerateKeyHash(sameKey)
 
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{sameKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v2", // CHANGED!
 			MaxRetries: 5,                           // CHANGED!
@@ -5937,21 +5985,21 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	// - Keep existing keys from DB (they weren't changed in file)
 
 	updatedConfig := configstore.ProviderConfig{
-		Keys:                dbConfig.Keys,                  // Keep original keys from DB
+		// Keep original keys from DB
 		NetworkConfig:       fileConfig.NetworkConfig,       // Update from file
 		SendBackRawResponse: fileConfig.SendBackRawResponse, // Update from file
 		ConfigHash:          fileProviderHash,               // New provider hash
 	}
 
 	// Verify keys are preserved (same values as DB)
-	if len(updatedConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(updatedConfig.Keys))
+	if len(dbKeys) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(dbKeys))
 	}
-	if updatedConfig.Keys[0].Value.GetValue() != "sk-original-123" {
-		t.Errorf("Expected key value to be preserved, got %v", updatedConfig.Keys[0].Value)
+	if dbKeys[0].Value.GetValue() != "sk-original-123" {
+		t.Errorf("Expected key value to be preserved, got %v", dbKeys[0].Value)
 	}
-	if len(updatedConfig.Keys[0].Models) != 2 {
-		t.Errorf("Expected 2 models to be preserved, got %d", len(updatedConfig.Keys[0].Models))
+	if len(dbKeys[0].Models) != 2 {
+		t.Errorf("Expected 2 models to be preserved, got %d", len(dbKeys[0].Models))
 	}
 
 	// Verify provider config is updated
@@ -5981,7 +6029,6 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	originalKeyHash, _ := configstore.GenerateKeyHash(originalKey)
 
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v1",
 			MaxRetries: 3,
@@ -6004,8 +6051,8 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	}
 	changedKeyHash, _ := configstore.GenerateKeyHash(changedKey)
 
+	fileKeys := []schemas.Key{changedKey}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{changedKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v1", // SAME
 			MaxRetries: 3,                           // SAME
@@ -6030,41 +6077,48 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 		t.Log("✓ Key hash changed (expected)")
 	}
 
-	// === Simulate sync logic: Keep provider, update keys ===
-	// When provider hash matches but key hashes differ:
-	// - Keep provider-level config from DB
-	// - Update keys from file (they were changed)
+	// === Reconcile through the loader's merge: the provider hash matches, so its settings stay as
+	// stored, while the key whose hash changed is taken from the file under its stored ID ===
+	initTestLogger()
+	storedKey := originalKey
+	storedKey.ConfigHash = originalKeyHash
+	fileConfig.ConfigHash = fileProviderHash
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: dbConfig}
+	keys := map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: {storedKey}}
+	mergeProviderWithHash(schemas.OpenAI, fileConfig, fileKeys, providers, keys)
 
-	updatedConfig := configstore.ProviderConfig{
-		Keys:                fileConfig.Keys,              // Update keys from file
-		NetworkConfig:       dbConfig.NetworkConfig,       // Keep from DB
-		SendBackRawResponse: dbConfig.SendBackRawResponse, // Keep from DB
-		ConfigHash:          dbProviderHash,               // Provider hash unchanged
+	merged := providers[schemas.OpenAI]
+	if merged.NetworkConfig == nil || merged.NetworkConfig.BaseURL != "https://api.openai.com/v1" {
+		t.Errorf("Expected BaseURL to be preserved from DB, got %+v", merged.NetworkConfig)
+	} else if merged.NetworkConfig.MaxRetries != 3 {
+		t.Errorf("Expected MaxRetries to be preserved from DB, got %d", merged.NetworkConfig.MaxRetries)
 	}
-
-	// Verify provider config is preserved
-	if updatedConfig.NetworkConfig.BaseURL != "https://api.openai.com/v1" {
-		t.Error("Expected BaseURL to be preserved from DB")
-	}
-	if updatedConfig.NetworkConfig.MaxRetries != 3 {
-		t.Error("Expected MaxRetries to be preserved from DB")
-	}
-	if updatedConfig.SendBackRawResponse {
+	if merged.SendBackRawResponse {
 		t.Error("Expected SendBackRawResponse to be preserved from DB (false)")
 	}
+	if merged.ConfigHash != dbProviderHash {
+		t.Error("Expected the stored provider hash to be kept")
+	}
 
-	// Verify keys are updated
-	if len(updatedConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(updatedConfig.Keys))
+	mergedKeys := keys[schemas.OpenAI]
+	if len(mergedKeys) != 1 {
+		t.Fatalf("Expected 1 key, got %d", len(mergedKeys))
 	}
-	if updatedConfig.Keys[0].Value.GetValue() != "sk-new-456" {
-		t.Errorf("Expected key value to be updated, got %v", updatedConfig.Keys[0].Value)
+	key := mergedKeys[0]
+	if key.ID != "key-1" {
+		t.Errorf("Expected the stored key ID to be kept, got %q", key.ID)
 	}
-	if len(updatedConfig.Keys[0].Models) != 3 {
-		t.Errorf("Expected 3 models (updated), got %d", len(updatedConfig.Keys[0].Models))
+	if key.Value.GetValue() != "sk-new-456" {
+		t.Errorf("Expected key value to be updated, got %v", key.Value)
 	}
-	if updatedConfig.Keys[0].Weight != 2.0 {
-		t.Errorf("Expected weight to be 2.0 (updated), got %f", updatedConfig.Keys[0].Weight)
+	if len(key.Models) != 3 {
+		t.Errorf("Expected 3 models (updated), got %d", len(key.Models))
+	}
+	if key.Weight != 2.0 {
+		t.Errorf("Expected weight to be 2.0 (updated), got %f", key.Weight)
+	}
+	if key.ConfigHash != changedKeyHash {
+		t.Error("Expected the key to carry the file's key hash")
 	}
 
 	t.Log("✓ Provider preserved, keys updated")
@@ -6083,7 +6137,6 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	originalKeyHash, _ := configstore.GenerateKeyHash(originalKey)
 
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -6105,13 +6158,13 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	changedKeyHash, _ := configstore.GenerateKeyHash(changedKey)
 
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{changedKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v2", // CHANGED
 			MaxRetries: 5,                           // ADDED
 		},
 		SendBackRawResponse: true, // CHANGED
 	}
+	fileKeys := []schemas.Key{changedKey}
 	fileProviderHash, _ := fileConfig.GenerateConfigHash("openai")
 
 	t.Logf("File - Provider hash: %s", fileProviderHash[:16]+"...")
@@ -6133,6 +6186,7 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	// === Simulate sync: Update everything from file ===
 	updatedConfig := fileConfig
 	updatedConfig.ConfigHash = fileProviderHash
+	updatedKeys := fileKeys
 
 	// Verify both provider and keys are updated
 	if updatedConfig.NetworkConfig.BaseURL != "https://api.openai.com/v2" {
@@ -6141,10 +6195,10 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	if !updatedConfig.SendBackRawResponse {
 		t.Error("Expected SendBackRawResponse to be updated")
 	}
-	if updatedConfig.Keys[0].Value.GetValue() != "sk-new-456" {
+	if updatedKeys[0].Value.GetValue() != "sk-new-456" {
 		t.Error("Expected key value to be updated")
 	}
-	if updatedConfig.Keys[0].Weight != 2.0 {
+	if updatedKeys[0].Weight != 2.0 {
 		t.Error("Expected key weight to be updated")
 	}
 
@@ -6164,7 +6218,6 @@ func TestProviderHashComparison_NeitherChanged(t *testing.T) {
 	originalKeyHash, _ := configstore.GenerateKeyHash(originalKey)
 
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -6187,7 +6240,6 @@ func TestProviderHashComparison_NeitherChanged(t *testing.T) {
 	sameKeyHash, _ := configstore.GenerateKeyHash(sameKey)
 
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{sameKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -6234,8 +6286,8 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 	}
 	dbKeyHash, _ := configstore.GenerateKeyHash(dbKey)
 
+	dbKeys := []schemas.Key{dbKey}
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{dbKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -6256,8 +6308,8 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 	}
 	fileKeyHash, _ := configstore.GenerateKeyHash(fileKey)
 
+	fileKeys := []schemas.Key{fileKey}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{fileKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -6282,13 +6334,13 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 	// === Simulate key-level sync logic ===
 	mergedKeys := make([]schemas.Key, 0)
 	fileKeysByName := make(map[string]int)
-	for i, fk := range fileConfig.Keys {
+	for i, fk := range fileKeys {
 		fileKeysByName[fk.Name] = i
 	}
 
-	for _, dbk := range dbConfig.Keys {
+	for _, dbk := range dbKeys {
 		if fileIdx, exists := fileKeysByName[dbk.Name]; exists {
-			fk := fileConfig.Keys[fileIdx]
+			fk := fileKeys[fileIdx]
 			fkHash, _ := configstore.GenerateKeyHash(fk)
 			dkHash, _ := configstore.GenerateKeyHash(schemas.Key{
 				Name:   dbk.Name,
@@ -6313,7 +6365,7 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 
 	// Add keys only in file
 	for _, idx := range fileKeysByName {
-		mergedKeys = append(mergedKeys, fileConfig.Keys[idx])
+		mergedKeys = append(mergedKeys, fileKeys[idx])
 	}
 
 	// === Verify results ===
@@ -6350,8 +6402,8 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 		Weight: 1.0,
 	}
 
+	dbKeys := []schemas.Key{dbKey}
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{dbKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -6375,8 +6427,8 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 		Weight: 1.0,
 	}
 
+	fileKeys := []schemas.Key{fileKey1, newFileKey}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{fileKey1, newFileKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -6392,13 +6444,13 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 	// === Simulate key-level sync logic ===
 	mergedKeys := make([]schemas.Key, 0)
 	fileKeysByName := make(map[string]int)
-	for i, fk := range fileConfig.Keys {
+	for i, fk := range fileKeys {
 		fileKeysByName[fk.Name] = i
 	}
 
-	for _, dbk := range dbConfig.Keys {
+	for _, dbk := range dbKeys {
 		if fileIdx, exists := fileKeysByName[dbk.Name]; exists {
-			fk := fileConfig.Keys[fileIdx]
+			fk := fileKeys[fileIdx]
 			fkHash, _ := configstore.GenerateKeyHash(fk)
 			dkHash, _ := configstore.GenerateKeyHash(schemas.Key{
 				Name:   dbk.Name,
@@ -6423,7 +6475,7 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 
 	// Add keys only in file (NEW keys)
 	for name, idx := range fileKeysByName {
-		mergedKeys = append(mergedKeys, fileConfig.Keys[idx])
+		mergedKeys = append(mergedKeys, fileKeys[idx])
 		t.Logf("✓ New key '%s' added from file", name)
 	}
 
@@ -6479,8 +6531,8 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 		Weight: 2.0,
 	}
 
+	dbKeys := []schemas.Key{dbKey1, dashboardKey}
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{dbKey1, dashboardKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -6497,8 +6549,9 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 		Weight: 1.0,                               // SAME
 	}
 
+	fileKeys := []schemas.Key{fileKey1}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{fileKey1}, // Dashboard key NOT here
+		// Dashboard key NOT here
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -6514,13 +6567,13 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 	// === Simulate key-level sync logic ===
 	mergedKeys := make([]schemas.Key, 0)
 	fileKeysByName := make(map[string]int)
-	for i, fk := range fileConfig.Keys {
+	for i, fk := range fileKeys {
 		fileKeysByName[fk.Name] = i
 	}
 
-	for _, dbk := range dbConfig.Keys {
+	for _, dbk := range dbKeys {
 		if fileIdx, exists := fileKeysByName[dbk.Name]; exists {
-			fk := fileConfig.Keys[fileIdx]
+			fk := fileKeys[fileIdx]
 			fkHash, _ := configstore.GenerateKeyHash(fk)
 			dkHash, _ := configstore.GenerateKeyHash(schemas.Key{
 				Name:   dbk.Name,
@@ -6546,7 +6599,7 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 
 	// Add keys only in file
 	for _, idx := range fileKeysByName {
-		mergedKeys = append(mergedKeys, fileConfig.Keys[idx])
+		mergedKeys = append(mergedKeys, fileKeys[idx])
 	}
 
 	// === Verify results ===
@@ -6604,8 +6657,8 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 		Weight: 3.0,
 	}
 
+	dbKeys := []schemas.Key{unchangedKey, changedKey, dashboardKey}
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{unchangedKey, changedKey, dashboardKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -6637,8 +6690,8 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 	}
 	// Note: dashboardKey is NOT in file
 
+	fileKeys := []schemas.Key{fileUnchangedKey, fileChangedKey, newFileKey}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{fileUnchangedKey, fileChangedKey, newFileKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -6654,13 +6707,13 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 	// === Simulate key-level sync logic ===
 	mergedKeys := make([]schemas.Key, 0)
 	fileKeysByName := make(map[string]int)
-	for i, fk := range fileConfig.Keys {
+	for i, fk := range fileKeys {
 		fileKeysByName[fk.Name] = i
 	}
 
-	for _, dbk := range dbConfig.Keys {
+	for _, dbk := range dbKeys {
 		if fileIdx, exists := fileKeysByName[dbk.Name]; exists {
-			fk := fileConfig.Keys[fileIdx]
+			fk := fileKeys[fileIdx]
 			fkHash, _ := configstore.GenerateKeyHash(fk)
 			dkHash, _ := configstore.GenerateKeyHash(schemas.Key{
 				Name:   dbk.Name,
@@ -6685,7 +6738,7 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 	}
 
 	for name, idx := range fileKeysByName {
-		mergedKeys = append(mergedKeys, fileConfig.Keys[idx])
+		mergedKeys = append(mergedKeys, fileKeys[idx])
 		t.Logf("  Key '%s': FILE-ONLY → adding new key", name)
 	}
 
@@ -6765,7 +6818,6 @@ func TestKeyLevelSync_ProviderHashMatch_MultipleKeysChanged(t *testing.T) {
 	}
 
 	dbConfig := configstore.ProviderConfig{
-		Keys: dbKeys,
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -6781,7 +6833,6 @@ func TestKeyLevelSync_ProviderHashMatch_MultipleKeysChanged(t *testing.T) {
 	}
 
 	fileConfig := configstore.ProviderConfig{
-		Keys: fileKeys,
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -6796,14 +6847,14 @@ func TestKeyLevelSync_ProviderHashMatch_MultipleKeysChanged(t *testing.T) {
 	// === Simulate key-level sync logic ===
 	mergedKeys := make([]schemas.Key, 0)
 	fileKeysByName := make(map[string]int)
-	for i, fk := range fileConfig.Keys {
+	for i, fk := range fileKeys {
 		fileKeysByName[fk.Name] = i
 	}
 
 	changedCount := 0
-	for _, dbk := range dbConfig.Keys {
+	for _, dbk := range dbKeys {
 		if fileIdx, exists := fileKeysByName[dbk.Name]; exists {
-			fk := fileConfig.Keys[fileIdx]
+			fk := fileKeys[fileIdx]
 			fkHash, _ := configstore.GenerateKeyHash(fk)
 			dkHash, _ := configstore.GenerateKeyHash(schemas.Key{
 				Name:   dbk.Name,
@@ -6826,7 +6877,7 @@ func TestKeyLevelSync_ProviderHashMatch_MultipleKeysChanged(t *testing.T) {
 	}
 
 	for _, idx := range fileKeysByName {
-		mergedKeys = append(mergedKeys, fileConfig.Keys[idx])
+		mergedKeys = append(mergedKeys, fileKeys[idx])
 	}
 
 	// === Verify all 3 keys were detected as changed ===
@@ -6914,13 +6965,13 @@ func TestKeyHashComparison_KeyContentChanged(t *testing.T) {
 func TestProviderHashComparison_NewProvider(t *testing.T) {
 	// Create a provider config (simulating new provider in config.json)
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "anthropic-key", Value: *schemas.NewSecretVar("sk-ant-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.anthropic.com",
 		},
 		SendBackRawResponse: false,
+	}
+	fileKeys := []schemas.Key{
+		{ID: "key-1", Name: "anthropic-key", Value: *schemas.NewSecretVar("sk-ant-123"), Weight: 1},
 	}
 
 	// Generate hash for the file config
@@ -6932,12 +6983,14 @@ func TestProviderHashComparison_NewProvider(t *testing.T) {
 
 	// Empty DB (no existing providers)
 	providersInConfigStore := map[schemas.ModelProvider]configstore.ProviderConfig{}
+	keysInConfigStore := map[schemas.ModelProvider][]schemas.Key{}
 
 	provider := schemas.Anthropic
 
 	// Simulate the logic: provider doesn't exist, add from file
 	if _, exists := providersInConfigStore[provider]; !exists {
 		providersInConfigStore[provider] = fileConfig
+		keysInConfigStore[provider] = fileKeys
 	}
 
 	// Verify provider was added
@@ -6946,17 +6999,18 @@ func TestProviderHashComparison_NewProvider(t *testing.T) {
 	}
 
 	resultConfig := providersInConfigStore[provider]
+	resultKeys := keysInConfigStore[provider]
 
 	if resultConfig.ConfigHash != fileHash {
 		t.Error("Expected ConfigHash to be set from file")
 	}
 
-	if len(resultConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(resultConfig.Keys))
+	if len(resultKeys) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(resultKeys))
 	}
 
-	if resultConfig.Keys[0].Name != "anthropic-key" {
-		t.Errorf("Expected key name 'anthropic-key', got %s", resultConfig.Keys[0].Name)
+	if resultKeys[0].Name != "anthropic-key" {
+		t.Errorf("Expected key name 'anthropic-key', got %s", resultKeys[0].Name)
 	}
 }
 
@@ -7511,7 +7565,6 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	initialConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{initialAzureKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai",
 		},
@@ -7525,6 +7578,9 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	// Simulate DB state
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"azure": initialConfig,
+	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"azure": {initialAzureKey},
 	}
 
 	t.Logf("Step 1 - Initial DB provider hash: %s", initialProviderHash[:16]+"...")
@@ -7545,7 +7601,6 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	dbConfigAfterDashboardEdit := configstore.ProviderConfig{
-		Keys: []schemas.Key{dashboardEditedKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai",
 		},
@@ -7554,6 +7609,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	providersInDB["azure"] = dbConfigAfterDashboardEdit
+	keysInDB["azure"] = []schemas.Key{dashboardEditedKey}
 
 	dashboardKeyHash, _ := configstore.GenerateKeyHash(dashboardEditedKey)
 	t.Logf("Step 2 - After dashboard edit, key hash: %s (different from initial)", dashboardKeyHash[:16]+"...")
@@ -7564,18 +7620,6 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 
 	// === STEP 3: Same config.json loaded (unchanged) - should NOT update, preserve dashboard edits ===
 	sameFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("azure-api-key-initial"), // Original value from file
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"),
-				},
-			},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai",
 		},
@@ -7586,6 +7630,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 
 	// Provider hash should match (config.json unchanged)
 	existingCfg := providersInDB["azure"]
+	existingKeys := keysInDB["azure"]
 	if existingCfg.ConfigHash != sameFileProviderHash {
 		t.Errorf("Expected provider hash to match - config.json unchanged. DB: %s, File: %s",
 			existingCfg.ConfigHash[:16], sameFileProviderHash[:16])
@@ -7594,24 +7639,24 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	t.Logf("Step 3 - Hash matches, dashboard edits preserved ✓")
 
 	// Verify dashboard-edited key value is preserved
-	if existingCfg.Keys[0].Value.GetValue() != "azure-api-key-dashboard-edited" {
-		t.Errorf("Expected dashboard-edited key value to be preserved, got %v", existingCfg.Keys[0].Value)
+	if existingKeys[0].Value.GetValue() != "azure-api-key-dashboard-edited" {
+		t.Errorf("Expected dashboard-edited key value to be preserved, got %v", existingKeys[0].Value)
 	}
 
 	// === STEP 4: Config.json changed (Azure endpoint updated) - should trigger sync ===
-	newFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("azure-api-key-initial"),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://new-azure.openai.azure.com"), // Changed!
-				},
+	newFileKeys := []schemas.Key{
+		{
+			ID:      "azure-key-1",
+			Name:    "azure-openai-key",
+			Value:   *schemas.NewSecretVar("azure-api-key-initial"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://new-azure.openai.azure.com"), // Changed!
 			},
 		},
+	}
+	newFileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://new-azure.openai.azure.com/openai", // Changed!
 		},
@@ -7619,7 +7664,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	newFileProviderHash, _ := newFileConfig.GenerateConfigHash("azure")
-	newFileKeyHash, _ := configstore.GenerateKeyHash(newFileConfig.Keys[0])
+	newFileKeyHash, _ := configstore.GenerateKeyHash(newFileKeys[0])
 
 	t.Logf("Step 4 - New file provider hash: %s", newFileProviderHash[:16]+"...")
 	t.Logf("Step 4 - New file key hash: %s", newFileKeyHash[:16]+"...")
@@ -7634,9 +7679,9 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	mergedKeys := []schemas.Key{}
 
 	// For each key in file, check if it exists in DB
-	for _, fileKey := range newFileConfig.Keys {
+	for _, fileKey := range newFileKeys {
 		found := false
-		for _, dbKey := range existingCfg.Keys {
+		for _, dbKey := range existingKeys {
 			if dbKey.Name == fileKey.Name || dbKey.ID == fileKey.ID {
 				// Key exists in both - use file version (config.json changed)
 				mergedKeys = append(mergedKeys, fileKey)
@@ -7651,9 +7696,9 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	// Preserve dashboard-added keys that aren't in file
-	for _, dbKey := range existingCfg.Keys {
+	for _, dbKey := range existingKeys {
 		found := false
-		for _, fileKey := range newFileConfig.Keys {
+		for _, fileKey := range newFileKeys {
 			if dbKey.Name == fileKey.Name || dbKey.ID == fileKey.ID {
 				found = true
 				break
@@ -7666,18 +7711,19 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	updatedConfig := configstore.ProviderConfig{
-		Keys:                mergedKeys,
 		NetworkConfig:       newFileConfig.NetworkConfig,
 		SendBackRawResponse: newFileConfig.SendBackRawResponse,
 		ConfigHash:          newFileProviderHash,
 	}
 
 	providersInDB["azure"] = updatedConfig
+	keysInDB["azure"] = mergedKeys
 
 	t.Logf("Step 4 - Sync complete, DB updated ✓")
 
 	// === STEP 5: Verify final state ===
 	finalConfig := providersInDB["azure"]
+	finalKeys := keysInDB["azure"]
 
 	// Verify provider config updated
 	if finalConfig.NetworkConfig.BaseURL != "https://new-azure.openai.azure.com/openai" {
@@ -7691,14 +7737,14 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	// Verify Azure key config updated
-	if len(finalConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(finalConfig.Keys))
+	if len(finalKeys) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(finalKeys))
 	}
-	if finalConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://new-azure.openai.azure.com" {
-		t.Errorf("Expected updated Azure endpoint, got %s", finalConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue())
+	if finalKeys[0].AzureKeyConfig.Endpoint.GetValue() != "https://new-azure.openai.azure.com" {
+		t.Errorf("Expected updated Azure endpoint, got %s", finalKeys[0].AzureKeyConfig.Endpoint.GetValue())
 	}
-	if len(finalConfig.Keys[0].Aliases) != 2 {
-		t.Errorf("Expected 2 deployments, got %d", len(finalConfig.Keys[0].Aliases))
+	if len(finalKeys[0].Aliases) != 2 {
+		t.Errorf("Expected 2 deployments, got %d", len(finalKeys[0].Aliases))
 	}
 
 	t.Log("Step 5 - Final state verified, Azure provider lifecycle complete ✓")
@@ -7721,7 +7767,6 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	}
 
 	initialConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{initialBedrockKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
 			MaxRetries: 3,
@@ -7736,6 +7781,9 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	// Simulate DB state
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"bedrock": initialConfig,
+	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"bedrock": {initialBedrockKey},
 	}
 
 	t.Logf("Step 1 - Initial DB provider hash: %s", initialProviderHash[:16]+"...")
@@ -7756,32 +7804,19 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	}
 
 	dbConfigAfterDashboardAdd := configstore.ProviderConfig{
-		Keys:                []schemas.Key{initialBedrockKey, dashboardAddedKey}, // Added via dashboard
+		// Added via dashboard
 		NetworkConfig:       initialConfig.NetworkConfig,
 		SendBackRawResponse: false,
 		ConfigHash:          initialProviderHash, // Provider hash unchanged
 	}
 
 	providersInDB["bedrock"] = dbConfigAfterDashboardAdd
+	keysInDB["bedrock"] = []schemas.Key{initialBedrockKey, dashboardAddedKey} // Added via dashboard
 
 	t.Logf("Step 2 - Dashboard added second key ✓")
 
 	// === STEP 3: Same config.json loaded (unchanged) - should NOT update, preserve dashboard keys ===
 	sameFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-east-1"),
-				},
-			},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
 			MaxRetries: 3,
@@ -7793,6 +7828,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 
 	// Provider hash should match (config.json unchanged)
 	existingCfg := providersInDB["bedrock"]
+	existingKeys := keysInDB["bedrock"]
 	if existingCfg.ConfigHash != sameFileProviderHash {
 		t.Errorf("Expected provider hash to match - config.json unchanged. DB: %s, File: %s",
 			existingCfg.ConfigHash[:16], sameFileProviderHash[:16])
@@ -7801,27 +7837,27 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	t.Logf("Step 3 - Hash matches, dashboard-added key preserved ✓")
 
 	// Verify dashboard-added key is preserved
-	if len(existingCfg.Keys) != 2 {
-		t.Errorf("Expected 2 keys (1 original + 1 dashboard-added), got %d", len(existingCfg.Keys))
+	if len(existingKeys) != 2 {
+		t.Errorf("Expected 2 keys (1 original + 1 dashboard-added), got %d", len(existingKeys))
 	}
 
 	// === STEP 4: Config.json changed (region and new deployment) - should trigger sync but preserve dashboard keys ===
-	newFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-west-2"),                                                           // Changed!
-					ARN:       schemas.NewSecretVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile"), // Added!
-				},
+	newFileKeys := []schemas.Key{
+		{
+			ID:      "bedrock-key-1",
+			Name:    "aws-bedrock-key",
+			Value:   *schemas.NewSecretVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+				SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+				Region:    schemas.NewSecretVar("us-west-2"),                                                           // Changed!
+				ARN:       schemas.NewSecretVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile"), // Added!
 			},
 		},
+	}
+	newFileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-west-2.amazonaws.com", // Changed!
 			MaxRetries: 5,                                                 // Changed!
@@ -7830,7 +7866,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	}
 
 	newFileProviderHash, _ := newFileConfig.GenerateConfigHash("bedrock")
-	newFileKeyHash, _ := configstore.GenerateKeyHash(newFileConfig.Keys[0])
+	newFileKeyHash, _ := configstore.GenerateKeyHash(newFileKeys[0])
 
 	t.Logf("Step 4 - New file provider hash: %s", newFileProviderHash[:16]+"...")
 	t.Logf("Step 4 - New file key hash: %s", newFileKeyHash[:16]+"...")
@@ -7844,14 +7880,14 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	mergedKeys := []schemas.Key{}
 
 	// For each key in file, update or add
-	for _, fileKey := range newFileConfig.Keys {
+	for _, fileKey := range newFileKeys {
 		mergedKeys = append(mergedKeys, fileKey)
 	}
 
 	// Preserve dashboard-added keys that aren't in file
-	for _, dbKey := range existingCfg.Keys {
+	for _, dbKey := range existingKeys {
 		found := false
-		for _, fileKey := range newFileConfig.Keys {
+		for _, fileKey := range newFileKeys {
 			if dbKey.Name == fileKey.Name || dbKey.ID == fileKey.ID {
 				found = true
 				break
@@ -7864,18 +7900,19 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	}
 
 	updatedConfig := configstore.ProviderConfig{
-		Keys:                mergedKeys,
 		NetworkConfig:       newFileConfig.NetworkConfig,
 		SendBackRawResponse: newFileConfig.SendBackRawResponse,
 		ConfigHash:          newFileProviderHash,
 	}
 
 	providersInDB["bedrock"] = updatedConfig
+	keysInDB["bedrock"] = mergedKeys
 
 	t.Logf("Step 4 - Sync complete, DB updated ✓")
 
 	// === STEP 5: Verify final state ===
 	finalConfig := providersInDB["bedrock"]
+	finalKeys := keysInDB["bedrock"]
 
 	// Verify provider config updated
 	if finalConfig.NetworkConfig.BaseURL != "https://bedrock-runtime.us-west-2.amazonaws.com" {
@@ -7892,19 +7929,19 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	}
 
 	// Verify we have both keys (1 updated from file + 1 dashboard-added)
-	if len(finalConfig.Keys) != 2 {
-		t.Errorf("Expected 2 keys (1 from file + 1 dashboard-added), got %d", len(finalConfig.Keys))
+	if len(finalKeys) != 2 {
+		t.Errorf("Expected 2 keys (1 from file + 1 dashboard-added), got %d", len(finalKeys))
 	}
 
 	// Find the file key and verify its updates
 	var fileKey *schemas.Key
 	var dashboardKey *schemas.Key
-	for i := range finalConfig.Keys {
-		if finalConfig.Keys[i].Name == "aws-bedrock-key" {
-			fileKey = &finalConfig.Keys[i]
+	for i := range finalKeys {
+		if finalKeys[i].Name == "aws-bedrock-key" {
+			fileKey = &finalKeys[i]
 		}
-		if finalConfig.Keys[i].Name == "aws-bedrock-key-eu" {
-			dashboardKey = &finalConfig.Keys[i]
+		if finalKeys[i].Name == "aws-bedrock-key-eu" {
+			dashboardKey = &finalKeys[i]
 		}
 	}
 
@@ -7935,21 +7972,6 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 
 	// === STEP 6: Same config.json loaded again - should NOT update ===
 	sameNewFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-west-2"),
-					ARN:       schemas.NewSecretVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile"),
-				},
-			},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-west-2.amazonaws.com",
 			MaxRetries: 5,
@@ -7975,21 +7997,22 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 
 	// Empty DB - no Azure provider
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{}
 
 	// File has Azure provider with Azure key config
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("azure-api-key-123"),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"),
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "azure-key-1",
+			Name:    "azure-openai-key",
+			Value:   *schemas.NewSecretVar("azure-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"),
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai",
 		},
@@ -8006,6 +8029,7 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 	if _, exists := providersInDB["azure"]; !exists {
 		// Provider not in DB - add from file
 		providersInDB["azure"] = fileConfig
+		keysInDB["azure"] = fileKeys
 		t.Log("✓ Azure provider not in DB - added from config.json")
 	}
 
@@ -8021,14 +8045,15 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 	}
 
 	// Verify Azure key config is present
-	if len(addedConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(addedConfig.Keys))
+	addedKeys := keysInDB["azure"]
+	if len(addedKeys) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(addedKeys))
 	}
-	if addedConfig.Keys[0].AzureKeyConfig == nil {
+	if addedKeys[0].AzureKeyConfig == nil {
 		t.Fatal("Expected AzureKeyConfig to be present")
 	}
-	if addedConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://myazure.openai.azure.com" {
-		t.Errorf("Expected Azure endpoint, got %v", addedConfig.Keys[0].AzureKeyConfig.Endpoint)
+	if addedKeys[0].AzureKeyConfig.Endpoint.GetValue() != "https://myazure.openai.azure.com" {
+		t.Errorf("Expected Azure endpoint, got %v", addedKeys[0].AzureKeyConfig.Endpoint)
 	}
 
 	t.Log("✓ New Azure provider added to DB with correct hash and config")
@@ -8041,23 +8066,24 @@ func TestProviderHashComparison_BedrockNewProviderFromConfig(t *testing.T) {
 
 	// Empty DB - no Bedrock provider
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{}
 
 	// File has Bedrock provider with Bedrock key config
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-east-1"),
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "bedrock-key-1",
+			Name:    "aws-bedrock-key",
+			Value:   *schemas.NewSecretVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+				SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+				Region:    schemas.NewSecretVar("us-east-1"),
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
 			MaxRetries: 3,
@@ -8075,6 +8101,7 @@ func TestProviderHashComparison_BedrockNewProviderFromConfig(t *testing.T) {
 	if _, exists := providersInDB["bedrock"]; !exists {
 		// Provider not in DB - add from file
 		providersInDB["bedrock"] = fileConfig
+		keysInDB["bedrock"] = fileKeys
 		t.Log("✓ Bedrock provider not in DB - added from config.json")
 	}
 
@@ -8090,17 +8117,18 @@ func TestProviderHashComparison_BedrockNewProviderFromConfig(t *testing.T) {
 	}
 
 	// Verify Bedrock key config is present
-	if len(addedConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(addedConfig.Keys))
+	addedKeys := keysInDB["bedrock"]
+	if len(addedKeys) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(addedKeys))
 	}
-	if addedConfig.Keys[0].BedrockKeyConfig == nil {
+	if addedKeys[0].BedrockKeyConfig == nil {
 		t.Fatal("Expected BedrockKeyConfig to be present")
 	}
-	if addedConfig.Keys[0].BedrockKeyConfig.AccessKey.GetValue() != "AKIAIOSFODNN7EXAMPLE" {
-		t.Errorf("Expected Bedrock AccessKey, got %v", addedConfig.Keys[0].BedrockKeyConfig.AccessKey)
+	if addedKeys[0].BedrockKeyConfig.AccessKey.GetValue() != "AKIAIOSFODNN7EXAMPLE" {
+		t.Errorf("Expected Bedrock AccessKey, got %v", addedKeys[0].BedrockKeyConfig.AccessKey)
 	}
-	if addedConfig.Keys[0].BedrockKeyConfig.Region.GetValue() != "us-east-1" {
-		t.Errorf("Expected Bedrock region us-east-1, got %v", *addedConfig.Keys[0].BedrockKeyConfig.Region)
+	if addedKeys[0].BedrockKeyConfig.Region.GetValue() != "us-east-1" {
+		t.Errorf("Expected Bedrock region us-east-1, got %v", *addedKeys[0].BedrockKeyConfig.Region)
 	}
 
 	t.Log("✓ New Bedrock provider added to DB with correct hash and config")
@@ -8112,19 +8140,19 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 	// Expected: Hash matches (structure same), DB value should NOT be overwritten
 
 	// DB has Azure config - key value was edited via dashboard
-	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited this!
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"),
-				},
+	dbKeys := []schemas.Key{
+		{
+			ID:      "azure-key-1",
+			Name:    "azure-openai-key",
+			Value:   *schemas.NewSecretVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited this!
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"),
 			},
 		},
+	}
+	dbConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai",
 		},
@@ -8138,21 +8166,24 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"azure": dbConfig,
 	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"azure": dbKeys,
+	}
 
 	// File config has SAME STRUCTURE but DIFFERENT key value
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("original-key-from-file"), // Different value than DB!
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"), // Same
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "azure-key-1",
+			Name:    "azure-openai-key",
+			Value:   *schemas.NewSecretVar("original-key-from-file"), // Different value than DB!
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"), // Same
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai", // Same
 		},
@@ -8160,6 +8191,10 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 	}
 
 	fileHash, _ := fileConfig.GenerateConfigHash("azure")
+	// The file's key differs from the DB's; keys are not part of the provider hash.
+	if fileKeys[0].Value.GetValue() == dbKeys[0].Value.GetValue() {
+		t.Fatal("scenario needs the file's key value to differ from the DB's")
+	}
 
 	// === Key assertion: Provider hashes should MATCH (structure is same) ===
 	if dbHash != fileHash {
@@ -8177,14 +8212,14 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 	}
 
 	// === Verify DB value was NOT overwritten ===
-	if existingConfig.Keys[0].Value.GetValue() != "DASHBOARD-EDITED-SECRET-KEY" {
+	if keysInDB["azure"][0].Value.GetValue() != "DASHBOARD-EDITED-SECRET-KEY" {
 		t.Errorf("DB value should NOT be overwritten! Expected 'DASHBOARD-EDITED-SECRET-KEY', got '%v'",
-			existingConfig.Keys[0].Value)
+			keysInDB["azure"][0].Value)
 	}
 	t.Log("✓ DB value preserved (dashboard edit NOT overwritten)")
 
 	// === Verify Azure config in DB is intact ===
-	if existingConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://myazure.openai.azure.com" {
+	if keysInDB["azure"][0].AzureKeyConfig.Endpoint.GetValue() != "https://myazure.openai.azure.com" {
 		t.Error("Azure endpoint should be preserved")
 	}
 	t.Log("✓ Azure config preserved in DB")
@@ -8196,21 +8231,21 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 	// Expected: Hash matches (structure same), DB credentials should NOT be overwritten
 
 	// DB has Bedrock config - credentials were edited via dashboard
-	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("DASHBOARD-EDITED-ACCESS-KEY"), // Dashboard edited!
-					SecretKey: *schemas.NewSecretVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited!
-					Region:    schemas.NewSecretVar("us-east-1"),
-				},
+	dbKeys := []schemas.Key{
+		{
+			ID:      "bedrock-key-1",
+			Name:    "aws-bedrock-key",
+			Value:   *schemas.NewSecretVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("DASHBOARD-EDITED-ACCESS-KEY"), // Dashboard edited!
+				SecretKey: *schemas.NewSecretVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited!
+				Region:    schemas.NewSecretVar("us-east-1"),
 			},
 		},
+	}
+	dbConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
 			MaxRetries: 3,
@@ -8224,23 +8259,26 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"bedrock": dbConfig,
 	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"bedrock": dbKeys,
+	}
 
 	// File config has SAME STRUCTURE but DIFFERENT credentials
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),                     // Different!
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), // Different!
-					Region:    schemas.NewSecretVar("us-east-1"),                                 // Same
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "bedrock-key-1",
+			Name:    "aws-bedrock-key",
+			Value:   *schemas.NewSecretVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),                     // Different!
+				SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), // Different!
+				Region:    schemas.NewSecretVar("us-east-1"),                                 // Same
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com", // Same
 			MaxRetries: 3,                                                 // Same
@@ -8249,6 +8287,10 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 	}
 
 	fileHash, _ := fileConfig.GenerateConfigHash("bedrock")
+	// The file's credentials differ from the DB's; keys are not part of the provider hash.
+	if fileKeys[0].BedrockKeyConfig.AccessKey.GetValue() == dbKeys[0].BedrockKeyConfig.AccessKey.GetValue() {
+		t.Fatal("scenario needs the file's credentials to differ from the DB's")
+	}
 
 	// === Key assertion: Provider hashes should MATCH (structure is same) ===
 	if dbHash != fileHash {
@@ -8265,18 +8307,18 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 	}
 
 	// === Verify DB credentials were NOT overwritten ===
-	if existingConfig.Keys[0].BedrockKeyConfig.AccessKey.GetValue() != "DASHBOARD-EDITED-ACCESS-KEY" {
+	if keysInDB["bedrock"][0].BedrockKeyConfig.AccessKey.GetValue() != "DASHBOARD-EDITED-ACCESS-KEY" {
 		t.Errorf("DB AccessKey should NOT be overwritten! Expected 'DASHBOARD-EDITED-ACCESS-KEY', got '%v'",
-			existingConfig.Keys[0].BedrockKeyConfig.AccessKey)
+			keysInDB["bedrock"][0].BedrockKeyConfig.AccessKey)
 	}
-	if existingConfig.Keys[0].BedrockKeyConfig.SecretKey.GetValue() != "DASHBOARD-EDITED-SECRET-KEY" {
+	if keysInDB["bedrock"][0].BedrockKeyConfig.SecretKey.GetValue() != "DASHBOARD-EDITED-SECRET-KEY" {
 		t.Errorf("DB SecretKey should NOT be overwritten! Expected 'DASHBOARD-EDITED-SECRET-KEY', got '%v'",
-			existingConfig.Keys[0].BedrockKeyConfig.SecretKey)
+			keysInDB["bedrock"][0].BedrockKeyConfig.SecretKey)
 	}
 	t.Log("✓ DB credentials preserved (dashboard edits NOT overwritten)")
 
 	// === Verify Bedrock config in DB is intact ===
-	if existingConfig.Keys[0].BedrockKeyConfig.Region.GetValue() != "us-east-1" {
+	if keysInDB["bedrock"][0].BedrockKeyConfig.Region.GetValue() != "us-east-1" {
 		t.Error("Bedrock region should be preserved")
 	}
 	t.Log("✓ Bedrock config preserved in DB")
@@ -8288,18 +8330,18 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 	// Expected: Hash differs, DB should be updated with new config and hash
 
 	// DB has existing Azure config
-	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:     "azure-key-1",
-				Name:   "azure-openai-key",
-				Value:  *schemas.NewSecretVar("azure-api-key-123"),
-				Weight: 1,
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://old-azure.openai.azure.com"),
-				},
+	dbKeys := []schemas.Key{
+		{
+			ID:     "azure-key-1",
+			Name:   "azure-openai-key",
+			Value:  *schemas.NewSecretVar("azure-api-key-123"),
+			Weight: 1,
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://old-azure.openai.azure.com"),
 			},
 		},
+	}
+	dbConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://old-azure.openai.azure.com/openai",
 		},
@@ -8312,21 +8354,24 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"azure": dbConfig,
 	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"azure": dbKeys,
+	}
 
 	// File has CHANGED Azure config (new endpoint)
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("azure-api-key-123"),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://NEW-azure.openai.azure.com"), // Changed!
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "azure-key-1",
+			Name:    "azure-openai-key",
+			Value:   *schemas.NewSecretVar("azure-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-deployment"}},
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://NEW-azure.openai.azure.com"), // Changed!
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://NEW-azure.openai.azure.com/openai", // Changed!
 		},
@@ -8345,6 +8390,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 
 	// === Simulate sync: hash differs -> update DB from file ===
 	providersInDB["azure"] = fileConfig
+	keysInDB["azure"] = fileKeys
 	t.Log("✓ DB updated from config.json")
 
 	// === Verify DB was updated ===
@@ -8353,8 +8399,8 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 	if updatedConfig.ConfigHash != fileHash {
 		t.Error("Expected DB hash to be updated")
 	}
-	if updatedConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://NEW-azure.openai.azure.com" {
-		t.Errorf("Expected new Azure endpoint, got %v", updatedConfig.Keys[0].AzureKeyConfig.Endpoint)
+	if keysInDB["azure"][0].AzureKeyConfig.Endpoint.GetValue() != "https://NEW-azure.openai.azure.com" {
+		t.Errorf("Expected new Azure endpoint, got %v", keysInDB["azure"][0].AzureKeyConfig.Endpoint)
 	}
 	if !updatedConfig.SendBackRawResponse {
 		t.Error("Expected SendBackRawResponse to be updated to true")
@@ -8369,20 +8415,20 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 	// Expected: Hash differs, DB should be updated with new config and hash
 
 	// DB has existing Bedrock config
-	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:     "bedrock-key-1",
-				Name:   "aws-bedrock-key",
-				Value:  *schemas.NewSecretVar(""),
-				Weight: 1,
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-east-1"),
-				},
+	dbKeys := []schemas.Key{
+		{
+			ID:     "bedrock-key-1",
+			Name:   "aws-bedrock-key",
+			Value:  *schemas.NewSecretVar(""),
+			Weight: 1,
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+				SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+				Region:    schemas.NewSecretVar("us-east-1"),
 			},
 		},
+	}
+	dbConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
 			MaxRetries: 3,
@@ -8396,24 +8442,27 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"bedrock": dbConfig,
 	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"bedrock": dbKeys,
+	}
 
 	// File has CHANGED Bedrock config (new region, new ARN)
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-west-2"),                                                            // Changed!
-					ARN:       schemas.NewSecretVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/new-profile"), // Added!
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "bedrock-key-1",
+			Name:    "aws-bedrock-key",
+			Value:   *schemas.NewSecretVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+				SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+				Region:    schemas.NewSecretVar("us-west-2"),                                                            // Changed!
+				ARN:       schemas.NewSecretVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/new-profile"), // Added!
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-west-2.amazonaws.com", // Changed!
 			MaxRetries: 5,                                                 // Changed!
@@ -8433,6 +8482,7 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 
 	// === Simulate sync: hash differs -> update DB from file ===
 	providersInDB["bedrock"] = fileConfig
+	keysInDB["bedrock"] = fileKeys
 	t.Log("✓ DB updated from config.json")
 
 	// === Verify DB was updated ===
@@ -8441,10 +8491,10 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 	if updatedConfig.ConfigHash != fileHash {
 		t.Error("Expected DB hash to be updated")
 	}
-	if updatedConfig.Keys[0].BedrockKeyConfig.Region.GetValue() != "us-west-2" {
-		t.Errorf("Expected new Bedrock region, got %v", *updatedConfig.Keys[0].BedrockKeyConfig.Region)
+	if keysInDB["bedrock"][0].BedrockKeyConfig.Region.GetValue() != "us-west-2" {
+		t.Errorf("Expected new Bedrock region, got %v", *keysInDB["bedrock"][0].BedrockKeyConfig.Region)
 	}
-	if updatedConfig.Keys[0].BedrockKeyConfig.ARN == nil {
+	if keysInDB["bedrock"][0].BedrockKeyConfig.ARN == nil {
 		t.Error("Expected ARN to be set")
 	}
 	if updatedConfig.NetworkConfig.MaxRetries != 5 {
@@ -9379,7 +9429,7 @@ func TestSQLite_Provider_NewProviderFromFile(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a new provider
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9417,7 +9467,7 @@ func TestSQLite_Provider_HashMatch_DBPreserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a provider
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9460,7 +9510,7 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a provider
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9479,7 +9529,7 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	config1.Close(ctx)
 
 	// Modify config.json - change the BaseURL
-	providers2 := map[string]configstore.ProviderConfig{
+	providers2 := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com/v2"),
 	}
 	configData2 := makeConfigDataWithProvidersAndDir(providers2, tempDir)
@@ -9512,7 +9562,7 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with OpenAI provider only
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9527,14 +9577,6 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 
 	// Add Anthropic provider directly to DB (simulating dashboard addition)
 	anthropicConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:     uuid.NewString(),
-				Name:   "anthropic-key-1",
-				Value:  *schemas.NewSecretVar("sk-anthropic-123"),
-				Weight: 1,
-			},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.anthropic.com",
 		},
@@ -9543,9 +9585,17 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 	anthropicConfig.ConfigHash = anthropicHash
 
 	// Update providers in DB to include both
-	existingProviders, _ := config1.ConfigStore.GetProvidersConfig(ctx)
+	existingProviders, existingKeys, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
 	existingProviders[schemas.Anthropic] = anthropicConfig
-	err = config1.ConfigStore.UpdateProvidersConfig(ctx, existingProviders)
+	existingKeys[schemas.Anthropic] = []schemas.Key{
+		{
+			ID:     uuid.NewString(),
+			Name:   "anthropic-key-1",
+			Value:  *schemas.NewSecretVar("sk-anthropic-123"),
+			Weight: 1,
+		},
+	}
+	err = config1.ConfigStore.UpdateProvidersConfig(ctx, existingProviders, existingKeys)
 	if err != nil {
 		t.Fatalf("Failed to add Anthropic to DB: %v", err)
 	}
@@ -9576,7 +9626,7 @@ func TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned(t *testing.T) {
 	initTestLogger()
 	tempDir := createTempDir(t)
 
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9586,26 +9636,24 @@ func TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned(t *testing.T) {
 	config1, err := LoadConfig(ctx, tempDir)
 	require.NoError(t, err)
 
-	existingProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
+	existingProviders, existingKeys, err := dbProvidersAndKeys(ctx, config1.ConfigStore)
 	require.NoError(t, err)
-	openaiConfig := existingProviders[schemas.OpenAI]
-	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+	existingKeys[schemas.OpenAI] = append(existingKeys[schemas.OpenAI], schemas.Key{
 		ID:     uuid.NewString(),
 		Name:   "dashboard-openai-key",
 		Value:  *schemas.NewSecretVar("sk-dashboard-openai"),
 		Weight: 1,
 	})
-	existingProviders[schemas.OpenAI] = openaiConfig
 	existingProviders[schemas.Anthropic] = configstore.ProviderConfig{
-		Keys: []schemas.Key{{
-			ID:     uuid.NewString(),
-			Name:   "anthropic-key-1",
-			Value:  *schemas.NewSecretVar("sk-anthropic-123"),
-			Weight: 1,
-		}},
 		NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
 	}
-	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, existingProviders))
+	existingKeys[schemas.Anthropic] = []schemas.Key{{
+		ID:     uuid.NewString(),
+		Name:   "anthropic-key-1",
+		Value:  *schemas.NewSecretVar("sk-anthropic-123"),
+		Weight: 1,
+	}}
+	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, existingProviders, existingKeys))
 	config1.Close(ctx)
 
 	configData.SourceOfTruth = SourceOfTruthConfigJSON
@@ -9615,13 +9663,13 @@ func TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned(t *testing.T) {
 	require.NoError(t, err)
 	defer config2.Close(ctx)
 
-	dbProviders, err := config2.ConfigStore.GetProvidersConfig(ctx)
+	dbProviders, dbKeys, err := dbProvidersAndKeys(ctx, config2.ConfigStore)
 	require.NoError(t, err)
 	require.Len(t, dbProviders, 1)
 	require.Contains(t, dbProviders, schemas.OpenAI)
 	require.NotContains(t, dbProviders, schemas.Anthropic)
-	require.Len(t, dbProviders[schemas.OpenAI].Keys, 1)
-	require.Equal(t, "openai-key-1", dbProviders[schemas.OpenAI].Keys[0].Name)
+	require.Len(t, dbKeys[schemas.OpenAI], 1)
+	require.Equal(t, "openai-key-1", dbKeys[schemas.OpenAI][0].Name)
 }
 
 // TestSQLite_Provider_RoundTrip tests load -> modify via DB -> reload same file -> no changes
@@ -9630,7 +9678,7 @@ func TestSQLite_Provider_RoundTrip(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9644,14 +9692,14 @@ func TestSQLite_Provider_RoundTrip(t *testing.T) {
 	}
 
 	// Get original state
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
+	dbProviders1, dbKeys1, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
 	originalHash := dbProviders1[schemas.OpenAI].ConfigHash
-	originalKeyValue := dbProviders1[schemas.OpenAI].Keys[0].Value
+	originalKeyValue := dbKeys1[schemas.OpenAI][0].Value
 
 	// Modify key value in DB (simulating dashboard edit)
-	dbProviders1[schemas.OpenAI].Keys[0].Value = *schemas.NewSecretVar("sk-dashboard-modified")
+	dbKeys1[schemas.OpenAI][0].Value = *schemas.NewSecretVar("sk-dashboard-modified")
 	// Note: We keep the same hash since only the key value changed, not provider config
-	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1)
+	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1, dbKeys1)
 	if err != nil {
 		t.Fatalf("Failed to update provider in DB: %v", err)
 	}
@@ -9665,14 +9713,14 @@ func TestSQLite_Provider_RoundTrip(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify hash is unchanged
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
+	dbProviders2, dbKeys2, _ := dbProvidersAndKeys(ctx, config2.ConfigStore)
 	if dbProviders2[schemas.OpenAI].ConfigHash != originalHash {
 		t.Error("Hash should remain unchanged when config.json hasn't changed")
 	}
 
 	// The key value should be from DB (dashboard edit preserved) since hash matches
 	// This demonstrates that when hashes match, DB config is kept
-	if dbProviders2[schemas.OpenAI].Keys[0].Value == originalKeyValue {
+	if dbKeys2[schemas.OpenAI][0].Value == originalKeyValue {
 		t.Log("Note: Key value preserved from initial load (hash match means DB preserved)")
 	}
 }
@@ -9687,12 +9735,14 @@ func TestSQLite_Key_NewKeyFromFile(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a provider and one key
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-key1-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9707,13 +9757,68 @@ func TestSQLite_Key_NewKeyFromFile(t *testing.T) {
 	defer config.Close(ctx)
 
 	// Verify the key exists
-	dbProviders, _ := config.ConfigStore.GetProvidersConfig(ctx)
-	if len(dbProviders[schemas.OpenAI].Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(dbProviders[schemas.OpenAI].Keys))
+	_, dbKeys, err := dbProvidersAndKeys(ctx, config.ConfigStore)
+	require.NoError(t, err)
+	require.Len(t, dbKeys[schemas.OpenAI], 1)
+	if len(dbKeys[schemas.OpenAI]) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(dbKeys[schemas.OpenAI]))
 	}
-	if dbProviders[schemas.OpenAI].Keys[0].Name != "openai-key-1" {
-		t.Errorf("Expected key name 'openai-key-1', got '%s'", dbProviders[schemas.OpenAI].Keys[0].Name)
+	if dbKeys[schemas.OpenAI][0].Name != "openai-key-1" {
+		t.Errorf("Expected key name 'openai-key-1', got '%s'", dbKeys[schemas.OpenAI][0].Name)
 	}
+}
+
+// TestSQLite_Provider_InlineKeysLoadInFileOrder pins that a config.json provider entry with its keys
+// inline, written as raw JSON, loads every key in file order into the live store and the config
+// store and stores the provider config hash that config produced before keys were split from the
+// provider config, and that a restart over the same file and store neither duplicates nor reorders
+// the keys and keeps their IDs.
+func TestSQLite_Provider_InlineKeysLoadInFileOrder(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	tempDir := createTempDir(t)
+	// The provider config hash this entry stored before the split; keys are not part of it.
+	const pinnedConfigHash = "65144382c49fb06e7c163cf894aaa6cf6c8ae48ad54e55670b8857140c364612"
+	raw := `{
+		"config_store": {"enabled": true, "type": "sqlite", "config": {"path": ` + fmt.Sprintf("%q", filepath.Join(tempDir, "config.db")) + `}},
+		"providers": {"openai": {"keys":[{"name":"a","value":"sk-a","models":["*"],"weight":1},{"name":"b","value":"sk-b","models":["*"],"weight":1},{"name":"c","value":"sk-c","models":["*"],"weight":1}],"network_config":{"base_url":"https://api.example.com","default_request_timeout_in_seconds":30},"concurrency_and_buffer_size":{"concurrency":3,"buffer_size":10},"send_back_raw_response":true}}
+	}`
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "config.json"), []byte(raw), 0o644))
+	wantNames := []string{"a", "b", "c"}
+	wantValues := []string{"sk-a", "sk-b", "sk-c"}
+
+	// load runs LoadConfig over the directory and returns the key IDs, after checking that the live
+	// store and the config store both hold the file's keys in file order with the same IDs.
+	load := func(boot string) []string {
+		t.Helper()
+		config, err := LoadConfig(ctx, tempDir)
+		require.NoError(t, err, boot)
+		defer config.Close(ctx)
+
+		liveKeys := config.GetProviderKeys(schemas.OpenAI)
+		storedKeys, err := config.ConfigStore.GetProviderKeys(ctx, schemas.OpenAI)
+		require.NoError(t, err, boot)
+		require.Len(t, liveKeys, len(wantNames), "%s: live keys", boot)
+		require.Len(t, storedKeys, len(wantNames), "%s: stored keys", boot)
+		ids := make([]string, len(storedKeys))
+		for i := range storedKeys {
+			assert.Equal(t, wantNames[i], storedKeys[i].Name, "%s: stored key %d", boot, i)
+			assert.Equal(t, wantValues[i], storedKeys[i].Value.GetValue(), "%s: stored key %d", boot, i)
+			assert.Equal(t, wantNames[i], liveKeys[i].Name, "%s: live key %d", boot, i)
+			assert.Equal(t, storedKeys[i].ID, liveKeys[i].ID, "%s: live key %d", boot, i)
+			assert.NotEmpty(t, storedKeys[i].ID, "%s: stored key %d", boot, i)
+			ids[i] = storedKeys[i].ID
+		}
+
+		stored, err := config.ConfigStore.GetProviderConfig(ctx, schemas.OpenAI)
+		require.NoError(t, err, boot)
+		require.NotNil(t, stored, boot)
+		assert.Equal(t, pinnedConfigHash, stored.ConfigHash, "%s: stored provider config hash", boot)
+		return ids
+	}
+
+	firstIDs := load("first boot")
+	assert.Equal(t, firstIDs, load("restart"), "a restart keeps each key's ID")
 }
 
 // TestSQLite_Key_HashMatch_DBKeyPreserved tests that DB key is preserved when unchanged
@@ -9722,12 +9827,14 @@ func TestSQLite_Key_HashMatch_DBKeyPreserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "key-1", Value: *schemas.NewSecretVar("sk-key1-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9741,8 +9848,10 @@ func TestSQLite_Key_HashMatch_DBKeyPreserved(t *testing.T) {
 	}
 
 	// Get original key ID
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
-	originalKeyID := dbProviders1[schemas.OpenAI].Keys[0].ID
+	_, dbKeys1, err := dbProvidersAndKeys(ctx, config1.ConfigStore)
+	require.NoError(t, err)
+	require.NotEmpty(t, dbKeys1[schemas.OpenAI])
+	originalKeyID := dbKeys1[schemas.OpenAI][0].ID
 	config1.Close(ctx)
 
 	// Second load with same config
@@ -9753,15 +9862,17 @@ func TestSQLite_Key_HashMatch_DBKeyPreserved(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify key ID is preserved (same key, not recreated)
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
-	if dbProviders2[schemas.OpenAI].Keys[0].ID != originalKeyID {
+	_, dbKeys2, err := dbProvidersAndKeys(ctx, config2.ConfigStore)
+	require.NoError(t, err)
+	require.NotEmpty(t, dbKeys2[schemas.OpenAI])
+	if dbKeys2[schemas.OpenAI][0].ID != originalKeyID {
 		t.Errorf("Expected key ID to be preserved on reload: got %s, want %s",
-			dbProviders2[schemas.OpenAI].Keys[0].ID, originalKeyID)
+			dbKeys2[schemas.OpenAI][0].ID, originalKeyID)
 	}
 
 	// Key should still be present
-	if len(dbProviders2[schemas.OpenAI].Keys) != 1 {
-		t.Errorf("Expected 1 key after reload, got %d", len(dbProviders2[schemas.OpenAI].Keys))
+	if len(dbKeys2[schemas.OpenAI]) != 1 {
+		t.Errorf("Expected 1 key after reload, got %d", len(dbKeys2[schemas.OpenAI]))
 	}
 }
 
@@ -9772,12 +9883,14 @@ func TestSQLite_Key_DashboardAddedKey_Preserved(t *testing.T) {
 
 	// Create config.json with one key
 	keyID1 := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID1, Name: "file-key", Value: *schemas.NewSecretVar("sk-file-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9791,16 +9904,14 @@ func TestSQLite_Key_DashboardAddedKey_Preserved(t *testing.T) {
 	}
 
 	// Add a second key directly to DB (simulating dashboard addition)
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
-	openaiConfig := dbProviders1[schemas.OpenAI]
-	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+	dbProviders1, dbKeys1, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
+	dbKeys1[schemas.OpenAI] = append(dbKeys1[schemas.OpenAI], schemas.Key{
 		ID:     uuid.NewString(),
 		Name:   "dashboard-key",
 		Value:  *schemas.NewSecretVar("sk-dashboard-456"),
 		Weight: 1,
 	})
-	dbProviders1[schemas.OpenAI] = openaiConfig
-	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1)
+	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1, dbKeys1)
 	if err != nil {
 		t.Fatalf("Failed to add dashboard key: %v", err)
 	}
@@ -9814,14 +9925,14 @@ func TestSQLite_Key_DashboardAddedKey_Preserved(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify both keys exist (dashboard-added key preserved)
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
-	if len(dbProviders2[schemas.OpenAI].Keys) != 2 {
-		t.Errorf("Expected 2 keys (1 from file + 1 from dashboard), got %d", len(dbProviders2[schemas.OpenAI].Keys))
+	_, dbKeys2, _ := dbProvidersAndKeys(ctx, config2.ConfigStore)
+	if len(dbKeys2[schemas.OpenAI]) != 2 {
+		t.Errorf("Expected 2 keys (1 from file + 1 from dashboard), got %d", len(dbKeys2[schemas.OpenAI]))
 	}
 
 	// Check key names
 	keyNames := make(map[string]bool)
-	for _, k := range dbProviders2[schemas.OpenAI].Keys {
+	for _, k := range dbKeys2[schemas.OpenAI] {
 		keyNames[k.Name] = true
 	}
 	if !keyNames["file-key"] {
@@ -9839,12 +9950,14 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 
 	// Create config.json with a key
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "test-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9858,19 +9971,21 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 	}
 
 	// Verify original value
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
-	if dbProviders1[schemas.OpenAI].Keys[0].Value.GetValue() != "sk-original-123" {
-		t.Errorf("Expected original key value, got %v", dbProviders1[schemas.OpenAI].Keys[0].Value)
+	_, dbKeys1, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
+	if dbKeys1[schemas.OpenAI][0].Value.GetValue() != "sk-original-123" {
+		t.Errorf("Expected original key value, got %v", dbKeys1[schemas.OpenAI][0].Value)
 	}
 	config1.Close(ctx)
 
 	// Modify config.json - change key value AND network config to trigger hash mismatch
-	providers2 := map[string]configstore.ProviderConfig{
+	providers2 := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "test-key", Value: *schemas.NewSecretVar("sk-modified-456"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com/v2"}, // Changed to trigger hash mismatch
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com/v2"}, // Changed to trigger hash mismatch
+			},
 		},
 	}
 	configData2 := makeConfigDataWithProvidersAndDir(providers2, tempDir)
@@ -9884,9 +9999,9 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// When hash mismatches (provider config changed), file key value should be synced
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
-	if dbProviders2[schemas.OpenAI].Keys[0].Value.GetValue() != "sk-modified-456" {
-		t.Errorf("Expected key value to be updated to 'sk-modified-456', got '%v'", dbProviders2[schemas.OpenAI].Keys[0].Value)
+	_, dbKeys2, _ := dbProvidersAndKeys(ctx, config2.ConfigStore)
+	if dbKeys2[schemas.OpenAI][0].Value.GetValue() != "sk-modified-456" {
+		t.Errorf("Expected key value to be updated to 'sk-modified-456', got '%v'", dbKeys2[schemas.OpenAI][0].Value)
 	}
 }
 
@@ -9898,13 +10013,15 @@ func TestSQLite_Key_MultipleKeys_MergeLogic(t *testing.T) {
 	// Create config.json with two keys
 	keyID1 := uuid.NewString()
 	keyID2 := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID1, Name: "key-1", Value: *schemas.NewSecretVar("sk-key1-123"), Weight: 1},
 				{ID: keyID2, Name: "key-2", Value: *schemas.NewSecretVar("sk-key2-456"), Weight: 2},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9918,21 +10035,19 @@ func TestSQLite_Key_MultipleKeys_MergeLogic(t *testing.T) {
 	}
 
 	// Verify two keys exist
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
-	if len(dbProviders1[schemas.OpenAI].Keys) != 2 {
-		t.Errorf("Expected 2 keys, got %d", len(dbProviders1[schemas.OpenAI].Keys))
+	dbProviders1, dbKeys1, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
+	if len(dbKeys1[schemas.OpenAI]) != 2 {
+		t.Errorf("Expected 2 keys, got %d", len(dbKeys1[schemas.OpenAI]))
 	}
 
 	// Add a third key via dashboard
-	openaiConfig := dbProviders1[schemas.OpenAI]
-	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+	dbKeys1[schemas.OpenAI] = append(dbKeys1[schemas.OpenAI], schemas.Key{
 		ID:     uuid.NewString(),
 		Name:   "key-3-dashboard",
 		Value:  *schemas.NewSecretVar("sk-key3-789"),
 		Weight: 1,
 	})
-	dbProviders1[schemas.OpenAI] = openaiConfig
-	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1)
+	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1, dbKeys1)
 	if err != nil {
 		t.Fatalf("Failed to add third key: %v", err)
 	}
@@ -9946,14 +10061,14 @@ func TestSQLite_Key_MultipleKeys_MergeLogic(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify all three keys exist
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
-	if len(dbProviders2[schemas.OpenAI].Keys) != 3 {
-		t.Errorf("Expected 3 keys after merge, got %d", len(dbProviders2[schemas.OpenAI].Keys))
+	_, dbKeys2, _ := dbProvidersAndKeys(ctx, config2.ConfigStore)
+	if len(dbKeys2[schemas.OpenAI]) != 3 {
+		t.Errorf("Expected 3 keys after merge, got %d", len(dbKeys2[schemas.OpenAI]))
 	}
 
 	// Verify key names
 	keyNames := make(map[string]bool)
-	for _, k := range dbProviders2[schemas.OpenAI].Keys {
+	for _, k := range dbKeys2[schemas.OpenAI] {
 		keyNames[k.Name] = true
 	}
 	if !keyNames["key-1"] || !keyNames["key-2"] || !keyNames["key-3-dashboard"] {
@@ -9971,7 +10086,7 @@ func TestSQLite_VirtualKey_NewFromFile(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with providers and a virtual key
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -10011,7 +10126,7 @@ func TestSQLite_VirtualKey_HashMatch_DBPreserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a virtual key
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -10052,7 +10167,7 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a virtual key
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -10135,7 +10250,7 @@ func TestSQLite_VirtualKey_DBOnlyVK_Preserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with one VK
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -10197,7 +10312,7 @@ func TestSQLite_VirtualKey_WithProviderConfigs(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with providers and a virtual key with provider configs
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -10271,7 +10386,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Step 1: Create initial config.json with a simple VK (no ProviderConfigs)
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -10368,12 +10483,14 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 
 	// Step 1: Create initial config.json with a provider that has keys
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-test-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	vks := []tables.TableVirtualKey{
@@ -10551,7 +10668,7 @@ func TestSQLite_VKProviderConfig_NewConfig(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a VK that has provider configs
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -10617,7 +10734,7 @@ func TestSQLite_VKProviderConfig_KeyIDsWildcardFlipsAllowAllKeys(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 
@@ -10701,12 +10818,14 @@ func TestSQLite_VKProviderConfig_KeyReference(t *testing.T) {
 
 	// Create provider key first
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-test-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 
@@ -10961,26 +11080,30 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 	keyID1 := uuid.NewString()
 	keyID2 := uuid.NewString()
 
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID1, Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-openai-123"), Weight: 1},
 				{ID: keyID2, Name: "openai-key-2", Value: *schemas.NewSecretVar("sk-openai-456"), Weight: 2},
 			},
-			NetworkConfig: &schemas.NetworkConfig{
-				BaseURL: "https://api.openai.com",
-			},
-			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
-				BufferSize:  100,
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{
+					BaseURL: "https://api.openai.com",
+				},
+				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
+					Concurrency: 10,
+					BufferSize:  100,
+				},
 			},
 		},
 		"anthropic": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{
-				BaseURL: "https://api.anthropic.com",
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{
+					BaseURL: "https://api.anthropic.com",
+				},
 			},
 		},
 	}
@@ -11089,7 +11212,7 @@ func TestSQLite_FullLifecycle_SecondLoadNoChanges(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -11137,13 +11260,15 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with two providers and two VKs
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-openai-123", "https://api.openai.com"),
 		"anthropic": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
+			},
 		},
 	}
 	vks := []tables.TableVirtualKey{
@@ -11171,13 +11296,15 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 	config1.Close(ctx)
 
 	// Modify config.json - change only OpenAI and vk-1
-	providers2 := map[string]configstore.ProviderConfig{
+	providers2 := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-openai-123", "https://api.openai.com/v2"), // Changed
 		"anthropic": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"}, // Unchanged
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"}, // Unchanged
+			},
 		},
 	}
 	vks2 := []tables.TableVirtualKey{
@@ -11228,12 +11355,14 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 
 	// Create config.json
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	vks := []tables.TableVirtualKey{
@@ -11251,16 +11380,14 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 
 	// Simulate dashboard edits:
 	// 1. Add a new key
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
-	openaiConfig := dbProviders1[schemas.OpenAI]
-	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+	dbProviders1, dbKeys1, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
+	dbKeys1[schemas.OpenAI] = append(dbKeys1[schemas.OpenAI], schemas.Key{
 		ID:     uuid.NewString(),
 		Name:   "dashboard-key",
 		Value:  *schemas.NewSecretVar("sk-dashboard-789"),
 		Weight: 1,
 	})
-	dbProviders1[schemas.OpenAI] = openaiConfig
-	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1)
+	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1, dbKeys1)
 	if err != nil {
 		t.Fatalf("Failed to add dashboard key: %v", err)
 	}
@@ -11289,13 +11416,13 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify dashboard-added key is preserved
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
-	if len(dbProviders2[schemas.OpenAI].Keys) != 2 {
-		t.Errorf("Expected 2 keys (1 original + 1 dashboard), got %d", len(dbProviders2[schemas.OpenAI].Keys))
+	_, dbKeys2, _ := dbProvidersAndKeys(ctx, config2.ConfigStore)
+	if len(dbKeys2[schemas.OpenAI]) != 2 {
+		t.Errorf("Expected 2 keys (1 original + 1 dashboard), got %d", len(dbKeys2[schemas.OpenAI]))
 	}
 
 	keyNames := make(map[string]bool)
-	for _, k := range dbProviders2[schemas.OpenAI].Keys {
+	for _, k := range dbKeys2[schemas.OpenAI] {
 		keyNames[k.Name] = true
 	}
 	if !keyNames["openai-key-1"] {
@@ -11479,7 +11606,7 @@ func TestSQLite_VirtualKey_WithMCPConfigs(t *testing.T) {
 	ctx := context.Background()
 
 	// Create config with virtual key
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -11568,7 +11695,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 	ctx := context.Background()
 
 	// Create initial config
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -11730,7 +11857,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 	ctx := context.Background()
 
 	// Step 1: Create config.json with VK that has openai provider config
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-openai-123"), Weight: 1},
@@ -11890,7 +12017,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 	ctx := context.Background()
 
 	// Step 1: Create config.json with VK (no MCP configs initially - we'll add them via DB)
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-openai-123"), Weight: 1},
@@ -12060,7 +12187,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	ctx := context.Background()
 
 	// Create initial config without MCP
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -12191,7 +12318,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -12285,7 +12412,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 	ctx := context.Background()
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -12399,7 +12526,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameResolution(t *testing.T) {
 	ctx := context.Background()
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -16195,7 +16322,7 @@ func TestSQLite_Governance_FileCannotSetUsageResetEpochs(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 	dir := createTempDir(t)
-	data := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	data := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 	}, dir)
 	data.SourceOfTruth = SourceOfTruthConfigJSON
@@ -16689,7 +16816,7 @@ func TestSQLite_SourceOfTruthConfigJSON_KeepsInlineLimitsAcrossRestarts(t *testi
 			SetLogger(recorder)
 			defer initTestLogger()
 			tempDir := createTempDir(t)
-			configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+			configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 				"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 			}, tempDir)
 			configData.SourceOfTruth = SourceOfTruthConfigJSON
@@ -16731,7 +16858,7 @@ func TestSQLite_VirtualKeyInlineBudgetsFollowTheFile(t *testing.T) {
 					}
 					return rows
 				}
-				configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+				configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 					"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 				}, tempDir)
 				configData.SourceOfTruth = sourceOfTruth
@@ -16836,7 +16963,7 @@ func TestSQLite_VirtualKeyInlineBudgetMovesBetweenTiers(t *testing.T) {
 			}
 			return rows
 		}
-		configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 		}, tempDir)
 		configData.SourceOfTruth = SourceOfTruthConfigJSON
@@ -16901,7 +17028,7 @@ func TestSQLite_VirtualKeyLimitsFromConfigLandOnModelConfigs(t *testing.T) {
 			rateLimit := func(id string) *tables.TableRateLimit {
 				return &tables.TableRateLimit{ID: id, RequestMaxLimit: &requestMax, RequestResetDuration: &requestDur}
 			}
-			configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+			configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 				"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 			}, tempDir)
 			configData.SourceOfTruth = sourceOfTruth
@@ -17000,7 +17127,7 @@ func TestSQLite_VirtualKeyLimitsFromConfigLandOnModelConfigs(t *testing.T) {
 func TestSQLite_VirtualKeyLimitsFromConfigAdoptTheFilesModelConfig(t *testing.T) {
 	initTestLogger()
 	tempDir := createTempDir(t)
-	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 	}, tempDir)
 	configData.SourceOfTruth = SourceOfTruthConfigJSON
@@ -17040,7 +17167,7 @@ func TestSQLite_ProviderConfigBudgetFromConfigLandsOnTheProviderTier(t *testing.
 	initTestLogger()
 	tempDir := createTempDir(t)
 	declare := func(budgets []tables.TableBudget) *ConfigData {
-		configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 		}, tempDir)
 		configData.Governance = &configstore.GovernanceConfig{
@@ -17146,7 +17273,7 @@ func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 
 	tokenMax := int64(1000)
 	tokenDur := "1h"
-	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}, tempDir)
 	configData.MCP = &MCPFileConfig{
@@ -17164,20 +17291,17 @@ func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 	config1, err := LoadConfig(ctx, tempDir)
 	require.NoError(t, err)
 
-	dbProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
+	dbProviders, dbKeys, err := dbProvidersAndKeys(ctx, config1.ConfigStore)
 	require.NoError(t, err)
-	openaiConfig := dbProviders[schemas.OpenAI]
-	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+	dbKeys[schemas.OpenAI] = append(dbKeys[schemas.OpenAI], schemas.Key{
 		ID:     uuid.NewString(),
 		Name:   "dashboard-openai-key",
 		Value:  *schemas.NewSecretVar("sk-dashboard-openai"),
 		Weight: 1,
 	})
-	dbProviders[schemas.OpenAI] = openaiConfig
-	dbProviders[schemas.Anthropic] = configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic"), Weight: 1}},
-	}
-	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders))
+	dbProviders[schemas.Anthropic] = configstore.ProviderConfig{}
+	dbKeys[schemas.Anthropic] = []schemas.Key{{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic"), Weight: 1}}
+	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders, dbKeys))
 
 	require.NoError(t, config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
 		ID:             "mcp-dashboard",
@@ -17204,11 +17328,11 @@ func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 	require.NoError(t, err)
 	defer config2.Close(ctx)
 
-	dbProviders, err = config2.ConfigStore.GetProvidersConfig(ctx)
+	dbProviders, dbKeys, err = dbProvidersAndKeys(ctx, config2.ConfigStore)
 	require.NoError(t, err)
 	require.Len(t, dbProviders, 1)
-	require.Len(t, dbProviders[schemas.OpenAI].Keys, 1)
-	require.Equal(t, "openai-key-1", dbProviders[schemas.OpenAI].Keys[0].Name)
+	require.Len(t, dbKeys[schemas.OpenAI], 1)
+	require.Equal(t, "openai-key-1", dbKeys[schemas.OpenAI][0].Name)
 
 	mcpClients, err := config2.ConfigStore.GetMCPClientConfigs(ctx)
 	require.NoError(t, err)
@@ -18492,7 +18616,7 @@ func TestKeyWeight_ZeroPreserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "zero-weight-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 0}, // Explicit zero
@@ -18508,17 +18632,17 @@ func TestKeyWeight_ZeroPreserved(t *testing.T) {
 	}
 	defer config.Close(context.Background())
 
-	openaiConfig, exists := providersOf(config)[schemas.OpenAI]
-	if !exists {
+	if _, exists := providersOf(config)[schemas.OpenAI]; !exists {
 		t.Fatal("Expected openai provider to exist")
 	}
+	openaiKeys := config.GetProviderKeys(schemas.OpenAI)
 
-	if len(openaiConfig.Keys) != 1 {
-		t.Fatalf("Expected 1 key, got %d", len(openaiConfig.Keys))
+	if len(openaiKeys) != 1 {
+		t.Fatalf("Expected 1 key, got %d", len(openaiKeys))
 	}
 
-	if openaiConfig.Keys[0].Weight != 0 {
-		t.Errorf("Expected weight 0 (explicitly set), got %f", openaiConfig.Keys[0].Weight)
+	if openaiKeys[0].Weight != 0 {
+		t.Errorf("Expected weight 0 (explicitly set), got %f", openaiKeys[0].Weight)
 	}
 }
 
@@ -18529,7 +18653,7 @@ func TestKeyWeight_DefaultToOneWhenNotSet(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "default-weight-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1}, // Explicit 1 (default)
@@ -18545,13 +18669,13 @@ func TestKeyWeight_DefaultToOneWhenNotSet(t *testing.T) {
 	}
 	defer config.Close(context.Background())
 
-	openaiConfig, exists := providersOf(config)[schemas.OpenAI]
-	if !exists {
+	if _, exists := providersOf(config)[schemas.OpenAI]; !exists {
 		t.Fatal("Expected openai provider to exist")
 	}
+	openaiKeys := config.GetProviderKeys(schemas.OpenAI)
 
-	if openaiConfig.Keys[0].Weight != 1.0 {
-		t.Errorf("Expected weight 1.0 (default), got %f", openaiConfig.Keys[0].Weight)
+	if openaiKeys[0].Weight != 1.0 {
+		t.Errorf("Expected weight 1.0 (default), got %f", openaiKeys[0].Weight)
 	}
 }
 
@@ -18562,7 +18686,7 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "zero-weight-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 0},
@@ -18580,8 +18704,8 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
 
-	if providersOf(config1)[schemas.OpenAI].Keys[0].Weight != 0 {
-		t.Errorf("First load: Expected weight 0, got %f", providersOf(config1)[schemas.OpenAI].Keys[0].Weight)
+	if config1.GetProviderKeys(schemas.OpenAI)[0].Weight != 0 {
+		t.Errorf("First load: Expected weight 0, got %f", config1.GetProviderKeys(schemas.OpenAI)[0].Weight)
 	}
 	config1.Close(ctx)
 
@@ -18592,9 +18716,9 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 	}
 	defer config2.Close(ctx)
 
-	if providersOf(config2)[schemas.OpenAI].Keys[0].Weight != 0 {
+	if config2.GetProviderKeys(schemas.OpenAI)[0].Weight != 0 {
 		t.Errorf("Second load (from DB): Expected weight 0, got %f - weight=0 was incorrectly defaulted to 1.0",
-			providersOf(config2)[schemas.OpenAI].Keys[0].Weight)
+			config2.GetProviderKeys(schemas.OpenAI)[0].Weight)
 	}
 }
 
@@ -18610,7 +18734,7 @@ func TestVKProviderConfig_WeightZeroPreserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create providers
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test123", "https://api.openai.com"),
 	}
 
@@ -18664,7 +18788,7 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -18873,7 +18997,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	keyID := uuid.NewString()
 
 	// Initial config with Enabled=true
-	initialConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	initialConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{
@@ -18895,8 +19019,8 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	}
 
 	// Verify initial state in the in-memory config
-	openaiConfig1 := providersOf(config1)[schemas.OpenAI]
-	if openaiConfig1.Keys[0].Enabled == nil || !*openaiConfig1.Keys[0].Enabled {
+	openaiKeys1 := config1.GetProviderKeys(schemas.OpenAI)
+	if openaiKeys1[0].Enabled == nil || !*openaiKeys1[0].Enabled {
 		t.Fatal("Expected Enabled=true after first load")
 	}
 
@@ -18904,7 +19028,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	config1.Close(context.Background())
 
 	// Update config with Enabled=false
-	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{
@@ -18926,8 +19050,8 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	}
 
 	// Verify Enabled changed to false in the in-memory config
-	openaiConfig2 := providersOf(config2)[schemas.OpenAI]
-	if openaiConfig2.Keys[0].Enabled == nil || *openaiConfig2.Keys[0].Enabled {
+	openaiKeys2 := config2.GetProviderKeys(schemas.OpenAI)
+	if openaiKeys2[0].Enabled == nil || *openaiKeys2[0].Enabled {
 		t.Error("Expected Enabled=false after second load, but got true or nil")
 	}
 	config2.Close(context.Background())
@@ -18938,7 +19062,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
 	defer config3.Close(context.Background())
-	if enabled := providersOf(config3)[schemas.OpenAI].Keys[0].Enabled; enabled == nil || *enabled {
+	if enabled := config3.GetProviderKeys(schemas.OpenAI)[0].Enabled; enabled == nil || *enabled {
 		t.Error("Expected Enabled=false to be persisted and survive a restart, but got true or nil")
 	}
 }
@@ -18964,7 +19088,7 @@ func TestSQLite_Key_EnabledUIToggleSurvivesUpgrade(t *testing.T) {
 		}
 	}
 	writeConfig := func(enabled *bool) {
-		createConfigFile(t, tempDir, makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		createConfigFile(t, tempDir, makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{makeKey(enabled)}},
 		}, tempDir))
 	}
@@ -18985,7 +19109,7 @@ func TestSQLite_Key_EnabledUIToggleSurvivesUpgrade(t *testing.T) {
 
 	// Turn the key back on the way the UI does (ConfigHash is left as is), and store the hash an
 	// older build wrote for this file
-	key := providersOf(config2)[schemas.OpenAI].Keys[0]
+	key := config2.GetProviderKeys(schemas.OpenAI)[0]
 	key.Enabled = &enabledTrue
 	if err := config2.ConfigStore.UpdateProviderKey(context.Background(), schemas.OpenAI, key.ID, key); err != nil {
 		t.Fatalf("UpdateProviderKey failed: %v", err)
@@ -19005,7 +19129,7 @@ func TestSQLite_Key_EnabledUIToggleSurvivesUpgrade(t *testing.T) {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
 	defer config3.Close(context.Background())
-	if enabled := providersOf(config3)[schemas.OpenAI].Keys[0].Enabled; enabled == nil || !*enabled {
+	if enabled := config3.GetProviderKeys(schemas.OpenAI)[0].Enabled; enabled == nil || !*enabled {
 		t.Error("Expected Enabled=true from the UI to survive a restart with config.json unchanged, but got false")
 	}
 }
@@ -19121,7 +19245,7 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	keyID := uuid.NewString()
 
 	// Initial config with UseForBatchAPI=false
-	initialConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	initialConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{
@@ -19144,13 +19268,13 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	defer config1.Close(context.Background())
 
 	// Verify initial state in the in-memory config
-	openaiConfig1 := providersOf(config1)[schemas.OpenAI]
-	if openaiConfig1.Keys[0].UseForBatchAPI == nil || *openaiConfig1.Keys[0].UseForBatchAPI {
+	openaiKeys1 := config1.GetProviderKeys(schemas.OpenAI)
+	if openaiKeys1[0].UseForBatchAPI == nil || *openaiKeys1[0].UseForBatchAPI {
 		t.Fatal("Expected UseForBatchAPI=false after first load")
 	}
 
 	// Update config with UseForBatchAPI=true
-	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{
@@ -19173,8 +19297,8 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	defer config2.Close(context.Background())
 
 	// Verify UseForBatchAPI changed to true in the in-memory config
-	openaiConfig2 := providersOf(config2)[schemas.OpenAI]
-	if openaiConfig2.Keys[0].UseForBatchAPI == nil || !*openaiConfig2.Keys[0].UseForBatchAPI {
+	openaiKeys2 := config2.GetProviderKeys(schemas.OpenAI)
+	if openaiKeys2[0].UseForBatchAPI == nil || !*openaiKeys2[0].UseForBatchAPI {
 		t.Error("Expected UseForBatchAPI=true after second load, but got false or nil")
 	}
 }
@@ -19601,7 +19725,7 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	keyID := uuid.NewString()
 
 	// Phase 1: Initial load with Vertex config
-	initialConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	initialConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19627,17 +19751,18 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	defer config1.Close(context.Background())
 
 	// Verify initial state
-	providers1, _ := config1.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig1 := providers1[schemas.Vertex]
-	if vertexConfig1.Keys[0].VertexKeyConfig == nil {
+	vertexKeys1, err := config1.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	require.NoError(t, err)
+	require.NotEmpty(t, vertexKeys1)
+	if vertexKeys1[0].VertexKeyConfig == nil {
 		t.Fatal("Expected VertexKeyConfig after first load")
 	}
-	if vertexConfig1.Keys[0].VertexKeyConfig.ProjectID.GetValue() != "my-project-123" {
-		t.Errorf("Expected ProjectID='my-project-123', got '%s'", vertexConfig1.Keys[0].VertexKeyConfig.ProjectID.GetValue())
+	if vertexKeys1[0].VertexKeyConfig.ProjectID.GetValue() != "my-project-123" {
+		t.Errorf("Expected ProjectID='my-project-123', got '%s'", vertexKeys1[0].VertexKeyConfig.ProjectID.GetValue())
 	}
 
 	// Phase 2: Update config with different Region
-	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19663,10 +19788,9 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	defer config2.Close(context.Background())
 
 	// Verify Region changed
-	providers2, _ := config2.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig2 := providers2[schemas.Vertex]
-	if vertexConfig2.Keys[0].VertexKeyConfig.Region.GetValue() != "europe-west1" {
-		t.Errorf("Expected Region='europe-west1', got '%s'", vertexConfig2.Keys[0].VertexKeyConfig.Region.GetValue())
+	vertexKeys2, _ := config2.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	if vertexKeys2[0].VertexKeyConfig.Region.GetValue() != "europe-west1" {
+		t.Errorf("Expected Region='europe-west1', got '%s'", vertexKeys2[0].VertexKeyConfig.Region.GetValue())
 	}
 
 	// Phase 3: Same config again - should not trigger update (hash matches)
@@ -19676,10 +19800,9 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	}
 	defer config3.Close(context.Background())
 
-	providers3, _ := config3.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig3 := providers3[schemas.Vertex]
-	if vertexConfig3.Keys[0].VertexKeyConfig.Region.GetValue() != "europe-west1" {
-		t.Errorf("Expected Region='europe-west1' preserved, got '%s'", vertexConfig3.Keys[0].VertexKeyConfig.Region.GetValue())
+	vertexKeys3, _ := config3.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	if vertexKeys3[0].VertexKeyConfig.Region.GetValue() != "europe-west1" {
+		t.Errorf("Expected Region='europe-west1' preserved, got '%s'", vertexKeys3[0].VertexKeyConfig.Region.GetValue())
 	}
 }
 
@@ -19689,7 +19812,7 @@ func TestProviderHashComparison_VertexNewProviderFromConfig(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config with Vertex provider
-	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19716,18 +19839,18 @@ func TestProviderHashComparison_VertexNewProviderFromConfig(t *testing.T) {
 
 	// Verify Vertex provider was created
 	providers, _ := config.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig, exists := providers[schemas.Vertex]
-	if !exists {
+	if _, exists := providers[schemas.Vertex]; !exists {
 		t.Fatal("Expected Vertex provider to exist in DB")
 	}
-	if len(vertexConfig.Keys) != 1 {
-		t.Fatalf("Expected 1 key, got %d", len(vertexConfig.Keys))
+	vertexKeys, _ := config.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	if len(vertexKeys) != 1 {
+		t.Fatalf("Expected 1 key, got %d", len(vertexKeys))
 	}
-	if vertexConfig.Keys[0].VertexKeyConfig == nil {
+	if vertexKeys[0].VertexKeyConfig == nil {
 		t.Fatal("Expected VertexKeyConfig to exist")
 	}
-	if vertexConfig.Keys[0].VertexKeyConfig.ProjectID.GetValue() != "new-project-456" {
-		t.Errorf("Expected ProjectID='new-project-456', got '%s'", vertexConfig.Keys[0].VertexKeyConfig.ProjectID.GetValue())
+	if vertexKeys[0].VertexKeyConfig.ProjectID.GetValue() != "new-project-456" {
+		t.Errorf("Expected ProjectID='new-project-456', got '%s'", vertexKeys[0].VertexKeyConfig.ProjectID.GetValue())
 	}
 }
 
@@ -19739,7 +19862,7 @@ func TestProviderHashComparison_VertexDBValuePreservedWhenHashMatches(t *testing
 	keyID := uuid.NewString()
 
 	// Initial config
-	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19765,9 +19888,9 @@ func TestProviderHashComparison_VertexDBValuePreservedWhenHashMatches(t *testing
 
 	// Manually update the DB with a different AuthCredentials (simulating dashboard edit)
 	providers1, _ := config1.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig := providers1[schemas.Vertex]
-	vertexConfig.Keys[0].VertexKeyConfig.AuthCredentials = *schemas.NewSecretVar(`{"type":"service_account","edited":true}`)
-	config1.ConfigStore.UpdateProvidersConfig(context.Background(), providers1)
+	vertexKeys, _ := config1.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	vertexKeys[0].VertexKeyConfig.AuthCredentials = *schemas.NewSecretVar(`{"type":"service_account","edited":true}`)
+	config1.ConfigStore.UpdateProvidersConfig(context.Background(), providers1, map[schemas.ModelProvider][]schemas.Key{schemas.Vertex: vertexKeys})
 	config1.Close(context.Background())
 
 	// Reload with same config file - DB value should be preserved since hash matches
@@ -19780,11 +19903,10 @@ func TestProviderHashComparison_VertexDBValuePreservedWhenHashMatches(t *testing
 	// Note: With hash-based reconciliation, when the file hash doesn't change,
 	// the DB values are preserved. Since we modified the DB but not the file,
 	// the file hash still matches the original, so DB values are kept.
-	providers2, _ := config2.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig2 := providers2[schemas.Vertex]
+	vertexKeys2, _ := config2.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
 	// The AuthCredentials should be the DB-modified value since file hash matches original
-	if vertexConfig2.Keys[0].VertexKeyConfig.AuthCredentials.GetValue() != `{"type":"service_account","edited":true}` {
-		t.Logf("AuthCredentials: %s", vertexConfig2.Keys[0].VertexKeyConfig.AuthCredentials.GetValue())
+	if vertexKeys2[0].VertexKeyConfig.AuthCredentials.GetValue() != `{"type":"service_account","edited":true}` {
+		t.Logf("AuthCredentials: %s", vertexKeys2[0].VertexKeyConfig.AuthCredentials.GetValue())
 		// This is expected behavior - when file hasn't changed, DB value is preserved
 	}
 }
@@ -19797,7 +19919,7 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	keyID := uuid.NewString()
 
 	// Initial config
-	initialConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	initialConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19822,7 +19944,7 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	config1.Close(context.Background())
 
 	// Update config file with different ProjectID
-	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19847,10 +19969,9 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	defer config2.Close(context.Background())
 
 	// Verify file value wins
-	providers2, _ := config2.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig2 := providers2[schemas.Vertex]
-	if vertexConfig2.Keys[0].VertexKeyConfig.ProjectID.GetValue() != "updated-project" {
-		t.Errorf("Expected ProjectID='updated-project' from file, got '%s'", vertexConfig2.Keys[0].VertexKeyConfig.ProjectID.GetValue())
+	vertexKeys2, _ := config2.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	if vertexKeys2[0].VertexKeyConfig.ProjectID.GetValue() != "updated-project" {
+		t.Errorf("Expected ProjectID='updated-project' from file, got '%s'", vertexKeys2[0].VertexKeyConfig.ProjectID.GetValue())
 	}
 }
 
@@ -22003,6 +22124,20 @@ func testProviderKey() schemas.Key {
 	return schemas.Key{Name: "test-key", Value: *schemas.NewSecretVar("test-key")}
 }
 
+// addProviderWithKeys stores a provider and then each of keys in order, since AddProvider writes
+// the provider row alone.
+func addProviderWithKeys(ctx context.Context, store configstore.ConfigStore, provider schemas.ModelProvider, config configstore.ProviderConfig, keys []schemas.Key) error {
+	if err := store.AddProvider(ctx, provider, config); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if err := store.CreateProviderKey(ctx, provider, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // TestProviderPrefixRegistration_ConfigLifecycle checks that a provider's "name/model" prefix is
 // recognized once AddProvider returns and stops being recognized once RemoveProvider drops it,
 // and that a failed write leaves it as it was. A provider written to the database elsewhere and
@@ -22011,7 +22146,7 @@ func TestProviderPrefixRegistration_ConfigLifecycle(t *testing.T) {
 	initTestLogger()
 	const provider schemas.ModelProvider = "Config Prefix Registration"
 	t.Cleanup(func() { schemas.UnregisterKnownProvider(provider) })
-	cfg := providerStore(t, nil)
+	cfg := providerStore(t, nil, nil)
 	store := cfg.ConfigStore
 	ctx := context.Background()
 	model := string(provider) + "/namespace/model"
@@ -22071,11 +22206,9 @@ func TestProviderPrefixRegistration_ConfigLifecycle(t *testing.T) {
 
 func TestAddProvider_Success(t *testing.T) {
 	initTestLogger()
-	cfg := providerStore(t, nil)
+	cfg := providerStore(t, nil, nil)
 
-	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{
-		Keys: []schemas.Key{testProviderKey()},
-	})
+	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -22086,7 +22219,7 @@ func TestAddProvider_Success(t *testing.T) {
 
 func TestAddProvider_AlreadyExistsInMemory(t *testing.T) {
 	initTestLogger()
-	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{"test-provider": {}})
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{"test-provider": {}}, nil)
 
 	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{})
 	if err == nil {
@@ -22103,9 +22236,9 @@ func TestAddProvider_AlreadyExistsInDB_SyncsToMemory(t *testing.T) {
 	t.Cleanup(func() { schemas.UnregisterKnownProvider("test-provider") })
 	// Simulate: provider exists in DB but not in memory. This can happen when a previous
 	// AddProvider wrote to DB but the process failed before the live store heard of it.
-	cfg := providerStore(t, nil)
-	config := configstore.ProviderConfig{Keys: []schemas.Key{testProviderKey()}}
-	if err := cfg.ConfigStore.AddProvider(context.Background(), "test-provider", config); err != nil {
+	cfg := providerStore(t, nil, nil)
+	config := configstore.ProviderConfig{}
+	if err := addProviderWithKeys(context.Background(), cfg.ConfigStore, "test-provider", config, []schemas.Key{testProviderKey()}); err != nil {
 		t.Fatalf("seeding the database: %v", err)
 	}
 
@@ -22132,7 +22265,7 @@ func TestAddProvider_AlreadyExistsInDB_SyncsToMemory(t *testing.T) {
 func TestAddProvider_DBError_DoesNotSyncToMemory(t *testing.T) {
 	initTestLogger()
 	// Non-duplicate DB errors should NOT add the provider to memory
-	cfg := providerStore(t, nil)
+	cfg := providerStore(t, nil, nil)
 	cfg.ConfigStore = &mockConfigStoreAddProvider{ConfigStore: cfg.ConfigStore, addProviderErr: errors.New("connection refused")}
 
 	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{})
@@ -22149,11 +22282,9 @@ func TestAddProvider_DBError_DoesNotSyncToMemory(t *testing.T) {
 // write is refused and memory keeps what boot loaded.
 func TestAddProvider_NilConfigStore_Refuses(t *testing.T) {
 	initTestLogger()
-	cfg := withProviders(t, &Config{}, nil)
+	cfg := withProviders(t, &Config{}, nil, nil)
 
-	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{
-		Keys: []schemas.Key{testProviderKey()},
-	})
+	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{})
 	if !errors.Is(err, ErrNoConfigStore) {
 		t.Fatalf("expected ErrNoConfigStore, got: %v", err)
 	}
@@ -22183,7 +22314,9 @@ func (m *mockConfigStoreDeleteProvider) DeleteProvider(ctx context.Context, prov
 func TestRemoveProvider_Success(t *testing.T) {
 	initTestLogger()
 	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		"test-provider": {Keys: []schemas.Key{testProviderKey()}},
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
 	})
 
 	err := cfg.RemoveProvider(context.Background(), "test-provider")
@@ -22197,7 +22330,7 @@ func TestRemoveProvider_Success(t *testing.T) {
 
 func TestRemoveProvider_NotFound(t *testing.T) {
 	initTestLogger()
-	cfg := providerStore(t, nil)
+	cfg := providerStore(t, nil, nil)
 
 	err := cfg.RemoveProvider(context.Background(), "nonexistent-provider")
 	if err != nil {
@@ -22208,7 +22341,9 @@ func TestRemoveProvider_NotFound(t *testing.T) {
 func TestRemoveProvider_DBError_DoesNotRemoveFromMemory(t *testing.T) {
 	initTestLogger()
 	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		"test-provider": {Keys: []schemas.Key{testProviderKey()}},
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
 	})
 	cfg.ConfigStore = &mockConfigStoreDeleteProvider{ConfigStore: cfg.ConfigStore, deleteProviderErr: errors.New("connection refused")}
 
@@ -22225,7 +22360,9 @@ func TestRemoveProvider_DBError_DoesNotRemoveFromMemory(t *testing.T) {
 func TestRemoveProvider_NilConfigStore_Refuses(t *testing.T) {
 	initTestLogger()
 	cfg := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
-		"test-provider": {Keys: []schemas.Key{testProviderKey()}},
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
 	})
 
 	err := cfg.RemoveProvider(context.Background(), "test-provider")
@@ -22244,7 +22381,9 @@ func TestRemoveProvider_SkipDBUpdate(t *testing.T) {
 	// When skipDBUpdate is set, DeleteProvider should not be called on the store.
 	// Use a mock that would fail if called, proving it was skipped.
 	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		"test-provider": {Keys: []schemas.Key{testProviderKey()}},
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
 	})
 	cfg.ConfigStore = &mockConfigStoreDeleteProvider{ConfigStore: cfg.ConfigStore, deleteProviderErr: errors.New("should not be called")}
 
@@ -22500,7 +22639,7 @@ func TestLoadConfig_NoConfigFile_ExistingDB(t *testing.T) {
 	ctx := context.Background()
 
 	// First run: create a config.json to populate the DB
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -22546,7 +22685,7 @@ func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfig("openai-key-1", "sk-openai-123"),
 		"anthropic": {
 			Keys: []schemas.Key{
@@ -22616,9 +22755,9 @@ func TestLoadConfig_PartialConfigFile_OnlyProviders(t *testing.T) {
 	ctx := context.Background()
 
 	configData := makeMinimalConfigData(tempDir)
-	configData.Providers = map[string]configstore.ProviderConfig{
+	configData.Providers, configData.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
 		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
-	}
+	})
 
 	createConfigFile(t, tempDir, configData)
 
@@ -22772,10 +22911,10 @@ func TestLoadConfig_PartialConfigFile_ClientAndProviders(t *testing.T) {
 		MaxRequestBodySizeMB: 50,
 		AllowedOrigins:       []string{"*"},
 	}
-	configData.Providers = map[string]configstore.ProviderConfig{
+	configData.Providers, configData.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
 		"openai":    makeProviderConfig("openai-key", "sk-openai-abc"),
 		"anthropic": makeProviderConfig("anthropic-key", "sk-anthropic-def"),
-	}
+	})
 
 	createConfigFile(t, tempDir, configData)
 
@@ -22799,11 +22938,10 @@ func TestLoadConfig_ConfigFile_NoConfigStoreSection(t *testing.T) {
 	ctx := context.Background()
 
 	// Create config.json without config_store section
-	configData := &ConfigData{
-		Providers: map[string]configstore.ProviderConfig{
-			"openai": makeProviderConfig("openai-key", "sk-test-123"),
-		},
-	}
+	configData := &ConfigData{}
+	configData.Providers, configData.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
+		"openai": makeProviderConfig("openai-key", "sk-test-123"),
+	})
 	createConfigFile(t, tempDir, configData)
 
 	config, err := LoadConfig(ctx, tempDir)
@@ -22830,10 +22968,10 @@ func TestLoadConfig_ConfigFile_ConfigStoreDisabled(t *testing.T) {
 		ConfigStoreConfig: &configstore.Config{
 			Enabled: false,
 		},
-		Providers: map[string]configstore.ProviderConfig{
-			"openai": makeProviderConfig("openai-key", "sk-test-456"),
-		},
 	}
+	configData.Providers, configData.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
+		"openai": makeProviderConfig("openai-key", "sk-test-456"),
+	})
 	createConfigFile(t, tempDir, configData)
 
 	config, err := LoadConfig(ctx, tempDir)
@@ -22868,12 +23006,11 @@ func TestLoadConfig_NoConfigFile_SecondRun(t *testing.T) {
 	require.NotNil(t, config1)
 
 	// Manually add a provider to DB to simulate dashboard addition
-	testProvider := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: uuid.NewString(), Name: "manual-key", Value: *schemas.NewSecretVar("sk-manual-123"), Weight: 1},
-		},
+	testProviderKeys := []schemas.Key{
+		{ID: uuid.NewString(), Name: "manual-key", Value: *schemas.NewSecretVar("sk-manual-123"), Weight: 1},
 	}
-	err = config1.ConfigStore.AddProvider(ctx, schemas.OpenAI, testProvider)
+	testProvider := configstore.ProviderConfig{}
+	err = addProviderWithKeys(ctx, config1.ConfigStore, schemas.OpenAI, testProvider, testProviderKeys)
 	require.NoError(t, err)
 	config1.Close(ctx)
 
@@ -22897,7 +23034,7 @@ func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
 	ctx := context.Background()
 
 	// First run: full config.json
-	providers1 := map[string]configstore.ProviderConfig{
+	providers1 := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: "openai-key-1", Name: "openai-key", Value: *schemas.NewSecretVar("test-openai-key"), Weight: 1},
@@ -22925,13 +23062,13 @@ func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
 
 	// Second run: config.json with only changed providers (no governance section)
 	configData2 := makeMinimalConfigData(tempDir)
-	configData2.Providers = map[string]configstore.ProviderConfig{
+	configData2.Providers, configData2.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: "openai-key-1", Name: "openai-key", Value: *schemas.NewSecretVar("test-openai-key-updated"), Weight: 1},
 			},
 		},
-	}
+	})
 	// Note: no governance section in this config.json
 	createConfigFile(t, tempDir, configData2)
 
@@ -23031,21 +23168,23 @@ func makeV1ProviderKey(name string, models schemas.WhiteList) schemas.Key {
 	}
 }
 
-// makeV1ProviderConfig builds a minimal configstore.ProviderConfig with the given keys.
-func makeV1ProviderConfig(keys ...schemas.Key) configstore.ProviderConfig {
-	return configstore.ProviderConfig{Keys: keys}
+// makeV1ProviderConfig builds a minimal config.json provider entry with the given keys.
+func makeV1ProviderConfig(keys ...schemas.Key) providerFileEntry {
+	return providerFileEntry{Keys: keys}
 }
 
 // makeV1ConfigData is a convenience constructor for compat tests.
 func makeV1ConfigData(
-	providers map[string]configstore.ProviderConfig,
+	providers map[string]providerFileEntry,
 	mcp *MCPFileConfig,
 	vks []tables.TableVirtualKey,
 ) *ConfigData {
+	providerConfigs, providerKeys := splitProviderEntries(providers)
 	cd := &ConfigData{
-		Version:   1,
-		Providers: providers,
-		MCP:       mcp,
+		Version:      1,
+		Providers:    providerConfigs,
+		ProviderKeys: providerKeys,
+		MCP:          mcp,
 	}
 	if len(vks) > 0 {
 		cd.Governance = &configstore.GovernanceConfig{VirtualKeys: vks}
@@ -23057,7 +23196,7 @@ func makeV1ConfigData(
 // both normalised to ["*"].
 func TestApplyV1Compat_ProviderKey_EmptyModels(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai": makeV1ProviderConfig(
 				makeV1ProviderKey("nil-models", nil),
 				makeV1ProviderKey("empty-models", schemas.WhiteList{}),
@@ -23068,7 +23207,7 @@ func TestApplyV1Compat_ProviderKey_EmptyModels(t *testing.T) {
 
 	applyV1Compat(cd)
 
-	for _, key := range cd.Providers["openai"].Keys {
+	for _, key := range cd.ProviderKeys["openai"] {
 		require.Equal(t, schemas.WhiteList{"*"}, key.Models,
 			"key %q: expected models to be normalized to [\"*\"]", key.Name)
 	}
@@ -23078,7 +23217,7 @@ func TestApplyV1Compat_ProviderKey_EmptyModels(t *testing.T) {
 // ["*"] is left untouched.
 func TestApplyV1Compat_ProviderKey_WildcardUnchanged(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai": makeV1ProviderConfig(makeV1ProviderKey("wildcard", schemas.WhiteList{"*"})),
 		},
 		nil, nil,
@@ -23086,7 +23225,7 @@ func TestApplyV1Compat_ProviderKey_WildcardUnchanged(t *testing.T) {
 
 	applyV1Compat(cd)
 
-	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["openai"].Keys[0].Models)
+	require.Equal(t, schemas.WhiteList{"*"}, cd.ProviderKeys["openai"][0].Models)
 }
 
 // TestApplyV1Compat_ProviderKey_ExplicitUnchanged ensures that a specific model
@@ -23094,7 +23233,7 @@ func TestApplyV1Compat_ProviderKey_WildcardUnchanged(t *testing.T) {
 func TestApplyV1Compat_ProviderKey_ExplicitUnchanged(t *testing.T) {
 	models := schemas.WhiteList{"gpt-4o", "gpt-4o-mini"}
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai": makeV1ProviderConfig(makeV1ProviderKey("specific", models)),
 		},
 		nil, nil,
@@ -23102,7 +23241,7 @@ func TestApplyV1Compat_ProviderKey_ExplicitUnchanged(t *testing.T) {
 
 	applyV1Compat(cd)
 
-	require.Equal(t, models, cd.Providers["openai"].Keys[0].Models)
+	require.Equal(t, models, cd.ProviderKeys["openai"][0].Models)
 }
 
 // TestApplyV1Compat_VK_EmptyProviderConfigs verifies that a VK with no
@@ -23110,7 +23249,7 @@ func TestApplyV1Compat_ProviderKey_ExplicitUnchanged(t *testing.T) {
 // AllowedModels: ["*"] and AllowAllKeys: true.
 func TestApplyV1Compat_VK_EmptyProviderConfigs(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai":    makeV1ProviderConfig(makeV1ProviderKey("k1", nil)),
 			"anthropic": makeV1ProviderConfig(makeV1ProviderKey("k2", nil)),
 		},
@@ -23145,7 +23284,7 @@ func TestApplyV1Compat_VK_EmptyProviderConfigs(t *testing.T) {
 // provider config entry with allowed_models: [] gets normalised to ["*"].
 func TestApplyV1Compat_VK_ProviderConfig_EmptyAllowedModels(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
 		nil,
 		[]tables.TableVirtualKey{
 			{
@@ -23168,7 +23307,7 @@ func TestApplyV1Compat_VK_ProviderConfig_EmptyAllowedModels(t *testing.T) {
 // with no keys and AllowAllKeys=false gets AllowAllKeys set to true.
 func TestApplyV1Compat_VK_ProviderConfig_EmptyKeyIDs(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
 		nil,
 		[]tables.TableVirtualKey{
 			{
@@ -23191,7 +23330,7 @@ func TestApplyV1Compat_VK_ProviderConfig_EmptyKeyIDs(t *testing.T) {
 // that already has AllowAllKeys=true is left unchanged.
 func TestApplyV1Compat_VK_ProviderConfig_AlreadyAllowAll(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
 		nil,
 		[]tables.TableVirtualKey{
 			{
@@ -23215,7 +23354,7 @@ func TestApplyV1Compat_VK_ProviderConfig_AlreadyAllowAll(t *testing.T) {
 // gets one entry per configured MCP client, each with ToolsToExecute: ["*"].
 func TestApplyV1Compat_VK_EmptyMCPConfigs(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
 		&MCPFileConfig{
 			ClientConfigs: []*schemas.MCPClientConfig{
 				{Name: "tools-a"},
@@ -23252,7 +23391,7 @@ func TestApplyV1Compat_VK_NonEmptyMCPConfigs(t *testing.T) {
 		{MCPClientName: "tools-a", ToolsToExecute: schemas.WhiteList{"tool1"}},
 	}
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
 		&MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{Name: "tools-a"}, {Name: "tools-b"}}},
 		[]tables.TableVirtualKey{
 			{ID: "vk-1", Name: "Has MCP", MCPConfigs: existing},
@@ -23270,21 +23409,21 @@ func TestApplyV1Compat_VK_NonEmptyMCPConfigs(t *testing.T) {
 // governance section is absent.
 func TestApplyV1Compat_NoGovernance(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil)),
 		},
 		nil, nil,
 	)
 
 	require.NotPanics(t, func() { applyV1Compat(cd) })
-	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["openai"].Keys[0].Models)
+	require.Equal(t, schemas.WhiteList{"*"}, cd.ProviderKeys["openai"][0].Models)
 }
 
 // TestApplyV1Compat_NoMCP verifies that an empty mcp_configs on a VK is NOT
 // backfilled when the top-level mcp section is absent.
 func TestApplyV1Compat_NoMCP(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
 		nil, // no MCP config
 		[]tables.TableVirtualKey{
 			{ID: "vk-1", Name: "No MCP Section", MCPConfigs: []tables.TableVirtualKeyMCPConfig{}},
@@ -23301,7 +23440,7 @@ func TestApplyV1Compat_NoMCP(t *testing.T) {
 // single pass, even when some already have wildcard models.
 func TestApplyV1Compat_MultipleProviders(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai": makeV1ProviderConfig(
 				makeV1ProviderKey("empty", schemas.WhiteList{}),
 				makeV1ProviderKey("nil", nil),
@@ -23316,11 +23455,11 @@ func TestApplyV1Compat_MultipleProviders(t *testing.T) {
 
 	applyV1Compat(cd)
 
-	for _, k := range cd.Providers["openai"].Keys {
+	for _, k := range cd.ProviderKeys["openai"] {
 		require.Equal(t, schemas.WhiteList{"*"}, k.Models, "openai key %q should be [*]", k.Name)
 	}
-	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["anthropic"].Keys[0].Models, "wildcard unchanged")
-	require.Equal(t, schemas.WhiteList{"claude-3-5-sonnet-20241022"}, cd.Providers["anthropic"].Keys[1].Models, "specific unchanged")
+	require.Equal(t, schemas.WhiteList{"*"}, cd.ProviderKeys["anthropic"][0].Models, "wildcard unchanged")
+	require.Equal(t, schemas.WhiteList{"claude-3-5-sonnet-20241022"}, cd.ProviderKeys["anthropic"][1].Models, "specific unchanged")
 }
 
 // =============================================================================
@@ -23353,10 +23492,10 @@ func TestVersionField_DefaultBehavior(t *testing.T) {
 
 	cd := &ConfigData{
 		// Version intentionally omitted — defaults to 0, treated as v2
-		Providers: map[string]configstore.ProviderConfig{
-			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
-		},
 	}
+	cd.Providers, cd.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
+		"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+	})
 	createConfigFile(t, tempDir, cd)
 
 	config, err := LoadConfig(ctx, tempDir)
@@ -23365,10 +23504,11 @@ func TestVersionField_DefaultBehavior(t *testing.T) {
 	defer config.Close(ctx)
 
 	// v2 semantics: empty models stays empty (deny all) — must NOT be promoted to ["*"]
-	openaiCfg, ok := providersOf(config)[schemas.OpenAI]
+	_, ok := providersOf(config)[schemas.OpenAI]
 	require.True(t, ok, "openai provider should be present")
-	require.Len(t, openaiCfg.Keys, 1)
-	require.Empty(t, openaiCfg.Keys[0].Models,
+	openaiKeys := config.GetProviderKeys(schemas.OpenAI)
+	require.Len(t, openaiKeys, 1)
+	require.Empty(t, openaiKeys[0].Models,
 		"v2 semantics: empty models must NOT be normalised to [\"*\"]")
 }
 
@@ -23380,12 +23520,10 @@ func TestVersionField_Version1_AppliesCompat(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	cd := &ConfigData{
-		Version: 1,
-		Providers: map[string]configstore.ProviderConfig{
-			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
-		},
-	}
+	cd := &ConfigData{Version: 1}
+	cd.Providers, cd.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
+		"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+	})
 	createConfigFile(t, tempDir, cd)
 
 	config, err := LoadConfig(ctx, tempDir)
@@ -23393,10 +23531,11 @@ func TestVersionField_Version1_AppliesCompat(t *testing.T) {
 	require.NotNil(t, config)
 	defer config.Close(ctx)
 
-	openaiCfg, ok := providersOf(config)[schemas.OpenAI]
+	_, ok := providersOf(config)[schemas.OpenAI]
 	require.True(t, ok, "openai provider should be present")
-	require.Len(t, openaiCfg.Keys, 1)
-	require.Equal(t, schemas.WhiteList{"*"}, openaiCfg.Keys[0].Models,
+	openaiKeys := config.GetProviderKeys(schemas.OpenAI)
+	require.Len(t, openaiKeys, 1)
+	require.Equal(t, schemas.WhiteList{"*"}, openaiKeys[0].Models,
 		"v1 semantics: empty models must be normalised to [\"*\"]")
 }
 
@@ -23407,12 +23546,10 @@ func TestVersionField_Version2_NoCompat(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	cd := &ConfigData{
-		Version: 2,
-		Providers: map[string]configstore.ProviderConfig{
-			"anthropic": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
-		},
-	}
+	cd := &ConfigData{Version: 2}
+	cd.Providers, cd.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
+		"anthropic": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+	})
 	createConfigFile(t, tempDir, cd)
 
 	config, err := LoadConfig(ctx, tempDir)
@@ -23420,10 +23557,11 @@ func TestVersionField_Version2_NoCompat(t *testing.T) {
 	require.NotNil(t, config)
 	defer config.Close(ctx)
 
-	anthropicCfg, ok := providersOf(config)[schemas.Anthropic]
+	_, ok := providersOf(config)[schemas.Anthropic]
 	require.True(t, ok, "anthropic provider should be present")
-	require.Len(t, anthropicCfg.Keys, 1)
-	require.Empty(t, anthropicCfg.Keys[0].Models,
+	anthropicKeys := config.GetProviderKeys(schemas.Anthropic)
+	require.Len(t, anthropicKeys, 1)
+	require.Empty(t, anthropicKeys[0].Models,
 		"v2 semantics: empty models must NOT be normalised")
 }
 
@@ -23492,7 +23630,7 @@ func testMemoryEndpoint(id, name string) *configstoreTables.TableWebhookEndpoint
 // by ID and by name, follow a rename and a delete once refreshed, and come back as stored.
 func TestWebhookEndpointsServedFromTheLiveStore(t *testing.T) {
 	ctx := context.Background()
-	config := providerStore(t, nil)
+	config := providerStore(t, nil, nil)
 	refresh := func(id string, remove bool) {
 		t.Helper()
 		require.NoError(t, config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindWebhookEndpoint, ID: id, Remove: remove}}))
@@ -25424,12 +25562,12 @@ func TestResolveGovernanceKeyReferences_RoutingFallbacks(t *testing.T) {
 	ctx := context.Background()
 	store := createTestSQLiteConfigStore(t, t.TempDir())
 	// Key names are unique across providers; the lookup still checks the name belongs to the fallback's provider.
-	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{Keys: []schemas.Key{
+	require.NoError(t, addProviderWithKeys(ctx, store, schemas.Anthropic, configstore.ProviderConfig{}, []schemas.Key{
 		{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-	}}))
-	require.NoError(t, store.AddProvider(ctx, schemas.Vertex, configstore.ProviderConfig{Keys: []schemas.Key{
+	}))
+	require.NoError(t, addProviderWithKeys(ctx, store, schemas.Vertex, configstore.ProviderConfig{}, []schemas.Key{
 		{ID: "k-vertex-prod", Name: "Vertex Prod", Value: *schemas.NewSecretVar("sk-v"), Models: schemas.WhiteList{"*"}, Weight: 1},
-	}}))
+	}))
 	config := &Config{ConfigStore: store}
 
 	t.Run("resolves names per provider and leaves other entries alone", func(t *testing.T) {
@@ -25737,7 +25875,7 @@ func TestLoadConfig_ClientConfigSyncPreservesClientMetadata(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}, tempDir)
 	configData.Client = &configstore.ClientConfig{LogRetentionDays: 30}
@@ -25785,7 +25923,7 @@ func TestLoadConfig_DisableOnboarding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("BIFROST_DISABLE_ONBOARDING", tc.env)
 			tempDir := createTempDir(t)
-			configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{}, tempDir)
+			configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{}, tempDir)
 			configData.DisableOnboarding = tc.file
 			createConfigFile(t, tempDir, configData)
 
@@ -25944,7 +26082,7 @@ func TestGetCustomProviderPassthrough(t *testing.T) {
 			Passthrough:          &schemas.PassthroughPolicy{},
 		},
 		"sidecar-off": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}},
-	})
+	}, nil)
 	for _, tc := range []struct {
 		provider    schemas.ModelProvider
 		wantBase    schemas.ModelProvider
@@ -25971,7 +26109,7 @@ func TestSQLite_DirectlyOwnedVirtualKeyLimitsAreRepairedOnReload(t *testing.T) {
 			tempDir := createTempDir(t)
 			requestMax, requestDur := int64(50), "1m"
 			declare := func(step string) *ConfigData {
-				configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+				configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 					"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 				}, tempDir)
 				configData.SourceOfTruth = sourceOfTruth
@@ -26175,7 +26313,7 @@ func TestSQLite_ProviderConfigDroppedFromFileTakesItsTier(t *testing.T) {
 	tempDir := createTempDir(t)
 	requestMax, requestDur := int64(50), "1m"
 	declare := func(step string, providers ...string) *ConfigData {
-		configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai":    {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 			"anthropic": {Keys: []schemas.Key{{ID: "k2", Name: "k2", Value: *schemas.NewSecretVar("sk-b"), Weight: 1}}},
 		}, tempDir)
@@ -26367,7 +26505,7 @@ func TestSQLite_ReloadDoesNotCreateCompetingVirtualKeyTiers(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 	declare := func(dir string, withLimits bool, provider *string) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.SourceOfTruth = SourceOfTruthConfigJSON
@@ -26442,7 +26580,7 @@ func TestSQLite_DroppedProviderConfigKeepsDeclaredModelConfig(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(withProviderConfig bool) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.SourceOfTruth = SourceOfTruthConfigJSON
@@ -26545,7 +26683,7 @@ func TestSQLite_DeclaredModelConfigAdoptsExistingVirtualKeyTier(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(step string, named bool) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.SourceOfTruth = SourceOfTruthConfigJSON
@@ -26725,7 +26863,7 @@ func TestSQLite_TopLevelBudgetFollowsItsDeclaredOwner(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(step string, onKey bool, pcID *uint) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.SourceOfTruth = SourceOfTruthConfigJSON
@@ -26882,7 +27020,7 @@ func TestSQLite_DroppedProviderKeepsLimitsTheFileRelocated(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(step string, onProvider bool) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.SourceOfTruth = SourceOfTruthConfigJSON
@@ -27096,7 +27234,7 @@ func TestSQLite_DroppedTierKeepsARateLimitAnotherTierShares(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(step string, withAnthropic bool) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai":    {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 			"anthropic": {Keys: []schemas.Key{{ID: "k2", Name: "k2", Value: *schemas.NewSecretVar("sk-b"), Weight: 1}}},
 		}, dir)
@@ -27167,7 +27305,7 @@ func TestSQLite_ApiOwnedTierBudgetSurvivesKeyEdit(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(step string) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.Governance = &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{{
@@ -27256,7 +27394,6 @@ func TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys(t *testing.T) {
 	fileKey := schemas.Key{ID: "file-key", Name: "file", Value: *schemas.NewSecretVar("sk"), Weight: 1}
 	build := func() configstore.ProviderConfig {
 		return configstore.ProviderConfig{
-			Keys: []schemas.Key{fileKey},
 			CustomProviderConfig: &schemas.CustomProviderConfig{
 				BaseProviderType: schemas.OpenAI,
 				RequestPathOverrides: map[schemas.RequestType]string{
@@ -27267,7 +27404,8 @@ func TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys(t *testing.T) {
 			},
 		}
 	}
-	stored := func(t *testing.T) configstore.ProviderConfig {
+	// stored returns the stored provider and its keys: the file key and one added through the API.
+	stored := func(t *testing.T) (configstore.ProviderConfig, []schemas.Key) {
 		cfg := build()
 		legacy, err := cfg.LegacyOverrideOrderConfigHash(string(provider), []schemas.RequestType{
 			schemas.TextCompletionRequest, schemas.ChatCompletionRequest, schemas.EmbeddingRequest,
@@ -27278,9 +27416,8 @@ func TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys(t *testing.T) {
 		storedFileKey := fileKey
 		storedFileKey.ConfigHash = fileKeyHash
 		apiKey := schemas.Key{ID: "api-key", Name: "added-through-api", Value: *schemas.NewSecretVar("sk-api"), Weight: 1}
-		cfg.Keys = []schemas.Key{storedFileKey, apiKey}
 		cfg.ConfigHash = legacy
-		return cfg
+		return cfg, []schemas.Key{storedFileKey, apiKey}
 	}
 
 	t.Run("unchanged file keeps API-added keys", func(t *testing.T) {
@@ -27288,15 +27425,16 @@ func TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys(t *testing.T) {
 		sorted, err := fileCfg.GenerateConfigHash(string(provider))
 		require.NoError(t, err)
 		fileCfg.ConfigHash = sorted
-		dbCfg := stored(t)
+		dbCfg, dbKeys := stored(t)
 		require.NotEqual(t, sorted, dbCfg.ConfigHash)
 
 		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: dbCfg}
-		mergeProviderWithHash(provider, fileCfg, providers)
+		keys := map[schemas.ModelProvider][]schemas.Key{provider: dbKeys}
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, keys)
 		merged := providers[provider]
 		require.Equal(t, sorted, merged.ConfigHash, "the stored hash must be upgraded to the sorted form")
 		names := []string{}
-		for _, k := range merged.Keys {
+		for _, k := range keys[provider] {
 			names = append(names, k.Name)
 		}
 		require.ElementsMatch(t, []string{"file", "added-through-api"}, names, "the API-added key must survive the hash format change")
@@ -27309,8 +27447,9 @@ func TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys(t *testing.T) {
 		require.NoError(t, err)
 		fileCfg.ConfigHash = edited
 
-		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
-		mergeProviderWithHash(provider, fileCfg, providers)
+		dbCfg, dbKeys := stored(t)
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: dbCfg}
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, map[schemas.ModelProvider][]schemas.Key{provider: dbKeys})
 		merged := providers[provider]
 		require.Equal(t, edited, merged.ConfigHash)
 		require.True(t, merged.CustomProviderConfig.IsKeyLess, "a changed config.json must still replace the stored provider")
@@ -27337,11 +27476,12 @@ func TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys(t *tes
 			overrides[rt] = "/v1/" + string(rt)
 		}
 		return configstore.ProviderConfig{
-			Keys:                 []schemas.Key{fileKey},
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: overrides},
 		}
 	}
-	stored := func(t *testing.T) configstore.ProviderConfig {
+	// stored returns the stored provider, keyed by provider in a map mergeProviderWithHash merges
+	// into, and its keys, the file key and one added through the API, keyed the same way.
+	stored := func(t *testing.T) (map[schemas.ModelProvider]configstore.ProviderConfig, map[schemas.ModelProvider][]schemas.Key) {
 		cfg := build()
 		order := append([]schemas.RequestType{}, requestTypes...)
 		slices.Reverse(order)
@@ -27352,13 +27492,13 @@ func TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys(t *tes
 		storedFileKey := fileKey
 		storedFileKey.ConfigHash = fileKeyHash
 		apiKey := schemas.Key{ID: "api-key", Name: "added-through-api", Value: *schemas.NewSecretVar("sk-api"), Weight: 1}
-		cfg.Keys = []schemas.Key{storedFileKey, apiKey}
 		cfg.ConfigHash = legacy
-		return cfg
+		return map[schemas.ModelProvider]configstore.ProviderConfig{provider: cfg},
+			map[schemas.ModelProvider][]schemas.Key{provider: {storedFileKey, apiKey}}
 	}
-	keyNames := func(cfg configstore.ProviderConfig) []string {
+	keyNames := func(keys []schemas.Key) []string {
 		names := []string{}
-		for _, k := range cfg.Keys {
+		for _, k := range keys {
 			names = append(names, k.Name)
 		}
 		return names
@@ -27369,14 +27509,13 @@ func TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys(t *tes
 		current, err := fileCfg.GenerateConfigHash(string(provider))
 		require.NoError(t, err)
 		fileCfg.ConfigHash = current
-		dbCfg := stored(t)
-		require.NotEqual(t, current, dbCfg.ConfigHash)
+		providers, keys := stored(t)
+		require.NotEqual(t, current, providers[provider].ConfigHash)
 
-		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: dbCfg}
-		mergeProviderWithHash(provider, fileCfg, providers)
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, keys)
 		merged := providers[provider]
 		require.Equal(t, current, merged.ConfigHash, "the stored hash must move to the sorted form so this runs once")
-		require.ElementsMatch(t, []string{"file", "added-through-api"}, keyNames(merged), "the API-added key must survive")
+		require.ElementsMatch(t, []string{"file", "added-through-api"}, keyNames(keys[provider]), "the API-added key must survive")
 	})
 
 	t.Run("edited file still applies its provider settings", func(t *testing.T) {
@@ -27386,26 +27525,26 @@ func TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys(t *tes
 		require.NoError(t, err)
 		fileCfg.ConfigHash = edited
 
-		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
-		mergeProviderWithHash(provider, fileCfg, providers)
+		providers, keys := stored(t)
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, keys)
 		merged := providers[provider]
 		require.Equal(t, edited, merged.ConfigHash)
 		require.True(t, merged.CustomProviderConfig.IsKeyLess, "a changed config.json must still replace the provider settings")
-		require.ElementsMatch(t, []string{"file", "added-through-api"}, keyNames(merged))
+		require.ElementsMatch(t, []string{"file", "added-through-api"}, keyNames(keys[provider]))
 	})
 
 	t.Run("edited file key is still updated", func(t *testing.T) {
 		fileCfg := build()
-		fileCfg.Keys = []schemas.Key{fileKey}
-		fileCfg.Keys[0].Weight = 2
+		fileKeys := []schemas.Key{fileKey}
+		fileKeys[0].Weight = 2
 		current, err := fileCfg.GenerateConfigHash(string(provider))
 		require.NoError(t, err)
 		fileCfg.ConfigHash = current
 
-		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
-		mergeProviderWithHash(provider, fileCfg, providers)
+		providers, keys := stored(t)
+		mergeProviderWithHash(provider, fileCfg, fileKeys, providers, keys)
 		found := false
-		for _, k := range providers[provider].Keys {
+		for _, k := range keys[provider] {
 			if k.Name == "file" {
 				found = true
 				require.Equal(t, float64(2), k.Weight, "a key edited in config.json must still replace the stored key")
@@ -27420,8 +27559,8 @@ func TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys(t *tes
 		current, err := fileCfg.GenerateConfigHash(string(provider))
 		require.NoError(t, err)
 		fileCfg.ConfigHash = current
-		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
-		mergeProviderWithHash(provider, fileCfg, providers)
+		providers, keys := stored(t)
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, keys)
 		changes := DrainStartupAuditChanges()
 		require.Len(t, changes, 1, "provider settings were taken from config.json, so the sync is audited")
 		require.Equal(t, string(provider), changes[0].TargetID)
@@ -27433,27 +27572,27 @@ func TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys(t *tes
 		current, err := fileCfg.GenerateConfigHash(string(provider))
 		require.NoError(t, err)
 		fileCfg.ConfigHash = current
-		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
-		mergeProviderWithHash(provider, fileCfg, providers)
-		upgraded := providers[provider]
+		providers, keys := stored(t)
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, keys)
+		upgraded, upgradedKeys := providers[provider], keys[provider]
 		require.Equal(t, current, upgraded.ConfigHash)
 
 		// Second boot: config.json really changed (provider setting edited, the file key removed).
 		DrainStartupAuditChanges()
 		edited := build()
 		edited.CustomProviderConfig.IsKeyLess = true
-		edited.Keys = nil
 		editedHash, err := edited.GenerateConfigHash(string(provider))
 		require.NoError(t, err)
 		edited.ConfigHash = editedHash
 		require.False(t, edited.ConfigHashLegacyOverrideOrderUnverifiable(upgraded.ConfigHash), "a sorted-era stored hash is never unverifiable")
 
 		providers = map[schemas.ModelProvider]configstore.ProviderConfig{provider: upgraded}
-		mergeProviderWithHash(provider, edited, providers)
+		keys = map[schemas.ModelProvider][]schemas.Key{provider: upgradedKeys}
+		mergeProviderWithHash(provider, edited, nil, providers, keys)
 		merged := providers[provider]
 		require.Equal(t, editedHash, merged.ConfigHash)
 		require.True(t, merged.CustomProviderConfig.IsKeyLess)
-		require.NotContains(t, keyNames(merged), "file", "a key removed from config.json must be removed once the hash is sorted-era")
+		require.NotContains(t, keyNames(keys[provider]), "file", "a key removed from config.json must be removed once the hash is sorted-era")
 		require.Len(t, DrainStartupAuditChanges(), 1, "the edit is audited")
 	})
 }
@@ -27506,7 +27645,7 @@ func newOpenAPIUpdateTestConfig(t *testing.T, failRebuilds bool) (*Config, *sche
 	t.Helper()
 	ctx := context.Background()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	cfg := providerStore(t, nil)
+	cfg := providerStore(t, nil, nil)
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: NewBaseAccount(cfg), Logger: logger})
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)

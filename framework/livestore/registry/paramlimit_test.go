@@ -31,8 +31,8 @@ func withMissingIDs(ids ...string) []string {
 // TestProvidersByNameReadsMoreNamesThanTheParameterLimit checks that a refresh of more provider
 // names than one statement may bind still reads the ones that exist.
 func TestProvidersByNameReadsMoreNamesThanTheParameterLimit(t *testing.T) {
-	store := newProviderDB(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{key("o1")}},
+	store := newProviderDB(t, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {key("o1")},
 	})
 	rows, err := ProvidersByName(context.Background(), store.DB(), withMissingIDs(string(schemas.OpenAI)))
 	require.NoError(t, err)
@@ -44,8 +44,8 @@ func TestProvidersByNameReadsMoreNamesThanTheParameterLimit(t *testing.T) {
 // of more providers' keys, than one statement may bind still reads the ones that exist.
 func TestProviderKeysByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
 	ctx := context.Background()
-	store := newProviderDB(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{key("o1")}},
+	store := newProviderDB(t, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {key("o1")},
 	})
 	recs, err := ProviderKeysByID(ctx, store.DB(), withMissingIDs("o1"))
 	require.NoError(t, err)

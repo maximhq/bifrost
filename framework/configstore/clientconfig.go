@@ -748,10 +748,11 @@ func (c *ClientConfig) Redacted() ClientConfig {
 	return out
 }
 
-// ProviderConfig represents the configuration for a specific AI model provider.
-// It includes API keys, network settings, and concurrency settings.
+// ProviderConfig is a provider's configuration: network, concurrency, proxy and the rest of its
+// settings. It holds no keys: a provider's keys are rows of their own, and inside Bifrost they
+// travel as a separate []schemas.Key, read where they are kept, and passed only where they are
+// needed. A format that nests keys inside a provider (config.json) splits them off as it is read.
 type ProviderConfig struct {
-	Keys                     []schemas.Key                     `json:"keys"`                                  // API keys for the provider with UUIDs
 	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
@@ -769,74 +770,9 @@ type ProviderConfig struct {
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
 }
 
-// ProviderSettings is a provider's configuration without its keys: every ProviderConfig field but
-// Keys, which are rows of their own. A value that holds only settings has no keys to read, so a
-// reader that needs them reads them where they are kept. Settings and Config convert between the
-// two where a provider is loaded or written.
-type ProviderSettings struct {
-	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`
-	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"`
-	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`
-	SendBackRawRequest       bool                              `json:"send_back_raw_request"`
-	SendBackRawResponse      bool                              `json:"send_back_raw_response"`
-	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`
-	IgnoreProviderCost       bool                              `json:"ignore_provider_cost"`
-	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`
-	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`
-	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"`
-	Passthrough              *schemas.PassthroughPolicy        `json:"passthrough,omitempty"`
-	ConfigHash               string                            `json:"config_hash,omitempty"`
-	Status                   string                            `json:"status,omitempty"`
-	Description              string                            `json:"description,omitempty"`
-}
-
-// Settings returns p's settings, without its keys. The values are shared, not copied.
-func (p *ProviderConfig) Settings() ProviderSettings {
-	return ProviderSettings{
-		NetworkConfig:            p.NetworkConfig,
-		ConcurrencyAndBufferSize: p.ConcurrencyAndBufferSize,
-		ProxyConfig:              p.ProxyConfig,
-		SendBackRawRequest:       p.SendBackRawRequest,
-		SendBackRawResponse:      p.SendBackRawResponse,
-		StoreRawRequestResponse:  p.StoreRawRequestResponse,
-		IgnoreProviderCost:       p.IgnoreProviderCost,
-		CustomProviderConfig:     p.CustomProviderConfig,
-		OpenAIConfig:             p.OpenAIConfig,
-		PromptCache:              p.PromptCache,
-		InjectedTools:            p.InjectedTools,
-		Passthrough:              p.Passthrough,
-		ConfigHash:               p.ConfigHash,
-		Status:                   p.Status,
-		Description:              p.Description,
-	}
-}
-
-// Config returns s as a provider configuration with no keys, for a caller that answers or writes a
-// ProviderConfig. The values are shared, not copied.
-func (s *ProviderSettings) Config() ProviderConfig {
-	return ProviderConfig{
-		NetworkConfig:            s.NetworkConfig,
-		ConcurrencyAndBufferSize: s.ConcurrencyAndBufferSize,
-		ProxyConfig:              s.ProxyConfig,
-		SendBackRawRequest:       s.SendBackRawRequest,
-		SendBackRawResponse:      s.SendBackRawResponse,
-		StoreRawRequestResponse:  s.StoreRawRequestResponse,
-		IgnoreProviderCost:       s.IgnoreProviderCost,
-		CustomProviderConfig:     s.CustomProviderConfig,
-		OpenAIConfig:             s.OpenAIConfig,
-		PromptCache:              s.PromptCache,
-		InjectedTools:            s.InjectedTools,
-		Passthrough:              s.Passthrough,
-		ConfigHash:               s.ConfigHash,
-		Status:                   s.Status,
-		Description:              s.Description,
-	}
-}
-
-// Redacted returns a redacted copy of the provider configuration.
+// Redacted returns a redacted copy of the provider configuration: network and proxy secrets
+// masked, every other field carried as is. Keys are redacted on their own by RedactedKeys.
 func (p *ProviderConfig) Redacted() *ProviderConfig {
-	// Create redacted config with same structure but redacted values
 	var redactedNetworkConfig *schemas.NetworkConfig
 	if p.NetworkConfig != nil {
 		redactedNetworkConfig = p.NetworkConfig.Redacted()
@@ -857,260 +793,271 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		Status:                   p.Status,
 		Description:              p.Description,
 	}
-
 	if p.ProxyConfig != nil {
 		redactedConfig.ProxyConfig = p.ProxyConfig.Redacted()
 	}
+	return &redactedConfig
+}
 
-	// Create redacted keys
-	redactedConfig.Keys = make([]schemas.Key, len(p.Keys))
-	for i, key := range p.Keys {
-		models := key.Models
-		if models == nil {
-			models = []string{} // Ensure models is never nil in JSON response
-		}
-		blacklistedModels := key.BlacklistedModels
-		if blacklistedModels == nil {
-			blacklistedModels = []string{} // Match models: empty JSON array, not null
-		}
-		redactedConfig.Keys[i] = schemas.Key{
-			ID:                key.ID,
-			Name:              key.Name,
-			Models:            models,
-			BlacklistedModels: blacklistedModels,
-			Weight:            key.Weight,
-			ConfigHash:        key.ConfigHash,
-		}
-		if key.Enabled != nil {
-			enabled := *key.Enabled
-			redactedConfig.Keys[i].Enabled = &enabled
-		}
-		if key.Aliases != nil {
-			redactedConfig.Keys[i].Aliases = make(schemas.KeyAliases, len(key.Aliases))
-			for name, alias := range key.Aliases {
-				redactedConfig.Keys[i].Aliases[name] = alias.Redacted()
-			}
-		}
-		redactedConfig.Keys[i].Value = *key.Value.Redacted()
-		// Carried as is: nil is inherit, so it must not be defaulted like the flags below.
-		redactedConfig.Keys[i].DisableContentLogging = key.DisableContentLogging
-		// Add back use for batch api
-		if key.UseForBatchAPI != nil {
-			redactedConfig.Keys[i].UseForBatchAPI = key.UseForBatchAPI
-		} else {
-			redactedConfig.Keys[i].UseForBatchAPI = new(false)
-		}
-		// Add back use anthropic endpoints
-		if key.UseAnthropicEndpoints != nil {
-			redactedConfig.Keys[i].UseAnthropicEndpoints = key.UseAnthropicEndpoints
-		} else {
-			redactedConfig.Keys[i].UseAnthropicEndpoints = new(false)
-		}
-		// Add back use openai endpoints
-		if key.UseOpenAIEndpoints != nil {
-			redactedConfig.Keys[i].UseOpenAIEndpoints = key.UseOpenAIEndpoints
-		} else {
-			redactedConfig.Keys[i].UseOpenAIEndpoints = new(false)
-		}
-
-		// Add model discovery status and error
-		redactedConfig.Keys[i].Status = key.Status
-		redactedConfig.Keys[i].Description = key.Description
-
-		// Redact Azure key config if present
-		if key.AzureKeyConfig != nil {
-			azureConfig := &schemas.AzureKeyConfig{}
-			// The endpoint is a hostname, not a credential — surface it in plaintext.
-			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.RedactedIfSecret()
-			if key.AzureKeyConfig.ClientID != nil {
-				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
-			}
-			if key.AzureKeyConfig.ClientSecret != nil {
-				azureConfig.ClientSecret = key.AzureKeyConfig.ClientSecret.Redacted()
-			}
-			if key.AzureKeyConfig.TenantID != nil {
-				azureConfig.TenantID = key.AzureKeyConfig.TenantID.Redacted()
-			}
-			if len(key.AzureKeyConfig.Scopes) > 0 {
-				azureConfig.Scopes = key.AzureKeyConfig.Scopes
-			}
-			azureConfig.UseSpeechEndpoints = key.AzureKeyConfig.UseSpeechEndpoints
-			azureConfig.UseVoiceLiveEndpoints = key.AzureKeyConfig.UseVoiceLiveEndpoints
-			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
-		}
-
-		// Redact Vertex key config if present
-		if key.VertexKeyConfig != nil {
-			vertexConfig := &schemas.VertexKeyConfig{}
-			vertexConfig.ProjectID = *key.VertexKeyConfig.ProjectID.Redacted()
-			vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
-			// The region is a public identifier, not a credential — surface it in plaintext.
-			vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
-			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
-			vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
-			vertexConfig.UseSessionRouting = key.VertexKeyConfig.UseSessionRouting
-			vertexConfig.AWSWorkloadIdentity = key.VertexKeyConfig.AWSWorkloadIdentity.Redacted()
-			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
-		}
-
-		// Redact Bedrock key config if present
-		if key.BedrockKeyConfig != nil {
-			bedrockConfig := &schemas.BedrockKeyConfig{}
-			bedrockConfig.AccessKey = *key.BedrockKeyConfig.AccessKey.Redacted()
-			bedrockConfig.SecretKey = *key.BedrockKeyConfig.SecretKey.Redacted()
-			if key.BedrockKeyConfig.SessionToken != nil {
-				bedrockConfig.SessionToken = key.BedrockKeyConfig.SessionToken.Redacted()
-			}
-			// The region is a public identifier, not a credential — surface it in plaintext.
-			if key.BedrockKeyConfig.Region != nil {
-				bedrockConfig.Region = key.BedrockKeyConfig.Region.RedactedIfSecret()
-			}
-			if key.BedrockKeyConfig.ARN != nil {
-				bedrockConfig.ARN = key.BedrockKeyConfig.ARN.Redacted()
-			}
-			if key.BedrockKeyConfig.RoleARN != nil {
-				bedrockConfig.RoleARN = key.BedrockKeyConfig.RoleARN.Redacted()
-			}
-			if key.BedrockKeyConfig.ExternalID != nil {
-				bedrockConfig.ExternalID = key.BedrockKeyConfig.ExternalID.Redacted()
-			}
-			if key.BedrockKeyConfig.RoleSessionName != nil {
-				bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
-			}
-			if key.BedrockKeyConfig.BatchRoleARN != nil {
-				bedrockConfig.BatchRoleARN = key.BedrockKeyConfig.BatchRoleARN.Redacted()
-			}
-			// Preserve literal identifiers, but mask resolved secret references.
-			if key.BedrockKeyConfig.ProjectID != nil {
-				bedrockConfig.ProjectID = key.BedrockKeyConfig.ProjectID.RedactedIfSecret()
-			}
-			// Add back s3 config
-			if key.BedrockKeyConfig.BatchS3Config != nil {
-				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
-			}
-			bedrockConfig.Endpoints = key.BedrockKeyConfig.Endpoints.Redacted()
-			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
-		}
-
-		// Redact Bedrock Mantle key config if present
-		if key.BedrockMantleKeyConfig != nil {
-			mantleConfig := &schemas.BedrockMantleKeyConfig{}
-			mantleConfig.AccessKey = *key.BedrockMantleKeyConfig.AccessKey.Redacted()
-			mantleConfig.SecretKey = *key.BedrockMantleKeyConfig.SecretKey.Redacted()
-			if key.BedrockMantleKeyConfig.SessionToken != nil {
-				mantleConfig.SessionToken = key.BedrockMantleKeyConfig.SessionToken.Redacted()
-			}
-			// The region is a public identifier, not a credential — surface it in plaintext.
-			if key.BedrockMantleKeyConfig.Region != nil {
-				mantleConfig.Region = key.BedrockMantleKeyConfig.Region.RedactedIfSecret()
-			}
-			if key.BedrockMantleKeyConfig.RoleARN != nil {
-				mantleConfig.RoleARN = key.BedrockMantleKeyConfig.RoleARN.Redacted()
-			}
-			if key.BedrockMantleKeyConfig.ExternalID != nil {
-				mantleConfig.ExternalID = key.BedrockMantleKeyConfig.ExternalID.Redacted()
-			}
-			if key.BedrockMantleKeyConfig.RoleSessionName != nil {
-				mantleConfig.RoleSessionName = key.BedrockMantleKeyConfig.RoleSessionName.Redacted()
-			}
-			// Preserve literal identifiers, but mask resolved secret references.
-			if key.BedrockMantleKeyConfig.ProjectID != nil {
-				mantleConfig.ProjectID = key.BedrockMantleKeyConfig.ProjectID.RedactedIfSecret()
-			}
-			mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints.Redacted()
-			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
-		}
-
-		// Redact SageMaker key config if present
-		if key.SageMakerKeyConfig != nil {
-			smConfig := &schemas.SageMakerKeyConfig{}
-			smConfig.AccessKey = *key.SageMakerKeyConfig.AccessKey.Redacted()
-			smConfig.SecretKey = *key.SageMakerKeyConfig.SecretKey.Redacted()
-			if key.SageMakerKeyConfig.SessionToken != nil {
-				smConfig.SessionToken = key.SageMakerKeyConfig.SessionToken.Redacted()
-			}
-			if key.SageMakerKeyConfig.Region != nil {
-				smConfig.Region = key.SageMakerKeyConfig.Region.RedactedIfSecret()
-			}
-			if key.SageMakerKeyConfig.RoleARN != nil {
-				smConfig.RoleARN = key.SageMakerKeyConfig.RoleARN.Redacted()
-			}
-			if key.SageMakerKeyConfig.ExternalID != nil {
-				smConfig.ExternalID = key.SageMakerKeyConfig.ExternalID.Redacted()
-			}
-			if key.SageMakerKeyConfig.RoleSessionName != nil {
-				smConfig.RoleSessionName = key.SageMakerKeyConfig.RoleSessionName.Redacted()
-			}
-			smConfig.Endpoints = key.SageMakerKeyConfig.Endpoints.Redacted()
-			redactedConfig.Keys[i].SageMakerKeyConfig = smConfig
-		}
-
-		if key.VLLMKeyConfig != nil {
-			vllmConfig := &schemas.VLLMKeyConfig{
-				ModelName: key.VLLMKeyConfig.ModelName,
-			}
-			// The URL is a service address, not a credential — surface it in plaintext.
-			vllmConfig.URL = *key.VLLMKeyConfig.URL.RedactedIfSecret()
-			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
-		}
-
-		if key.ReplicateKeyConfig != nil {
-			replicateConfig := &schemas.ReplicateKeyConfig{
-				UseDeploymentsEndpoint: key.ReplicateKeyConfig.UseDeploymentsEndpoint,
-			}
-			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
-		}
-
-		if key.OllamaKeyConfig != nil {
-			ollamaConfig := &schemas.OllamaKeyConfig{}
-			// The URL is a service address, not a credential — surface it in plaintext.
-			ollamaConfig.URL = *key.OllamaKeyConfig.URL.RedactedIfSecret()
-			redactedConfig.Keys[i].OllamaKeyConfig = ollamaConfig
-		}
-
-		if key.SGLKeyConfig != nil {
-			sglConfig := &schemas.SGLKeyConfig{}
-			// The URL is a service address, not a credential — surface it in plaintext.
-			sglConfig.URL = *key.SGLKeyConfig.URL.RedactedIfSecret()
-			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
-		}
-
-		if key.CloudflareKeyConfig != nil {
-			cloudflareConfig := &schemas.CloudflareKeyConfig{}
-			// The account ID is an identifier, not a credential — surface it in plaintext.
-			cloudflareConfig.AccountID = *key.CloudflareKeyConfig.AccountID.RedactedIfSecret()
-			redactedConfig.Keys[i].CloudflareKeyConfig = cloudflareConfig
-		}
-
-		if key.AnthropicKeyConfig != nil {
-			// Identifiers readable unless secret-backed; the identity token always masked.
-			redactedConfig.Keys[i].AnthropicKeyConfig = key.AnthropicKeyConfig.Redacted()
-		}
-
-		// Redact Databricks key config if present
-		if key.DatabricksKeyConfig != nil {
-			databricksConfig := &schemas.DatabricksKeyConfig{
-				APIFormat:          key.DatabricksKeyConfig.APIFormat,
-				ForwardGatewayTags: key.DatabricksKeyConfig.ForwardGatewayTags,
-				Scopes:             slices.Clone(key.DatabricksKeyConfig.Scopes),
-			}
-			// The workspace URL is a hostname, not a credential — surface it in
-			// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
-			databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.RedactedIfSecret()
-			if key.DatabricksKeyConfig.ClientID != nil {
-				databricksConfig.ClientID = key.DatabricksKeyConfig.ClientID.Redacted()
-			}
-			if key.DatabricksKeyConfig.ClientSecret != nil {
-				databricksConfig.ClientSecret = key.DatabricksKeyConfig.ClientSecret.Redacted()
-			}
-			redactedConfig.Keys[i].DatabricksKeyConfig = databricksConfig
-		}
-
-		if key.OAuthKeyConfig != nil {
-			redactedConfig.Keys[i].OAuthKeyConfig = key.OAuthKeyConfig.Redacted()
+// RedactedKey returns a copy of key as the API shows it: identifiers readable, credentials masked,
+// Models and BlacklistedModels never nil (an empty JSON array, not null), and Enabled copied rather
+// than shared. key itself, which may be shared, is left untouched.
+func RedactedKey(key schemas.Key) schemas.Key {
+	models := key.Models
+	if models == nil {
+		models = []string{} // Ensure models is never nil in JSON response
+	}
+	blacklistedModels := key.BlacklistedModels
+	if blacklistedModels == nil {
+		blacklistedModels = []string{} // Match models: empty JSON array, not null
+	}
+	redacted := schemas.Key{
+		ID:                key.ID,
+		Name:              key.Name,
+		Models:            models,
+		BlacklistedModels: blacklistedModels,
+		Weight:            key.Weight,
+		ConfigHash:        key.ConfigHash,
+	}
+	if key.Enabled != nil {
+		enabled := *key.Enabled
+		redacted.Enabled = &enabled
+	}
+	if key.Aliases != nil {
+		redacted.Aliases = make(schemas.KeyAliases, len(key.Aliases))
+		for name, alias := range key.Aliases {
+			redacted.Aliases[name] = alias.Redacted()
 		}
 	}
-	return &redactedConfig
+	redacted.Value = *key.Value.Redacted()
+	// Carried as is: nil is inherit, so it must not be defaulted like the flags below.
+	redacted.DisableContentLogging = key.DisableContentLogging
+	// Add back use for batch api
+	if key.UseForBatchAPI != nil {
+		redacted.UseForBatchAPI = key.UseForBatchAPI
+	} else {
+		redacted.UseForBatchAPI = new(false)
+	}
+	// Add back use anthropic endpoints
+	if key.UseAnthropicEndpoints != nil {
+		redacted.UseAnthropicEndpoints = key.UseAnthropicEndpoints
+	} else {
+		redacted.UseAnthropicEndpoints = new(false)
+	}
+	// Add back use openai endpoints
+	if key.UseOpenAIEndpoints != nil {
+		redacted.UseOpenAIEndpoints = key.UseOpenAIEndpoints
+	} else {
+		redacted.UseOpenAIEndpoints = new(false)
+	}
+
+	// Add model discovery status and error
+	redacted.Status = key.Status
+	redacted.Description = key.Description
+
+	// Redact Azure key config if present
+	if key.AzureKeyConfig != nil {
+		azureConfig := &schemas.AzureKeyConfig{}
+		// The endpoint is a hostname, not a credential: surface it in plaintext.
+		azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.RedactedIfSecret()
+		if key.AzureKeyConfig.ClientID != nil {
+			azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
+		}
+		if key.AzureKeyConfig.ClientSecret != nil {
+			azureConfig.ClientSecret = key.AzureKeyConfig.ClientSecret.Redacted()
+		}
+		if key.AzureKeyConfig.TenantID != nil {
+			azureConfig.TenantID = key.AzureKeyConfig.TenantID.Redacted()
+		}
+		if len(key.AzureKeyConfig.Scopes) > 0 {
+			azureConfig.Scopes = key.AzureKeyConfig.Scopes
+		}
+		azureConfig.UseSpeechEndpoints = key.AzureKeyConfig.UseSpeechEndpoints
+		azureConfig.UseVoiceLiveEndpoints = key.AzureKeyConfig.UseVoiceLiveEndpoints
+		redacted.AzureKeyConfig = azureConfig
+	}
+
+	// Redact Vertex key config if present
+	if key.VertexKeyConfig != nil {
+		vertexConfig := &schemas.VertexKeyConfig{}
+		vertexConfig.ProjectID = *key.VertexKeyConfig.ProjectID.Redacted()
+		vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
+		// The region is a public identifier, not a credential: surface it in plaintext.
+		vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
+		vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
+		vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
+		vertexConfig.UseSessionRouting = key.VertexKeyConfig.UseSessionRouting
+		vertexConfig.AWSWorkloadIdentity = key.VertexKeyConfig.AWSWorkloadIdentity.Redacted()
+		redacted.VertexKeyConfig = vertexConfig
+	}
+
+	// Redact Bedrock key config if present
+	if key.BedrockKeyConfig != nil {
+		bedrockConfig := &schemas.BedrockKeyConfig{}
+		bedrockConfig.AccessKey = *key.BedrockKeyConfig.AccessKey.Redacted()
+		bedrockConfig.SecretKey = *key.BedrockKeyConfig.SecretKey.Redacted()
+		if key.BedrockKeyConfig.SessionToken != nil {
+			bedrockConfig.SessionToken = key.BedrockKeyConfig.SessionToken.Redacted()
+		}
+		// The region is a public identifier, not a credential: surface it in plaintext.
+		if key.BedrockKeyConfig.Region != nil {
+			bedrockConfig.Region = key.BedrockKeyConfig.Region.RedactedIfSecret()
+		}
+		if key.BedrockKeyConfig.ARN != nil {
+			bedrockConfig.ARN = key.BedrockKeyConfig.ARN.Redacted()
+		}
+		if key.BedrockKeyConfig.RoleARN != nil {
+			bedrockConfig.RoleARN = key.BedrockKeyConfig.RoleARN.Redacted()
+		}
+		if key.BedrockKeyConfig.ExternalID != nil {
+			bedrockConfig.ExternalID = key.BedrockKeyConfig.ExternalID.Redacted()
+		}
+		if key.BedrockKeyConfig.RoleSessionName != nil {
+			bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
+		}
+		if key.BedrockKeyConfig.BatchRoleARN != nil {
+			bedrockConfig.BatchRoleARN = key.BedrockKeyConfig.BatchRoleARN.Redacted()
+		}
+		// Preserve literal identifiers, but mask resolved secret references.
+		if key.BedrockKeyConfig.ProjectID != nil {
+			bedrockConfig.ProjectID = key.BedrockKeyConfig.ProjectID.RedactedIfSecret()
+		}
+		// Add back s3 config
+		if key.BedrockKeyConfig.BatchS3Config != nil {
+			bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
+		}
+		bedrockConfig.Endpoints = key.BedrockKeyConfig.Endpoints.Redacted()
+		redacted.BedrockKeyConfig = bedrockConfig
+	}
+
+	// Redact Bedrock Mantle key config if present
+	if key.BedrockMantleKeyConfig != nil {
+		mantleConfig := &schemas.BedrockMantleKeyConfig{}
+		mantleConfig.AccessKey = *key.BedrockMantleKeyConfig.AccessKey.Redacted()
+		mantleConfig.SecretKey = *key.BedrockMantleKeyConfig.SecretKey.Redacted()
+		if key.BedrockMantleKeyConfig.SessionToken != nil {
+			mantleConfig.SessionToken = key.BedrockMantleKeyConfig.SessionToken.Redacted()
+		}
+		// The region is a public identifier, not a credential: surface it in plaintext.
+		if key.BedrockMantleKeyConfig.Region != nil {
+			mantleConfig.Region = key.BedrockMantleKeyConfig.Region.RedactedIfSecret()
+		}
+		if key.BedrockMantleKeyConfig.RoleARN != nil {
+			mantleConfig.RoleARN = key.BedrockMantleKeyConfig.RoleARN.Redacted()
+		}
+		if key.BedrockMantleKeyConfig.ExternalID != nil {
+			mantleConfig.ExternalID = key.BedrockMantleKeyConfig.ExternalID.Redacted()
+		}
+		if key.BedrockMantleKeyConfig.RoleSessionName != nil {
+			mantleConfig.RoleSessionName = key.BedrockMantleKeyConfig.RoleSessionName.Redacted()
+		}
+		// Preserve literal identifiers, but mask resolved secret references.
+		if key.BedrockMantleKeyConfig.ProjectID != nil {
+			mantleConfig.ProjectID = key.BedrockMantleKeyConfig.ProjectID.RedactedIfSecret()
+		}
+		mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints.Redacted()
+		redacted.BedrockMantleKeyConfig = mantleConfig
+	}
+
+	// Redact SageMaker key config if present
+	if key.SageMakerKeyConfig != nil {
+		smConfig := &schemas.SageMakerKeyConfig{}
+		smConfig.AccessKey = *key.SageMakerKeyConfig.AccessKey.Redacted()
+		smConfig.SecretKey = *key.SageMakerKeyConfig.SecretKey.Redacted()
+		if key.SageMakerKeyConfig.SessionToken != nil {
+			smConfig.SessionToken = key.SageMakerKeyConfig.SessionToken.Redacted()
+		}
+		if key.SageMakerKeyConfig.Region != nil {
+			smConfig.Region = key.SageMakerKeyConfig.Region.RedactedIfSecret()
+		}
+		if key.SageMakerKeyConfig.RoleARN != nil {
+			smConfig.RoleARN = key.SageMakerKeyConfig.RoleARN.Redacted()
+		}
+		if key.SageMakerKeyConfig.ExternalID != nil {
+			smConfig.ExternalID = key.SageMakerKeyConfig.ExternalID.Redacted()
+		}
+		if key.SageMakerKeyConfig.RoleSessionName != nil {
+			smConfig.RoleSessionName = key.SageMakerKeyConfig.RoleSessionName.Redacted()
+		}
+		smConfig.Endpoints = key.SageMakerKeyConfig.Endpoints.Redacted()
+		redacted.SageMakerKeyConfig = smConfig
+	}
+
+	if key.VLLMKeyConfig != nil {
+		vllmConfig := &schemas.VLLMKeyConfig{
+			ModelName: key.VLLMKeyConfig.ModelName,
+		}
+		// The URL is a service address, not a credential: surface it in plaintext.
+		vllmConfig.URL = *key.VLLMKeyConfig.URL.RedactedIfSecret()
+		redacted.VLLMKeyConfig = vllmConfig
+	}
+
+	if key.ReplicateKeyConfig != nil {
+		replicateConfig := &schemas.ReplicateKeyConfig{
+			UseDeploymentsEndpoint: key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		}
+		redacted.ReplicateKeyConfig = replicateConfig
+	}
+
+	if key.OllamaKeyConfig != nil {
+		ollamaConfig := &schemas.OllamaKeyConfig{}
+		// The URL is a service address, not a credential: surface it in plaintext.
+		ollamaConfig.URL = *key.OllamaKeyConfig.URL.RedactedIfSecret()
+		redacted.OllamaKeyConfig = ollamaConfig
+	}
+
+	if key.SGLKeyConfig != nil {
+		sglConfig := &schemas.SGLKeyConfig{}
+		// The URL is a service address, not a credential: surface it in plaintext.
+		sglConfig.URL = *key.SGLKeyConfig.URL.RedactedIfSecret()
+		redacted.SGLKeyConfig = sglConfig
+	}
+
+	if key.CloudflareKeyConfig != nil {
+		cloudflareConfig := &schemas.CloudflareKeyConfig{}
+		// The account ID is an identifier, not a credential: surface it in plaintext.
+		cloudflareConfig.AccountID = *key.CloudflareKeyConfig.AccountID.RedactedIfSecret()
+		redacted.CloudflareKeyConfig = cloudflareConfig
+	}
+
+	if key.AnthropicKeyConfig != nil {
+		// Identifiers readable unless secret-backed; the identity token always masked.
+		redacted.AnthropicKeyConfig = key.AnthropicKeyConfig.Redacted()
+	}
+
+	// Redact Databricks key config if present
+	if key.DatabricksKeyConfig != nil {
+		databricksConfig := &schemas.DatabricksKeyConfig{
+			APIFormat:          key.DatabricksKeyConfig.APIFormat,
+			ForwardGatewayTags: key.DatabricksKeyConfig.ForwardGatewayTags,
+			Scopes:             slices.Clone(key.DatabricksKeyConfig.Scopes),
+		}
+		// The workspace URL is a hostname, not a credential: surface it in
+		// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
+		databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.RedactedIfSecret()
+		if key.DatabricksKeyConfig.ClientID != nil {
+			databricksConfig.ClientID = key.DatabricksKeyConfig.ClientID.Redacted()
+		}
+		if key.DatabricksKeyConfig.ClientSecret != nil {
+			databricksConfig.ClientSecret = key.DatabricksKeyConfig.ClientSecret.Redacted()
+		}
+		redacted.DatabricksKeyConfig = databricksConfig
+	}
+
+	if key.OAuthKeyConfig != nil {
+		redacted.OAuthKeyConfig = key.OAuthKeyConfig.Redacted()
+	}
+	return redacted
+}
+
+// RedactedKeys returns RedactedKey of each of keys, in order. It is the key half of what the API
+// redacts; ProviderConfig.Redacted is the provider half.
+func RedactedKeys(keys []schemas.Key) []schemas.Key {
+	redactedKeys := make([]schemas.Key, len(keys))
+	for i, key := range keys {
+		redactedKeys[i] = RedactedKey(key)
+	}
+	return redactedKeys
 }
 
 // GenerateConfigHash generates a SHA256 hash of the provider configuration.

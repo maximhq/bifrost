@@ -30,16 +30,16 @@ import (
 	"gorm.io/gorm"
 )
 
-// withProviders loads providers into a new live store on c, the way file-only boot does, and
-// returns c. It suits tests and benchmarks that only read providers; a write needs a database
-// (providerStore).
-func withProviders(t testing.TB, c *Config, providers map[schemas.ModelProvider]configstore.ProviderConfig) *Config {
+// withProviders loads providers, each with its keys from keys (which may be nil), into a new live
+// store on c, the way file-only boot does, and returns c. It suits tests and benchmarks that only
+// read providers; a write needs a database (providerStore).
+func withProviders(t testing.TB, c *Config, providers map[schemas.ModelProvider]configstore.ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key) *Config {
 	t.Helper()
 	live, err := livestore.New()
 	require.NoError(t, err)
 	t.Cleanup(live.Close)
 	require.NoError(t, c.AttachLiveStore(live))
-	require.NoError(t, live.LoadRecords(context.Background(), (&bootConfig{providers: providers}).records(live)))
+	require.NoError(t, live.LoadRecords(context.Background(), (&bootConfig{providers: providers, providerKeys: keys}).records(live)))
 	return c
 }
 
@@ -58,14 +58,14 @@ func sqliteConfigStore(t *testing.T) configstore.ConfigStore {
 	return store
 }
 
-// providerStore returns a Config over a new SQLite config store holding providers, with its live
-// store loaded from it, for tests that write providers.
-func providerStore(t *testing.T, providers map[schemas.ModelProvider]configstore.ProviderConfig) *Config {
+// providerStore returns a Config over a new SQLite config store holding providers and, for each
+// provider in keys, its keys, with its live store loaded from it, for tests that write providers.
+func providerStore(t *testing.T, providers map[schemas.ModelProvider]configstore.ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key) *Config {
 	t.Helper()
 	ctx := context.Background()
 	store := sqliteConfigStore(t)
 	if len(providers) > 0 {
-		require.NoError(t, store.UpdateProvidersConfig(ctx, providers))
+		require.NoError(t, store.UpdateProvidersConfig(ctx, providers, keys))
 	}
 	live, err := livestore.New()
 	require.NoError(t, err)
@@ -79,15 +79,12 @@ func providerStore(t *testing.T, providers map[schemas.ModelProvider]configstore
 // newLiveStoreForTest returns a new, empty live store closed when the test ends.
 var newLiveStoreForTest = livestoretest.New
 
-// providersOf returns the providers c's live store holds, keyed by name, each with its keys.
+// providersOf returns the providers c's live store holds, keyed by name. The configs hold no keys:
+// c.GetProviderKeys reads a provider's keys.
 func providersOf(c *Config) map[schemas.ModelProvider]configstore.ProviderConfig {
 	out := make(map[schemas.ModelProvider]configstore.ProviderConfig)
 	c.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
-		config := p.Settings.Config()
-		if keys, ok := c.LiveStore.Views.ProviderKeyLists.Get(string(p.Name)); ok {
-			config.Keys = *keys
-		}
-		out[p.Name] = config
+		out[p.Name] = p.Config
 		return true
 	})
 	return out
@@ -281,7 +278,9 @@ func TestProviderRefreshReadsAnOutsideWrite(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1}}},
+		schemas.OpenAI: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1}},
 	})
 
 	// Someone else adds a key: the live store does not see it until the refresh.
@@ -305,7 +304,9 @@ func TestProviderKeyWritesReachMemoryThroughTheDatabase(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {ConfigHash: "from-file", Keys: []schemas.Key{{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1}}},
+		schemas.OpenAI: {ConfigHash: "from-file"},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1}},
 	})
 	cfg.client = newNoopProviderClient(t, cfg)
 
@@ -385,10 +386,12 @@ func TestRemoveProviderKeyCatchesUpWhenTheRowIsAlreadyGone(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{
+		schemas.OpenAI: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {
 			{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1},
 			{ID: "k2", Name: "second", Value: *schemas.NewSecretVar("sk-2"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		}},
+		},
 	})
 	cfg.client = newNoopProviderClient(t, cfg)
 
@@ -467,10 +470,12 @@ func TestRemoveProviderKeyDropsTheKeyWithoutReadingTheDatabase(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{
+		schemas.OpenAI: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {
 			{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1},
 			{ID: "k2", Name: "second", Value: *schemas.NewSecretVar("sk-2"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		}},
+		},
 	})
 	cfg.client = newNoopProviderClient(t, cfg)
 	reads := &failingReads{}
@@ -494,7 +499,9 @@ func TestProviderKeyWritesRetryAFailedReread(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1}}},
+		schemas.OpenAI: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1}},
 	})
 	cfg.client = newNoopProviderClient(t, cfg)
 	reads := &failingReads{}
@@ -535,10 +542,12 @@ func TestProviderSettingsUpdateKeepsKeyRowsAsStored(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{
+		schemas.OpenAI: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {
 			{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1},
 			{ID: "k2", Name: "second", Value: *schemas.NewSecretVar("sk-2"), Models: schemas.WhiteList{"*"}, Weight: 1},
-		}},
+		},
 	})
 	cfg.client = newNoopProviderClient(t, cfg)
 	keyIDs := func(keys []schemas.Key) []string {
@@ -550,14 +559,14 @@ func TestProviderSettingsUpdateKeepsKeyRowsAsStored(t *testing.T) {
 		return ids
 	}
 	// saveSettings saves the provider's settings as the settings route does, from the live record,
-	// keys included, and checks the keys the database and memory then hold.
+	// and checks the keys the database and memory then hold.
 	saveSettings := func(want []string, msg string) {
 		t.Helper()
 		require.NoError(t, cfg.UpdateProviderConfig(ctx, schemas.OpenAI, providersOf(cfg)[schemas.OpenAI]))
 		stored, err := cfg.ConfigStore.GetProviderKeys(ctx, schemas.OpenAI)
 		require.NoError(t, err)
 		require.Equal(t, want, keyIDs(stored), "database: "+msg)
-		require.Equal(t, want, keyIDs(providersOf(cfg)[schemas.OpenAI].Keys), "memory: "+msg)
+		require.Equal(t, want, keyIDs(cfg.GetProviderKeys(schemas.OpenAI)), "memory: "+msg)
 	}
 
 	// k2's row is deleted but memory was never refreshed, so it still holds the key.
@@ -578,7 +587,7 @@ func TestProviderSettingsUpdateKeepsKeyRowsAsStored(t *testing.T) {
 // disabled stays disabled instead of being enabled by the rollback.
 func TestDisableMCPClientRollbackKeepsADisabledClientDisabled(t *testing.T) {
 	ctx := context.Background()
-	c := providerStore(t, nil)
+	c := providerStore(t, nil, nil)
 	// A core client started without MCP has no MCP manager, so the runtime refuses every disable.
 	c.SetBifrostClient(newNoopProviderClient(t, c))
 	client := &schemas.MCPClientConfig{
@@ -619,7 +628,7 @@ func TestAddMCPClientAgainKeepsTheHeldClient(t *testing.T) {
 	ts := httptest.NewServer(mcpserver.NewStreamableHTTPServer(upstream))
 	t.Cleanup(ts.Close)
 
-	c := providerStore(t, nil)
+	c := providerStore(t, nil, nil)
 	c.SetBifrostClient(newNoopProviderClient(t, c))
 	client := &schemas.MCPClientConfig{
 		ID: "docs-id", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
@@ -643,7 +652,7 @@ func TestAddMCPClientAgainKeepsTheHeldClient(t *testing.T) {
 func newDiscoveryRestoreConfig(t *testing.T) (*Config, *bifrost.Bifrost) {
 	t.Helper()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	c := providerStore(t, nil)
+	c := providerStore(t, nil, nil)
 	shared, err := mcpdiscovery.NewSharedStore(c.ConfigStore, c.LiveStore, logger)
 	require.NoError(t, err)
 	perUser, err := mcpdiscovery.NewPerUserStore(c.ConfigStore, c.LiveStore, logger)
@@ -745,7 +754,7 @@ func TestMCPClientWritesReachMemoryThroughTheDatabase(t *testing.T) {
 	ts := httptest.NewServer(mcpserver.NewStreamableHTTPServer(upstream))
 	t.Cleanup(ts.Close)
 
-	c := providerStore(t, nil)
+	c := providerStore(t, nil, nil)
 	c.SetBifrostClient(newNoopProviderClient(t, c))
 	client := &schemas.MCPClientConfig{
 		ID: "docs-id", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP,
@@ -784,7 +793,7 @@ func TestMCPClientWritesReachMemoryThroughTheDatabase(t *testing.T) {
 // unrestricted while any client allows every header.
 func TestMCPHeaderAllowlistFollowsTheClients(t *testing.T) {
 	ctx := context.Background()
-	c := providerStore(t, nil)
+	c := providerStore(t, nil, nil)
 	client := func(id string, headers ...string) *schemas.MCPClientConfig {
 		return &schemas.MCPClientConfig{
 			ID: id, Name: id, ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("https://" + id + ".example/mcp"),

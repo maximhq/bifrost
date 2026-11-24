@@ -17,9 +17,10 @@ func TestSeedModelCatalogCarriesKeylessProvidersAndIgnoredCosts(t *testing.T) {
 	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
 		"local-llm": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}},
 		schemas.OpenAI: {
-			Keys:               []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Enabled: &enabled, Weight: 1}},
 			IgnoreProviderCost: true,
 		},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Enabled: &enabled, Weight: 1}},
 	})
 	catalog := catalogForTest(t, nil)
 

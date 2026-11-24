@@ -409,8 +409,8 @@ func TestReportUsage_BatchModelUsageIsChargedWithoutAliasExpansion(t *testing.T)
 	targetCfg := buildModelConfig("target-cfg", target, &provider, buildBudget("target-budget", 100.0, "1d"), nil)
 	aliasCfg := buildModelConfig("alias-cfg", aliased, &provider, buildBudget("alias-budget", 100.0, "1d"), nil)
 	store, h := modelKeyStore(t, targetCfg, aliasCfg)
-	h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Anthropic: {Keys: []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{aliased: {ModelID: target}}}}},
+	h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {}}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{aliased: {ModelID: target}}}},
 	})
 	logger := NewMockLogger()
 	resolver, err := NewBudgetResolver(store, nil, h.live, logger)

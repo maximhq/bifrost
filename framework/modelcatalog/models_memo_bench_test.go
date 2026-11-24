@@ -142,7 +142,7 @@ func BenchmarkIsModelAllowed_Uncached(b *testing.B) {
 		// so modelsForProvider must be flushed too or it stays warm after iteration 1.
 		clearTable(mc.providersForModel)
 		clearTable(mc.modelsForProvider)
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), model, nil, unrestricted)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), model, nil, nil, unrestricted)
 	}
 }
 
@@ -169,7 +169,7 @@ func BenchmarkIsModelAllowed_ExplicitList(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, explicit)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, nil, explicit)
 	}
 }
 
@@ -182,7 +182,7 @@ func BenchmarkIsModelAllowed_ExplicitList_Deny(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, explicit)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, nil, explicit)
 	}
 }
 
@@ -199,7 +199,7 @@ func BenchmarkIsModelAllowed_ExplicitList_Prefixed(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, prefixed)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, nil, prefixed)
 	}
 }
 
@@ -208,12 +208,12 @@ func BenchmarkIsModelAllowed_Cached(b *testing.B) {
 	q := benchQueryModels(all, 8)
 	unrestricted := schemas.WhiteList{"*"}
 	for _, m := range q {
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), m, nil, unrestricted)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), m, nil, nil, unrestricted)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		model := q[i%len(q)]
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), model, nil, unrestricted)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), model, nil, nil, unrestricted)
 	}
 }

@@ -13,12 +13,12 @@ import (
 	"gorm.io/gorm"
 )
 
-// Provider is one configured provider's settings. Its keys are records of their own
-// (ProviderKey), so the record holds no keys to read: a key write re-reads only its key, and a
+// Provider is one configured provider's configuration. Its keys are records of their own
+// (ProviderKey), and ProviderConfig has no field for them: a key write re-reads only its key, and a
 // settings write never touches a key.
 type Provider struct {
-	Name     schemas.ModelProvider
-	Settings configstore.ProviderSettings
+	Name   schemas.ModelProvider
+	Config configstore.ProviderConfig
 	// BudgetID and RateLimitID name the limits governance holds every request to this provider
 	// to; "" for none.
 	BudgetID, RateLimitID string
@@ -53,9 +53,8 @@ func readProviders(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm.
 	}
 	out := make([]*Provider, 0, len(rows))
 	for i := range rows {
-		config := configstore.ProviderConfigFromTable(&rows[i])
 		out = append(out, &Provider{
-			Name: schemas.ModelProvider(rows[i].Name), Settings: config.Settings(),
+			Name: schemas.ModelProvider(rows[i].Name), Config: configstore.ProviderConfigFromTable(&rows[i]),
 			BudgetID: deref(rows[i].BudgetID), RateLimitID: deref(rows[i].RateLimitID),
 		})
 	}

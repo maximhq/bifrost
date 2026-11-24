@@ -129,7 +129,7 @@ func newRealtimeUpgradeRequest(path string) *fasthttp.RequestCtx {
 // shared tables, as LoadConfig builds one.
 func newRealtimeUpgradeHandler(t *testing.T, enforceAuthOnInference bool) *WSRealtimeHandler {
 	t.Helper()
-	config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuthOnInference}}, nil)
+	config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuthOnInference}}, nil, nil)
 	return &WSRealtimeHandler{config: config, handlerStore: config}
 }
 

@@ -70,7 +70,10 @@ func auditCustomer(customer *configstoreTables.TableCustomer) json.RawMessage {
 	return lib.AuditSnapshot(c, "virtual_keys")
 }
 
-// auditProviderConfig snapshots an already-redacted provider config for the audit log, leaving keys to their own events.
+// auditProviderConfig snapshots an already-redacted provider config for the audit log; keys have
+// their own events. ProviderConfig has no "keys" field any more, but naming it to drop routes the
+// snapshot through AuditSnapshot's field map, which keeps the fields in sorted order: byte for byte
+// the snapshot the audit log stored when the config still carried keys.
 func auditProviderConfig(cfg *configstore.ProviderConfig) json.RawMessage {
 	if cfg == nil {
 		return nil

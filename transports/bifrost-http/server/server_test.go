@@ -121,7 +121,7 @@ func governedServer(t *testing.T) (*BifrostHTTPServer, *governance.LocalGovernan
 	logger = noopTestLogger{}
 	t.Cleanup(func() { logger = previousLogger })
 	ctx := context.Background()
-	config := libtest.Config(t, nil)
+	config := libtest.Config(t, nil, nil)
 	config.ClientConfig = &configstore.ClientConfig{}
 	gs, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, config.LiveStore, nil)
 	require.NoError(t, err)
@@ -560,7 +560,7 @@ func TestUpdateKeyStatus_KeylessProviderUpdatesProviderStatusInMemory(t *testing
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
 			Status:               "unknown",
 		},
-	})
+	}, nil)
 	store := &updateStatusOnlyConfigStore{ConfigStore: config.ConfigStore}
 	config.ConfigStore = store
 	server := &BifrostHTTPServer{Config: config}
@@ -594,9 +594,10 @@ func TestUpdateKeyStatus_EmptyKeyIDDoesNotOverwriteKeyedProviderStatus(t *testin
 
 	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
 		"openai": {
-			Keys:   []schemas.Key{{ID: "key-1"}},
 			Status: "healthy",
 		},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {{ID: "key-1"}},
 	})
 	store := &updateStatusOnlyConfigStore{ConfigStore: config.ConfigStore}
 	config.ConfigStore = store
@@ -633,13 +634,13 @@ func TestUpdateKeyStatus_SkipsWriteWhenUnchanged(t *testing.T) {
 	defer func() { logger = prevLogger }()
 
 	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		"openai": {
-			Keys: []schemas.Key{{
-				ID:          "key-1",
-				Status:      schemas.KeyStatusListModelsFailed,
-				Description: "upstream 503",
-			}},
-		},
+		"openai": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {{
+			ID:          "key-1",
+			Status:      schemas.KeyStatusListModelsFailed,
+			Description: "upstream 503",
+		}},
 	})
 	store := &updateStatusOnlyConfigStore{ConfigStore: config.ConfigStore}
 	config.ConfigStore = store
@@ -670,10 +671,10 @@ func TestUpdateKeyStatus_SkipsWriteWhenUnchanged(t *testing.T) {
 	if len(store.calls) != 1 {
 		t.Fatalf("expected one status update call after the status changed, got %d", len(store.calls))
 	}
-	if got := libtest.Providers(server.Config)["openai"].Keys[0].Status; got != schemas.KeyStatusSuccess {
+	if got := server.Config.GetProviderKeys("openai")[0].Status; got != schemas.KeyStatusSuccess {
 		t.Fatalf("expected in-memory status to become success, got %q", got)
 	}
-	if got := libtest.Providers(server.Config)["openai"].Keys[0].Description; got != "" {
+	if got := server.Config.GetProviderKeys("openai")[0].Description; got != "" {
 		t.Fatalf("expected in-memory description to be cleared, got %q", got)
 	}
 }
@@ -687,7 +688,9 @@ func TestUpdateKeyStatus_RereadsOnlyTheChangedKey(t *testing.T) {
 	defer func() { logger = prevLogger }()
 
 	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		"openai": {Keys: []schemas.Key{{ID: "key-1"}, {ID: "key-2"}}},
+		"openai": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {{ID: "key-1"}, {ID: "key-2"}},
 	})
 	server := &BifrostHTTPServer{Config: config}
 	collections := config.LiveStore.Collections
@@ -726,7 +729,9 @@ func TestUpdateKeyStatus_WritesWhenKeyMissingFromMemory(t *testing.T) {
 	defer func() { logger = prevLogger }()
 
 	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		"openai": {Keys: []schemas.Key{{ID: "key-1"}}},
+		"openai": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {{ID: "key-1"}},
 	})
 	store := &updateStatusOnlyConfigStore{ConfigStore: config.ConfigStore}
 	config.ConfigStore = store
@@ -753,13 +758,13 @@ func TestUpdateKeyStatus_LastStatusForAKeyInOneBatchWins(t *testing.T) {
 	defer func() { logger = prevLogger }()
 
 	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		"openai": {
-			Keys: []schemas.Key{{
-				ID:          "key-1",
-				Status:      schemas.KeyStatusListModelsFailed,
-				Description: "upstream 503",
-			}},
-		},
+		"openai": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {{
+			ID:          "key-1",
+			Status:      schemas.KeyStatusListModelsFailed,
+			Description: "upstream 503",
+		}},
 	})
 	store := &updateStatusOnlyConfigStore{ConfigStore: config.ConfigStore}
 	config.ConfigStore = store
@@ -783,7 +788,7 @@ func TestUpdateKeyStatus_LastStatusForAKeyInOneBatchWins(t *testing.T) {
 	if row.Status != schemas.KeyStatusListModelsFailed || row.Description != "upstream 503" {
 		t.Fatalf("expected the row to end %q (%q), got %q (%q)", schemas.KeyStatusListModelsFailed, "upstream 503", row.Status, row.Description)
 	}
-	live := libtest.Providers(server.Config)["openai"].Keys[0]
+	live := server.Config.GetProviderKeys("openai")[0]
 	if live.Status != schemas.KeyStatusListModelsFailed || live.Description != "upstream 503" {
 		t.Fatalf("expected the live record to end %q (%q), got %q (%q)", schemas.KeyStatusListModelsFailed, "upstream 503", live.Status, live.Description)
 	}
@@ -801,7 +806,9 @@ func TestRefreshAllLiveModels_NilClientIsNoop(t *testing.T) {
 		Config: libtest.FileOnly(t, &lib.Config{
 			ModelCatalog: catalogForTest(t, nil),
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			"custom-provider": {Keys: []schemas.Key{{ID: "key-1"}}},
+			"custom-provider": {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			"custom-provider": {{ID: "key-1"}},
 		}),
 	}
 
@@ -826,11 +833,13 @@ func TestRefreshAllLiveModels_SkipsProvidersWithNoEnabledKeys(t *testing.T) {
 		Config: libtest.FileOnly(t, &lib.Config{
 			ModelCatalog: catalogForTest(t, nil),
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			"all-disabled": {Keys: []schemas.Key{
+			"all-disabled": {},
+			"no-keys":      {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			"all-disabled": {
 				{ID: "key-1", Enabled: schemas.Ptr(false)},
 				{ID: "key-2", Enabled: schemas.Ptr(false)},
-			}},
-			"no-keys": {},
+			},
 		}),
 	}
 	// Non-nil sentinel would be required for a fetch to be attempted; leaving
@@ -1017,7 +1026,7 @@ func TestRefreshLiveModelsForProvider_AllKeysDisabled(t *testing.T) {
 			ModelCatalog: catalogForTest(t, nil),
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
 			"custom-provider": {},
-		}),
+		}, nil),
 	}
 
 	keys := []schemas.Key{
@@ -1061,7 +1070,6 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualDisabledKeys(t *testing
 		ModelCatalog: catalogForTest(t, nil),
 	}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		provider: {
-			Keys: []schemas.Key{{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1, Enabled: schemas.Ptr(false)}},
 			NetworkConfig: &schemas.NetworkConfig{
 				BaseURL:                        upstream.URL,
 				AllowPrivateNetwork:            true,
@@ -1072,6 +1080,8 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualDisabledKeys(t *testing
 				BaseProviderType: schemas.OpenAI,
 			},
 		},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		provider: {{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1, Enabled: schemas.Ptr(false)}},
 	})
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: lib.NewBaseAccount(cfg),
@@ -1081,7 +1091,7 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualDisabledKeys(t *testing
 	defer client.Shutdown()
 
 	server := &BifrostHTTPServer{Config: cfg, Client: client}
-	keys := libtest.Providers(cfg)[provider].Keys
+	keys := cfg.GetProviderKeys(provider)
 
 	server.RefreshLiveModelsForProvider(context.Background(), provider, keys)
 
@@ -1110,7 +1120,6 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualEnabledKey(t *testing.T
 		ModelCatalog: catalogForTest(t, nil),
 	}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		provider: {
-			Keys: []schemas.Key{{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1}},
 			NetworkConfig: &schemas.NetworkConfig{
 				BaseURL:                        upstream.URL,
 				AllowPrivateNetwork:            true,
@@ -1121,6 +1130,8 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualEnabledKey(t *testing.T
 				BaseProviderType: schemas.OpenAI,
 			},
 		},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		provider: {{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1}},
 	})
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: lib.NewBaseAccount(cfg),
@@ -1130,7 +1141,7 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualEnabledKey(t *testing.T
 	defer client.Shutdown()
 
 	server := &BifrostHTTPServer{Config: cfg, Client: client}
-	keys := libtest.Providers(cfg)[provider].Keys
+	keys := cfg.GetProviderKeys(provider)
 
 	server.RefreshLiveModelsForProvider(context.Background(), provider, keys)
 	require.NotEmpty(t, cfg.ModelCatalog.GetModelsForProvider(provider), "keyless provider has no live models after discovery")
@@ -1155,7 +1166,9 @@ func TestOnKeyAdded_DisabledKeySkipsFetch(t *testing.T) {
 		Config: libtest.FileOnly(t, &lib.Config{
 			ModelCatalog: catalogForTest(t, nil),
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			"custom-provider": {Keys: []schemas.Key{disabledKey}},
+			"custom-provider": {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			"custom-provider": {disabledKey},
 		}),
 	}
 
@@ -1186,7 +1199,9 @@ func TestOnKeyUpdated_DisabledKeySkipsFetchButInvalidatesCache(t *testing.T) {
 		Config: libtest.FileOnly(t, &lib.Config{
 			ModelCatalog: catalog,
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			"custom-provider": {Keys: []schemas.Key{disabledKey}},
+			"custom-provider": {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			"custom-provider": {disabledKey},
 		}),
 	}
 
@@ -1248,9 +1263,10 @@ func newReloadProviderServer(t testing.TB, catalog *modelcatalog.ModelCatalog, p
 			ModelCatalog: catalog,
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
 			provider: {
-				Keys:                 keys,
 				CustomProviderConfig: customProviderConfig,
 			},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			provider: keys,
 		}),
 	}
 }
@@ -1316,7 +1332,7 @@ func newProviderRegistrationFixture(t *testing.T) *providerRegistrationFixture {
 		CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
 	}
 	cc := lib.DefaultClientConfig
-	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &cc, ModelCatalog: catalogForTest(t, nil)}, nil)
+	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &cc, ModelCatalog: catalogForTest(t, nil)}, nil, nil)
 	// The key is written to the config store and brought into the live store, which the governance
 	// store reads it from.
 	require.NoError(t, cfg.ConfigStore.CreateVirtualKey(context.Background(), &configstoreTables.TableVirtualKey{
@@ -2227,7 +2243,7 @@ func TestReloadPluginValidatesSemanticCacheConfig(t *testing.T) {
 	SetLogger(bifrost.NewNoOpLogger())
 	cfg := libtest.FileOnly(t, &lib.Config{
 		VectorStore: mismatchVectorStore{},
-	}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}})
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, nil)
 	s := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), Config: cfg}
 
 	rejected := []struct {
@@ -3648,7 +3664,7 @@ func TestGovernanceWritesWithoutPluginReportItAndKeepLiveStore(t *testing.T) {
 	logger = noopTestLogger{}
 	t.Cleanup(func() { logger = previousLogger })
 	ctx := context.Background()
-	config := libtest.Config(t, nil)
+	config := libtest.Config(t, nil, nil)
 	config.ClientConfig = &configstore.ClientConfig{}
 	server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config}
 

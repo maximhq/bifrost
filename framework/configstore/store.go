@@ -298,12 +298,17 @@ type ConfigStore interface {
 	UpsertFeatureFlag(ctx context.Context, id string, enabled bool, updatedAt int64) error
 
 	// Provider config CRUD
-	UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, tx ...*gorm.DB) error
+	// UpdateProvidersConfig upserts providers and, for each provider with an entry in keys, its keys
+	// (the config.json sync).
+	UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key, tx ...*gorm.DB) error
+	// AddProvider creates a provider without keys; CreateProviderKey adds them.
 	AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error
-	// UpdateProvider writes a provider's settings only: config.Keys is ignored, and its key rows,
-	// config hash, status, description and limits are left as stored.
+	// UpdateProvider writes a provider's settings only: its key rows, config hash, status,
+	// description and limits are left as stored.
 	UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error
 	DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error
+	// GetProvidersConfig and GetProviderConfig read provider configurations, which hold no keys;
+	// GetProviderKeys reads a provider's keys.
 	GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error)
 	GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*ProviderConfig, error)
 	GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error)

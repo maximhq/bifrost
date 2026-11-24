@@ -356,7 +356,7 @@ func (h *WSCodexPassthroughHandler) dialUpstream(safeHeaders map[string]string, 
 	var proxyConfig *schemas.ProxyConfig
 	if h.config != nil {
 		if stored, ok := h.config.LiveStore.Collections.Providers.Get(string(schemas.OpenAI)); ok {
-			providerCfg := &stored.Settings // read only: the record is shared
+			providerCfg := &stored.Config // read only: the record is shared
 			proxyConfig = providerCfg.ProxyConfig
 			// Operator headers go first so the client's own win, as on the HTTP route.
 			if providerCfg.NetworkConfig != nil {

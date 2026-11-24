@@ -333,9 +333,9 @@ func (r *BudgetResolver) literalAccess(access schemas.Access) schemas.Access {
 // literalAccessFor rebuilds access without the alias-target source, so a blacklist on a model the name
 // would become through a key alias does not refuse a name that is never resolved. The matcher resolves
 // the provider's configuration as GovernancePlugin.modelMatcher does, so the custom-provider exemption
-// still applies, but on a copy with its keys cleared: key aliases are the only thing
-// IsModelAllowedForProvider reads them for. Without a catalog names match as written. Admission and
-// limit settlement both use it, so a literal request answers to the permits that admitted it.
+// still applies, but passes no keys: key aliases are the only thing IsModelAllowedForProvider reads
+// them for. Without a catalog names match as written. Admission and limit settlement both use it, so
+// a literal request answers to the permits that admitted it.
 func literalAccessFor(access schemas.Access, catalog *modelcatalog.ModelCatalog, live *livestore.Store) schemas.Access {
 	if access == nil {
 		return nil
@@ -345,10 +345,11 @@ func literalAccessFor(access schemas.Access, catalog *modelcatalog.ModelCatalog,
 		matcher = func(provider, model string, allowed []string) bool {
 			var providerConfig *configstore.ProviderConfig
 			if stored, ok := live.Collections.Providers.Get(provider); ok {
-				config := stored.Settings.Config() // with no keys no alias can widen the match
+				config := stored.Config
 				providerConfig = &config
 			}
-			return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
+			// No keys: with none, no alias can widen the match.
+			return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, nil, schemas.WhiteList(allowed))
 		}
 	}
 	// A copy of the access itself keeps every permit and level; Bases is only the granting level, so

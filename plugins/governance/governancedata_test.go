@@ -234,10 +234,10 @@ func TestLimitHooksWrapLimitChanges(t *testing.T) {
 // a grant of every key lists none.
 func TestVirtualKeyViewNamesGrantedKeysAsTheProviderHoldsThem(t *testing.T) {
 	h := newLiveHarness(t, &configstore.GovernanceConfig{}, nil)
-	h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: []schemas.Key{
+	h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: {
 		{ID: "k1", Name: "one", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"gpt-4o"}, Weight: 1},
 		{ID: "k2", Name: "two", Value: *schemas.NewSecretVar("sk-2"), Models: schemas.WhiteList{"*"}, Weight: 1},
-	}}})
+	}})
 	h.putVirtualKey(buildVirtualKeyWithProviders("vk-1", "sk-bf-1", "named", []configstoreTables.TableVirtualKeyProviderConfig{{
 		Provider: string(schemas.OpenAI), AllowedModels: schemas.WhiteList{"*"}, Keys: []configstoreTables.TableKey{{KeyID: "k1"}},
 	}}))

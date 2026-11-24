@@ -719,7 +719,7 @@ func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
 // A grant the snapshot drops, settles without its user, or settles past a
 // presented key breaks the chat or widens it, and either shows up here.
 func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
-	live := libtest.FileOnly(t, &lib.Config{}, nil).LiveStore
+	live := libtest.FileOnly(t, &lib.Config{}, nil, nil).LiveStore
 	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil, live, nil)
 	require.NoError(t, err)
 	isVkMandatory := false
@@ -1470,7 +1470,7 @@ func TestWarpChatPresentsWarpVirtualKeyForACallerWithNoIdentity(t *testing.T) {
 		ID: "vk-warp", Name: "warp", Value: *schemas.NewSecretVar("sk-bf-warp"), IsActive: &active,
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{{Provider: "openai", AllowedModels: []string{"*"}, Weight: new(1.0)}},
 	}
-	live := libtest.FileOnlyGovernance(t, &lib.Config{}, nil,
+	live := libtest.FileOnlyGovernance(t, &lib.Config{}, nil, nil,
 		&configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{warpKey}}).LiveStore
 	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil, live, nil)
 	require.NoError(t, err)

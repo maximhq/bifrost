@@ -130,7 +130,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if !ok {
 		return nil, ErrNotFound
 	}
-	config := &p.Settings
+	config := &p.Config
 	providerConfig := &schemas.ProviderConfig{}
 	if config.ProxyConfig != nil {
 		providerConfig.ProxyConfig = config.ProxyConfig

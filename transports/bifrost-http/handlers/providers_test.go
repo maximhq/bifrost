@@ -146,9 +146,9 @@ func providerHandlerForTest(t testing.TB, provider schemas.ModelProvider, keys [
 		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			provider: {
-				Keys: keys,
-			},
+			provider: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			provider: keys,
 		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
@@ -167,7 +167,7 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 
 	modelsManager := &mockModelsManager{}
 	h := &ProviderHandler{
-		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}),
+		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 		modelsManager: modelsManager,
 	}
 
@@ -208,7 +208,7 @@ func TestAddProvider_ZeroKeyCustomProviderResolvesByPrefix(t *testing.T) {
 
 	const name = schemas.ModelProvider("harness-zero-key-direct")
 	t.Cleanup(func() { schemas.UnregisterKnownProvider(name) })
-	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{})
+	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil)
 	h := &ProviderHandler{
 		config: cfg,
 		// The server removes the configuration, which is what unregisters the prefix.
@@ -254,7 +254,7 @@ func TestDeleteProvider_AnswersServerErrorWhenTheDeleteFails(t *testing.T) {
 	lib.SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}),
+		config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, nil),
 		modelsManager: &mockModelsManager{remove: func(context.Context, schemas.ModelProvider) error {
 			return lib.ErrNoConfigStore
 		}},
@@ -276,7 +276,9 @@ func TestUpdateProvider_MergesOntoTheStoredProvider(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1}}},
+		schemas.OpenAI: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1}},
 	})
 	// Written elsewhere: this node's live record does not have it.
 	require.NoError(t, cfg.ConfigStore.UpdateProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{OpenAIConfig: &schemas.OpenAIConfig{DisableStore: true}}))
@@ -295,7 +297,9 @@ func TestUpdateProvider_MergesOntoTheStoredProvider(t *testing.T) {
 	require.NotNil(t, stored.OpenAIConfig, "the update kept the stored setting it was not given")
 	require.True(t, stored.OpenAIConfig.DisableStore)
 	require.Equal(t, 2, stored.ConcurrencyAndBufferSize.Concurrency)
-	require.Len(t, stored.Keys, 1, "a settings update leaves the keys alone")
+	storedKeys, err := cfg.ConfigStore.GetProviderKeys(ctx, schemas.OpenAI)
+	require.NoError(t, err)
+	require.Len(t, storedKeys, 1, "a settings update leaves the keys alone")
 }
 
 // TestAddProvider_CustomProviderBaseTypes pins which base_provider_type values
@@ -316,7 +320,7 @@ func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &ProviderHandler{
-				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}),
+				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 				modelsManager: &mockModelsManager{},
 			}
 			body, err := sonic.Marshal(providerCreatePayload{
@@ -350,7 +354,7 @@ func TestAddProvider_RejectsBaseURLComponents(t *testing.T) {
 	for _, suffix := range []string{"?x=", "?", "#ignored", "#"} {
 		t.Run(suffix, func(t *testing.T) {
 			h := &ProviderHandler{
-				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}),
+				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 				modelsManager: &mockModelsManager{},
 			}
 			body, err := schemas.MarshalSorted(providerCreatePayload{
@@ -393,7 +397,7 @@ func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
 						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 						CustomProviderConfig:     customConfig,
 					},
-				}),
+				}, nil),
 				modelsManager: modelsManager,
 			}
 			attachBifrostClient(t, h.config)
@@ -446,7 +450,7 @@ func TestProviderWrites_RejectMalformedInjectedTools(t *testing.T) {
 	for name, tc := range blocks {
 		t.Run("add/"+name, func(t *testing.T) {
 			h := &ProviderHandler{
-				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}),
+				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 				modelsManager: &mockModelsManager{},
 			}
 			ctx := newBareRequestCtx()
@@ -470,7 +474,7 @@ func TestProviderWrites_RejectMalformedInjectedTools(t *testing.T) {
 						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 						CustomProviderConfig:     customConfig,
 					},
-				}),
+				}, nil),
 				modelsManager: modelsManager,
 			}
 			attachBifrostClient(t, h.config)
@@ -513,7 +517,7 @@ func TestProviderWrites_RejectMalformedPassthrough(t *testing.T) {
 	for name, tc := range blocks {
 		t.Run("add/"+name, func(t *testing.T) {
 			h := &ProviderHandler{
-				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}),
+				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 				modelsManager: &mockModelsManager{},
 			}
 			ctx := newBareRequestCtx()
@@ -536,7 +540,7 @@ func TestProviderWrites_RejectMalformedPassthrough(t *testing.T) {
 						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 						CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
 					},
-				}),
+				}, nil),
 				modelsManager: modelsManager,
 			}
 			attachBifrostClient(t, h.config)
@@ -569,7 +573,7 @@ func TestProviderWrites_StorePassthrough(t *testing.T) {
 		{Methods: []string{"POST"}, Path: "/v1/models/*/predict"},
 	}}
 	h := &ProviderHandler{
-		config:        libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, map[schemas.ModelProvider]configstore.ProviderConfig{}),
+		config:        libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 		modelsManager: &mockModelsManager{},
 	}
 	body, err := sonic.Marshal(providerCreatePayload{
@@ -623,7 +627,7 @@ func TestAddProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 	lib.SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}),
+		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 		modelsManager: &mockModelsManager{},
 	}
 
@@ -666,7 +670,7 @@ func TestAddProvider_RejectsAllowPrivateNetworkWhenAuthBypassed(t *testing.T) {
 	lib.SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}),
+		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 		modelsManager: &mockModelsManager{},
 	}
 
@@ -747,7 +751,7 @@ func TestProviderInterceptionGuardWhenAuthBypassed(t *testing.T) {
 				}
 			}
 			h := &ProviderHandler{
-				config:        libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, providers),
+				config:        libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, providers, nil),
 				modelsManager: &mockModelsManager{},
 			}
 			attachBifrostClient(t, h.config)
@@ -842,7 +846,7 @@ func TestUpdateProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 			"mock-openai": {
 				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
 			},
-		}),
+		}, nil),
 		modelsManager: &mockModelsManager{},
 	}
 
@@ -941,7 +945,7 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 						CustomProviderConfig:     customConfig,
 					},
-				}),
+				}, nil),
 				modelsManager: &mockModelsManager{},
 			}
 			attachBifrostClient(t, h.config)
@@ -1008,13 +1012,14 @@ func TestProviderWrites_TellTheReloadWhetherTheyAdded(t *testing.T) {
 					ClientConfig: &configstore.ClientConfig{},
 				}, map[schemas.ModelProvider]configstore.ProviderConfig{
 					schemas.OpenAI: {
-						Keys:                     []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-stored"), Weight: 1}},
 						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 					},
 					"mock-openai": {
 						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 						CustomProviderConfig:     keyless,
 					},
+				}, map[schemas.ModelProvider][]schemas.Key{
+					schemas.OpenAI: {{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-stored"), Weight: 1}},
 				}),
 				modelsManager: mgr,
 			}
@@ -1042,7 +1047,7 @@ func TestProviderWrites_TellTheReloadWhetherTheyAdded(t *testing.T) {
 	}
 
 	mgr := &mockModelsManager{}
-	h := &ProviderHandler{config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}), modelsManager: mgr}
+	h := &ProviderHandler{config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil), modelsManager: mgr}
 	body, err := sonic.Marshal(providerCreatePayload{Provider: "mock-new", CustomProviderConfig: keyless})
 	if err != nil {
 		t.Fatalf("failed to marshal request body: %v", err)
@@ -1066,7 +1071,7 @@ func TestAddProvider_ReturnsErrorWhenRuntimeReloadFails(t *testing.T) {
 
 	modelsManager := &mockModelsManager{reloadErr: context.DeadlineExceeded}
 	h := &ProviderHandler{
-		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}),
+		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 		modelsManager: modelsManager,
 	}
 
@@ -1134,7 +1139,9 @@ func TestUpdateProvider_RejectsKeysInBody(t *testing.T) {
 		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {Keys: []schemas.Key{existingKey}},
+			schemas.OpenAI: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {existingKey},
 		}),
 		modelsManager: &mockModelsManager{},
 	}
@@ -1183,13 +1190,14 @@ func TestUpdateProvider_RejectsKeysInBody(t *testing.T) {
 	}
 
 	// In-memory cache must NOT have been mutated by the rejected request.
-	stored, ok := libtest.Providers(h.config)[schemas.OpenAI]
-	if !ok || len(stored.Keys) != 1 {
+	_, ok := libtest.Providers(h.config)[schemas.OpenAI]
+	stored := h.config.GetProviderKeys(schemas.OpenAI)
+	if !ok || len(stored) != 1 {
 		t.Fatalf("expected provider to retain its single existing key, got %#v", stored)
 	}
-	if stored.Keys[0].Weight != 0.8 || len(stored.Keys[0].BlacklistedModels) != 1 || stored.Keys[0].BlacklistedModels[0] != "gpt-3.5-turbo" {
+	if stored[0].Weight != 0.8 || len(stored[0].BlacklistedModels) != 1 || stored[0].BlacklistedModels[0] != "gpt-3.5-turbo" {
 		t.Fatalf("expected key to be untouched (weight=0.8, blacklisted=[gpt-3.5-turbo]); got weight=%v blacklisted=%v",
-			stored.Keys[0].Weight, stored.Keys[0].BlacklistedModels)
+			stored[0].Weight, stored[0].BlacklistedModels)
 	}
 }
 
@@ -1246,7 +1254,9 @@ func TestUpdateProvider_PassesThroughForEmptyOrAbsentKeys(t *testing.T) {
 				config: libtest.WithProviders(t, &lib.Config{
 					ClientConfig: &configstore.ClientConfig{},
 				}, map[schemas.ModelProvider]configstore.ProviderConfig{
-					schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-existing"}}},
+					schemas.OpenAI: {},
+				}, map[schemas.ModelProvider][]schemas.Key{
+					schemas.OpenAI: {{ID: "key-existing"}},
 				}),
 				modelsManager: &mockModelsManager{},
 			}
@@ -1294,11 +1304,12 @@ func TestProviderHandler_RejectsUnrestorableMaskedHeaders(t *testing.T) {
 				ClientConfig: &configstore.ClientConfig{},
 			}, map[schemas.ModelProvider]configstore.ProviderConfig{
 				schemas.OpenAI: {
-					Keys: []schemas.Key{{ID: "key-existing"}},
 					NetworkConfig: &schemas.NetworkConfig{ExtraHeaders: map[string]schemas.SecretVar{
 						"Authorization": *schemas.NewSecretVar("Bearer real-token"),
 					}},
 				},
+			}, map[schemas.ModelProvider][]schemas.Key{
+				schemas.OpenAI: {{ID: "key-existing"}},
 			}),
 			modelsManager: &mockModelsManager{},
 		}
@@ -1628,7 +1639,7 @@ func TestListModels_DecisionsKeepsTypesafeBasedModels(t *testing.T) {
 		if provider != schemas.Typesafe {
 			config := libtest.Providers(h.config)[provider]
 			config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Typesafe, IsKeyLess: true}
-			libtest.SetProvider(t, h.config, provider, config)
+			libtest.SetProvider(t, h.config, provider, config, nil)
 		}
 
 		ctx := newBareRequestCtx()
@@ -1843,7 +1854,7 @@ func TestListModels_DecisionsGeminiListsDecisionModels(t *testing.T) {
 		if provider != schemas.Gemini {
 			config := libtest.Providers(h.config)[provider]
 			config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
-			libtest.SetProvider(t, h.config, provider, config)
+			libtest.SetProvider(t, h.config, provider, config, nil)
 		}
 
 		ctx := newBareRequestCtx()
@@ -2089,7 +2100,7 @@ func TestListModels_DecisionsListsEveryModelOnCustomOpenAIBase(t *testing.T) {
 		h := providerHandlerForTest(t, "kserve", []schemas.Key{{ID: "key-a"}}, models, models)
 		config := libtest.Providers(h.config)["kserve"]
 		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true, AllowedRequests: allowed}
-		libtest.SetProvider(t, h.config, "kserve", config)
+		libtest.SetProvider(t, h.config, "kserve", config, nil)
 
 		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod("GET")
@@ -2122,7 +2133,7 @@ func TestListModels_DecisionsListsEveryModelOnCustomEngineBase(t *testing.T) {
 		h := providerHandlerForTest(t, "my-engine", []schemas.Key{{ID: "key-a"}}, models, models)
 		config := libtest.Providers(h.config)["my-engine"]
 		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: base, IsKeyLess: true, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
-		libtest.SetProvider(t, h.config, "my-engine", config)
+		libtest.SetProvider(t, h.config, "my-engine", config, nil)
 
 		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod("GET")
@@ -2154,7 +2165,7 @@ func TestListModels_DecisionsSkipsProvidersDenyingDecisions(t *testing.T) {
 		h := providerHandlerForTest(t, provider, []schemas.Key{{ID: "key-a"}}, models, models)
 		config := libtest.Providers(h.config)[provider]
 		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: base, IsKeyLess: true, AllowedRequests: &schemas.AllowedRequests{ListModels: true}}
-		libtest.SetProvider(t, h.config, provider, config)
+		libtest.SetProvider(t, h.config, provider, config, nil)
 
 		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod("GET")
@@ -3100,8 +3111,11 @@ func TestListModels_VKFilterListsProviderAllowedOnlyByAllowAll(t *testing.T) {
 		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI:    {Keys: []schemas.Key{{ID: "key-a"}}},
-			schemas.Anthropic: {Keys: []schemas.Key{{ID: "key-b"}}},
+			schemas.OpenAI:    {},
+			schemas.Anthropic: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI:    {{ID: "key-a"}},
+			schemas.Anthropic: {{ID: "key-b"}},
 		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
@@ -3145,7 +3159,9 @@ func TestListModels_VKFilterHidesBlacklistedModel(t *testing.T) {
 		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
+			schemas.OpenAI: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {{ID: "key-a"}},
 		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
@@ -3182,7 +3198,9 @@ func TestListModels_VKFilterUnionsDuplicateProviderConfigs(t *testing.T) {
 		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
+			schemas.OpenAI: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {{ID: "key-a"}},
 		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
@@ -3223,8 +3241,11 @@ func TestListModels_VKFilterRestrictsToAllowedProviderAndModels(t *testing.T) {
 		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI:    {Keys: []schemas.Key{{ID: "key-a"}}},
-			schemas.Anthropic: {Keys: []schemas.Key{{ID: "key-b"}}},
+			schemas.OpenAI:    {},
+			schemas.Anthropic: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI:    {{ID: "key-a"}},
+			schemas.Anthropic: {{ID: "key-b"}},
 		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
@@ -3276,7 +3297,9 @@ func TestListModels_VKFilterAllowsAllModelsWithWildcard(t *testing.T) {
 		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
+			schemas.OpenAI: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {{ID: "key-a"}},
 		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
@@ -3310,7 +3333,9 @@ func TestListModels_VKFilterDeniesAllModelsWhenAllowedModelsEmpty(t *testing.T) 
 		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
+			schemas.OpenAI: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {{ID: "key-a"}},
 		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
@@ -3345,7 +3370,7 @@ func TestListModels_VKFilterNoProviderConfigsDeniesAll(t *testing.T) {
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
 			schemas.OpenAI:    {},
 			schemas.Anthropic: {},
-		}),
+		}, nil),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI:    {"gpt-4o"},
@@ -3378,7 +3403,7 @@ func TestListModels_VKFilterBlockedExplicitProviderReturnsEmptyResult(t *testing
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
 			schemas.OpenAI:    {},
 			schemas.Anthropic: {},
-		}),
+		}, nil),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI:    {"gpt-4o"},
@@ -3421,7 +3446,7 @@ func modelListQueryHandlerForTest(t testing.TB, manager *mockModelsManager) *Pro
 			ClientConfig: &configstore.ClientConfig{},
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
 			schemas.OpenAI: {},
-		}),
+		}, nil),
 		modelsManager: manager,
 	}
 }
@@ -3614,7 +3639,7 @@ func TestListModels_NoVKFilterReturnsAll(t *testing.T) {
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
 			schemas.OpenAI:    {},
 			schemas.Anthropic: {},
-		}),
+		}, nil),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI:    {"gpt-4o"},
@@ -4136,7 +4161,9 @@ func TestListModels_IncludeAliases(t *testing.T) {
 					"regex:claude-.*": {ModelID: "unlisted-d"},
 				}}}
 				h := providerHandlerForTest(t, schemas.OpenAI, keys, []string{"gpt-4o", "gpt-4o-mini"}, []string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"})
-				h.config.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+				catalog, err := modelcatalog.NewTestCatalog(nil)
+				require.NoError(t, err)
+				h.config.ModelCatalog = catalog
 				h.config.ModelCatalog.SetKeyConfigForProvider(schemas.OpenAI, keys)
 				permit := grant.NewPermit(grant.PermitAccessProfile, "profile-test", "Test Profile", true, false,
 					[]schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"gpt-4o"}}}, nil)
@@ -4189,7 +4216,9 @@ func BenchmarkListModels_Unfiltered(b *testing.B) {
 			}
 		}
 		h := providerHandlerForTest(b, schemas.OpenAI, keys, models, models)
-		h.config.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+		catalog, err := modelcatalog.NewTestCatalog(nil)
+		require.NoError(b, err)
+		h.config.ModelCatalog = catalog
 		h.config.ModelCatalog.SetKeyConfigForProvider(schemas.OpenAI, keys)
 		for _, flag := range []string{"", "&include_aliases=true"} {
 			b.Run(fmt.Sprintf("aliases=%d,include=%t", len(keys)*aliasesPerKey, flag != ""), func(b *testing.B) {
@@ -4210,16 +4239,16 @@ func BenchmarkListModels_Unfiltered(b *testing.B) {
 // disabled key read as enabled to every client of the endpoint.
 func TestRedactedKeys_PreservesEnabled(t *testing.T) {
 	cfg := libtest.FileOnly(t, &lib.Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"typesafe": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
 		"typesafe": {
-			Keys: []schemas.Key{
-				{ID: "disabled-key", Name: "disabled", Value: *schemas.NewSecretVar("sk-disabled"), Enabled: new(false)},
-				{ID: "enabled-key", Name: "enabled", Value: *schemas.NewSecretVar("sk-enabled"), Enabled: new(true)},
-				{ID: "unset-key", Name: "unset", Value: *schemas.NewSecretVar("sk-unset")},
-			},
+			{ID: "disabled-key", Name: "disabled", Value: *schemas.NewSecretVar("sk-disabled"), Enabled: new(false)},
+			{ID: "enabled-key", Name: "enabled", Value: *schemas.NewSecretVar("sk-enabled"), Enabled: new(true)},
+			{ID: "unset-key", Name: "unset", Value: *schemas.NewSecretVar("sk-unset")},
 		},
 	})
 
-	keys := redactedKeys(libtest.Providers(cfg))
+	keys := redactedKeys(map[schemas.ModelProvider][]schemas.Key{"typesafe": cfg.GetProviderKeys("typesafe")})
 	byID := make(map[string]configstoreTables.TableKey, len(keys))
 	for _, key := range keys {
 		byID[key.KeyID] = key
@@ -4251,17 +4280,19 @@ func TestRedactedKeys_PreservesEnabled(t *testing.T) {
 func TestRedactedKeys_RedactsAnthropicWorkloadIdentity(t *testing.T) {
 	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
 	cfg := libtest.FileOnly(t, &lib.Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Anthropic: {Keys: []schemas.Key{{ID: "wif-key", Name: "wif", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
+		schemas.Anthropic: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {{ID: "wif-key", Name: "wif", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
 			WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
 				FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
 				OrganizationID:   *schemas.NewSecretVar("org-uuid"),
 				ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
 				IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar(jwt)},
 			},
-		}}}},
+		}}},
 	})
 
-	keys := redactedKeys(libtest.Providers(cfg))
+	keys := redactedKeys(map[schemas.ModelProvider][]schemas.Key{schemas.Anthropic: cfg.GetProviderKeys(schemas.Anthropic)})
 	require.Len(t, keys, 1)
 	require.True(t, keys[0].AnthropicKeyConfig.HasWorkloadIdentity())
 	wif := keys[0].AnthropicKeyConfig.WorkloadIdentity
@@ -4271,5 +4302,238 @@ func TestRedactedKeys_RedactsAnthropicWorkloadIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(body), jwt)
 	assert.Contains(t, string(body), `"anthropic_key_config"`)
-	assert.Equal(t, jwt, libtest.Providers(cfg)[schemas.Anthropic].Keys[0].AnthropicKeyConfig.WorkloadIdentity.IdentitySource.Token.GetValue(), "the live config is untouched")
+	assert.Equal(t, jwt, cfg.GetProviderKeys(schemas.Anthropic)[0].AnthropicKeyConfig.WorkloadIdentity.IdentitySource.Token.GetValue(), "the live config is untouched")
+}
+
+// TestRedactedKeys_MasksBedrockBatchRoleAndEndpoints pins that /api/keys masks a Bedrock key the
+// way the providers API does: the batch role ARN, the env-backed endpoints and project ID, and the
+// credentials come back masked, while the key ID, name, provider and region stay readable.
+func TestRedactedKeys_MasksBedrockBatchRoleAndEndpoints(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	t.Setenv("BEDROCK_KEYS_TEST_ENDPOINT", "https://bedrock-runtime.internal.example.com")
+	t.Setenv("BEDROCK_KEYS_TEST_PROJECT", "bedrock-project-secret-0123")
+	const batchRole = "arn:aws:iam::123456789012:role/bedrock-batch-example"
+	key := schemas.Key{ID: "bedrock-key", Name: "bedrock", Models: schemas.WhiteList{"*"}, BedrockKeyConfig: &schemas.BedrockKeyConfig{
+		AccessKey:    *schemas.NewSecretVar("AKIAEXAMPLEBEDROCK01"),
+		SecretKey:    *schemas.NewSecretVar("bedrock-secret-key-example"),
+		Region:       schemas.NewSecretVar("us-east-1"),
+		BatchRoleARN: schemas.NewSecretVar(batchRole),
+		ProjectID:    schemas.NewSecretVar("env.BEDROCK_KEYS_TEST_PROJECT"),
+		Endpoints:    &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("env.BEDROCK_KEYS_TEST_ENDPOINT")},
+	}}
+	cfg := libtest.FileOnly(t, &lib.Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{schemas.Bedrock: {key}})
+	h := &ProviderHandler{config: cfg}
+
+	ctx := keyRouteRequest(h.listKeys, schemas.Bedrock, "")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	body := string(ctx.Response.Body())
+	for _, secret := range []string{batchRole, "bedrock-runtime.internal.example.com", "bedrock-project-secret-0123", "AKIAEXAMPLEBEDROCK01", "bedrock-secret-key-example"} {
+		assert.NotContains(t, body, secret)
+	}
+	assert.Contains(t, body, "env.BEDROCK_KEYS_TEST_ENDPOINT", "the endpoint's reference stays visible")
+	var listed []struct {
+		KeyID            string `json:"key_id"`
+		Name             string `json:"name"`
+		Provider         string `json:"provider"`
+		BedrockKeyConfig struct {
+			Region struct {
+				Value string `json:"value"`
+			} `json:"region"`
+		} `json:"bedrock_key_config"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &listed))
+	require.Len(t, listed, 1)
+	assert.Equal(t, "bedrock-key", listed[0].KeyID)
+	assert.Equal(t, "bedrock", listed[0].Name)
+	assert.Equal(t, string(schemas.Bedrock), listed[0].Provider)
+	assert.Equal(t, "us-east-1", listed[0].BedrockKeyConfig.Region.Value, "the region is an identifier, not a credential")
+	assert.Equal(t, batchRole, cfg.GetProviderKeys(schemas.Bedrock)[0].BedrockKeyConfig.BatchRoleARN.GetValue(), "the live key is untouched")
+}
+
+// TestListKeys_NeverReturnsASecretValue pins that GET /api/keys, read from the database and from
+// memory, masks every credential a key config can hold, whether it is a literal, an env reference
+// or a vault reference. A reference stays visible and its resolved value is masked, identifiers
+// included; a literal identifier reads back as stored. Each value is unique, so a leak names its
+// field, and the count of masks proves every field reached the body.
+func TestListKeys_NeverReturnsASecretValue(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	vaultValues := map[string]string{}
+	previousHook := schemas.VaultResolveHook
+	schemas.VaultResolveHook = func(_ context.Context, value *string) error {
+		resolved, ok := vaultValues[*value]
+		if !ok {
+			return fmt.Errorf("unknown vault reference %q", *value)
+		}
+		*value = resolved
+		return nil
+	}
+	t.Cleanup(func() { schemas.VaultResolveHook = previousHook })
+	// Redacted keeps the first and last four characters, so every value starts and ends the same
+	// and its mask is this string.
+	const mask = "head************************tail"
+
+	for _, source := range []string{"literal", "env", "vault"} {
+		t.Run(source, func(t *testing.T) {
+			type field struct {
+				name, value, ref string
+				credential       bool
+			}
+			var fields []field
+			// secret returns a SecretVar for one field, from source. A credential is masked even as a
+			// literal; an identifier is masked only when it comes from a reference.
+			secret := func(name string, credential bool) *schemas.SecretVar {
+				value := "head-" + source + "-" + name + "-tail"
+				input := value
+				switch source {
+				case "env":
+					input = "env.LISTKEYS_" + strings.ToUpper(strings.NewReplacer(".", "_", "-", "_").Replace(name))
+					t.Setenv(strings.TrimPrefix(input, "env."), value)
+				case "vault":
+					input = "vault.listkeys/" + name
+					vaultValues[input] = value
+				}
+				ref := ""
+				if source != "literal" {
+					ref = input
+				}
+				fields = append(fields, field{name: name, value: value, ref: ref, credential: credential})
+				sv := schemas.NewSecretVar(input)
+				// An unresolved reference would otherwise make the leak check pass.
+				require.Equal(t, value, sv.GetValue(), "setup: %s must resolve", name)
+				return sv
+			}
+			const cred, ident = true, false
+			endpoints := func(prefix string) *schemas.BedrockEndpoints {
+				return &schemas.BedrockEndpoints{
+					Runtime: secret(prefix+".endpoints.runtime", ident), ControlPlane: secret(prefix+".endpoints.control_plane", ident),
+					Mantle: secret(prefix+".endpoints.mantle", ident), AgentRuntime: secret(prefix+".endpoints.agent_runtime", ident),
+					S3: secret(prefix+".endpoints.s3", ident),
+				}
+			}
+			// extra_params values are literal strings, never resolved, and always masked.
+			extraParam := "head-" + source + "-oauth.extra_param-tail"
+			fields = append(fields, field{name: "oauth.extra_param", value: extraParam, credential: true})
+			keys := map[schemas.ModelProvider][]schemas.Key{
+				schemas.OpenAI: {{ID: "openai-key", Name: "openai", Models: schemas.WhiteList{"*"},
+					Value: *secret("openai.value", cred),
+					OAuthKeyConfig: &schemas.OAuthKeyConfig{
+						GrantType: schemas.OAuthGrantClientCredentials, TokenURL: *secret("oauth.token_url", ident),
+						ClientID: secret("oauth.client_id", cred), ClientSecret: secret("oauth.client_secret", cred),
+						PrivateKey: secret("oauth.private_key", cred), ExtraParams: map[string]string{"client_assertion": extraParam},
+					},
+				}},
+				schemas.Azure: {{ID: "azure-key", Name: "azure", Models: schemas.WhiteList{"*"},
+					AzureKeyConfig: &schemas.AzureKeyConfig{
+						Endpoint: *secret("azure.endpoint", ident), ClientID: secret("azure.client_id", cred),
+						ClientSecret: secret("azure.client_secret", cred), TenantID: secret("azure.tenant_id", cred),
+					},
+					Aliases: schemas.KeyAliases{"gpt": {ModelID: "gpt-deployment", AzureAliasCfg: &schemas.AzureAliasCfg{Endpoint: secret("azure.alias.endpoint", ident)}}},
+				}},
+				schemas.Vertex: {{ID: "vertex-key", Name: "vertex", Models: schemas.WhiteList{"*"},
+					VertexKeyConfig: &schemas.VertexKeyConfig{
+						ProjectID: *secret("vertex.project_id", cred), ProjectNumber: *secret("vertex.project_number", cred),
+						Region: *secret("vertex.region", ident), AuthCredentials: *secret("vertex.auth_credentials", cred),
+						AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{
+							Audience: *secret("vertex.wif.audience", ident), ServiceAccountEmail: secret("vertex.wif.service_account_email", ident),
+							AWSRegion: secret("vertex.wif.aws_region", ident), AWSRoleARN: secret("vertex.wif.aws_role_arn", cred),
+						},
+					},
+					Aliases: schemas.KeyAliases{
+						"gemini": {ModelID: "gemini-model", Region: secret("vertex.alias.region", ident), ProjectID: secret("vertex.alias.project_id", ident),
+							VertexAliasCfg: &schemas.VertexAliasCfg{ProjectNumber: secret("vertex.alias.project_number", ident)}},
+						// MarshalJSON promotes the deprecated project ID; it must be masked before that.
+						"legacy": {ModelID: "legacy-model", VertexAliasCfg: &schemas.VertexAliasCfg{ProjectID: secret("vertex.alias.legacy_project_id", ident)}},
+					},
+				}},
+				schemas.Bedrock: {{ID: "bedrock-key", Name: "bedrock", Models: schemas.WhiteList{"*"},
+					BedrockKeyConfig: &schemas.BedrockKeyConfig{
+						AccessKey: *secret("bedrock.access_key", cred), SecretKey: *secret("bedrock.secret_key", cred),
+						SessionToken: secret("bedrock.session_token", cred), Region: secret("bedrock.region", ident),
+						ARN: secret("bedrock.arn", cred), RoleARN: secret("bedrock.role_arn", cred),
+						ExternalID: secret("bedrock.external_id", cred), RoleSessionName: secret("bedrock.session_name", cred),
+						BatchRoleARN: secret("bedrock.batch_role_arn", cred), ProjectID: secret("bedrock.project_id", ident),
+						BatchS3Config: &schemas.BatchS3Config{Buckets: []schemas.S3BucketConfig{{BucketName: "listkeys-batch-bucket", IsDefault: true}}},
+						Endpoints:     endpoints("bedrock"),
+					},
+					Aliases: schemas.KeyAliases{"claude": {ModelID: "claude-model", BedrockAliasCfg: &schemas.BedrockAliasCfg{InferenceProfileARN: secret("bedrock.alias.inference_profile_arn", ident)}}},
+				}},
+				schemas.BedrockMantle: {{ID: "mantle-key", Name: "mantle", Models: schemas.WhiteList{"*"},
+					BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+						AccessKey: *secret("mantle.access_key", cred), SecretKey: *secret("mantle.secret_key", cred),
+						SessionToken: secret("mantle.session_token", cred), Region: secret("mantle.region", ident),
+						RoleARN: secret("mantle.role_arn", cred), ExternalID: secret("mantle.external_id", cred),
+						RoleSessionName: secret("mantle.session_name", cred), ProjectID: secret("mantle.project_id", ident),
+						Endpoints: endpoints("mantle"),
+					},
+				}},
+				schemas.SageMaker: {{ID: "sagemaker-key", Name: "sagemaker", Models: schemas.WhiteList{"*"},
+					SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+						AccessKey: *secret("sagemaker.access_key", cred), SecretKey: *secret("sagemaker.secret_key", cred),
+						SessionToken: secret("sagemaker.session_token", cred), Region: secret("sagemaker.region", ident),
+						RoleARN: secret("sagemaker.role_arn", cred), ExternalID: secret("sagemaker.external_id", cred),
+						RoleSessionName: secret("sagemaker.session_name", cred),
+						Endpoints:       &schemas.SageMakerEndpoints{Runtime: secret("sagemaker.endpoints.runtime", ident)},
+					},
+				}},
+				schemas.VLLM:       {{ID: "vllm-key", Name: "vllm", Models: schemas.WhiteList{"*"}, VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: *secret("vllm.url", ident), ModelName: "served-model"}}},
+				schemas.Ollama:     {{ID: "ollama-key", Name: "ollama", Models: schemas.WhiteList{"*"}, OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *secret("ollama.url", ident)}}},
+				schemas.SGL:        {{ID: "sgl-key", Name: "sgl", Models: schemas.WhiteList{"*"}, SGLKeyConfig: &schemas.SGLKeyConfig{URL: *secret("sgl.url", ident)}}},
+				schemas.Cloudflare: {{ID: "cloudflare-key", Name: "cloudflare", Models: schemas.WhiteList{"*"}, CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: *secret("cloudflare.account_id", ident)}}},
+				schemas.Databricks: {{ID: "databricks-key", Name: "databricks", Models: schemas.WhiteList{"*"},
+					DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+						WorkspaceURL: *secret("databricks.workspace_url", ident),
+						ClientID:     secret("databricks.client_id", cred), ClientSecret: secret("databricks.client_secret", cred),
+					},
+				}},
+				schemas.Anthropic: {{ID: "anthropic-key", Name: "anthropic", Models: schemas.WhiteList{"*"},
+					AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+						FederationRuleID: *secret("anthropic.federation_rule_id", ident), OrganizationID: *secret("anthropic.organization_id", ident),
+						ServiceAccountID: *secret("anthropic.service_account_id", ident), WorkspaceID: secret("anthropic.workspace_id", ident),
+						// Only one of path and token is valid at once; both are set to check both.
+						IdentitySource: &schemas.IdentitySource{Type: schemas.IdentitySourceInline,
+							Path: secret("anthropic.identity_path", ident), Token: secret("anthropic.identity_token", cred)},
+					}},
+				}},
+				schemas.Baseten: {{ID: "baseten-key", Name: "baseten", Models: schemas.WhiteList{"*"},
+					Aliases: schemas.KeyAliases{"dedicated": {ModelID: "dedicated-model", BasetenAliasCfg: &schemas.BasetenAliasCfg{DeploymentURL: secret("baseten.alias.deployment_url", ident)}}},
+				}},
+			}
+			providers := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(keys))
+			for provider := range keys {
+				providers[provider] = configstore.ProviderConfig{}
+			}
+			withStore := libtest.Config(t, providers, keys)
+
+			for name, h := range map[string]*ProviderHandler{
+				"database": {config: withStore, configStore: withStore.ConfigStore},
+				"memory":   {config: libtest.FileOnly(t, &lib.Config{}, providers, keys)},
+			} {
+				t.Run(name, func(t *testing.T) {
+					ctx := keyRouteRequest(h.listKeys, "", "")
+					require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body %s", ctx.Response.Body())
+					body := string(ctx.Response.Body())
+					var listed []map[string]any
+					require.NoError(t, json.Unmarshal(ctx.Response.Body(), &listed))
+					require.Len(t, listed, len(keys))
+					masks := 0
+					for _, f := range fields {
+						if f.credential || f.ref != "" {
+							// The middle is what the mask hides; the whole value contains it.
+							assert.NotContains(t, body, f.value[4:len(f.value)-4], "%s leaked", f.name)
+							masks++
+						} else {
+							assert.Contains(t, body, `"`+f.value+`"`, "the literal identifier %s reads back as stored", f.name)
+						}
+						if f.ref != "" {
+							assert.Contains(t, body, `"`+f.ref+`"`, "the reference of %s stays visible", f.name)
+						}
+					}
+					assert.Equal(t, masks, strings.Count(body, `"`+mask+`"`), "every masked field reaches the body once: %s", body)
+					assert.Contains(t, body, `"listkeys-batch-bucket"`, "the batch bucket is not a secret")
+				})
+			}
+		})
+	}
 }

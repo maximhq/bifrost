@@ -100,7 +100,8 @@ type liveFixture struct {
 	clientNames             map[string]string // clientID -> clientName, configured clients not open by default
 	clientSlugs             map[string]string // endpoint slug -> clientID
 	configuredProviders     map[schemas.ModelProvider]configstore.ProviderConfig
-	enabledAgents           map[string]bool // agent name -> allowed by default
+	providerKeys            map[schemas.ModelProvider][]schemas.Key // keys of providers in configuredProviders
+	enabledAgents           map[string]bool                         // agent name -> allowed by default
 }
 
 // liveHarness is one test's configuration source: a SQLite config store and a live store loaded
@@ -317,12 +318,12 @@ func (h *liveHarness) putProvider(p *configstoreTables.TableProvider) {
 	h.refresh(livestore.Ref{Kind: livestore.KindProvider, ID: p.Name})
 }
 
-// setProviders writes providers as a providers config save does and refreshes their records, so
-// the live store holds them with their keys. Keys without an ID or name get one (key IDs are
-// unique across providers).
-func (h *liveHarness) setProviders(providers map[schemas.ModelProvider]configstore.ProviderConfig) {
+// setProviders writes providers and their keys as a providers config save does and refreshes their
+// records, so the live store holds them with their keys. Keys without an ID or name get one (key
+// IDs are unique across providers); keys of a provider missing from providers are not written.
+func (h *liveHarness) setProviders(providers map[schemas.ModelProvider]configstore.ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key) {
 	h.t.Helper()
-	h.must(h.configStore.UpdateProvidersConfig(h.ctx, withKeyIDs(providers)), "write providers")
+	h.must(h.configStore.UpdateProvidersConfig(h.ctx, providers, withKeyIDs(keys)), "write providers")
 	refs := make([]livestore.Ref, 0, len(providers))
 	for name := range providers {
 		refs = append(refs, livestore.Ref{Kind: livestore.KindProvider, ID: string(name)})
@@ -337,21 +338,21 @@ func (h *liveHarness) deleteProvider(name schemas.ModelProvider) {
 	h.refresh(livestore.Ref{Kind: livestore.KindProvider, ID: string(name), Remove: true})
 }
 
-// withKeyIDs returns a copy of providers whose keys all carry an ID and a name, filling the
+// withKeyIDs returns a copy of keys in which every key carries an ID and a name, filling the
 // missing ones from the provider's name and the key's position.
-func withKeyIDs(providers map[schemas.ModelProvider]configstore.ProviderConfig) map[schemas.ModelProvider]configstore.ProviderConfig {
-	out := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(providers))
-	for name, cfg := range providers {
-		cfg.Keys = slices.Clone(cfg.Keys)
-		for i := range cfg.Keys {
-			if cfg.Keys[i].ID == "" {
-				cfg.Keys[i].ID = fmt.Sprintf("%s-key-%d", name, i)
+func withKeyIDs(keys map[schemas.ModelProvider][]schemas.Key) map[schemas.ModelProvider][]schemas.Key {
+	out := make(map[schemas.ModelProvider][]schemas.Key, len(keys))
+	for name, providerKeys := range keys {
+		providerKeys = slices.Clone(providerKeys)
+		for i := range providerKeys {
+			if providerKeys[i].ID == "" {
+				providerKeys[i].ID = fmt.Sprintf("%s-key-%d", name, i)
 			}
-			if cfg.Keys[i].Name == "" {
-				cfg.Keys[i].Name = cfg.Keys[i].ID
+			if providerKeys[i].Name == "" {
+				providerKeys[i].Name = providerKeys[i].ID
 			}
 		}
-		out[name] = cfg
+		out[name] = providerKeys
 	}
 	return out
 }
@@ -425,13 +426,13 @@ func (h *liveHarness) setVirtualMCPAssignments(vkID string, ids ...uint) {
 	h.refresh(livestore.Ref{Kind: livestore.KindVirtualKey, ID: vkID})
 }
 
-// writeFixture writes the fixture's providers and MCP clients.
+// writeFixture writes the fixture's providers with their keys, its MCP clients and its agents.
 func (h *liveHarness) writeFixture(f *liveFixture) error {
 	if f == nil {
 		return nil
 	}
 	if len(f.configuredProviders) > 0 {
-		if err := h.configStore.UpdateProvidersConfig(h.ctx, withKeyIDs(f.configuredProviders)); err != nil {
+		if err := h.configStore.UpdateProvidersConfig(h.ctx, f.configuredProviders, withKeyIDs(f.providerKeys)); err != nil {
 			return err
 		}
 	}

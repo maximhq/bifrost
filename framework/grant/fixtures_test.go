@@ -61,7 +61,7 @@ func catalogMatcher(catalog *modelcatalog.ModelCatalog, source *fakeProviderConf
 		if ok {
 			cfgPtr = &cfg
 		}
-		return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, cfgPtr, schemas.WhiteList(allowed))
+		return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, cfgPtr, nil, schemas.WhiteList(allowed))
 	}
 }
 
