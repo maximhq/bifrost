@@ -357,7 +357,8 @@ export default function NotificationCenter() {
 									<div className="divide-y">
 										{notifications.map((notification) => {
 											const Icon = severityIcons[notification.severity];
-											const isRead = readIds.includes(notification.id);
+											const isResolved = Boolean(notification.resolved_at);
+											const isRead = isResolved || readIds.includes(notification.id);
 											return (
 												// Open and dismiss are sibling native buttons, never nested. A
 												// <button> may not contain interactive content, and role="button"
@@ -382,14 +383,22 @@ export default function NotificationCenter() {
 														<span
 															className={cn(
 																"mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full",
-																severityStyles[notification.severity],
+																isResolved ? "bg-muted text-muted-foreground" : severityStyles[notification.severity],
 															)}
 														>
 															<Icon className="size-3.5" />
 														</span>
 														<span className="min-w-0 flex-1 pr-5">
 															<span className="flex items-start gap-2">
-																<span className={cn("min-w-0 flex-1 text-sm", !isRead && "font-semibold")}>{notification.title}</span>
+																<span
+																	className={cn(
+																		"min-w-0 flex-1 text-sm",
+																		!isRead && "font-semibold",
+																		isResolved && "text-muted-foreground",
+																	)}
+																>
+																	{notification.title}
+																</span>
 																{!isRead && (
 																	<span
 																		className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full"
@@ -400,14 +409,25 @@ export default function NotificationCenter() {
 															<span className="text-muted-foreground mt-0.5 line-clamp-3 block text-xs leading-relaxed">
 																{notification.message}
 															</span>
-															<span className="text-muted-foreground mt-1.5 flex items-center gap-2 text-[11px]">
-																<span>
+															<span className="text-muted-foreground mt-1.5 flex items-center gap-1.5 text-[11px]">
+																{isResolved && notification.resolution && (
+																	<span
+																		className="text-foreground/70 min-w-0 truncate"
+																		data-testid={`notification-resolution-${notification.id}`}
+																	>
+																		{notification.resolution}
+																	</span>
+																)}
+																{isResolved && notification.resolution && <span aria-hidden="true">·</span>}
+																<span className="shrink-0 whitespace-nowrap">
 																	{formatDistanceToNow(new Date(notification.created_at), {
 																		addSuffix: true,
 																		locale: dateFnsLocale(i18n.language),
 																	})}
 																</span>
-																{notification.action_label && <span className="text-primary font-medium">{notification.action_label}</span>}
+																{!isResolved && notification.action_label && (
+																	<span className="text-primary font-medium">{notification.action_label}</span>
+																)}
 															</span>
 														</span>
 													</button>
