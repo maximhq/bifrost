@@ -3173,6 +3173,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.NotificationService == nil {
 		s.NotificationService = handlers.NewNotificationService(s.Config.ConfigStore, s.WebSocketHandler)
 		s.Config.NotificationPublisher = s.NotificationService.Publish
+		s.Config.NotificationResolver = s.NotificationService.Resolve
 		s.NotificationService.Start(s.Ctx)
 	}
 	if s.RSSFeedsHandler == nil {
@@ -3698,6 +3699,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Config.EventBroadcaster = s.WebSocketHandler.BroadcastEvent
 	s.NotificationService = handlers.NewNotificationService(s.Config.ConfigStore, s.WebSocketHandler)
 	s.Config.NotificationPublisher = s.NotificationService.Publish
+	s.Config.NotificationResolver = s.NotificationService.Resolve
 	s.NotificationService.Start(s.Ctx)
 	// Warp is built once, in RegisterAPIRoutes below (called from this same
 	// Bootstrap, before it returns): that is the first point the logging
