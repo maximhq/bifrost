@@ -912,6 +912,7 @@ Target-specific variables are isolated. For example, `model` is unavailable to M
 | `stream_replay_event_interval_ms` | No | Delay in milliseconds between buffered events after block-capable streaming output guardrails allow the response. `0` sends buffered events immediately; maximum `1000` |
 | `output_mode` | No | `enforce` (default) acts on output matches; `monitor` delivers the response untouched and only logs what the output guardrails would do. Requires `apply_to` `output` or `both`. See [Monitor Mode](/enterprise/guardrails#monitor-mode) |
 | `input_timing` | No | `pre_call` (default) finishes the input check before the request is sent; `parallel` runs it alongside the LLM call and enforces only blocks. `parallel` requires an LLM rule with `apply_to` `input` or `both` |
+| `fail_closed` | No | `true` blocks traffic when one of the rule's providers errors, times out, or returns an invalid or partial result; `false` (default) lets it through and logs the failure. See [Provider Failures](/enterprise/guardrails#provider-failures) |
 | `provider_config_ids` | No | `id` values of providers to invoke when this rule matches, in execution order. See [Profile Execution Order](/enterprise/guardrails#profile-execution-order) |
 | `profile_execution_mode` | No | `independent` (default) gives every provider the original payload; `chained` gives each provider the payload as earlier ones redacted or transformed it. See [Chained Profile Execution](/enterprise/guardrails#chained-profile-execution) |
 
