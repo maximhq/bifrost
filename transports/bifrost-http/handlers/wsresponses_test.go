@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -129,6 +130,31 @@ func TestCreateBifrostContextFromHeaders_BaggageSessionIDSetsGrouping(t *testing
 
 	if got, _ := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); got != "rt-ws-123" {
 		t.Fatalf("parent request id = %q, want %q", got, "rt-ws-123")
+	}
+}
+
+// Every turn on a connection presents the headers sent at upgrade to guardrail rules, as an HTTP request presents
+// its own, so a rule that matches a header applies to WebSocket turns too.
+func TestCreateBifrostContextFromHeaders_PresentsHeadersToGuardrails(t *testing.T) {
+	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, &sessionHeaders{
+		headers: map[string][]string{"x-team": {"finance"}, "x-tag": {"a", "b"}},
+	})
+	defer cancel()
+
+	want := map[string]string{"x-team": "finance", "x-tag": "b"}
+	got, _ := ctx.Value(schemas.BifrostContextKeyGuardrailHeaders).(map[string]string)
+	if !maps.Equal(got, want) {
+		t.Fatalf("guardrail headers = %v, want %v", got, want)
+	}
+	requestHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if !maps.Equal(requestHeaders, want) {
+		t.Fatalf("request headers = %v, want %v", requestHeaders, want)
+	}
+
+	empty, cancelEmpty := createBifrostContextFromHeaders(testWSHandlerStore{}, &sessionHeaders{})
+	defer cancelEmpty()
+	if empty.Value(schemas.BifrostContextKeyGuardrailHeaders) != nil {
+		t.Fatal("a connection that presented no headers presents none to guardrails")
 	}
 }
 
@@ -678,6 +704,93 @@ func TestResponsesWSHealsUnverifiableEncryptedReasoning(t *testing.T) {
 	last := fake.httpBodies[len(fake.httpBodies)-1]
 	assert.NotContains(t, last, "encrypted_content", "the retry must not replay the unverifiable ciphertext")
 	assert.Contains(t, last, "earlier thought", "the retry keeps the reasoning summary")
+}
+
+// streamRewriterPlugin is an LLM plugin that only reports whether it may block or rewrite streams; the WebSocket
+// handlers read nothing else from it.
+type streamRewriterPlugin struct {
+	schemas.LLMPlugin
+	rewrites bool
+}
+
+// RewritesStreams implements schemas.StreamRewriter.
+func (p streamRewriterPlugin) RewritesStreams() bool { return p.rewrites }
+
+// withStreamRewriter loads an LLM plugin on config that reports rewrites, and returns config.
+func withStreamRewriter(config *lib.Config, rewrites bool) *lib.Config {
+	plugins := []schemas.LLMPlugin{streamRewriterPlugin{rewrites: rewrites}}
+	config.LLMPlugins.Store(&plugins)
+	return config
+}
+
+// stopStreamPlugin is a transport plugin whose stream chunk hook stops every stream with an error, as a guardrail
+// block does.
+type stopStreamPlugin struct{ schemas.HTTPTransportPlugin }
+
+// GetName implements schemas.BasePlugin.
+func (stopStreamPlugin) GetName() string { return "stop-stream" }
+
+// HTTPTransportStreamChunkHook stops the stream on its first chunk.
+func (stopStreamPlugin) HTTPTransportStreamChunkHook(*schemas.BifrostContext, *schemas.HTTPRequest, *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	status := http.StatusBadRequest
+	return nil, &schemas.StreamInterceptionError{BifrostError: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "output blocked"}}}
+}
+
+// TestResponsesWSTakesTheHTTPBridgeWhileStreamsAreRewritten: the native upstream relays the provider's frames past the
+// plugin hooks, so while a loaded plugin may block or rewrite streams every turn takes the HTTP bridge; otherwise turns
+// stay on the native upstream.
+func TestResponsesWSTakesTheHTTPBridgeWhileStreamsAreRewritten(t *testing.T) {
+	for _, rewrites := range []bool{true, false} {
+		t.Run(fmt.Sprintf("rewrites=%v", rewrites), func(t *testing.T) {
+			fake := &fakeOpenAIResponses{}
+			h, session, relayed := newTwoKeyWSResponsesHarness(t, fake)
+			withStreamRewriter(h.config, rewrites)
+
+			h.handleResponseCreate(session, nil, []byte(`{"type":"response.create","model":"openai/gpt-5.5","input":"hello"}`))
+			require.Contains(t, awaitTerminalWSMessage(t, relayed), `"response.completed"`)
+
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			if rewrites {
+				assert.Empty(t, fake.wsAuth, "no turn reaches the native upstream")
+				assert.Len(t, fake.httpBodies, 1, "the turn runs through the HTTP bridge")
+				return
+			}
+			assert.Len(t, fake.wsAuth, 1, "the turn takes the native upstream")
+			assert.Empty(t, fake.httpBodies)
+		})
+	}
+}
+
+// TestResponsesWSBridgeAppliesStreamChunkHooks: on the HTTP bridge each chunk passes the transport plugins' stream
+// chunk hooks, as on the HTTP streaming route, so a hook that stops the stream ends the turn with its error and the
+// client receives none of the response.
+func TestResponsesWSBridgeAppliesStreamChunkHooks(t *testing.T) {
+	fake := &fakeOpenAIResponses{}
+	h, session, relayed := newTwoKeyWSResponsesHarness(t, fake)
+	withStreamRewriter(h.config, true)
+	transport := []schemas.HTTPTransportPlugin{stopStreamPlugin{}}
+	h.config.HTTPTransportPlugins.Store(&transport)
+
+	h.handleResponseCreate(session, nil, []byte(`{"type":"response.create","model":"openai/gpt-5.5","input":"hello"}`))
+
+	// Every message up to the error is kept, so a chunk that slipped past the hook before it is caught.
+	var before []string
+	msg := ""
+	for msg == "" {
+		select {
+		case next := <-relayed:
+			if strings.Contains(next, `"type":"error"`) {
+				msg = next
+			} else {
+				before = append(before, next)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for the turn's error")
+		}
+	}
+	assert.Contains(t, msg, "output blocked")
+	assert.Empty(t, before, "no chunk reaches the client before the error")
 }
 
 func TestEventLoopIgnoresResponseInterrupt(t *testing.T) {

@@ -364,6 +364,43 @@ func TestCodexWebSocketRefusesBeforeUpgrade(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "chatgpt.com's 401 reaches Codex, which refreshes its token")
 }
 
+// TestCodexWebSocketRefusesWhileStreamsAreRewritten: the relay writes chatgpt.com's frames to Codex past the plugin
+// hooks, so while a loaded plugin may block or rewrite streams the upgrade gets 426, which moves Codex to HTTP, before
+// chatgpt.com is dialed.
+func TestCodexWebSocketRefusesWhileStreamsAreRewritten(t *testing.T) {
+	f := newCodexRelayFixture(t, withStreamRewriter(&lib.Config{}, true))
+
+	_, resp, err := websocket.DefaultDialer.Dial(f.url, codexHeaders())
+
+	require.ErrorIs(t, err, websocket.ErrBadHandshake)
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusUpgradeRequired, resp.StatusCode)
+	assert.Nil(t, f.upstream.seenHandshake(), "chatgpt.com is not dialed")
+}
+
+// TestCodexWebSocketClosesOnceStreamsAreRewritten: a socket opened before a plugin started rewriting streams closes
+// once it has no turn in flight, so Codex reconnects and its upgrade is refused to HTTP.
+func TestCodexWebSocketClosesOnceStreamsAreRewritten(t *testing.T) {
+	config := withStreamRewriter(&lib.Config{}, false)
+	f := newCodexRelayFixture(t, config)
+	f.handler.idleCheck = 10 * time.Millisecond
+
+	conn, _ := f.dial(t, codexHeaders())
+	f.upstream.accept(t)
+	withStreamRewriter(config, true)
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err := conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	assert.Equal(t, websocket.CloseNormalClosure, closeErr.Code)
+
+	_, resp, err := websocket.DefaultDialer.Dial(f.url, codexHeaders())
+	require.ErrorIs(t, err, websocket.ErrBadHandshake)
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusUpgradeRequired, resp.StatusCode)
+}
+
 // TestCodexWebSocketRefusesAnonymousCallerWhenAuthIsEnforced: on a deployment that enforces auth on
 // inference, the ChatGPT token alone is not a Bifrost credential, so the upgrade is refused before
 // chatgpt.com is dialed.

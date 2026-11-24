@@ -633,3 +633,11 @@ type OverheadSpanConsumer interface {
 type RawPayloadConsumer interface {
 	ConsumesRawPayloads() bool
 }
+
+// StreamRewriter is an optional interface an LLMPlugin may implement to report that its hooks may block or rewrite a
+// streamed turn. While any loaded plugin reports true, a transport that can relay a stream without applying hook
+// results must take a road that applies them, or refuse so the client falls back to one. It is read on every such
+// decision, so it must be cheap, and it should answer true when unsure. Unimplemented means no.
+type StreamRewriter interface {
+	RewritesStreams() bool
+}
