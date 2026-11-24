@@ -72,7 +72,7 @@ func TestRawRootCompositionNormalizedForClaudeOnBedrock(t *testing.T) {
 	const model = "global.anthropic.claude-sonnet-4-6"
 	newParams := func(t *testing.T) *schemas.ToolFunctionParameters {
 		t.Helper()
-		params, err := schemas.NewRawToolFunctionParameters([]byte(`{"type":"object","anyOf":[{"type":"object","properties":{"mode":{"type":"string"},"left":{"type":"string"}},"required":["mode","left"]},{"type":"object","properties":{"mode":{"type":"string"},"right":{"type":"string"}},"required":["mode","right"]}]}`))
+		params, err := schemas.NewRawToolFunctionParameters([]byte(`{"type":"object","minProperties":1,"anyOf":[{"type":"object","properties":{"mode":{"type":"string"},"left":{"type":"string"}},"required":["mode","left"]},{"type":"object","properties":{"mode":{"type":"string"},"right":{"type":"string"}},"required":["mode","right"]}]}`))
 		if err != nil {
 			t.Fatalf("create raw tool parameters: %v", err)
 		}
@@ -88,6 +88,9 @@ func TestRawRootCompositionNormalizedForClaudeOnBedrock(t *testing.T) {
 		}
 		if got := string(root["required"]); got != `["mode"]` {
 			t.Fatalf("required = %s, want [\"mode\"] in %s", got, schema)
+		}
+		if got := string(root["minProperties"]); got != "1" {
+			t.Fatalf("minProperties = %q, want 1: root members without a typed field were lost in %s", got, schema)
 		}
 	}
 

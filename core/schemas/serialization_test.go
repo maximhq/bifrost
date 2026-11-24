@@ -1192,6 +1192,28 @@ func TestToolFunctionParameters_Materialize(t *testing.T) {
 		assert.True(t, raw.HasRawJSON(), "the raw value must not be changed")
 	})
 
+	t.Run("root members without a typed field are kept", func(t *testing.T) {
+		const schema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","minProperties":1,"properties":{"query":{"type":"string"}},"x-vendor":{"enabled":true}}`
+		raw, err := NewRawToolFunctionParameters([]byte(schema))
+		require.NoError(t, err)
+
+		typed, err := raw.Materialize()
+		require.NoError(t, err)
+		marshaled, err := Marshal(typed)
+		require.NoError(t, err)
+		assert.Equal(t, schema, string(marshaled), "members and their order must survive the decode")
+
+		copied, err := Marshal(DeepCopyToolFunctionParameters(typed))
+		require.NoError(t, err)
+		assert.Equal(t, schema, string(copied))
+
+		normalized, err := Marshal(typed.Normalized())
+		require.NoError(t, err)
+		for _, key := range []string{"$schema", "minProperties", "x-vendor"} {
+			assert.Contains(t, string(normalized), `"`+key+`"`)
+		}
+	})
+
 	t.Run("typed parameters are returned as is", func(t *testing.T) {
 		typed := &ToolFunctionParameters{Type: "object"}
 		got, err := typed.Materialize()
@@ -1229,6 +1251,23 @@ func BenchmarkToolFunctionParameters_HasRootComposition(b *testing.B) {
 	for b.Loop() {
 		if params.HasRootComposition() {
 			b.Fatal("unexpected root composition")
+		}
+	}
+}
+
+// BenchmarkToolFunctionParameters_Materialize measures decoding a raw schema
+// with a root composition and root members that have no typed field, the path
+// taken before Claude's composition rewrite.
+func BenchmarkToolFunctionParameters_Materialize(b *testing.B) {
+	params, err := NewRawToolFunctionParameters([]byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","minProperties":1,"properties":{"query":{"type":"string"}},"anyOf":[{"required":["query"]}],"x-vendor":{"enabled":true}}`))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := params.Materialize(); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

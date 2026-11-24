@@ -121,6 +121,34 @@ func TestNormalizeAnthropicToolInputSchemaRawRootCompositions(t *testing.T) {
 		})
 	}
 
+	t.Run("root members without a typed field survive the rewrite", func(t *testing.T) {
+		params, err := schemas.NewRawToolFunctionParameters([]byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","minProperties":1,"anyOf":[{"type":"object","properties":{"mode":{"type":"string"},"left":{"type":"string"}},"required":["mode","left"]},{"type":"object","properties":{"mode":{"type":"string"},"right":{"type":"string"}},"required":["mode","right"]}]}`))
+		if err != nil {
+			t.Fatalf("create raw tool parameters: %v", err)
+		}
+		normalized, err := NormalizeAnthropicToolInputSchema(params)
+		if err != nil {
+			t.Fatalf("normalize schema: %v", err)
+		}
+		// The chat path also applies Normalized() before sending the schema.
+		for name, schema := range map[string]*schemas.ToolFunctionParameters{"normalized": normalized, "key-sorted": normalized.Normalized()} {
+			marshaled, err := schemas.Marshal(schema)
+			if err != nil {
+				t.Fatalf("%s: marshal schema: %v", name, err)
+			}
+			var root map[string]interface{}
+			if err := schemas.Unmarshal(marshaled, &root); err != nil {
+				t.Fatalf("%s: unmarshal schema: %v", name, err)
+			}
+			if _, ok := root["anyOf"]; ok {
+				t.Fatalf("%s: root anyOf reached the Anthropic input_schema: %s", name, marshaled)
+			}
+			if root["$schema"] != "https://json-schema.org/draft/2020-12/schema" || root["minProperties"] != float64(1) {
+				t.Fatalf("%s: root members without a typed field were lost: %s", name, marshaled)
+			}
+		}
+	})
+
 	t.Run("raw schema without a root composition stays raw", func(t *testing.T) {
 		params, err := schemas.NewRawToolFunctionParameters([]byte(`{"type":"object","properties":{"note":{"anyOf":[{"type":"string"},{"type":"null"}]}}}`))
 		if err != nil {

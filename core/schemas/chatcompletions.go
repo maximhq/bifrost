@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -694,8 +695,23 @@ type ToolFunctionParameters struct {
 	explicitEmptyObject bool `json:"-"`
 	// rawJSON stores a validated schema that should be forwarded without
 	// materializing the typed representation. It is immutable after construction.
-	rawJSON json.RawMessage `json:"-"`
+	rawJSON          json.RawMessage `json:"-"`
+	unmodeledMembers []byte          `json:"-"` // root members of a materialized raw schema that have no typed field, as a JSON member list
 }
+
+// toolFunctionParametersKeys holds the JSON names of the root members that
+// ToolFunctionParameters models with a typed field.
+var toolFunctionParametersKeys = func() map[string]struct{} {
+	typ := reflect.TypeFor[ToolFunctionParameters]()
+	keys := make(map[string]struct{}, typ.NumField())
+	for i := range typ.NumField() {
+		name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			keys[name] = struct{}{}
+		}
+	}
+	return keys
+}()
 
 // NewRawToolFunctionParameters creates tool parameters backed by validated raw
 // JSON. Providers that serialize ToolFunctionParameters can forward the schema
@@ -758,8 +774,10 @@ func (t *ToolFunctionParameters) HasRootComposition() bool {
 
 // Materialize returns parameters whose typed fields describe the schema. Raw
 // parameters are decoded into a new value; any other value is returned as is.
-// Decoding gives up the raw passthrough, so callers use it only for a schema
-// they must rewrite.
+// Root members without a typed field (minProperties, $schema, vendor keys) are
+// kept as raw JSON and written back by MarshalJSON, so a rewrite of the typed
+// fields does not drop them. Decoding gives up the raw passthrough, so callers
+// use it only for a schema they must rewrite.
 func (t *ToolFunctionParameters) Materialize() (*ToolFunctionParameters, error) {
 	if t == nil || len(t.rawJSON) == 0 || t.hasDefinedSchemaFields() {
 		return t, nil
@@ -768,7 +786,44 @@ func (t *ToolFunctionParameters) Materialize() (*ToolFunctionParameters, error) 
 	if err := Unmarshal(t.rawJSON, &typed); err != nil {
 		return nil, err
 	}
+	typed.unmodeledMembers = unmodeledRootMembers(t.rawJSON)
 	return &typed, nil
+}
+
+// unmodeledRootMembers returns the root members of a JSON object that have no
+// typed field, as a comma-separated member list, or nil when there are none.
+func unmodeledRootMembers(object json.RawMessage) []byte {
+	var members []byte
+	gjson.ParseBytes(object).ForEach(func(key, value gjson.Result) bool {
+		if _, modeled := toolFunctionParametersKeys[key.Str]; modeled {
+			return true
+		}
+		if len(members) > 0 {
+			members = append(members, ',')
+		}
+		members = append(members, key.Raw...)
+		members = append(members, ':')
+		members = append(members, value.Raw...)
+		return true
+	})
+	return members
+}
+
+// appendObjectMembers adds a comma-separated member list to the end of a
+// marshaled JSON object. The typed fields never emit unmodeled keys, so no key
+// appears twice.
+func appendObjectMembers(object, members []byte) []byte {
+	end := bytes.LastIndexByte(object, '}')
+	if end < 1 || object[0] != '{' {
+		return object
+	}
+	out := make([]byte, 0, len(object)+len(members)+1)
+	out = append(out, object[:end]...)
+	if len(bytes.TrimSpace(object[1:end])) > 0 {
+		out = append(out, ',')
+	}
+	out = append(out, members...)
+	return append(out, object[end:]...)
 }
 
 // MarshalJSON serializes ToolFunctionParameters while preserving the original
@@ -790,6 +845,9 @@ func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
 	data, err := MarshalSorted(Alias(t))
 	if err != nil {
 		return nil, err
+	}
+	if len(t.unmodeledMembers) > 0 {
+		data = appendObjectMembers(data, t.unmodeledMembers)
 	}
 	return t.keyOrder.Apply(data)
 }
