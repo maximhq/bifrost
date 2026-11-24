@@ -22,7 +22,7 @@ Priced as ordinary calls, such an API is charged on every status check, and the 
 2. Under **Start Route (Charged)**, set the call that starts the job: method `POST`, path `/` and the header matcher `X-Amz-Target` = `Textract.StartDocumentAnalysis`. Set **Fee per Start (USD)** to `0.01` and **Job ID Path** to `JobId`.
 3. Under **Status Check (Free)**, set how Bifrost checks the job: method `POST`, path `/`, the header `X-Amz-Target` = `Textract.GetDocumentAnalysis`, the body `{"JobId":"{{job.id}}","MaxResults":1}` with content type `application/x-amz-json-1.1`, **Status Path** `JobStatus`, **Succeeded Statuses** `SUCCEEDED, PARTIAL_SUCCESS` and **Failed Statuses** `FAILED`.
 4. Under **Job Pricing**, set **Price per Unit (USD)** to `0.0015`, **Units Read From** to the response, **Measure** to **Number at path** and **Units Path** to `DocumentMetadata.Pages`.
-5. Check the note under the status check. It names the route that typical job ids reach when callers check their status: an existing free route, or a free route that saving adds. If a charged route would take them, saving is refused until that route is free or narrower. The check tries four common job id shapes, so it does not catch a charged route written for one specific job id.
+5. Check the note under the status check. It names the route that typical job ids reach when callers check their status: an existing free route, or a free route that saving adds. If a charged route would take them, saving is refused until that route is free or narrower. The check tries five common job id shapes, so it does not catch a charged route written for one specific job id.
 6. Select **Add Async Job**.
 
 The routes table lists the status-check route under its start route. Editing either one opens the async job again. If two jobs share a status route, it is listed under the first one, so edit the second job from its own start row.
@@ -173,7 +173,7 @@ The final charge goes to the budgets of the virtual key, team and customer that 
 
 ## Status checks must be free
 
-Bifrost refuses to save a relay where a caller's status check would be charged: the job is already charged once, when it finishes. In the example, a status check is `POST /` with `X-Amz-Target: Textract.GetDocumentAnalysis`. Without the `Textract.Get*` route it matches no route, so callers cannot check their jobs (`404`); with a catch-all `POST /` route instead, every check would be charged. Add a route for the status check with `billable: false`, above any broader route that would match it.
+Bifrost refuses to save a relay where a caller's status check would be charged: the job is already charged once, when it finishes. In the example, a status check is `POST /` with `X-Amz-Target: Textract.GetDocumentAnalysis`. Without the `Textract.Get*` route it matches no route, so callers cannot check their jobs (`404`); with a catch-all `POST /` route instead, every check would be charged. Add a route for the status check with `billable: false`. The most specific matching route wins, so a free route narrower than the catch-all takes the checks wherever it is listed.
 
 ## In Relay Logs
 

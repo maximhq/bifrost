@@ -1904,6 +1904,24 @@
           "path": "/v1/status"
         },
         {
+          "method": "GET",
+          "path": "/v1/files/**",
+          "billable": true,
+          "usage": {
+            "cost_per_request": 0.003,
+            "cost_per_unit": 0
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/v1/files/**/meta",
+          "billable": true,
+          "usage": {
+            "cost_per_request": 0.007,
+            "cost_per_unit": 0
+          }
+        },
+        {
           "method": "POST",
           "path": "/v1/free",
           "billable": false
