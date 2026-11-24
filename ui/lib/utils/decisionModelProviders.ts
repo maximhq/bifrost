@@ -65,13 +65,17 @@ export function decisionProviderIconKey(provider: ModelProvider): ProviderIconTy
 
 // isDecisionProvider reports a provider that answers /v1/decisions natively:
 // Typesafe, OpenRouter, Cloudflare (Clef), Perplexity, Ollama, Azure
-// (Microsoft-Decision-1), Databricks (ai_decide, System One), vLLM and SGLang (every
-// model they load), OpenAI or a custom provider built on it (their decision models,
-// such as gpt-6-luna), Gemini or a custom provider built on it (gemini-decision-1),
-// or a custom provider built on the Typesafe base (Laya, Nimble, Clef). Other
-// providers would only emulate decisions through chat, so decision-model pickers
-// never offer them.
+// (Microsoft-Decision-1), Databricks (ai_decide, System One), Baseten (its
+// decision-models/ deployments), vLLM and SGLang (every model they load), OpenAI or
+// a custom provider built on it (their decision models, such as gpt-6-luna), Gemini
+// or a custom provider built on it (gemini-decision-1), or a custom provider built
+// on the Typesafe base (Laya, Nimble, Clef). Other providers would only emulate
+// decisions through chat, so decision-model pickers never offer them. A custom
+// provider whose allowed_requests turns decisions off is left out too, since the
+// gateway rejects its decision calls; no allowed_requests block at all allows them.
 export function isDecisionProvider(provider: ModelProvider): boolean {
+	const allowedRequests = provider.custom_provider_config?.allowed_requests;
+	if (allowedRequests && allowedRequests.decisions !== true) return false;
 	return (
 		provider.name === "typesafe" ||
 		provider.name === "openrouter" ||
@@ -80,6 +84,7 @@ export function isDecisionProvider(provider: ModelProvider): boolean {
 		provider.name === "ollama" ||
 		provider.name === "azure" ||
 		provider.name === "databricks" ||
+		provider.name === "baseten" ||
 		provider.name === "vllm" ||
 		provider.name === "sgl" ||
 		isOpenAIDecisionProvider(provider) ||
@@ -141,5 +146,5 @@ export function defaultDecisionModel(provider: ModelProvider | undefined): strin
 export function listsDecisionModels(provider: ModelProvider | undefined, providerName: string): boolean {
 	if (provider ? isOpenAIDecisionProvider(provider) : providerName === "openai") return true;
 	if (provider ? isGeminiDecisionProvider(provider) : providerName === "gemini") return true;
-	return ["openrouter", "cloudflare", "perplexity", "ollama", "azure", "databricks", "vllm", "sgl"].includes(providerName);
+	return ["openrouter", "cloudflare", "perplexity", "ollama", "azure", "databricks", "baseten", "vllm", "sgl"].includes(providerName);
 }
