@@ -1188,3 +1188,7 @@ cd ui && npm run i18n:check
 * Follow **strict folder structure and routing conventions**
 * Use **the right tool for the right problem**
 * Keep code **simple, predictable, and maintainable**
+
+## Downstream maintenance
+
+Follow the [fork plan](docs/quartermaster/PLAN.md) and record new work in [triage](docs/quartermaster/TRIAGE.md).
