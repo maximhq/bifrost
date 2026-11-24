@@ -1386,6 +1386,8 @@
 			"toastUpdated": "Ruta actualizada correctamente",
 			"deleteTitle": "Eliminar ruta",
 			"deleteDescription": "¿Seguro que quieres eliminar esta ruta? Esta acción no se puede deshacer.",
+			"statusRouteLocked": "Recibe las consultas de estado del job asíncrono en {{route}}. Elimina esa ruta para quitar ambas.",
+			"deleteAlsoRemoves": "Esto también elimina {{route}}, la ruta de estado gratuita que solo usaba este job.",
 			"toastDeleted": "Ruta eliminada correctamente",
 			"importReview": {
 				"title": "¿Reemplazar las rutas con las importadas?",
@@ -1553,6 +1555,7 @@
 			"statusHint": "Cómo Bifrost consulta el trabajo hasta que termina, con el id del trabajo en lugar de {{token}}. Las consultas de estado de los llamantes son gratuitas, ya que el trabajo se cobra una vez.",
 			"statusRouteReuse": "Las consultas de estado de los ID de trabajo habituales llegan a {{route}}, que es gratuita.",
 			"statusRouteAdd": "Al guardar se añade una ruta gratuita para las consultas de estado de los ID de trabajo habituales: {{route}}",
+			"statusRouteRemoved": "Al guardar también se elimina {{route}}, que solo recibía las consultas de estado anteriores de este job.",
 			"statusRouteUnverified": "Este relay envía un encabezado secreto que usan las rutas para coincidir, por lo que la puerta de enlace comprueba la ruta de estado al guardar.",
 			"statusRouteOtherJob": "Esto enviaría las consultas de estado del trabajo en {{job}} a {{route}}, que tiene cargo. Cambie esta ruta de inicio o asigne a ese trabajo una ruta gratuita más específica.",
 			"startRouteDuplicate": "{{route}} ya existe y seguiría recibiendo estas llamadas, por lo que este trabajo nunca se registraría. Use otra ruta de inicio o elimine primero la existente.",

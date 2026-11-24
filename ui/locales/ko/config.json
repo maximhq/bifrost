@@ -1409,6 +1409,8 @@
 			"toastUpdated": "라우트를 업데이트했어요",
 			"deleteTitle": "라우트 삭제",
 			"deleteDescription": "이 라우트를 삭제하시겠어요? 이 작업은 되돌릴 수 없어요.",
+			"statusRouteLocked": "{{route}}의 비동기 작업 상태 확인을 받아요. 둘 다 삭제하려면 그 경로를 삭제하세요.",
+			"deleteAlsoRemoves": "이 작업으로 {{route}}도 삭제돼요. 이 작업만 사용하던 무료 상태 경로예요.",
 			"toastDeleted": "라우트를 삭제했어요",
 			"importReview": {
 				"title": "라우트를 가져온 라우트로 교체할까요?",
@@ -1575,6 +1577,7 @@
 			"statusHint": "작업이 끝날 때까지 Bifrost가 확인하는 방법이며, {{token}} 자리에 작업 ID가 들어갑니다. 작업은 한 번 과금되므로 호출자의 상태 확인은 무료입니다.",
 			"statusRouteReuse": "일반적인 작업 ID의 상태 확인은 무료인 {{route}}에 도달합니다.",
 			"statusRouteAdd": "저장하면 일반적인 작업 ID의 상태 확인용 무료 경로가 추가됩니다: {{route}}",
+			"statusRouteRemoved": "저장하면 {{route}}도 삭제돼요. 이 작업의 이전 상태 확인만 받던 경로예요.",
 			"statusRouteUnverified": "이 릴레이는 경로 일치에 쓰이는 비밀 헤더를 보내므로, 저장할 때 게이트웨이가 상태 경로를 확인합니다.",
 			"statusRouteOtherJob": "이렇게 하면 {{job}} 작업의 상태 확인이 요금이 부과되는 {{route}}(으)로 전송됩니다. 이 시작 경로를 변경하거나 해당 작업에 더 좁은 무료 경로를 지정하세요.",
 			"startRouteDuplicate": "{{route}} 경로가 이미 있어 이 호출을 계속 받게 되므로 이 작업은 추적되지 않습니다. 다른 시작 경로를 사용하거나 기존 경로를 먼저 삭제하세요.",

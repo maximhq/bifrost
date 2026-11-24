@@ -1417,6 +1417,8 @@
 			"toastUpdated": "路由已成功更新",
 			"deleteTitle": "刪除路由",
 			"deleteDescription": "確定要刪除此路由嗎？此操作無法復原。",
+			"statusRouteLocked": "接收 {{route}} 上非同步作業的狀態查詢。刪除該路由即可同時移除兩者。",
+			"deleteAlsoRemoves": "這也會移除 {{route}}，即只有此作業使用的免費狀態路由。",
 			"toastDeleted": "路由已成功刪除",
 			"importReview": {
 				"title": "要以匯入的路由取代現有路由嗎？",
@@ -1583,6 +1585,7 @@
 			"statusHint": "Bifrost 在工作完成前查詢它的方式，{{token}} 會替換為工作 ID。由於工作只計費一次，呼叫端自己的狀態查詢是免費的。",
 			"statusRouteReuse": "常見工作 ID 的狀態查詢會到達免費的 {{route}}。",
 			"statusRouteAdd": "儲存時會為常見工作 ID 的狀態查詢新增一條免費路由：{{route}}",
+			"statusRouteRemoved": "儲存時也會移除 {{route}}，它只接收此作業先前的狀態查詢。",
 			"statusRouteUnverified": "此中繼會傳送路由用於比對的機密標頭，因此閘道會在儲存時檢查狀態路由。",
 			"statusRouteOtherJob": "這會將 {{job}} 上工作的狀態查詢傳送到收費的 {{route}}。請變更此啟動路由，或為該工作設定範圍更窄的免費路由。",
 			"startRouteDuplicate": "{{route}} 已存在並會繼續接收這些呼叫，因此此工作永遠不會被追蹤。請使用其他啟動路由，或先刪除現有路由。",

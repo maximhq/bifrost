@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { RelayRouteForm as RouteForm } from "@/lib/types/schemas";
-import { applyAsyncJob, pairStatusRoutes, relayHeadersForPlan, statusCheckTarget, statusRouteFor } from "./relayAsyncJob";
+import {
+	applyAsyncJob,
+	pairStatusRoutes,
+	relayHeadersForPlan,
+	statusCheckTarget,
+	statusRouteFor,
+	unusedStatusRoutes,
+} from "./relayAsyncJob";
 type JobForm = NonNullable<RouteForm["job"]>;
 
 const textractJob: JobForm = {
@@ -236,5 +243,72 @@ describe("pairStatusRoutes", () => {
 	it("leaves a billed route that takes the status check unpaired", () => {
 		const routes: RouteForm[] = [restStart, { method: "GET", path: "/jobs/**", headers: [], billable: true }];
 		expect(pairStatusRoutes(routes).size).toBe(0);
+	});
+});
+
+describe("unused status routes", () => {
+	const postJob: JobForm = { ...restJob, poll: { method: "POST", path: "/jobs/{{job.id}}" } };
+	const shape = (routes: RouteForm[]) => routes.map((r) => `${r.method} ${r.path}`);
+
+	it("replaces the generated route when an edit changes the poll method", () => {
+		const first = applyAsyncJob([], -1, { ...restStart, job: postJob });
+		expect(shape(first.routes)).toEqual(["POST /jobs", "POST /jobs/**"]);
+		const edited = applyAsyncJob(first.routes, 0, restStart);
+		expect(shape(edited.routes)).toEqual(["POST /jobs", "GET /jobs/**"]);
+		expect(shape(edited.removed)).toEqual(["POST /jobs/**"]);
+	});
+
+	it("keeps the status route when an edit leaves the poll alone", () => {
+		const first = applyAsyncJob([], -1, restStart);
+		const edited = applyAsyncJob(first.routes, 0, { ...restStart, job: { ...restJob, interval_seconds: 60 } });
+		expect(shape(edited.routes)).toEqual(["POST /jobs", "GET /jobs/**"]);
+		expect(edited.removed).toEqual([]);
+	});
+
+	it("drops the generated route with the job's start route, but not one another job still uses", () => {
+		const first = applyAsyncJob([], -1, restStart);
+		expect(unusedStatusRoutes(first.routes, first.routes.slice(1))).toEqual([0]);
+		const other: RouteForm & { job: JobForm } = { ...restStart, path: "/batch" };
+		const both = applyAsyncJob(first.routes, -1, other).routes;
+		expect(shape(both)).toEqual(["POST /jobs", "GET /jobs/**", "POST /batch"]);
+		expect(
+			unusedStatusRoutes(
+				both,
+				both.filter((_, i) => i !== 0),
+			),
+		).toEqual([]);
+	});
+
+	it("keeps a generated route a remaining job reaches for some ids, though another route takes the first", () => {
+		// Job A polls /jobs/{{job.id}}: the sample id job-id reaches an exact route, the others the wildcard.
+		const a = applyAsyncJob([], -1, restStart).routes;
+		const exactJob: RouteForm & { job: JobForm } = {
+			...restStart,
+			path: "/exact",
+			job: { ...restJob, poll: { method: "GET", path: "/jobs/job-id" } },
+		};
+		const both = [...a, exactJob, { method: "GET" as const, path: "/jobs/job-id", headers: [] }];
+		const withoutExactJob = both.filter((r) => r !== exactJob);
+		expect(unusedStatusRoutes(both, withoutExactJob)).toEqual([]);
+	});
+
+	it("keeps the generated route when a secret header decides where the deleted last job's checks land", () => {
+		const first = applyAsyncJob([], -1, restStart);
+		const secret = relayHeadersForPlan({ "X-Mode": { value: "", ref: "env.MODE", type: "env" } });
+		const guarded: RouteForm = { method: "GET", path: "/jobs/**", headers: [{ name: "X-Mode", value: "check" }], billable: false };
+		const routes = [first.routes[0], guarded, first.routes[1]];
+		expect(unusedStatusRoutes(routes, routes.slice(1), secret)).toEqual([]);
+		// With the header readable, cleanup still runs.
+		expect(unusedStatusRoutes(routes, routes.slice(1))).toEqual([1]);
+	});
+
+	it("never drops a route that is not shaped like a generated one, or a billed one", () => {
+		const first = applyAsyncJob([], -1, restStart);
+		const routes: RouteForm[] = [
+			first.routes[0],
+			{ method: "GET", path: "/jobs/*", headers: [] },
+			{ method: "GET", path: "/jobs/**", headers: [], billable: true },
+		];
+		expect(unusedStatusRoutes(routes, routes.slice(1))).toEqual([]);
 	});
 });

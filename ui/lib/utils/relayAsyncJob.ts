@@ -193,16 +193,45 @@ export type StatusRoutePlan =
 
 /** Same method, path and header matchers: the gateway only ever reaches the first of two such routes. */
 function sameMatcher(a: RouteForm, b: RouteForm): boolean {
-	// JSON, not routeKey: a header value may hold spaces and colons, which routeKey joins its parts with.
-	const key = (r: RouteForm) =>
-		JSON.stringify([
-			r.method.toUpperCase(),
-			r.path.trim(),
-			Object.entries(savedHeaders(r.headers))
-				.map(([name, value]) => [name.toLowerCase(), value])
-				.sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)),
-		]);
-	return key(a) === key(b);
+	return matcherKey(a) === matcherKey(b);
+}
+
+// Keyed on what a save keeps, so a matcher with a blank value does not tell two routes apart. JSON,
+// not routeKey: a header value may hold spaces and colons, which routeKey joins its parts with.
+const matcherKey = (r: RouteForm) =>
+	JSON.stringify([
+		r.method.toUpperCase(),
+		r.path.trim(),
+		Object.entries(savedHeaders(r.headers))
+			.map(([name, value]) => [name.toLowerCase(), value])
+			.sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)),
+	]);
+
+/**
+ * Free status routes left with no job to serve after an edit or a delete: shaped exactly like the
+ * route this sheet generates for one of the jobs before the change, and reached by no job after it.
+ * Every route any sample id reaches counts as used, so a job split across an exact and a wildcard
+ * route keeps both. Nothing is dropped when a secret relay header decides where checks land.
+ */
+export function unusedStatusRoutes(before: RouteForm[], after: RouteForm[], relayHeaders: RelayHeaders = new Map()): number[] {
+	const generated = new Set(before.flatMap((r) => (r.job ? [matcherKey(statusRouteFor(r.job))] : [])));
+	if (generated.size === 0) return [];
+	const order = formSaveOrder(after);
+	const used = new Set<number>();
+	// The removed or edited jobs are checked too: if a secret header decides where their checks land,
+	// only the gateway can tell whether a generated route is still needed.
+	const jobs = [...after.map((r) => ({ job: r.job, kept: true })), ...before.map((r) => ({ job: r.job, kept: false }))];
+	for (const { job, kept } of jobs) {
+		if (!job) continue;
+		for (const id of SAMPLE_JOB_IDS) {
+			const req = statusCheck(job, id);
+			const index = order.find((i) => routeMatches(after[i], req, relayHeaders) !== false);
+			if (index === undefined) continue;
+			if (routeMatches(after[index], req, relayHeaders) === "unknown") return [];
+			if (kept) used.add(index);
+		}
+	}
+	return after.flatMap((r, i) => (!r.job && !routeIsBillable(r) && generated.has(matcherKey(r)) && !used.has(i) ? [i] : []));
 }
 
 /**
@@ -216,17 +245,25 @@ export function applyAsyncJob(
 	editIndex: number,
 	start: RouteForm & { job: JobForm },
 	relayHeaders: RelayHeaders = new Map(),
-): { routes: RouteForm[]; plan: StatusRoutePlan } {
+): { routes: RouteForm[]; plan: StatusRoutePlan; removed: RouteForm[] } {
 	const result = planAsyncJob(routes, editIndex, start, relayHeaders);
-	if (result.plan.kind === "blocked" || result.plan.kind === "disabled" || result.plan.kind === "duplicateStart") return result;
+	if (result.plan.kind === "blocked" || result.plan.kind === "disabled" || result.plan.kind === "duplicateStart")
+		return { ...result, removed: [] };
 	// The gateway checks every job on save, and this save can move another job's status checks.
 	const startIndex = editIndex >= 0 ? editIndex : routes.length;
 	for (const [i, r] of result.routes.entries()) {
 		if (!r.job || i === startIndex) continue;
 		const target = statusCheckTarget(result.routes, r.job, relayHeaders);
-		if (target.kind === "billed") return { routes: routes, plan: { kind: "otherJobCharged", job: r, route: result.routes[target.index] } };
+		if (target.kind === "billed")
+			return { routes: routes, plan: { kind: "otherJobCharged", job: r, route: result.routes[target.index] }, removed: [] };
 	}
-	return result;
+	// An edit can move the job's status checks off the route this sheet added for it earlier.
+	const unused = new Set(unusedStatusRoutes(routes, result.routes, relayHeaders));
+	return {
+		routes: result.routes.filter((_, i) => !unused.has(i)),
+		plan: result.plan,
+		removed: result.routes.filter((_, i) => unused.has(i)),
+	};
 }
 
 function planAsyncJob(

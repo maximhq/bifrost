@@ -1381,6 +1381,8 @@
 			"toastUpdated": "Route aggiornata con successo",
 			"deleteTitle": "Elimina route",
 			"deleteDescription": "Vuoi davvero eliminare questa route? Questa azione non può essere annullata.",
+			"statusRouteLocked": "Riceve i controlli di stato del job asincrono su {{route}}. Elimina quella route per rimuoverle entrambe.",
+			"deleteAlsoRemoves": "Questo rimuove anche {{route}}, la route di stato gratuita usata solo da questo job.",
 			"toastDeleted": "Route eliminata con successo",
 			"importReview": {
 				"title": "Sostituire le route con quelle importate?",
@@ -1548,6 +1550,7 @@
 			"statusHint": "Come Bifrost controlla il job finché non termina, con l'id del job al posto di {{token}}. I controlli di stato dei chiamanti sono gratuiti, poiché il job è addebitato una volta.",
 			"statusRouteReuse": "I controlli di stato per gli ID job tipici raggiungono {{route}}, che è gratuita.",
 			"statusRouteAdd": "Il salvataggio aggiunge una route gratuita per i controlli di stato degli ID job tipici: {{route}}",
+			"statusRouteRemoved": "Il salvataggio rimuove anche {{route}}, che riceveva solo i vecchi controlli di stato di questo job.",
 			"statusRouteUnverified": "Questo relay invia un'intestazione segreta usata dalle route, quindi il gateway verifica la route di stato al salvataggio.",
 			"statusRouteOtherJob": "In questo modo i controlli di stato del job su {{job}} andrebbero a {{route}}, che è a pagamento. Modifica questa route di avvio o assegna a quel job una route gratuita più specifica.",
 			"startRouteDuplicate": "{{route}} esiste già e continuerebbe a ricevere queste chiamate, quindi questo job non verrebbe mai tracciato. Usa una route di avvio diversa o elimina prima quella esistente.",

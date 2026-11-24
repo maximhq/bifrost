@@ -113,9 +113,10 @@ export function AsyncJobSheet({
 	// The status route is judged on the routes as they would be saved (the schema trims the path), so
 	// the person sees it before saving.
 	const pollPath = values.job?.poll?.path?.trim();
-	const plan: StatusRoutePlan | undefined = pollPath?.startsWith("/")
-		? applyAsyncJob(routes, editIndex, asStartRoute(withPollPath(values, pollPath)), relayHeaders).plan
+	const planned = pollPath?.startsWith("/")
+		? applyAsyncJob(routes, editIndex, asStartRoute(withPollPath(values, pollPath)), relayHeaders)
 		: undefined;
+	const plan: StatusRoutePlan | undefined = planned?.plan;
 	const refusesSave = (p: StatusRoutePlan) =>
 		p.kind === "blocked" || p.kind === "disabled" || p.kind === "duplicateStart" || p.kind === "otherJobCharged";
 	const planRefused = plan !== undefined && refusesSave(plan);
@@ -271,6 +272,11 @@ export function AsyncJobSheet({
 										</AlertDescription>
 									</Alert>
 								)}
+								{planned?.removed.map((r) => (
+									<Alert key={describeRoute(r)} variant="info" data-testid="relay-async-job-status-route-removed">
+										<AlertDescription>{t("relays.asyncJob.statusRouteRemoved", { route: describeRoute(r) })}</AlertDescription>
+									</Alert>
+								))}
 							</Section>
 
 							<Section title={t("relays.job.pricingTitle")} hint={t("relays.job.pricingInfo")} testId="relay-async-job-pricing">

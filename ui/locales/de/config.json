@@ -1410,6 +1410,8 @@
 			"toastUpdated": "Route erfolgreich aktualisiert",
 			"deleteTitle": "Route löschen",
 			"deleteDescription": "Möchtest du diese Route wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
+			"statusRouteLocked": "Übernimmt die Statusabfragen des asynchronen Jobs auf {{route}}. Lösche diese Route, um beide zu entfernen.",
+			"deleteAlsoRemoves": "Dadurch wird auch {{route}} entfernt, die kostenlose Status-Route, die nur dieser Job genutzt hat.",
 			"toastDeleted": "Route erfolgreich gelöscht",
 			"importReview": {
 				"title": "Routen durch die importierten ersetzen?",
@@ -1577,6 +1579,7 @@
 			"statusHint": "Wie Bifrost den Job abfragt, bis er fertig ist, mit der Job-ID anstelle von {{token}}. Eigene Statusabfragen der Aufrufer sind kostenlos, da der Job einmal berechnet wird.",
 			"statusRouteReuse": "Statusabfragen für typische Job-IDs erreichen {{route}}, die kostenlos ist.",
 			"statusRouteAdd": "Beim Speichern wird eine kostenlose Route für Statusabfragen mit typischen Job-IDs hinzugefügt: {{route}}",
+			"statusRouteRemoved": "Beim Speichern wird auch {{route}} entfernt, das nur die alten Statusabfragen dieses Jobs übernommen hat.",
 			"statusRouteUnverified": "Dieses Relay sendet einen geheimen Header, auf den Routen prüfen. Daher prüft das Gateway die Statusroute beim Speichern.",
 			"statusRouteOtherJob": "Dadurch würden Statusabfragen des Jobs auf {{job}} an {{route}} gehen, die kostenpflichtig ist. Ändern Sie diese Startroute oder geben Sie dem Job eine engere kostenlose Route.",
 			"startRouteDuplicate": "{{route}} ist bereits vorhanden und würde diese Aufrufe weiter annehmen, sodass dieser Job nie erfasst würde. Verwenden Sie eine andere Startroute oder löschen Sie zuerst die vorhandene.",

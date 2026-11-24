@@ -1381,6 +1381,8 @@
 			"toastUpdated": "Rota atualizada com sucesso",
 			"deleteTitle": "Eliminar rota",
 			"deleteDescription": "Tem a certeza de que pretende eliminar esta rota? Esta ação não pode ser anulada.",
+			"statusRouteLocked": "Recebe as verificações de status da tarefa assíncrona em {{route}}. Exclua essa rota para remover as duas.",
+			"deleteAlsoRemoves": "Isso também remove {{route}}, a rota de status gratuita que só esta tarefa usava.",
 			"toastDeleted": "Rota eliminada com sucesso",
 			"importReview": {
 				"title": "Substituir as rotas pelas importadas?",
@@ -1548,6 +1550,7 @@
 			"statusHint": "Como o Bifrost verifica o job até ele terminar, com o id do job no lugar de {{token}}. As verificações de status dos chamadores são gratuitas, já que o job é cobrado uma vez.",
 			"statusRouteReuse": "As verificações de status de IDs de job típicos chegam a {{route}}, que é gratuita.",
 			"statusRouteAdd": "Ao salvar, uma rota gratuita é adicionada para as verificações de status de IDs de job típicos: {{route}}",
+			"statusRouteRemoved": "Salvar também remove {{route}}, que só recebia as verificações de status antigas desta tarefa.",
 			"statusRouteUnverified": "Este relay envia um cabeçalho secreto usado pelas rotas, então o gateway verifica a rota de status ao salvar.",
 			"statusRouteOtherJob": "Isso enviaria as verificações de status do job em {{job}} para {{route}}, que é cobrada. Altere esta rota de início ou dê a esse job uma rota gratuita mais específica.",
 			"startRouteDuplicate": "{{route}} já existe e continuaria recebendo essas chamadas, portanto este job nunca seria rastreado. Use outra rota de início ou exclua a existente primeiro.",

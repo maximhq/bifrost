@@ -1380,6 +1380,8 @@
 			"toastUpdated": "路由更新成功",
 			"deleteTitle": "删除路由",
 			"deleteDescription": "确定要删除此路由吗？此操作无法撤销。",
+			"statusRouteLocked": "接收 {{route}} 上异步作业的状态查询。删除该路由即可同时移除两者。",
+			"deleteAlsoRemoves": "这也会移除 {{route}}，即只有此作业使用的免费状态路由。",
 			"toastDeleted": "路由已删除",
 			"importReview": {
 				"title": "用导入的路由替换现有路由？",
@@ -1546,6 +1548,7 @@
 			"statusHint": "Bifrost 在任务完成前查询它的方式，{{token}} 会替换为任务 ID。由于任务只计费一次，调用方自己的状态查询是免费的。",
 			"statusRouteReuse": "常见作业 ID 的状态查询会到达免费的 {{route}}。",
 			"statusRouteAdd": "保存时会为常见作业 ID 的状态查询添加一条免费路由：{{route}}",
+			"statusRouteRemoved": "保存时也会移除 {{route}}，它只接收此作业以前的状态查询。",
 			"statusRouteUnverified": "此中继会发送路由用于匹配的机密请求头，因此网关会在保存时检查状态路由。",
 			"statusRouteOtherJob": "这会将 {{job}} 上作业的状态查询发送到收费的 {{route}}。请更改此启动路由，或为该作业设置范围更窄的免费路由。",
 			"startRouteDuplicate": "{{route}} 已存在并会继续接收这些调用，因此此作业永远不会被跟踪。请使用其他启动路由，或先删除现有路由。",

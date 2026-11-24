@@ -1410,6 +1410,8 @@
 			"toastUpdated": "Route mise à jour avec succès",
 			"deleteTitle": "Supprimer la route",
 			"deleteDescription": "Voulez-vous vraiment supprimer cette route ? Cette action est irréversible.",
+			"statusRouteLocked": "Reçoit les vérifications d’état de la tâche asynchrone sur {{route}}. Supprimez cette route pour retirer les deux.",
+			"deleteAlsoRemoves": "Cela supprime aussi {{route}}, la route d’état gratuite que seule cette tâche utilisait.",
 			"toastDeleted": "Route supprimée avec succès",
 			"importReview": {
 				"title": "Remplacer les routes par celles importées ?",
@@ -1577,6 +1579,7 @@
 			"statusHint": "Comment Bifrost vérifie la tâche jusqu'à sa fin, avec l'identifiant de la tâche à la place de {{token}}. Les vérifications d'état des appelants sont gratuites, puisque la tâche est facturée une fois.",
 			"statusRouteReuse": "Les vérifications d'état des ID de tâche courants atteignent {{route}}, qui est gratuite.",
 			"statusRouteAdd": "L'enregistrement ajoute une route gratuite pour les vérifications d'état des ID de tâche courants : {{route}}",
+			"statusRouteRemoved": "L’enregistrement supprime aussi {{route}}, qui ne recevait que les anciennes vérifications d’état de cette tâche.",
 			"statusRouteUnverified": "Ce relais envoie un en-tête secret utilisé par les routes, la passerelle vérifie donc la route d'état à l'enregistrement.",
 			"statusRouteOtherJob": "Les vérifications d'état de la tâche sur {{job}} iraient alors vers {{route}}, qui est payante. Modifiez cette route de démarrage ou donnez à cette tâche une route gratuite plus précise.",
 			"startRouteDuplicate": "{{route}} existe déjà et continuerait de recevoir ces appels, cette tâche ne serait donc jamais suivie. Utilisez une autre route de démarrage ou supprimez d'abord la route existante.",

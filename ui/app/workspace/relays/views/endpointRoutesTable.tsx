@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import type { OpenAPIImport } from "@/lib/utils/openapiImport";
 import { cleanUsage, describePricing, locateRoute, mergeUsage, routeBillableByDefault, routeKey, toRelayForm } from "@/lib/utils/relayForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { liveOrder, pairStatusRoutes, relayHeadersForPlan } from "@/lib/utils/relayAsyncJob";
+import { liveOrder, pairStatusRoutes, relayHeadersForPlan, unusedStatusRoutes } from "@/lib/utils/relayAsyncJob";
 import {
 	CornerDownRightIcon,
 	EllipsisIcon,
@@ -41,7 +41,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { HeaderActionButton } from "../fragments/headerActionButton";
 import { withRoutes, type RouteForm } from "../routes.utils";
-import { AsyncJobSheet } from "../sheets/asyncJobSheet";
+import { AsyncJobSheet, describeRoute } from "../sheets/asyncJobSheet";
 import { OpenAPIImportSheet } from "../sheets/openapiImportSheet";
 import { RouteSheet } from "../sheets/routeSheet";
 
@@ -51,12 +51,14 @@ function RouteActionsMenu({
 	onEdit,
 	onRouteSettings,
 	onDelete,
+	deleteLockedBy,
 }: {
 	index: number;
 	hasUpdateAccess: boolean;
 	onEdit: () => void;
 	onRouteSettings?: () => void;
 	onDelete: () => void;
+	deleteLockedBy?: string; // the job route whose status checks this route takes
 }) {
 	const { t } = useTranslation("config");
 	return (
@@ -78,10 +80,20 @@ function RouteActionsMenu({
 					</DropdownMenuItem>
 				)}
 				<DropdownMenuSeparator />
-				<DropdownMenuItem variant="destructive" onSelect={onDelete} disabled={!hasUpdateAccess} data-testid={`relay-route-remove-${index}`}>
+				<DropdownMenuItem
+					variant="destructive"
+					onSelect={onDelete}
+					disabled={!hasUpdateAccess || deleteLockedBy !== undefined}
+					data-testid={`relay-route-remove-${index}`}
+				>
 					<TrashIcon className="mr-1 h-4 w-4" />
 					{t("delete", { ns: "common" })}
 				</DropdownMenuItem>
+				{deleteLockedBy !== undefined && (
+					<p className="text-muted-foreground max-w-64 px-2 py-1 text-xs" data-testid={`relay-route-remove-locked-${index}`}>
+						{t("relays.routes.statusRouteLocked", { route: deleteLockedBy })}
+					</p>
+				)}
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
@@ -106,6 +118,14 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 	// The free route that takes a job's status checks is listed under the job's start route.
 	const relayHeaders = useMemo(() => relayHeadersForPlan(endpoint.extra_headers), [endpoint.extra_headers]);
 	const statusOf = useMemo(() => pairStatusRoutes(routes, relayHeaders), [endpoint, relayHeaders]); // eslint-disable-line react-hooks/exhaustive-deps
+	// Deleting a job's route also drops the free status route that only that job used.
+	const withoutRoute = (at: number) => {
+		const after = routes.filter((_, i) => i !== at);
+		const unused = new Set(unusedStatusRoutes(routes, after, relayHeaders));
+		return { routes: after.filter((_, i) => !unused.has(i)), removed: after.filter((_, i) => unused.has(i)) };
+	};
+	const deleteAt = deleting === null ? -1 : locateRoute(routes, deleting.index, deleting.key);
+	const deletePlan = deleteAt >= 0 ? withoutRoute(deleteAt) : undefined;
 	// Listed in the order the gateway tries them, specific routes first.
 	const displayOrder = liveOrder(routes).flatMap((i) => {
 		if (statusOf.has(i)) return [];
@@ -321,6 +341,7 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 													: undefined
 											}
 											onDelete={() => setDeleting(opened(index))}
+											deleteLockedBy={statusOf.has(index) ? describeRoute(routes[statusOf.get(index)!]) : undefined}
 										/>
 									</TableCell>
 								</TableRow>
@@ -373,6 +394,11 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 					<AlertDialogHeader>
 						<AlertDialogTitle>{t("relays.routes.deleteTitle")}</AlertDialogTitle>
 						<AlertDialogDescription>{t("relays.routes.deleteDescription")}</AlertDialogDescription>
+						{deletePlan?.removed.map((r) => (
+							<p key={describeRoute(r)} className="text-muted-foreground text-sm" data-testid="relay-route-delete-also-removes">
+								{t("relays.routes.deleteAlsoRemoves", { route: describeRoute(r) })}
+							</p>
+						))}
 					</AlertDialogHeader>
 					<AlertDialogFooter className="pt-4">
 						<AlertDialogCancel onClick={() => setDeleting(null)} disabled={saving}>
@@ -389,13 +415,7 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 									setDeleting(null);
 									return;
 								}
-								if (
-									await save(
-										routes.filter((_, i) => i !== at),
-										t("relays.routes.toastDeleted"),
-									)
-								)
-									setDeleting(null);
+								if (await save(withoutRoute(at).routes, t("relays.routes.toastDeleted"))) setDeleting(null);
 							}}
 						>
 							{t("delete", { ns: "common" })}

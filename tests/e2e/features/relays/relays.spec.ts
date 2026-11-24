@@ -2,6 +2,7 @@ import type { APIRequestContext } from "@playwright/test";
 import { createServer } from "http";
 import type { AddressInfo } from "net";
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { fillSelect } from "../../core/utils/test-helpers";
 
 const API = "/api/relays";
 const VK_API = "/api/governance/virtual-keys";
@@ -428,6 +429,53 @@ test.describe("Relays", () => {
     const saved = await getRelay(request, name);
     expect(saved.routes).toHaveLength(2);
     expect(saved.routes.find((r: { job?: unknown }) => r.job).job.reused_id_is_new_job).toBe(true);
+  });
+
+  test("keeps a job's status route tied to it: edits replace it, and only deleting the job removes it", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-job-link-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://jobs.example.com", "sk-e2e-secret");
+    await page.select(name);
+    await page.openAddAsyncJob();
+    await page.fillAsyncJob({
+      start: { path: "/jobs" },
+      idPath: "id",
+      poll: { method: "POST", path: "/jobs/{{job.id}}" },
+      statusPath: "status",
+      succeeded: "done",
+    });
+    await page.saveAsyncJob();
+    let relay = await getRelay(request, name);
+    expect(relay.routes.map((r: { method: string; path: string }) => `${r.method} ${r.path}`).sort()).toEqual(["POST /jobs", "POST /jobs/**"]);
+
+    // The status route cannot be deleted on its own while the job uses it.
+    const statusIndex = relay.routes.findIndex((r: { job?: unknown }) => !r.job);
+    await page.page.getByTestId(`relay-route-actions-${statusIndex}`).click();
+    await expect(page.page.getByTestId(`relay-route-remove-${statusIndex}`)).toHaveAttribute("data-disabled", "");
+    await expect(page.page.getByTestId(`relay-route-remove-locked-${statusIndex}`)).toContainText("POST /jobs");
+    await page.page.keyboard.press("Escape");
+
+    // Switching the status check to GET replaces the free POST route instead of leaving it behind.
+    const startIndex = relay.routes.findIndex((r: { job?: unknown }) => r.job);
+    await page.page.getByTestId(`relay-route-actions-${startIndex}`).click();
+    await page.page.getByTestId(`relay-route-edit-${startIndex}`).click();
+    await expect(page.asyncJobSheet).toBeVisible();
+    await fillSelect(page.page, '[data-testid="relay-job-poll-method"]', "GET");
+    await expect(page.page.getByTestId("relay-async-job-status-route-removed")).toContainText("POST /jobs/**");
+    await page.saveAsyncJob();
+    relay = await getRelay(request, name);
+    expect(relay.routes.map((r: { method: string; path: string }) => `${r.method} ${r.path}`).sort()).toEqual(["GET /jobs/**", "POST /jobs"]);
+
+    // Deleting the job's route takes its status route with it.
+    const jobIndex = relay.routes.findIndex((r: { job?: unknown }) => r.job);
+    await page.page.getByTestId(`relay-route-actions-${jobIndex}`).click();
+    await page.page.getByTestId(`relay-route-remove-${jobIndex}`).click();
+    await expect(page.page.getByTestId("relay-route-delete-also-removes")).toContainText("GET /jobs/**");
+    await page.page.getByTestId("relay-route-delete-confirm").click();
+    await page.waitForSuccessToast("Route deleted");
+    relay = await getRelay(request, name);
+    expect(relay.routes ?? []).toHaveLength(0);
   });
 
   test("async job sheet keeps each job's status check headers and its route settings", async ({ relaysPage: page, request }) => {

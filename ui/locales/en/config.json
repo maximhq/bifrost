@@ -1389,6 +1389,8 @@
 			"toastUpdated": "Route updated successfully",
 			"deleteTitle": "Delete Route",
 			"deleteDescription": "Are you sure you want to delete this route? This action cannot be undone.",
+			"statusRouteLocked": "Takes the status checks of the async job on {{route}}. Delete that route to remove both.",
+			"deleteAlsoRemoves": "This also removes {{route}}, the free status route only this job used.",
 			"toastDeleted": "Route deleted successfully",
 			"importReview": {
 				"title": "Replace the routes with the imported ones?",
@@ -1556,6 +1558,7 @@
 			"statusHint": "How Bifrost checks the job until it finishes, with the job id in place of {{token}}. Callers' own status checks are free, since the job is charged once.",
 			"statusRouteReuse": "Status checks for typical job ids reach {{route}}, which is free.",
 			"statusRouteAdd": "Saving adds a free route for status checks on typical job ids: {{route}}",
+			"statusRouteRemoved": "Saving also removes {{route}}, which only took this job's old status checks.",
 			"statusRouteUnverified": "This relay sends a secret header that routes match on, so the gateway checks the status route when you save.",
 			"statusRouteOtherJob": "This would send status checks for the job on {{job}} to {{route}}, which is charged. Change this start route or give that job a narrower free route.",
 			"startRouteDuplicate": "{{route}} already exists and would keep taking these calls, so this job would never be tracked. Use a different start route, or delete the existing one first.",
