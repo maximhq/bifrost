@@ -42,14 +42,31 @@ func compileBodyOverrides(overrides map[string]json.RawMessage) []bodyOverride {
 	return out
 }
 
+// isJSONBodyType reports whether forced fields may go into a body of this type: application/json, a
+// +json or -json subtype, or application/x-amz-json-1.x. Unlike isJSONContentType, which only decides
+// whether to scan for usage, a type such as application/jsonp is refused, since the upstream may not
+// read it as JSON. Parameters and letter case are ignored, with no allocation.
+func isJSONBodyType(contentType string) bool {
+	mediaType, _, _ := strings.Cut(contentType, ";")
+	mediaType = strings.TrimSpace(mediaType)
+	hasSuffixFold := func(s, suffix string) bool {
+		return len(s) >= len(suffix) && strings.EqualFold(s[len(s)-len(suffix):], suffix)
+	}
+	const amz = "application/x-amz-json-"
+	return strings.EqualFold(mediaType, "application/json") ||
+		(strings.Contains(mediaType, "/") && (hasSuffixFold(mediaType, "+json") || hasSuffixFold(mediaType, "-json"))) ||
+		(len(mediaType) > len(amz) && strings.EqualFold(mediaType[:len(amz)], amz))
+}
+
 // bodylessMethods never get a created body; many servers ignore or refuse one.
 var bodylessMethods = map[string]struct{}{"GET": {}, "HEAD": {}, "DELETE": {}}
 
 // applyBodyOverrides returns the body with every forced field set, and whether it was created from
 // nothing. A body it cannot guarantee the fields in (not a JSON object, a forced key sent twice or
-// in another case) is refused rather than forwarded. Compressed bodies never get here: the HTTP
-// gateway decompresses them before routing.
-func applyBodyOverrides(overrides []bodyOverride, method string, body []byte) ([]byte, bool, error) {
+// in another case) is refused rather than forwarded, and so is a body sent as anything but JSON: an
+// upstream that reads it as a form would ignore the forced fields. A body with no content type is
+// read as JSON. Compressed bodies never get here: the HTTP gateway decompresses them before routing.
+func applyBodyOverrides(overrides []bodyOverride, method, contentType string, body []byte) ([]byte, bool, error) {
 	if len(overrides) == 0 {
 		return body, false, nil
 	}
@@ -59,6 +76,10 @@ func applyBodyOverrides(overrides []bodyOverride, method string, body []byte) ([
 			return body, false, nil
 		}
 		body, created = []byte("{}"), true
+	} else if contentType != "" && !isJSONBodyType(contentType) {
+		return nil, false, errors.New("this route sets fields in the request body, which must be a JSON object sent as Content-Type: application/json")
+	} else if jsonTooDeep(body) {
+		return nil, false, errors.New("the request body nests deeper than 1000 levels")
 	} else if trimmed := bytes.TrimLeft(body, " \t\r\n"); trimmed[0] != '{' || !gjson.ValidBytes(body) {
 		return nil, false, errors.New("this route sets fields in the request body, which must be a JSON object")
 	}

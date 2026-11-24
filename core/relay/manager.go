@@ -426,11 +426,12 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 		return nil, statusError(http.StatusNotFound, fmt.Sprintf("no route for %s %s on relay %q", in.Method, in.Path, in.Endpoint))
 	}
 	// Forced fields go in first, so pricing, logs and the upstream all see the sent body.
-	body, created, err := applyBodyOverrides(p.body, in.Method, in.Body)
+	body, created, err := applyBodyOverrides(p.body, in.Method, contentType, in.Body)
 	if err != nil {
 		return nil, statusError(http.StatusBadRequest, err.Error())
 	}
-	if created {
+	// A created body keeps a JSON content type the caller or operator already set (application/x-amz-json-1.1).
+	if created && !isJSONBodyType(contentType) {
 		in.Headers = withJSONContentType(in.Headers)
 		contentType = "application/json"
 	}

@@ -68,7 +68,7 @@ func TestApplyBodyOverrides(t *testing.T) {
 			}
 			in := []byte(tc.body)
 			original := string(in)
-			got, created, err := applyBodyOverrides(overrides, method, in)
+			got, created, err := applyBodyOverrides(overrides, method, "", in)
 			assert.Equal(t, original, string(in), "the caller's buffer is never modified in place")
 			if tc.wantErr != "" {
 				require.Error(t, err)
@@ -84,7 +84,7 @@ func TestApplyBodyOverrides(t *testing.T) {
 
 func TestApplyBodyOverridesKeepsACorrectBodyWithoutACopy(t *testing.T) {
 	body := []byte(`{"query":"x","include_usage":true}`)
-	got, _, err := applyBodyOverrides(compiledOverrides(t, map[string]string{"include_usage": "true"}), "POST", body)
+	got, _, err := applyBodyOverrides(compiledOverrides(t, map[string]string{"include_usage": "true"}), "POST", "", body)
 	require.NoError(t, err)
 	assert.Same(t, &body[0], &got[0], "a body that already carries the value is forwarded as is")
 }
@@ -116,8 +116,45 @@ func BenchmarkApplyBodyOverrides(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(len(tc.body)))
 			for b.Loop() {
-				_, _, _ = applyBodyOverrides(tc.overrides, "POST", tc.body)
+				_, _, _ = applyBodyOverrides(tc.overrides, "POST", "", tc.body)
 			}
 		})
 	}
+}
+
+// A deeply nested body is refused before gjson's recursive validation could overflow the stack.
+func TestApplyBodyOverridesRefusesADeeplyNestedBody(t *testing.T) {
+	overrides := compileBodyOverrides(map[string]json.RawMessage{"include_usage": json.RawMessage("true")})
+	deep := `{"a":` + strings.Repeat("[", 2_000_000) + strings.Repeat("]", 2_000_000) + `}`
+	_, _, err := applyBodyOverrides(overrides, "POST", "", []byte(deep))
+	require.ErrorContains(t, err, "nests deeper than 1000 levels")
+	// A string full of brackets is not nesting.
+	out, _, err := applyBodyOverrides(overrides, "POST", "", []byte(`{"q":"`+strings.Repeat("[", 5000)+`"}`))
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"include_usage":true`)
+	assert.False(t, jsonTooDeep([]byte(`{"a":"\"[[["}`)), "an escaped quote does not end the string")
+}
+
+// Forced fields go only into a JSON body: a form-encoded body that happens to parse as JSON would
+// carry them where a form-reading upstream never looks.
+func TestApplyBodyOverridesNeedsAJSONBody(t *testing.T) {
+	overrides := compileBodyOverrides(map[string]json.RawMessage{"include_usage": json.RawMessage("true")})
+	body := []byte(`{"z":"&include_usage=false&q=x"}`)
+	_, _, err := applyBodyOverrides(overrides, "POST", "application/x-www-form-urlencoded", body)
+	require.ErrorContains(t, err, "sent as Content-Type: application/json")
+	for _, contentType := range []string{"application/jsonp", "text/plain", "application/json-seq+xml", "json"} {
+		_, _, err := applyBodyOverrides(overrides, "POST", contentType, body)
+		require.ErrorContains(t, err, "sent as Content-Type: application/json", contentType)
+	}
+	for _, contentType := range []string{
+		"", "application/json", "Application/JSON; charset=utf-8", "application/x-amz-json-1.1",
+		"application/vnd.api+json", "application/merge-patch+json", "application/x-json",
+	} {
+		out, _, err := applyBodyOverrides(overrides, "POST", contentType, body)
+		require.NoError(t, err, contentType)
+		assert.Contains(t, string(out), `"include_usage":true`)
+	}
+	_, created, err := applyBodyOverrides(overrides, "POST", "application/x-www-form-urlencoded", nil)
+	require.NoError(t, err, "an empty body is created as JSON whatever the caller labelled it")
+	assert.True(t, created)
 }

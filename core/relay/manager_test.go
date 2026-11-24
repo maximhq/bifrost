@@ -941,13 +941,16 @@ func TestServeForcesBodyOverrides(t *testing.T) {
 	require.Nil(t, bErr, "a call matching no route takes the relay's fields")
 	assert.JSONEq(t, `{"include_usage":true,"model":"tavily-basic"}`, gotBody)
 	assert.Equal(t, "application/json", gotContentType, "a created body is labelled JSON")
+	_, bErr = serve("POST", "/crawl", map[string]string{"content-type": "application/x-amz-json-1.1"}, ``)
+	require.Nil(t, bErr)
+	assert.Equal(t, "application/x-amz-json-1.1", gotContentType, "a JSON content type already set is kept")
 
 	_, bErr = serve("POST", "/translate", jsonHeaders, `{"q":"hello"}`)
 	require.Nil(t, bErr)
 	sent := gotBody
-	require.Len(t, pipeline.post, 3)
-	require.NotNil(t, pipeline.post[2].Usage)
-	assert.InDelta(t, float64(len(sent))*0.001, pipeline.post[2].Usage.Cost, 1e-12, "a request-side quantity is measured on the body that is sent")
+	require.Len(t, pipeline.post, 4)
+	require.NotNil(t, pipeline.post[3].Usage)
+	assert.InDelta(t, float64(len(sent))*0.001, pipeline.post[3].Usage.Cost, 1e-12, "a request-side quantity is measured on the body that is sent")
 
 	_, bErr = serve("GET", "/usage", map[string]string{}, ``)
 	require.Nil(t, bErr)

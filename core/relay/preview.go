@@ -155,12 +155,12 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 		return out, nil
 	}
 	// Forced fields go in first, as in Serve, so the model and request-side units are read off the sent body.
-	reqBody, created, err := applyBodyOverrides(forced, method, reqBody)
+	reqBody, created, err := applyBodyOverrides(forced, method, contentType, reqBody)
 	if err != nil {
 		out.Notes = append(out.Notes, "the relay refuses this request with 400: "+err.Error())
 		return out, nil
 	}
-	if created {
+	if created && !isJSONBodyType(contentType) {
 		contentType = "application/json"
 	}
 	// The model is read the way the transport reads it, so a body the relay refuses is reported.
