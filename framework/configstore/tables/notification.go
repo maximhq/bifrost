@@ -6,16 +6,20 @@ import "time"
 // than a foreign-key relation because enterprise roles are supplied by an
 // optional overlay and do not exist in every OSS database.
 type TableNotification struct {
-	ID          string    `gorm:"type:varchar(36);primaryKey" json:"id"`
-	Audience    string    `gorm:"type:varchar(16);not null;index:idx_notifications_feed,priority:1" json:"audience"`
-	RoleIDs     []uint    `gorm:"serializer:json;type:text" json:"role_ids"`
-	Severity    string    `gorm:"type:varchar(16);not null" json:"severity"`
-	Title       string    `gorm:"type:varchar(160);not null" json:"title"`
-	Message     string    `gorm:"type:text;not null" json:"message"`
-	ActionLabel string    `gorm:"type:varchar(64)" json:"action_label,omitempty"`
-	ActionPath  string    `gorm:"type:varchar(2048)" json:"action_path,omitempty"`
-	CreatedAt   time.Time `gorm:"not null;index:idx_notifications_feed,priority:2,sort:desc" json:"created_at"`
-	ExpiresAt   time.Time `gorm:"not null;index" json:"expires_at"`
+	ID          string     `gorm:"type:varchar(36);primaryKey" json:"id"`
+	Audience    string     `gorm:"type:varchar(16);not null;index:idx_notifications_feed,priority:1" json:"audience"`
+	RoleIDs     []uint     `gorm:"serializer:json;type:text" json:"role_ids"`
+	Severity    string     `gorm:"type:varchar(16);not null" json:"severity"`
+	Title       string     `gorm:"type:varchar(160);not null" json:"title"`
+	Message     string     `gorm:"type:text;not null" json:"message"`
+	ActionLabel string     `gorm:"type:varchar(64)" json:"action_label,omitempty"`
+	ActionPath  string     `gorm:"type:varchar(2048)" json:"action_path,omitempty"`
+	SubjectType string     `gorm:"type:varchar(64);index:idx_notifications_subject,priority:1" json:"subject_type,omitempty"`
+	SubjectID   string     `gorm:"type:varchar(255);index:idx_notifications_subject,priority:2" json:"subject_id,omitempty"`
+	ResolvedAt  *time.Time `json:"resolved_at,omitempty"`
+	Resolution  string     `gorm:"type:varchar(512)" json:"resolution,omitempty"`
+	CreatedAt   time.Time  `gorm:"not null;index:idx_notifications_feed,priority:2,sort:desc" json:"created_at"`
+	ExpiresAt   time.Time  `gorm:"not null;index" json:"expires_at"`
 }
 
 func (TableNotification) TableName() string { return "notifications" }
