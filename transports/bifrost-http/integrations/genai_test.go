@@ -521,6 +521,7 @@ func TestGenAICachedContentCreateParserCarriesRawBody(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, converted)
 	assert.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
+	assert.NotNil(t, bifrostCtx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter), "the raw body is forwarded with a rewriter, so redaction can reach it")
 }
 
 func TestCreateGenAIRouteConfigsIncludesRerankForCompositePrefixes(t *testing.T) {

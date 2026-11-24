@@ -1117,6 +1117,20 @@ func TestRewriteOpenAIResponsesRawRequestBodyRedactsOnlyContentFields(t *testing
 	assertRawPaths(t, got, []string{"input"}, nil)
 }
 
+// TestRewriteOpenAICompactionRawRequestBody verifies a compaction body is rewritten with the Responses field rules: its
+// instructions and input text change, while compaction items and fields outside those rules stay as sent.
+func TestRewriteOpenAICompactionRawRequestBody(t *testing.T) {
+	rawBody := []byte(`{"model":"gpt-5","instructions":"be brief alice@example.com","previous_response_id":"resp_1","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi alice@example.com"}]},{"type":"compaction","encrypted_content":"alice@example.com"}],"future_field":{"note":"alice@example.com"}}`)
+
+	got, err := openAIRawRequestBodyRewriter(schemas.CompactionRequest)(rawBody, map[string]string{"alice@example.com": "[EMAIL]"})
+
+	require.NoError(t, err)
+	assertRawPaths(t, got,
+		[]string{"instructions", "input.0.content.0.text"},
+		map[string]string{"input.1.encrypted_content": "alice@example.com", "future_field.note": "alice@example.com"},
+	)
+}
+
 // TestRewriteOpenAIFlatRawRequestBodies verifies the legacy completions prompt (string or string array, skipping token
 // arrays), speech input and instructions, and the image prompt are rewritten, and that kinds with no JSON text, such as
 // multipart uploads and embeddings, get no rewriter.

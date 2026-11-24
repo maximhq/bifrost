@@ -1245,7 +1245,7 @@ func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.Ha
 					createReq.Provider = schemas.Gemini
 				}
 				if len(createReq.RawRequestBody) > 0 {
-					ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+					enableGenAIRawRequestBodyRedaction(ctx)
 				}
 				return &CachedContentRequest{Type: schemas.CachedContentCreateRequest, CreateRequest: createReq}, nil
 			},

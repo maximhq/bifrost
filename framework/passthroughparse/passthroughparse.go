@@ -284,6 +284,12 @@ func parseRequest(format wireFormat, requestType schemas.RequestType, body []byt
 				return nil, err
 			}
 			return &schemas.BifrostRequest{RequestType: requestType, ResponsesRequest: native.ToBifrostResponsesRequest(ctx)}, nil
+		case schemas.CompactionRequest:
+			var native openai.OpenAICompactionRequest
+			if err := sonic.Unmarshal(body, &native); err != nil {
+				return nil, err
+			}
+			return &schemas.BifrostRequest{RequestType: requestType, CompactionRequest: native.ToBifrostCompactionRequest(ctx)}, nil
 		case schemas.TextCompletionRequest:
 			var native openai.OpenAITextCompletionRequest
 			if err := sonic.Unmarshal(body, &native); err != nil {
@@ -345,6 +351,14 @@ func parseRequest(format wireFormat, requestType schemas.RequestType, body []byt
 				return nil, err
 			}
 			return &schemas.BifrostRequest{RequestType: requestType, CountTokensRequest: native.ToGeminiGenerationRequest().ToBifrostResponsesRequest(ctx)}, nil
+		case schemas.CachedContentCreateRequest:
+			// A cached content holds the same contents, systemInstruction and tools as a generateContent body. Its own
+			// request type keeps them untyped, so it is read through the Responses shape, as countTokens is.
+			var native gemini.GeminiGenerationRequest
+			if err := sonic.Unmarshal(body, &native); err != nil {
+				return nil, err
+			}
+			return &schemas.BifrostRequest{RequestType: requestType, ResponsesRequest: native.ToBifrostResponsesRequest(ctx)}, nil
 		case schemas.EmbeddingRequest:
 			return parseGeminiEmbeddingRequest(ctx, body)
 		case schemas.ImageGenerationRequest:
