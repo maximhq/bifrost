@@ -11,7 +11,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 ### Upcoming
 
 - Added `vectorStore.type: pgvector`, which keeps vectors in the logs store's Postgres database with no settings of its own. Renders into `vector_store` with an empty `config`. The chart refuses it unless the logs store is enabled and Postgres.
-- The bundled PostgreSQL image stays `postgres:16-alpine`, which has no pgvector. To use pgvector with it, set `postgresql.image.repository: pgvector/pgvector` and `postgresql.image.tag: "0.8.0-pg16"` on a new install. On an existing install, run `REINDEX DATABASE` after switching, or use an external PostgreSQL. See [pgvector](#pgvector).
+- The bundled PostgreSQL image stays `postgres:16-alpine`, which has no pgvector. To use pgvector with it, set `postgresql.image.repository: pgvector/pgvector` and `postgresql.image.tag: "0.8.0-pg16"`. Switching an existing install needs a reindex first; follow the [pgvector migration steps](#pgvector).
 
 ### 2.1.49
 
@@ -1141,7 +1141,10 @@ postgresql:
 > PG=$(kubectl get deploy -l "app.kubernetes.io/instance=<release>,app.kubernetes.io/component=database" -o name)
 > echo "$BIFROST $PG"   # expect exactly one Bifrost and one PostgreSQL deployment
 >
-> # 1. Stop Bifrost (an HPA does not scale a workload back up from zero), and any other client
+> # 1. If a GitOps controller (Argo CD, Flux) manages the release, suspend its sync first and
+> #    keep it suspended until step 5 succeeds and its source values carry the new image;
+> #    otherwise it can bring Bifrost back before the reindex.
+> #    Then stop Bifrost (an HPA does not scale a workload back up from zero), and any other client
 > #    of the database. kubectl scale returns before pods exit, so wait until none are left.
 > kubectl scale "$BIFROST" --replicas=0
 > while kubectl get pods -l "$SERVER_PODS" -o name | grep -q .; do sleep 2; done
@@ -1163,10 +1166,14 @@ postgresql:
 > #    already runs it, so it does not restart), then start Bifrost again. The upgrade alone
 > #    does not: with autoscaling on, the chart sets no replica count and an HPA does not
 > #    scale up from zero. <replicas> is replicaCount, or autoscaling.minReplicas when
-> #    autoscaling is on, after which the HPA takes over.
+> #    autoscaling is on, after which the HPA takes over. Bifrost starts only if the upgrade
+> #    succeeds and the release records the new image; on any failure, leave it stopped and fix
+> #    the release first, or a later upgrade restores the alpine image over the rebuilt indexes.
 > helm upgrade <release> bifrost/bifrost --reuse-values \
->   --set postgresql.image.repository=pgvector/pgvector --set postgresql.image.tag=0.8.0-pg16
-> kubectl scale "$BIFROST" --replicas=<replicas>
+>   --set postgresql.image.repository=pgvector/pgvector --set postgresql.image.tag=0.8.0-pg16 \
+>   && helm get values <release> --all -o json \
+>     | jq -e '.postgresql.image.repository == "pgvector/pgvector" and .postgresql.image.tag == "0.8.0-pg16"' \
+>   && kubectl scale "$BIFROST" --replicas=<replicas>
 > ```
 >
 > The two images also run Postgres under different user IDs (70 on alpine, 999 on Debian). The image entrypoint takes ownership of the data directory when it starts as root, which is the chart default. If you set `postgresql.primary.containerSecurityContext.runAsUser`, fix ownership of the volume before switching. You can also leave the bundled database alone and use an external PostgreSQL that has pgvector.

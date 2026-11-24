@@ -8,6 +8,6 @@ description: "Helm v2.1.50 changelog - 2026-11-23"
 ## Changelog
 
 - Added `vectorStore.type: pgvector`, which keeps vectors in the logs store's Postgres database with no settings of its own. Renders into `vector_store` with an empty `config`. The chart refuses it unless the logs store is enabled and Postgres.
-- The bundled PostgreSQL image stays `postgres:16-alpine`, which has no pgvector. To use pgvector with it, set `postgresql.image.repository: pgvector/pgvector` and `postgresql.image.tag: "0.8.0-pg16"` on a new install. Switching an existing install changes text collation and corrupts existing indexes: stop Bifrost and every other database client first, switch the image with `kubectl`, run `REINDEX DATABASE`, and start them only after it succeeds (the README's pgvector section has the steps). Or use an external PostgreSQL.
+- The bundled PostgreSQL image stays `postgres:16-alpine`, which has no pgvector. To use pgvector with it, set `postgresql.image.repository: pgvector/pgvector` and `postgresql.image.tag: "0.8.0-pg16"`. Switching an existing install needs a reindex first; follow the [pgvector migration steps](https://github.com/maximhq/bifrost/blob/dev/helm-charts/bifrost/README.md#pgvector).
 
 </Update>
