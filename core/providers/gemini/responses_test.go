@@ -3123,3 +3123,15 @@ func TestMalformedOutputFailsResponsesStream(t *testing.T) {
 		assert.NotEmpty(t, events)
 	})
 }
+
+func TestResolveResponsesAudioURLsEmptyDownloadIsBadRequest(t *testing.T) {
+	fetches := stubAudioFetchBytes(t, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := ResolveResponsesAudioURLs(ctx, responsesAudioURLRequest("https://audio.example/empty.wav"))
+	require.Error(t, err)
+	require.True(t, providerUtils.IsInvalidRequestError(err), "want a 400-class error, got %v", err)
+	require.Contains(t, err.Error(), "input[0].content[0]")
+	require.NotErrorIs(t, err, errUnresolvedAudioURL)
+	require.Equal(t, int32(1), fetches.Load())
+}

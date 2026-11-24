@@ -442,3 +442,17 @@ func TestMalformedOutputError(t *testing.T) {
 		assert.Nil(t, (*GenerateContentResponse)(nil).MalformedOutputError())
 	})
 }
+
+// An empty successful download is the caller's input, not an unresolved URL: it must come back
+// as a 400 naming the block.
+func TestResolveChatAudioURLsEmptyDownloadIsBadRequest(t *testing.T) {
+	fetches := stubAudioFetchBytes(t, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := ResolveChatAudioURLs(ctx, chatAudioURLRequest("https://audio.example/empty.wav"))
+	require.Error(t, err)
+	require.True(t, providerUtils.IsInvalidRequestError(err), "want a 400-class error, got %v", err)
+	require.Contains(t, err.Error(), "messages[0].content[0]")
+	require.NotErrorIs(t, err, errUnresolvedAudioURL)
+	require.Equal(t, int32(1), fetches.Load())
+}

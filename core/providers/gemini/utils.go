@@ -2360,6 +2360,9 @@ func (b *AudioURLBudget) fetch(ctx context.Context, audioURL, location string) (
 		return "", "", providerUtils.InvalidRequestErrorf("failed to download audio for %s: %v", location, err)
 	}
 	size := decodedBase64Len(encoded)
+	if size == 0 {
+		return "", "", providerUtils.InvalidRequestErrorf("audio downloaded for %s is empty", location)
+	}
 	if size > b.remaining {
 		return "", "", providerUtils.InvalidRequestErrorf("audio downloaded from URLs exceeds the %d-byte total allowed per request (at %s)", maxAudioURLBytesPerRequest, location)
 	}
