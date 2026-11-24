@@ -1992,6 +1992,8 @@ components:
       $ref: "./schemas/inference/text.yaml#/TextCompletionResponse"
 
     # ==================== Responses API ====================
+    AccessPrograms:
+      $ref: "./schemas/inference/responses.yaml#/AccessPrograms"
     ContextManagement:
       $ref: "./schemas/inference/responses.yaml#/ContextManagement"
     ResponsesRequest:
