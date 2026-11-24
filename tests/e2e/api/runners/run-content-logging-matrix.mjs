@@ -344,7 +344,11 @@ async function checkRelay(logsDb, relayRequestID, relayMarker, expected) {
 	const rawRelayRow = await poll(`raw relay row ${relayRequestID}`, 30000, () => logsDb.read("relay_logs", "request_id", relayRequestID));
 	failures.push(...relayRowFailures(rawRelayRow, relayMarker, want));
 	// A connector that disables content, or an admin layer that does, must keep relay bodies out of
-	// the export too.
+	// the export too. Wait for the relay's own export first: absence is only proof once the export
+	// has arrived, and nothing else here waits for it.
+	if (!expected.connectorExportsContent) {
+		await poll(`OTel export of ${relayRequestID}`, 30000, () => exportsContain(relayRequestID));
+	}
 	if (!expected.connectorExportsContent && exportsContain(relayMarker)) {
 		failures.push("OTel exported relay content, want stripped");
 	}
