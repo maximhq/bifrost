@@ -1310,6 +1310,21 @@ func TestCommitPoint_ModelRouterWritesRecordedWhenServingFails(t *testing.T) {
 	}
 }
 
+func TestCommitPoint_ModelRouterUpdateFallbackKeepsStoredTargets(t *testing.T) {
+	h, manager, _ := modelRouterHandler(t)
+	modelRouterOK(t, h.createModelRouter, routerBody("support", "Support"), nil)
+	support := modelRouterPath("support")
+	modelRouterOK(t, h.setModelRouterTargets, `{"targets":[{"tier":"SIMPLE","provider":"openai","model":"gpt-4o-mini","weight":1}]}`, support)
+	manager.serveErr = errors.New("plugin is restarting")
+
+	ctx := runWithParams(h.updateModelRouter, `{"name":"Renamed"}`, support)
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "model_router.updated", "name", "Renamed")
+	if !strings.Contains(string(change.After), "gpt-4o-mini") {
+		t.Fatalf("after = %s, want the stored targets kept", change.After)
+	}
+}
+
 func TestCommitPoint_ModelRouterResetFallbackKeepsTargetsAndRouting(t *testing.T) {
 	h, manager, _ := modelRouterHandler(t)
 	modelRouterOK(t, h.createModelRouter, routerBody("support", "Support"), nil)
@@ -1433,10 +1448,7 @@ func TestCommitPoint_PluginUpdateLoadFailure(t *testing.T) {
 			if ctx.Response.StatusCode() == fasthttp.StatusOK {
 				t.Fatalf("expected the load failure to fail the request: %s", ctx.Response.Body())
 			}
-			changes := liveAuditChanges(ctx)
-			if tc.wantRecorded != (len(changes) == 1 && changes[0].EventName == "plugin.updated") {
-				t.Fatalf("recorded=%v, changes=%+v", tc.wantRecorded, changes)
-			}
+			requireRecordedOrNone(t, liveAuditChanges(ctx), tc.wantRecorded, "plugin.updated")
 		})
 	}
 }
@@ -1585,7 +1597,14 @@ func TestCommitPoint_SkillWritesRecordedWhenReadBackFails(t *testing.T) {
 		h := &SkillsHandler{store: newStore(true)}
 		ctx := runWithParams(h.shiftVersion, `{"version":"1.0.1"}`, params)
 		requireStatus(t, ctx, fasthttp.StatusInternalServerError)
-		requireCommitPointChange(t, ctx, "skill.version_shifted", "serving_version", "1.0.1")
+		change := requireCommitPointChange(t, ctx, "skill.version_shifted", "latest_version", "1.0.1")
+		var after map[string]any
+		if err := json.Unmarshal(change.After, &after); err != nil {
+			t.Fatalf("decode after: %v", err)
+		}
+		if len(after) != 3 || after["id"] != "sk-1" || after["name"] != "audit-skill" {
+			t.Fatalf("after = %s, want only id, name and latest_version", change.After)
+		}
 		var prev map[string]any
 		if err := json.Unmarshal(change.Before, &prev); err != nil {
 			t.Fatalf("decode before: %v", err)
@@ -1692,11 +1711,7 @@ func TestCommitPoint_PluginCreate(t *testing.T) {
 			ctx.Request.Header.SetMethod("POST")
 			h.createPlugin(ctx)
 
-			changes := liveAuditChanges(ctx)
-			recorded := len(changes) == 1 && changes[0].EventName == "plugin.created"
-			if recorded != tc.wantRecorded || (!tc.wantRecorded && len(changes) != 0) {
-				t.Fatalf("status %d, changes %+v, want recorded=%v", ctx.Response.StatusCode(), changes, tc.wantRecorded)
-			}
+			requireRecordedOrNone(t, liveAuditChanges(ctx), tc.wantRecorded, "plugin.created")
 		})
 	}
 }
@@ -1757,10 +1772,7 @@ func TestCommitPoint_ConfigCompatReloadFailure(t *testing.T) {
 			h.updateConfig(ctx)
 
 			requireStatus(t, ctx, tc.wantStatus)
-			changes := liveAuditChanges(ctx)
-			if tc.wantRecorded != (len(changes) == 1 && changes[0].EventName == "config.updated") || (!tc.wantRecorded && len(changes) != 0) {
-				t.Fatalf("changes = %+v, want recorded=%v", changes, tc.wantRecorded)
-			}
+			requireRecordedOrNone(t, liveAuditChanges(ctx), tc.wantRecorded, "config.updated")
 		})
 	}
 }

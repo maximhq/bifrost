@@ -632,14 +632,15 @@ func (h *SkillsHandler) shiftVersion(ctx *fasthttp.RequestCtx) {
 	}
 
 	shiftedName := id
-	written, _ := auditSkill(before).(map[string]any)
 	if before != nil {
 		shiftedName = before.Name
 	}
-	if written == nil {
-		written = map[string]any{"id": id}
+	// The shift also rewrites the per-version fields, which only the read-back knows, so the fallback covers just these on both sides.
+	var previous any
+	if before != nil {
+		previous = map[string]any{"id": id, "name": shiftedName, "latest_version": before.LatestVersion}
 	}
-	written["serving_version"] = req.Version
+	written := map[string]any{"id": id, "name": shiftedName, "latest_version": req.Version}
 	rec := lib.RecordAuditChange(ctx, "skill.version_shifted", "skill", id, shiftedName, previous, written)
 
 	skill, err := h.store.GetSkill(ctx, id)

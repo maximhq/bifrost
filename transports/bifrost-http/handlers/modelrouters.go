@@ -305,7 +305,13 @@ func (h *RoutingHandler) updateModelRouter(ctx *fasthttp.RequestCtx) {
 		}
 		return
 	}
-	rec := lib.RecordAuditChange(ctx, "model_router.updated", "model_router", id, router.Name, before, router)
+	// The update keeps the stored targets and routing, so the fallback snapshot carries them too.
+	written := *router
+	if before != nil {
+		written.Targets = before.Targets
+		written.Routing = before.Routing
+	}
+	rec := lib.RecordAuditChange(ctx, "model_router.updated", "model_router", id, router.Name, before, &written)
 	if !h.reloadModelRouter(ctx, id) {
 		return
 	}
