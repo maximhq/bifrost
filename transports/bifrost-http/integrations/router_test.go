@@ -1731,6 +1731,51 @@ func TestRegisterPassthroughTextRewriters(t *testing.T) {
 	}
 }
 
+// TestRegisterBatchRequestTextRewriters verifies batch create and file upload routes register a lookup that names, for
+// each request a batch carries, the rewriter of that request's own API, so a request inside a batch is rewritten with
+// the field rules of its API's native route, and names none for an API without one. Synthetic payloads.
+func TestRegisterBatchRequestTextRewriters(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	RegisterBatchRequestTextRewriters(ctx)
+	rewriters, ok := ctx.Value(schemas.BifrostContextKeyBatchRequestTextRewriters).(schemas.RawRequestBodyTextRewriters)
+	require.True(t, ok)
+
+	replacements := map[string]string{"alice@example.com": "[EMAIL]"}
+	cases := []struct {
+		name        string
+		wire        schemas.ModelProvider
+		requestType schemas.RequestType
+		body        string
+		want        string
+	}{
+		{
+			"openai chat", schemas.OpenAI, schemas.ChatCompletionRequest,
+			`{"model":"gpt-4o","user":"alice@example.com","messages":[{"role":"user","content":"mail alice@example.com"}]}`,
+			`{"model":"gpt-4o","user":"alice@example.com","messages":[{"role":"user","content":"mail [EMAIL]"}]}`,
+		},
+		{
+			"anthropic messages", schemas.Anthropic, schemas.ResponsesRequest,
+			`{"model":"claude-sonnet-4-5","max_tokens":8,"messages":[{"role":"user","content":"mail alice@example.com"}]}`,
+			`{"model":"claude-sonnet-4-5","max_tokens":8,"messages":[{"role":"user","content":"mail [EMAIL]"}]}`,
+		},
+		{
+			"gemini generate", schemas.Gemini, schemas.ResponsesRequest,
+			`{"contents":[{"role":"user","parts":[{"text":"mail alice@example.com"}]}]}`,
+			`{"contents":[{"role":"user","parts":[{"text":"mail [EMAIL]"}]}]}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rewrite := rewriters(tc.wire, tc.requestType)
+			require.NotNil(t, rewrite)
+			got, err := rewrite([]byte(tc.body), replacements)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.want, string(got))
+		})
+	}
+	assert.Nil(t, rewriters(schemas.OpenAI, schemas.EmbeddingRequest), "an API with no rewriter has none")
+}
+
 // TestPassthroughRequestRewritersMatchTheReaders verifies, for every request shape the Runware, SageMaker, Bedrock agent
 // and Gemini Interactions readers accept, that the route's rewriter rewrites exactly the texts passthroughparse hands
 // guardrails: rewriting a value the reader read gives a body that reads back with only that value replaced. A text the

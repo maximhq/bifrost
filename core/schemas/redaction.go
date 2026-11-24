@@ -14,6 +14,10 @@ import (
 // A literal found in no owned field is reported as a *RawRequestLiteralsNotFoundError.
 type RawRequestBodyTextRewriter func(rawBody []byte, replacements map[string]string) ([]byte, error)
 
+// RawRequestBodyTextRewriters returns the RawRequestBodyTextRewriter for a body written in wire's API (for example
+// OpenAI, Anthropic, or Gemini) that addresses requestType, or nil when that API has none.
+type RawRequestBodyTextRewriters func(wire ModelProvider, requestType RequestType) RawRequestBodyTextRewriter
+
 // RawRequestLiteralsNotFoundError reports the replacement literals a RawRequestBodyTextRewriter found in none of the
 // fields it owns, so a caller can tell which redactions the raw body could not carry. Its message never includes the
 // literals, which are the values being redacted.

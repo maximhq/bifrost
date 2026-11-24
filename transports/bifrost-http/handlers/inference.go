@@ -25,6 +25,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -3882,6 +3883,7 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	integrations.RegisterBatchRequestTextRewriters(bifrostCtx)
 	resp, bifrostErr := h.client.BatchCreateRequest(bifrostCtx, bifrostBatchReq)
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)
@@ -4271,6 +4273,7 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	integrations.RegisterBatchRequestTextRewriters(bifrostCtx)
 	resp, bifrostErr := h.client.FileUploadRequest(bifrostCtx, bifrostFileReq)
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)

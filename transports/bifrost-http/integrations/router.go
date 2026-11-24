@@ -2046,6 +2046,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid batch create request"))
 			return
 		}
+		RegisterBatchRequestTextRewriters(bifrostCtx)
 		batchResponse, bifrostErr := g.client.BatchCreateRequest(bifrostCtx, batchReq.CreateRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
@@ -2204,6 +2205,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid file upload request"))
 			return
 		}
+		RegisterBatchRequestTextRewriters(bifrostCtx)
 		fileResponse, bifrostErr := g.client.FileUploadRequest(bifrostCtx, fileReq.UploadRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)

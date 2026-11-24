@@ -305,26 +305,39 @@ func NewGenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handler
 // is forwarded as received, so a route with no rewriter registers nothing and a plugin that must change its text has
 // to refuse the call instead of forwarding the original bytes.
 func registerPassthroughTextRewriters(ctx *schemas.BifrostContext, route passthroughparse.Route) {
-	var rewriter schemas.RawRequestBodyTextRewriter
-	switch route.Wire {
-	case schemas.Anthropic:
-		rewriter = rewriteAnthropicRawRequestBody
-	case schemas.Gemini:
-		rewriter = rewriteGenAIRawRequestBody
-	case schemas.OpenAI:
-		rewriter = openAIRawRequestBodyRewriter(route.RequestType)
-	case passthroughparse.WireGeminiInteractions:
-		rewriter = rewriteGeminiInteractionsRawRequestBody
-	case schemas.Runware:
-		rewriter = rewriteRunwareRawRequestBody
-	case schemas.SageMaker:
-		rewriter = rewriteSageMakerRawRequestBody
-	case schemas.Bedrock:
-		rewriter = rewriteBedrockAgentRawRequestBody
-	}
-	if rewriter != nil {
+	if rewriter := passthroughTextRewriter(route.Wire, route.RequestType); rewriter != nil {
 		ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter, rewriter)
 	}
+}
+
+// passthroughTextRewriter returns the rewriter for a body written in wire's API addressing requestType, or nil when
+// that API has none. It is a schemas.RawRequestBodyTextRewriters, which batch create and file upload routes register
+// for the requests a batch carries.
+func passthroughTextRewriter(wire schemas.ModelProvider, requestType schemas.RequestType) schemas.RawRequestBodyTextRewriter {
+	switch wire {
+	case schemas.Anthropic:
+		return rewriteAnthropicRawRequestBody
+	case schemas.Gemini:
+		return rewriteGenAIRawRequestBody
+	case schemas.OpenAI:
+		return openAIRawRequestBodyRewriter(requestType)
+	case passthroughparse.WireGeminiInteractions:
+		return rewriteGeminiInteractionsRawRequestBody
+	case schemas.Runware:
+		return rewriteRunwareRawRequestBody
+	case schemas.SageMaker:
+		return rewriteSageMakerRawRequestBody
+	case schemas.Bedrock:
+		return rewriteBedrockAgentRawRequestBody
+	}
+	return nil
+}
+
+// RegisterBatchRequestTextRewriters lets plugins that change the requests inside a batch rewrite each one with the
+// rewriter of its own API: a batch carries bodies of other APIs (chat completions, messages), which no route rewriter
+// covers. Batch create and file upload handlers call it.
+func RegisterBatchRequestTextRewriters(ctx *schemas.BifrostContext) {
+	ctx.SetValue(schemas.BifrostContextKeyBatchRequestTextRewriters, schemas.RawRequestBodyTextRewriters(passthroughTextRewriter))
 }
 
 // rewriteRunwareRawRequestBody applies runtime replacements to the task texts a Runware passthrough call is read for.
