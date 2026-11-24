@@ -509,3 +509,38 @@ func TestUpsertProviderJobLeavesSettledRelayJobsAlone(t *testing.T) {
 		})
 	}
 }
+
+// A poll sent outside the sweeper is counted on the row alone: its schedule and status are untouched.
+func TestIncrementProviderJobPollAttempts(t *testing.T) {
+	ctx := context.Background()
+	store := setupBatchJobTestStore(t)
+	id := tables.ProviderJobID(tables.ProviderJobKindRelay, "textract", "j-1")
+	next := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{ID: id, Kind: tables.ProviderJobKindRelay, Provider: "textract", JobID: "j-1", ProviderStatus: "IN_PROGRESS", NextCheckAt: &next, PollAttempts: 2}))
+	require.NoError(t, store.IncrementProviderJobPollAttempts(ctx, id))
+	job, err := store.GetProviderJob(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, 3, job.PollAttempts)
+	assert.Equal(t, "IN_PROGRESS", job.ProviderStatus)
+	require.NotNil(t, job.NextCheckAt)
+	assert.True(t, job.NextCheckAt.Equal(next), "the schedule is untouched")
+}
+
+// Every poll is counted on the row as it is sent, so a settlement write carrying a count read
+// earlier never drops a poll counted since: two polls elsewhere plus this node's own make 7.
+func TestUpsertProviderJobKeepsEveryRelayPoll(t *testing.T) {
+	ctx := context.Background()
+	store := setupBatchJobTestStore(t)
+	id := tables.ProviderJobID(tables.ProviderJobKindRelay, "textract", "j-1")
+	require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{ID: id, Kind: tables.ProviderJobKindRelay, Provider: "textract", JobID: "j-1", PollAttempts: 4}))
+	read, err := store.GetProviderJob(ctx, id)
+	require.NoError(t, err)
+	require.NoError(t, store.IncrementProviderJobPollAttempts(ctx, id)) // another node's poll
+	require.NoError(t, store.IncrementProviderJobPollAttempts(ctx, id)) // and another
+	require.NoError(t, store.IncrementProviderJobPollAttempts(ctx, id)) // this node's own poll
+	read.PollAttempts++                                                 // its stale copy now says 5
+	require.NoError(t, store.UpsertProviderJob(ctx, read))
+	job, err := store.GetProviderJob(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, 7, job.PollAttempts)
+}

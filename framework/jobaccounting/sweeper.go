@@ -209,8 +209,10 @@ func (s *Sweeper) settle(ctx context.Context, job *cstables.TableProviderJob, po
 }
 
 func (s *Sweeper) reschedule(ctx context.Context, job *cstables.TableProviderJob, now time.Time) {
-	job.PollAttempts++
 	_, ownSchedule := s.settler.(PollScheduler)
+	if !ownSchedule {
+		job.PollAttempts++
+	}
 	if !ownSchedule && job.PollAttempts >= MaxPollAttempts {
 		s.markTerminalAsUnpriceable(ctx, job, UnpriceableReasonMaxPollAttempts)
 		return

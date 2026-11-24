@@ -40,6 +40,7 @@ type BifrostRelayResponse struct {
 	Latency         int64 // milliseconds the call spent in Bifrost, pre-hooks to the end of the reply (or the stream)
 	UpstreamLatency int64 // milliseconds blocked on the upstream socket, 0 when the upstream was never called
 	Usage           *RelayUsage
+	JobStatusCheck  *RelayJobStatusCheck // set when a 2xx reply answers a caller's status check for one of the relay's jobs
 }
 
 // RelayUsage is what one counted call costs and what the mapping read to get there. Cost is the
@@ -58,6 +59,14 @@ type RelayUsage struct {
 	Job *RelayJobHandle `json:"job,omitempty"` // set when the call started a job billed on completion
 }
 
+// RelayJobStatusCheck names the job a caller's own status check asked about, so the logging plugin
+// can settle the job from the reply, as a terminal video retrieve settles a video.
+type RelayJobStatusCheck struct {
+	JobID       string          // upstream job id read from the request
+	ContentType string          // the reply's content type, for reading its status and usage
+	Matches     []RelayJobMatch // the started jobs' routes whose templates the request matched; settlement requires the job's own
+}
+
 // RelayJobHandle is a job a route started: the upstream id, the seconds until the first poll and
 // the settlement snapshot the sweeper prices it with.
 type RelayJobHandle struct {
@@ -65,6 +74,13 @@ type RelayJobHandle struct {
 	IntervalSeconds  int    `json:"interval_seconds"`
 	Params           string `json:"params"`
 	ReusedIDIsNewJob bool   `json:"reused_id_is_new_job,omitempty"` // the job config's reused_id_is_new_job
+	RouteKey         string `json:"route_key,omitempty"`            // names the start route in the job's row
+}
+
+// RelayJobMatch is one job route whose poll template a caller's status check matched.
+type RelayJobMatch struct {
+	RouteKey string       // the job route, as RelayJobHandle.RouteKey names it
+	Poll     RelayJobPoll // a copy of its poll template
 }
 
 // RelayPluginShortCircuit is a pre-hook's decision to answer without calling the upstream.

@@ -1,10 +1,11 @@
 package logging
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/overhead"
 )
@@ -261,6 +263,11 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 		// The reply names the relay that started the job; the entry was found by the caller's
 		// x-request-id, which another relay's call in flight may share.
 		p.recordEndpointJob(entry, clampString(resp.RelayName, 64), resp.Usage.Job)
+	}
+	// Only a pending entry knows when the check was sent, which tells which run of a reused job id it
+	// asked about; an evicted or unseen one is left to the sweeper.
+	if resp != nil && resp.JobStatusCheck != nil && pending != nil {
+		p.accountRelayStatusCheck(entry, resp)
 	}
 	p.storeOrEnqueueRelayEntry(ctx, relayInjectEntry{entry: entry, reconcile: evicted, dropRequestBody: !policy.storeContent})
 	return resp, bifrostErr, nil
@@ -583,9 +590,76 @@ func applyEndpointUsage(entry *logstore.RelayLog, usage *schemas.RelayUsage) {
 	}
 }
 
-// maxEndpointJobGenerations bounds the dedupe lookup for one upstream job id reused after settlement;
-// past it each start gets a row keyed by its own request, which is settled but no longer deduped.
-const maxEndpointJobGenerations = 64
+// accountRelayStatusCheck settles a relay job from a caller's status check that found it finished,
+// rather than leaving the sweeper to poll it again, as accountVideoResults does for a video. The
+// admitRelaySettle admits one settle for key (a relay and job id): false when one is already
+// running for that job or maxRelaySettles are, so the check is left to the sweeper. release frees it.
+func (p *LoggerPlugin) admitRelaySettle(key string) (release func(), ok bool) {
+	if _, busy := p.relaySettling.LoadOrStore(key, struct{}{}); busy {
+		return nil, false
+	}
+	p.relaySettleSlotsOnce.Do(func() { p.relaySettleSlots = make(chan struct{}, maxRelaySettles) })
+	select {
+	case p.relaySettleSlots <- struct{}{}:
+		return func() {
+			<-p.relaySettleSlots
+			p.relaySettling.Delete(key)
+		}, true
+	default:
+		p.relaySettling.Delete(key)
+		return nil, false
+	}
+}
+
+// maxRelaySettles bounds the settles from callers' status checks running at once; each is one
+// upstream poll and a short settlement, and the sweeper covers any check left out.
+const maxRelaySettles = 16
+
+// call's own row stays as charged as its route says; the job's charge goes on the job row.
+func (p *LoggerPlugin) accountRelayStatusCheck(entry *logstore.RelayLog, resp *schemas.BifrostRelayResponse) {
+	if entry == nil || p.batchStore == nil || p.store == nil {
+		return
+	}
+	p.mu.Lock()
+	usageReporter := p.batchUsageReporter
+	poller := p.relayJobPoller
+	p.mu.Unlock()
+	if poller == nil {
+		return // the sweeper settles it
+	}
+	check := resp.JobStatusCheck
+	// One settle per job, and a few at once, decided before the reply is copied: other checks of a job
+	// already being settled, and any past the cap, are left to the sweeper. The caller never waits.
+	release, ok := p.admitRelaySettle(entry.RelayName + "\x00" + check.JobID)
+	if !ok {
+		return
+	}
+	reporter, _ := usageReporter.(jobaccounting.RelayUsageReporter)
+	req := jobaccounting.JobRequest{
+		Provider:      schemas.ModelProvider(clampString(resp.RelayName, 64)),
+		ProviderJobID: check.JobID,
+		ClaimedBy:     p.batchRunnerID("logging"),
+		// The body is copied: the reply goes back to the caller while Bifrost polls the job itself.
+		Payload: jobaccounting.RelayStatusCheckPayload{StatusCode: resp.StatusCode, ContentType: check.ContentType, Body: bytes.Clone(resp.Body),
+			RequestID: entry.ID, SentAt: entry.Timestamp, Matches: check.Matches, Logger: p.logger},
+	}
+	relayName := entry.RelayName
+	// Off the caller's path: settling means Bifrost's own poll of the upstream, which the caller
+	// should not wait for. Bounded as video settlement is; the sweeper re-drives a timeout.
+	go func() {
+		defer release()
+		ctx, cancel := context.WithTimeout(p.ctx, jobAccountingTimeout)
+		defer cancel()
+		outcome, err := jobaccounting.AccountRelayJob(ctx, p.batchStore, p.store, reporter, poller, req)
+		if err != nil {
+			p.logger.Warn("failed to account relay job from a status check relay=%s job_id=%s: %v", relayName, check.JobID, err)
+			return
+		}
+		if outcome != nil && outcome.Accounted {
+			p.logger.Info("accounted relay job from a status check relay=%s job_id=%s cost=%f log_id=%s", relayName, check.JobID, outcome.Cost, outcome.LogID)
+		}
+	}()
+}
 
 // recordEndpointJob writes the job row the sweeper settles. The row is keyed by endpoint and upstream
 // job id, so a caller retrying an idempotent start (the upstream answers with the same id, while the
@@ -602,17 +676,13 @@ func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, relayName str
 	kind := tables.ProviderJobKindRelay
 	var scoped, id string
 	for gen := 1; ; gen++ {
-		if gen > maxEndpointJobGenerations {
-			scoped = schemas.RelayScopedJobID(entry.RequestID, job.ID)
+		if gen > jobaccounting.MaxRelayJobGenerations {
+			// Keyed by this call's own row id: two starts sharing a caller's x-request-id must not collide.
+			scoped = schemas.RelayScopedJobID(cmp.Or(entry.ID, entry.RequestID), job.ID)
 			id = tables.ProviderJobID(kind, relayName, scoped)
 			break
 		}
-		prefix := ""
-		if gen > 1 {
-			prefix = "g" + strconv.Itoa(gen)
-		}
-		scoped = schemas.RelayScopedJobID(prefix, job.ID)
-		id = tables.ProviderJobID(kind, relayName, scoped)
+		id, scoped = jobaccounting.RelayJobRowID(relayName, job.RouteKey, job.ID, gen)
 		existing, err := p.batchStore.GetProviderJob(p.ctx, id)
 		if errors.Is(err, configstore.ErrNotFound) || (err == nil && existing == nil) {
 			break // a free slot

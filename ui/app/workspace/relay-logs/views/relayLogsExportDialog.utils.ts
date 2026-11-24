@@ -9,6 +9,7 @@ import type { ParseKeys } from "i18next";
 import { logAppDisplayName, mapAppToClientApp, mapUserAgentToApp } from "@/lib/constants/logs";
 import type { RelayLog, RelayLogFilters } from "@/lib/types/relays";
 import { buildCSV } from "@/lib/utils/csv";
+import { relayJobOutcome, relayJobReason } from "../relayJob";
 import { getRangeForPeriod } from "@/lib/utils/timeRange";
 
 // The column names and their order follow the LLM logs export (LOGS_CSV_HEADERS): time and request
@@ -48,6 +49,10 @@ export const RELAY_LOGS_CSV_HEADERS = [
 	"Business Unit",
 	"Project",
 	"Job ID",
+	"Job Status",
+	"Job Outcome",
+	"Job Settled At",
+	"Unpriced Reason",
 	"Client IP",
 	"User Email",
 ] as const;
@@ -101,6 +106,10 @@ export function relayLogToCSVRow(log: RelayLog): unknown[] {
 		log.business_unit_name || log.business_unit_id || "",
 		log.project_name || log.project_id || "",
 		log.job_id || "",
+		log.kind === "job" ? log.job_status || "" : "",
+		log.kind === "job" ? relayJobOutcome(log) : "",
+		log.job_debug?.settled_at || "",
+		log.kind === "job" && relayJobOutcome(log) === "unpriced" ? relayJobReason(log) : "",
 		log.client_ip || "",
 		log.user_email || "",
 	];
@@ -117,6 +126,9 @@ export function formatRelayActiveFiltersSummary(filters: RelayLogFilters): strin
 	const t = (key: ParseKeys<"observability">, options?: Record<string, unknown>) => i18n.t(key, { ns: "observability", ...options });
 	if (filters.request_id) summary.push(t("logs.export.summary.request", { value: filters.request_id }));
 	if (filters.search) summary.push(t("logs.export.summary.search", { value: filters.search }));
+	if (filters.job_id) summary.push(t("logs.export.summary.jobId", { value: filters.job_id }));
+	if (filters.session_id) summary.push(t("logs.export.summary.session", { value: filters.session_id }));
+	if (filters.unpriced) summary.push(t("relayLogs.filters.unpriced"));
 	const counted: [ParseKeys<"observability">, string[] | undefined][] = [
 		["logs.export.summary.relays", filters.relay_names],
 		["logs.export.summary.methods", filters.methods],

@@ -53,8 +53,9 @@ type RelayLog struct {
 	TotalTokens    int      `json:"total_tokens,omitempty"`
 
 	JobID       *string `gorm:"type:varchar(255);index:idx_relay_logs_job_id" json:"job_id,omitempty"`
-	JobStatus   *string `gorm:"type:varchar(64)" json:"job_status,omitempty"`
+	JobStatus   *string `gorm:"type:text" json:"job_status,omitempty"`                                               // an upstream's own status string, of any length
 	ParentLogID *string `gorm:"type:varchar(255);index:idx_relay_logs_parent_log_id" json:"parent_log_id,omitempty"` // a job row's start call
+	JobDebug    string  `gorm:"type:text" json:"-"`                                                                  // JSON serialized *RelayJobDebug, on job rows
 
 	UserID             *string `gorm:"type:varchar(255);index:idx_relay_logs_user_id" json:"user_id,omitempty"`
 	UserName           *string `gorm:"type:varchar(255)" json:"user_name,omitempty"`
@@ -100,6 +101,7 @@ type RelayLog struct {
 	MetadataParsed          map[string]any        `gorm:"-" json:"metadata,omitempty"`
 	RequestHeadersParsed    map[string]string     `gorm:"-" json:"request_headers,omitempty"`
 	ErrorDetailsParsed      *schemas.BifrostError `gorm:"-" json:"error_details,omitempty"`
+	JobDebugParsed          *RelayJobDebug        `gorm:"-" json:"job_debug,omitempty"`
 	OverheadBreakdownParsed []OverheadBucket      `gorm:"-" json:"overhead_breakdown,omitempty"`
 	TeamIDsParsed           []string              `gorm:"-" json:"team_ids,omitempty"`
 	TeamNamesParsed         []string              `gorm:"-" json:"team_names,omitempty"`
@@ -114,6 +116,29 @@ type RelayLog struct {
 	RetainedPath         *string               `gorm:"-" json:"-"`
 	RetainedErrorDetails *schemas.BifrostError `gorm:"-" json:"-"`
 }
+
+// RelayJobDebug is how a job row's job was polled, as video_debug is on an LLM row. Poll replies
+// themselves are never stored.
+type RelayJobDebug struct {
+	// Outcome is how the job ended: succeeded, failed (a $0 settlement) or unpriced. The upstream's
+	// own statuses are free-form, so the UI reads this rather than job_status.
+	Outcome        string `json:"outcome,omitempty"`
+	Polls          int    `json:"polls"`                      // status checks Bifrost sent
+	LastStatus     string `json:"last_status,omitempty"`      // the job status last read from a reply
+	LastHTTPStatus int    `json:"last_http_status,omitempty"` // HTTP status of the poll that ended the job
+	LastError      string `json:"last_error,omitempty"`       // why the job ended unpriced
+	// SettledByRequestID is the caller's status check that found the job finished, as on
+	// video_debug; Bifrost's own poll then priced it. "" when the sweeper's poll found it.
+	SettledByRequestID string    `json:"settled_by_request_id,omitempty"`
+	SettledAt          time.Time `json:"settled_at"`
+}
+
+// Relay job outcomes, for RelayJobDebug.Outcome.
+const (
+	RelayJobOutcomeSucceeded = "succeeded"
+	RelayJobOutcomeFailed    = "failed"
+	RelayJobOutcomeUnpriced  = "unpriced"
+)
 
 // Relay log kinds and statuses.
 const (
@@ -203,6 +228,13 @@ func (l *RelayLog) SerializeFields() error {
 		}
 		l.ErrorDetails = string(data)
 	}
+	if l.JobDebugParsed != nil {
+		data, err := sonic.Marshal(l.JobDebugParsed)
+		if err != nil {
+			return fmt.Errorf("failed to serialize relay job debug: %w", err)
+		}
+		l.JobDebug = string(data)
+	}
 	if len(l.OverheadBreakdownParsed) > 0 {
 		data, err := marshalOverheadBreakdown(l.OverheadBreakdownParsed)
 		if err != nil {
@@ -238,6 +270,13 @@ func (l *RelayLog) DeserializeFields() error {
 			l.ErrorDetailsParsed = &details
 		}
 	}
+	l.JobDebugParsed = nil
+	if l.JobDebug != "" {
+		var debug RelayJobDebug
+		if err := sonic.Unmarshal([]byte(l.JobDebug), &debug); err == nil {
+			l.JobDebugParsed = &debug
+		}
+	}
 	if l.OverheadBreakdown != "" {
 		l.OverheadBreakdownParsed = unmarshalOverheadBreakdown(l.OverheadBreakdown)
 	}
@@ -267,10 +306,11 @@ type RelayLogFilters struct {
 	MaxLatency         *float64   `json:"max_latency,omitempty"`
 	RequestID          string     `json:"request_id,omitempty"`
 	JobID              string     `json:"job_id,omitempty"`
+	Unpriced           bool       `json:"unpriced,omitempty"` // job rows that ended without a price (cost NULL)
 	SessionID          string     `json:"session_id,omitempty"`
 	ParentRequestID    string     `json:"parent_request_id,omitempty"`
 	AgentCorrelationID string     `json:"agent_correlation_id,omitempty"`
-	// Search matches the path, route, model and request id: metadata columns only, never bodies.
+	// Search matches the path, route, model, request id and job id: metadata columns only, never bodies.
 	Search string `json:"search,omitempty"`
 	// ContentSearch matches the request and response bodies, as content_search matches an LLM
 	// row's content and an MCP row's arguments and result. A hybrid store searches the previews
@@ -412,6 +452,9 @@ func (s *RDBLogStore) applyRelayLogFilters(query *gorm.DB, f RelayLogFilters) *g
 	if f.RequestID != "" {
 		query = query.Where("request_id = ?", f.RequestID)
 	}
+	if f.Unpriced {
+		query = query.Where("kind = ? AND cost IS NULL", RelayLogKindJob)
+	}
 	if f.JobID != "" {
 		query = query.Where("job_id = ?", f.JobID)
 	}
@@ -432,7 +475,7 @@ func (s *RDBLogStore) applyRelayLogFilters(query *gorm.DB, f RelayLogFilters) *g
 		if query.Dialector != nil && query.Dialector.Name() == "sqlite" {
 			escape = ` ESCAPE '\'`
 		}
-		query = query.Where("(path LIKE ?"+escape+" OR route_path LIKE ?"+escape+" OR model LIKE ?"+escape+" OR request_id LIKE ?"+escape+")", like, like, like, like)
+		query = query.Where("(path LIKE ?"+escape+" OR route_path LIKE ?"+escape+" OR model LIKE ?"+escape+" OR request_id LIKE ?"+escape+" OR job_id LIKE ?"+escape+")", like, like, like, like, like)
 	}
 	if search := strings.TrimSpace(f.ContentSearch); search != "" {
 		if query.Dialector != nil && query.Dialector.Name() == "postgres" {
@@ -519,7 +562,13 @@ func (s *RDBLogStore) SearchRelayLogs(ctx context.Context, filters RelayLogFilte
 		pagination.Limit = 50
 	}
 	var logs []*RelayLog
-	if err := query.Order(column + " " + direction).Order("id " + direction).Limit(pagination.Limit).Offset(pagination.Offset).Find(&logs).Error; err != nil {
+	// A job row has no latency and an unpriced one no cost; a missing value is neither the largest nor
+	// the smallest, so it sorts last, as on the LLM logs.
+	order := column + " " + direction
+	if column != "timestamp" {
+		order += " NULLS LAST"
+	}
+	if err := query.Order(order).Order("id " + direction).Limit(pagination.Limit).Offset(pagination.Offset).Find(&logs).Error; err != nil {
 		return nil, fmt.Errorf("failed to search relay logs: %w", err)
 	}
 	hasLogs := len(logs) > 0

@@ -22,7 +22,7 @@ func TestRelayLogsRoundTrip(t *testing.T) {
 		{ID: "a", RequestID: "a", Timestamp: now.Add(-2 * time.Minute), RelayName: "tavily", Method: "POST", Path: "/search", RoutePath: "/search", Status: RelayLogStatusSuccess, StatusCode: 200, Billable: true, Cost: schemas.Ptr(0.033), BilledUnits: schemas.Ptr(4.0), Latency: schemas.Ptr(120.0), UpstreamLatency: schemas.Ptr(100.0), OverheadLatency: schemas.Ptr(20.0), OverheadBreakdownParsed: []OverheadBucket{{Name: "plugin.governance", DurationUs: 1500}}, UserAgent: schemas.Ptr("claude-code/1.0.0"), App: schemas.Ptr("claude-code"), VirtualKeyID: &vk, VirtualKeyName: schemas.Ptr("prod"), TeamID: schemas.Ptr("t1"), TeamName: schemas.Ptr("Team One"), TeamIDsParsed: []string{"t1", "t2"}, TeamNamesParsed: []string{"Team One", "Team Two"}, BudgetIDsParsed: []string{"b1"}, RequestHeadersParsed: map[string]string{"content-type": "application/json"}},
 		{ID: "b", RequestID: "b", Timestamp: now.Add(-time.Minute), RelayName: "tavily", Method: "GET", Path: "/usage", Status: RelayLogStatusSuccess, StatusCode: 200, Latency: schemas.Ptr(40.0)},
 		{ID: "c", RequestID: "c", Timestamp: now, RelayName: "textract", Method: "POST", Path: "/", Status: RelayLogStatusError, StatusCode: 500, Billable: true, ErrorDetailsParsed: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "boom"}}},
-		{ID: "c-job", RequestID: "c", Kind: RelayLogKindJob, Timestamp: now, RelayName: "textract", Status: RelayLogStatusSuccess, Billable: true, Cost: schemas.Ptr(0.15), JobID: schemas.Ptr("j-1"), ParentLogID: schemas.Ptr("c")},
+		{ID: "c-job", RequestID: "c", Kind: RelayLogKindJob, Timestamp: now, RelayName: "textract", Status: RelayLogStatusSuccess, Billable: true, Cost: schemas.Ptr(0.15), JobID: schemas.Ptr("j-1"), ParentLogID: schemas.Ptr("c"), JobDebugParsed: &RelayJobDebug{Polls: 3, LastStatus: "SUCCEEDED", LastHTTPStatus: 200, SettledAt: now}},
 	}
 	inserted, err := store.BatchCreateRelayLogsIfNotExists(ctx, entries)
 	require.NoError(t, err)
@@ -45,10 +45,23 @@ func TestRelayLogsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got.ErrorDetailsParsed)
 	assert.Equal(t, "boom", got.ErrorDetailsParsed.Error.Message)
+	got, err = store.FindRelayLog(ctx, "c-job")
+	require.NoError(t, err)
+	assert.Equal(t, &RelayJobDebug{Polls: 3, LastStatus: "SUCCEEDED", LastHTTPStatus: 200, SettledAt: now}, got.JobDebugParsed, "a job row's polling details round-trip")
+	// Job rows have no latency, and unpriced ones no cost: they sort last either way, and search finds a job id.
+	for _, order := range []string{"asc", "desc"} {
+		page, err := store.SearchRelayLogs(ctx, RelayLogFilters{}, PaginationOptions{Limit: 10, SortBy: "latency", Order: order})
+		require.NoError(t, err)
+		assert.Nil(t, page.Logs[len(page.Logs)-1].Latency, "a row with no latency sorts last (%s)", order)
+	}
+	page, err := store.SearchRelayLogs(ctx, RelayLogFilters{Search: "j-1"}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Logs, 1)
+	assert.Equal(t, "c-job", page.Logs[0].ID)
 	_, err = store.FindRelayLog(ctx, "missing")
 	require.ErrorIs(t, err, ErrNotFound)
 
-	page, err := store.SearchRelayLogs(ctx, RelayLogFilters{EndpointNames: []string{"tavily"}}, PaginationOptions{Limit: 10})
+	page, err = store.SearchRelayLogs(ctx, RelayLogFilters{EndpointNames: []string{"tavily"}}, PaginationOptions{Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, page.Logs, 2)
 	assert.Equal(t, "b", page.Logs[0].ID, "newest first")

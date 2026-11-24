@@ -792,6 +792,7 @@
 			"toastExported_other": "ログを {{count}} 件エクスポートしました",
 			"toastFailed": "エクスポートに失敗しました: {{error}}",
 			"summary": {
+				"jobId": "ジョブ ID: {{value}}",
 				"search": "検索「{{value}}」",
 				"request": "リクエスト「{{value}}」",
 				"providers": "プロバイダー（{{total}}）",
@@ -818,6 +819,20 @@
 		"batchMixedModel": "混在"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "課金前に精算行が削除されました",
+			"relay_job_no_usage": "最終応答に課金できる使用量がありません",
+			"relay_job_rejected": "アップストリームがジョブ ID を拒否しました",
+			"relay_job_access_denied": "アップストリームがアクセスを拒否しました",
+			"relay_job_gone": "アップストリームにジョブが見つかりません",
+			"relay_job_timeout": "タイムアウトまでに完了しませんでした",
+			"relay_job_params": "ジョブ設定を読み取れません"
+		},
+		"jobOutcome": {
+			"unpriced": "価格なし",
+			"failed": "失敗",
+			"succeeded": "成功"
+		},
 		"fields": {
 			"relay": "リレー",
 			"kind": "種類",
@@ -836,6 +851,9 @@
 			"no": "いいえ"
 		},
 		"columns": {
+			"startsJob": "ジョブ {{id}} を開始",
+			"jobUnpriced": "価格なし: {{reason}}",
+			"jobFailed": "失敗: {{status}}",
 			"jobBadge": "ジョブ",
 			"noRoute": "ルートなし",
 			"route": "ルート {{route}}",
@@ -875,6 +893,13 @@
 			"perRequest": "{{value}}/リクエスト"
 		},
 		"detail": {
+			"jobStatusStat": "ジョブのステータス",
+			"jobNotSettled": "未精算",
+			"jobSettlementFailed": "精算を確認できませんでした。",
+			"jobSettlement": "ジョブの精算",
+			"costUnpriced": "価格なし",
+			"unpricedBody": "Bifrost はこのジョブの価格を決められなかったため、コストは不明で、ジョブ自体には課金されていません。開始呼び出しの課金はそのままです。",
+			"unpricedTitle": "価格なしのジョブ",
 			"loadingDetails": "リレーログの詳細を読み込み中",
 			"notFound": "リレーログが見つかりません",
 			"loadFailed": "このリレーログを読み込めませんでした。",
@@ -905,6 +930,12 @@
 			"tokensNotPricedValue": "入力 {{input}} / 出力 {{output}}",
 			"matchedRoute": "一致したルート",
 			"parentLog": "親ログ",
+			"jobPolls": "ステータス確認の試行回数",
+			"jobLastStatus": "最後のジョブステータス",
+			"jobLastHttpStatus": "最後のポーリングの HTTP ステータス",
+			"jobSettledAt": "精算日時",
+			"jobSettledBy": "精算したステータス確認",
+			"jobLastError": "価格なしで終了した理由",
 			"responseBodyPreview": "レスポンス本文 (プレビュー)",
 			"filterByValue": "この値のリレー呼び出しを表示",
 			"queryParameters": "クエリパラメーター",
@@ -914,6 +945,7 @@
 			"contentHidden": "このリクエストではコンテンツのログ記録が無効になっています。"
 		},
 		"filters": {
+			"unpriced": "価格なしのジョブ",
 			"reset": "リセット",
 			"searchRelays": "リレーを検索",
 			"searchMethods": "メソッドを検索",

@@ -172,7 +172,11 @@ The final charge goes to the budgets of the virtual key, team and customer that 
 
 ## In Relay Logs
 
-The start call is a row like any other, with its job id and the status `started`. When the job ends, a **job** row is added with the final status, the units and the charge. It links to the start call's row. A job Bifrost could not price still gets its row, with the reason and a blank cost, and nothing is charged.
+The start call is a row like any other, with its job id and the status `started`. When the job ends, a **job** row is added with the final status, the units and the charge. It links to the start call's row and carries that call's model, route and the names of its virtual key, user, team and project. A job Bifrost could not price still gets its row, with the reason and a blank cost, and nothing is charged.
+
+The job row also shows how the job was followed: how many status checks Bifrost sent (a sweep that skips the job because another node is settling it sends nothing, so it does not count), the last job status it read, the HTTP status of the check that ended it, and when it was settled. The replies to those checks are not stored.
+
+A caller's own status check can settle the job too: when its reply shows the job finished, Bifrost charges the job from that reply at once, as it does for a video retrieve, and the job row names that check. Bifrost's own polling stays the backstop, and a job is still charged once whichever check finds it finished first.
 
 <Note>
 Jobs are recorded by request logging. With logging off, the start call is still charged its fee, but no job is followed or charged.

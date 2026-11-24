@@ -71,9 +71,7 @@ curl -X POST "${baseUrl}/relay/<relay-name>/<path>" \\
 			{error && (
 				<Alert>
 					<AlertTriangle className="h-4 w-4" />
-					<AlertDescription>
-						{isUnexpectedError ? t("mcpLogs.empty.logStoreNotConfigured") : error}
-					</AlertDescription>
+					<AlertDescription>{isUnexpectedError ? t("mcpLogs.empty.logStoreNotConfigured") : error}</AlertDescription>
 				</Alert>
 			)}
 

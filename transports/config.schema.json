@@ -6025,7 +6025,7 @@
     },
     "relay_job_config": {
       "type": "object",
-      "description": "The matched call starts an upstream job that is billed once, when it finishes, instead of on every status check. The job id is read from the start reply, Bifrost polls the upstream with the relay's credential until the status is terminal, prices the terminal reply with the job's usage mapping and charges the start call's budgets. The start call is counted as usual and carries the route's fee. A route that starts a job is buffered and billable, and a caller's own status checks (the poll request) must not match a billable route.",
+      "description": "The matched call starts an upstream job that is billed once, when it finishes, instead of on every status check. The job id is read from the start reply, Bifrost polls the upstream with the relay's credential until the status is terminal, prices the terminal reply with the job's usage mapping and charges the start call's budgets. The start call is counted as usual and carries the route's fee. A route that starts a job is buffered and billable, and a caller's own status check for a job Bifrost started (a call matching the poll request) is relayed free, with no route of its own.",
       "properties": {
         "id_path": {
           "type": "string",

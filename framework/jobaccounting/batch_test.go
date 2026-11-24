@@ -79,12 +79,19 @@ func (s *fakeAccountingStore) UpsertProviderJob(ctx context.Context, job *cstabl
 	if job.NextCheckAt != nil {
 		existing.NextCheckAt = job.NextCheckAt
 	}
-	if job.PollAttempts > 0 {
+	if job.PollAttempts > 0 && existing.Kind != cstables.ProviderJobKindRelay {
 		existing.PollAttempts = job.PollAttempts
 	}
 	// Refresh updated_at like the real store does. This is deliberately unfenced,
 	// which is exactly why claim staleness must not be measured on it.
 	existing.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (s *fakeAccountingStore) IncrementProviderJobPollAttempts(_ context.Context, jobID string) error {
+	if job, ok := s.jobs[jobID]; ok {
+		job.PollAttempts++
+	}
 	return nil
 }
 
