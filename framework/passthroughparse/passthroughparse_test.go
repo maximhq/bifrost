@@ -270,6 +270,26 @@ func checkGemini(t *testing.T, r *Result) {
 	require.Equal(t, "Sunny.", *resp.Output[0].Content.ContentBlocks[0].Text)
 }
 
+// TestParseCompactionAndCachedContentRequests verifies a compaction body parses into its own request type, and a
+// Gemini cached content create into a Responses-shaped request under its own request type.
+func TestParseCompactionAndCachedContentRequests(t *testing.T) {
+	compaction, err := Parse(Input{Provider: schemas.OpenAI, Model: "gpt-5", Method: "POST", Path: "/v1/responses/compact", RequestBody: []byte(`{"model":"gpt-5","instructions":"be brief","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`)})
+	require.NoError(t, err)
+	require.NotNil(t, compaction)
+	require.Equal(t, schemas.CompactionRequest, compaction.RequestType)
+	require.NotNil(t, compaction.Request.CompactionRequest)
+	require.Len(t, compaction.Request.CompactionRequest.Input, 1)
+	require.NotNil(t, compaction.Request.CompactionRequest.Instructions)
+	require.Equal(t, "be brief", *compaction.Request.CompactionRequest.Instructions)
+
+	cached, err := Parse(Input{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Method: "POST", Path: "/v1beta/cachedContents", RequestBody: []byte(`{"model":"models/gemini-2.5-flash","ttl":"300s","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)})
+	require.NoError(t, err)
+	require.NotNil(t, cached)
+	require.Equal(t, schemas.CachedContentCreateRequest, cached.RequestType)
+	require.NotNil(t, cached.Request.ResponsesRequest)
+	require.Len(t, cached.Request.ResponsesRequest.Input, 1)
+}
+
 func TestParseUnknownRoutesReturnNil(t *testing.T) {
 	tests := []struct {
 		name string
@@ -939,6 +959,11 @@ func TestClassify(t *testing.T) {
 		{"vertex mistral", schemas.Vertex, "POST", "/projects/p/locations/l/publishers/mistralai/models/mistral-large:rawPredict", Route{schemas.OpenAI, schemas.ChatCompletionRequest}},
 		{"gemini stream", schemas.Gemini, "POST", "/models/gemini-2.5-flash:streamGenerateContent", Route{schemas.Gemini, schemas.ResponsesRequest}},
 		{"gemini count tokens", schemas.Gemini, "POST", "/models/gemini-2.5-flash:countTokens", Route{schemas.Gemini, schemas.CountTokensRequest}},
+		{"openai compaction", schemas.OpenAI, "POST", "/v1/responses/compact", Route{schemas.OpenAI, schemas.CompactionRequest}},
+		{"azure compaction", schemas.Azure, "POST", "/openai/v1/responses/compact", Route{schemas.OpenAI, schemas.CompactionRequest}},
+		{"gemini cached content", schemas.Gemini, "POST", "/v1beta/cachedContents", Route{schemas.Gemini, schemas.CachedContentCreateRequest}},
+		{"vertex cached content", schemas.Vertex, "POST", "/projects/p/locations/l/cachedContents", Route{schemas.Gemini, schemas.CachedContentCreateRequest}},
+		{"gemini cached content list", schemas.Gemini, "GET", "/v1beta/cachedContents", Route{}},
 		{"untyped route", schemas.Anthropic, "POST", "/v1/files", Route{}},
 		{"non-POST call", schemas.Anthropic, "GET", "/v1/messages", Route{}},
 		{"provider without a parser", schemas.Bedrock, "POST", "/model/anthropic.claude-sonnet-4-5/invoke", Route{}},
