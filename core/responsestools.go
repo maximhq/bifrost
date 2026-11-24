@@ -3,6 +3,7 @@ package bifrost
 import (
 	"slices"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -131,7 +132,8 @@ func mergeResponsesToolDeclarations(top, declared []schemas.ResponsesTool) []sch
 }
 
 // hoistClientToolSearchOutputTools declares the tools a caller's client-run tool search
-// loaded, for a Claude request. Codex keeps its deferred tools on its side and returns
+// loaded, for a Claude request or a Gemini request on generateContent (which has no tool
+// search, so a loaded tool is callable only once declared). Codex keeps its deferred tools on its side and returns
 // the matches in tool_search_output items; OpenAI loads them from there, but the
 // Anthropic Messages API only resolves a tool_reference to a tool declared in the
 // request with defer_loading. Each loaded tool is therefore added to the tools,
@@ -139,11 +141,12 @@ func mergeResponsesToolDeclarations(top, declared []schemas.ResponsesTool) []sch
 // so the loaded tools get the same flat names and response-side restore as the rest.
 // The output items stay in input: the converter turns them into tool_result blocks.
 //
-// Only Claude requests that declare a client tool_search are touched; everything else,
+// Only those requests that declare a client tool_search are touched (a Gemini turn on the
+// Interactions API is not: Google loads the tools from the search's result itself); everything else,
 // and a request whose history holds no client search output, comes back as the same
 // pointer without allocating. Copy-on-write, so fallbacks see the caller's request.
 func hoistClientToolSearchOutputTools(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
-	if request == nil || !declaresClientToolSearch(request) || !schemas.IsAnthropicModelFamily(ctx, request.Model) {
+	if request == nil || !declaresClientToolSearch(request) || !clientToolSearchNeedsDeclaredTools(ctx, request) {
 		return request, nil
 	}
 	var declared []schemas.ResponsesTool
@@ -246,6 +249,15 @@ func hoistClientToolSearchOutputTools(ctx *schemas.BifrostContext, request *sche
 	params.Tools = merged
 	prepared.Params = &params
 	return &prepared, nil
+}
+
+// clientToolSearchNeedsDeclaredTools reports whether request's model can call a tool a client
+// search loaded only once it is declared: Claude, and Gemini on generateContent.
+func clientToolSearchNeedsDeclaredTools(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) bool {
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		return true
+	}
+	return schemas.IsGeminiModelFamily(ctx, request.Model) && !gemini.ShouldUseGeminiInteractions(ctx, request)
 }
 
 // declaresClientToolSearch reports whether request declares a client-run tool_search,

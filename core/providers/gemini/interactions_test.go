@@ -751,6 +751,23 @@ func BenchmarkShouldUseGeminiInteractions(b *testing.B) {
 	}
 }
 
+// BenchmarkShouldUseGeminiInteractionsWithTools measures the gate for a tool-calling request that
+// stays on generateContent: the tool_search check passes over every tool.
+func BenchmarkShouldUseGeminiInteractionsWithTools(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	tools := make([]schemas.ResponsesTool, 20)
+	for i := range tools {
+		tools[i] = schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr(fmt.Sprintf("tool_%d", i)), ResponsesToolFunction: &schemas.ResponsesToolFunction{}}
+	}
+	req := &schemas.BifrostResponsesRequest{Model: "gemini-3.8-flash", Params: &schemas.ResponsesParameters{Tools: tools}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if ShouldUseGeminiInteractions(ctx, req) {
+			b.Fatal("plain tool request left generateContent")
+		}
+	}
+}
+
 // TestGeminiInteractionServerToolStepsToResponses pins the built-in tool steps the Interactions
 // API documents onto their Responses items: a search is a web_search_call, code execution a
 // code_interpreter_call, URL context one web_fetch_call per URL, a remote MCP call an mcp_call and
@@ -4484,4 +4501,766 @@ func TestGeminiResponsesStreamViaInteractionsTagsRawFormat(t *testing.T) {
 		tagged++
 	}
 	assert.Equal(t, 4, tagged)
+}
+
+// toolSearchTestTools is a request that searches a deferred library on Google's side: a tool_search,
+// a deferred function, a deferred remote MCP server and a function loaded up front.
+func toolSearchTestTools() []schemas.ResponsesTool {
+	never := "never"
+	return []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeToolSearch},
+		{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("get_weather"), Description: schemas.Ptr("Weather for a city."), DeferLoading: schemas.Ptr(true),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}},
+		{Type: schemas.ResponsesToolTypeMCP, DeferLoading: schemas.Ptr(true), ResponsesToolMCP: &schemas.ResponsesToolMCP{
+			ServerLabel: "dice", ServerURL: schemas.Ptr("https://m.example/mcp"),
+			RequireApproval: &schemas.ResponsesToolMCPAllowedToolsApprovalSetting{Setting: &never},
+		}},
+		{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("now"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+	}
+}
+
+// TestToGeminiInteractionsToolSearchTools pins tool retrieval on the request: a Responses
+// tool_search is the Interactions tool_search, and defer_loading reaches the function and
+// mcp_server tools it withholds. A tool loaded up front carries no defer_loading.
+func TestToGeminiInteractionsToolSearchTools(t *testing.T) {
+	out, err := ToGeminiInteractionsRequest(&schemas.BifrostResponsesRequest{
+		Model:  "gemini-3.8-flash",
+		Input:  []schemas.ResponsesMessage{interactionsUserText("Weather in Paris?")},
+		Params: &schemas.ResponsesParameters{Tools: toolSearchTestTools()},
+	})
+	require.NoError(t, err)
+	raw, err := providerUtils.MarshalSorted(out.Tools)
+	require.NoError(t, err)
+	assert.JSONEq(t, `[
+		{"type":"tool_search"},
+		{"type":"function","name":"get_weather","description":"Weather for a city.","defer_loading":true,"parameters":{"type":"object","properties":{}}},
+		{"type":"mcp_server","name":"dice","url":"https://m.example/mcp","defer_loading":true},
+		{"type":"function","name":"now"}
+	]`, string(raw))
+}
+
+// TestToGeminiInteractionsDeferredToolsNeedSearch pins the deferral rules Google enforces: a
+// deferred tool without a tool_search gets one on a model that serves tool retrieval (Google
+// refuses defer_loading alone), and loads up front on an older model or beside a search the
+// caller runs itself, since Google refuses defer_loading with a client tool_search.
+func TestToGeminiInteractionsDeferredToolsNeedSearch(t *testing.T) {
+	deferred := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("get_weather"), DeferLoading: schemas.Ptr(true), ResponsesToolFunction: &schemas.ResponsesToolFunction{}}
+	toolsJSON := func(model string, tools ...schemas.ResponsesTool) string {
+		t.Helper()
+		out, err := ToGeminiInteractionsRequest(&schemas.BifrostResponsesRequest{
+			Model: model, Input: []schemas.ResponsesMessage{interactionsUserText("hi")},
+			Params: &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr("v1_prev"), Tools: tools},
+		})
+		require.NoError(t, err)
+		raw, err := providerUtils.MarshalSorted(out.Tools)
+		require.NoError(t, err)
+		return string(raw)
+	}
+
+	assert.JSONEq(t, `[{"type":"function","name":"get_weather","defer_loading":true},{"type":"tool_search"}]`, toolsJSON("gemini-3.8-flash", deferred))
+	assert.JSONEq(t, `[{"type":"function","name":"get_weather","defer_loading":true},{"type":"tool_search"}]`, toolsJSON("gemini-4-neon", deferred))
+	assert.JSONEq(t, `[{"type":"function","name":"get_weather"}]`, toolsJSON("gemini-3-flash-preview", deferred),
+		"a model without tool retrieval loads the tool up front, as before")
+
+	client := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeToolSearch, Description: schemas.Ptr("Find tools."),
+		ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: schemas.Ptr("client"), Parameters: &schemas.ToolFunctionParameters{Type: "object"}}}
+	assert.JSONEq(t, `[
+		{"type":"tool_search","execution":"client","name":"tool_search","description":"Find tools.","parameters":{"type":"object","properties":{}}},
+		{"type":"function","name":"get_weather"}
+	]`, toolsJSON("gemini-3.8-flash", client, deferred), "a client search takes a name and keeps every tool loaded")
+}
+
+// TestSupportsGeminiToolSearch pins the models tool retrieval is added for: Gemini 3.6 and later.
+func TestSupportsGeminiToolSearch(t *testing.T) {
+	for model, want := range map[string]bool{
+		"gemini-3.6-flash": true, "gemini-3.8-flash": true, "gemini-3.10-pro": true, "gemini-4-neon": true, "gemini-4-argon": true,
+		"models/gemini-3.6-flash": true, "gemini-3.5-flash": false, "gemini-3-flash-preview": false, "gemini-3.1-pro-preview": false,
+		"gemini-2.5-pro": false, "deep-research-pro-preview": false, "": false,
+	} {
+		assert.Equal(t, want, supportsGeminiToolSearch(model), model)
+	}
+}
+
+// TestShouldUseGeminiInteractionsToolSearch pins routing: generateContent has no tool search, so a
+// request carrying a tool_search Google runs leaves it. A client search and a plain deferred tool
+// stay where they were (the gateway runs the search for a deferred tool on generateContent).
+func TestShouldUseGeminiInteractionsToolSearch(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := func(tools ...schemas.ResponsesTool) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{Model: "gemini-3.8-flash", Params: &schemas.ResponsesParameters{Tools: tools}}
+	}
+	assert.True(t, ShouldUseGeminiInteractions(ctx, request(toolSearchTestTools()...)))
+	assert.False(t, ShouldUseGeminiInteractions(ctx, request(schemas.ResponsesTool{Type: schemas.ResponsesToolTypeToolSearch, ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: schemas.Ptr("client")}})))
+	assert.False(t, ShouldUseGeminiInteractions(ctx, request(schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("f"), DeferLoading: schemas.Ptr(true)})))
+}
+
+const toolSearchInteractionBody = `{
+	"id":"v1_ts","object":"interaction","model":"gemini-3.8-flash","status":"requires_action",
+	"steps":[
+		{"type":"user_input","content":[{"type":"text","text":"Weather in Paris?"}]},
+		{"type":"tool_search_call","id":"ts_1","arguments":{"function_names":["get_weather"]},"signature":"sig_call"},
+		{"type":"tool_search_result","call_id":"ts_1","signature":"sig_result","result":[{"type":"function","name":"get_weather","description":"Weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}]},
+		{"type":"function_call","id":"fc_1","name":"get_weather","arguments":{"city":"Paris"}}
+	],
+	"usage":{"total_input_tokens":40,"total_output_tokens":8,"total_tool_use_tokens":12,"total_tokens":60}
+}`
+
+// TestGeminiInteractionToolSearchStepsToResponses pins the search steps onto the items OpenAI
+// uses for its own hosted search: tool_search_call names what the model looked for, and
+// tool_search_output lists the declarations it loaded, both execution "server". Each keeps the
+// step's signature as encrypted_content, which a stateless replay must send back.
+func TestGeminiInteractionToolSearchStepsToResponses(t *testing.T) {
+	var interaction GeminiInteraction
+	require.NoError(t, sonic.Unmarshal([]byte(toolSearchInteractionBody), &interaction))
+	resp := interaction.ToBifrostResponsesResponse()
+
+	require.Len(t, resp.Output, 3)
+	assert.Nil(t, resp.ProviderExtraFields, "the search steps map, so none stay raw")
+	call, err := sonic.Marshal(resp.Output[0])
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"tool_search_call","id":"ts_1","call_id":"ts_1","execution":"server","status":"completed",
+		"arguments":{"function_names":["get_weather"]},"encrypted_content":"sig_call"}`, string(call))
+	output, err := sonic.Marshal(resp.Output[1])
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"tool_search_output","id":"item_v1_ts_2","call_id":"ts_1","execution":"server","status":"completed",
+		"tools":[{"type":"function","name":"get_weather","description":"Weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}],
+		"encrypted_content":"sig_result"}`, string(output))
+	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *resp.Output[2].Type)
+	assert.Equal(t, 52, resp.Usage.InputTokens, "the search's own model call is billed as input")
+}
+
+// TestToGeminiInteractionsInputReplaysToolSearch pins a stateless follow-up: the search items a
+// client got back (decoded as the client sends them) replay as the same steps with the signatures
+// Google issued. A search another provider ran carries no signature Google can verify, so it is
+// dropped as other built-in tool history is.
+func TestToGeminiInteractionsInputReplaysToolSearch(t *testing.T) {
+	var interaction GeminiInteraction
+	require.NoError(t, sonic.Unmarshal([]byte(toolSearchInteractionBody), &interaction))
+	output, err := sonic.Marshal(interaction.ToBifrostResponsesResponse().Output)
+	require.NoError(t, err)
+	history := `[{"type":"message","role":"user","content":"Weather in Paris?"},` +
+		`{"type":"tool_search_call","id":"tsc_openai","call_id":"call_o","execution":"server","status":"completed","arguments":{"query":"weather"}},` +
+		string(output[1:len(output)-1]) +
+		`,{"type":"function_call_output","call_id":"fc_1","output":"21C"}]`
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(history), &input))
+
+	out, err := ToGeminiInteractionsRequest(&schemas.BifrostResponsesRequest{
+		Model: "gemini-3.8-flash", Input: input,
+		Params: &schemas.ResponsesParameters{Store: schemas.Ptr(false), Tools: toolSearchTestTools()},
+	})
+	require.NoError(t, err)
+	steps, err := providerUtils.MarshalSorted(out.Input.Items)
+	require.NoError(t, err)
+	assert.JSONEq(t, `[
+		{"type":"user_input","content":[{"type":"text","text":"Weather in Paris?"}]},
+		{"type":"tool_search_call","id":"ts_1","arguments":{"function_names":["get_weather"]},"signature":"sig_call"},
+		{"type":"tool_search_result","call_id":"ts_1","signature":"sig_result","result":[{"type":"function","name":"get_weather","description":"Weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}]},
+		{"type":"function_call","id":"fc_1","name":"get_weather","arguments":{"city":"Paris"}},
+		{"type":"function_result","call_id":"fc_1","name":"get_weather","result":[{"type":"text","text":"21C"}]}
+	]`, string(steps))
+}
+
+// TestGeminiResponsesClientToolSearchViaInteractions pins a search the caller runs itself, end to
+// end through the provider: the client tool_search is sent with a name, the caller's earlier search
+// replays as the function_call and function_result Google documents for it, and the model's next
+// call to the search comes back as a client tool_search_call the caller dispatches.
+func TestGeminiResponsesClientToolSearchViaInteractions(t *testing.T) {
+	server, calls := newInteractionsTestServer(t, "application/json", func(interactionsCall) string {
+		return `{"id":"v1_c","object":"interaction","model":"gemini-3.8-flash","status":"requires_action","steps":[
+			{"type":"function_call","id":"call_2","name":"search_tool_registry","arguments":{"query":"currency"}}],
+			"usage":{"total_input_tokens":5,"total_output_tokens":2,"total_tokens":7}}`
+	})
+	provider := NewGeminiProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL + "/v1beta"}}, nil)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "k"}, Models: []string{"*"}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"tool_search_call","call_id":"call_1","execution":"client","status":"completed","arguments":{"query":"weather"}},
+		{"type":"tool_search_output","call_id":"call_1","execution":"client","status":"completed","tools":[{"type":"function","name":"get_weather","parameters":{"type":"object"}}]}
+	]`), &input))
+	resp, bifrostErr := provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Gemini, Model: "gemini-3.8-flash", Input: input,
+		Params: &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr("v1_prev"), Tools: []schemas.ResponsesTool{{
+			Type: schemas.ResponsesToolTypeToolSearch, Name: schemas.Ptr("search_tool_registry"), Description: schemas.Ptr("Find tools."),
+			ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: schemas.Ptr("client"), Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+		}}},
+	})
+	require.Nil(t, bifrostErr)
+	require.Len(t, *calls, 1)
+	assert.JSONEq(t, `{"model":"gemini-3.8-flash","previous_interaction_id":"v1_prev",
+		"tools":[{"type":"tool_search","execution":"client","name":"search_tool_registry","description":"Find tools.","parameters":{"type":"object","properties":{}}}],
+		"input":[
+			{"type":"function_call","id":"call_1","name":"search_tool_registry","arguments":{"query":"weather"}},
+			{"type":"function_result","call_id":"call_1","name":"search_tool_registry","result":[{"type":"function","name":"get_weather","parameters":{"type":"object"}}]}
+		]}`, (*calls)[0].body)
+
+	require.Len(t, resp.Output, 1)
+	item, err := sonic.Marshal(resp.Output[0])
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"tool_search_call","id":"call_2","call_id":"call_2","execution":"client","status":"completed","arguments":{"query":"currency"}}`, string(item))
+}
+
+// TestGeminiInteractionsClientSearchStartArguments pins that a client search whose arguments arrive whole on
+// step.start sends them on its completed item only: the item is a tool_search_call, so no function-call
+// event belongs to it. A function call sends them as a delta.
+func TestGeminiInteractionsClientSearchStartArguments(t *testing.T) {
+	run := func(name string) (types []schemas.ResponsesStreamResponseType, arguments string) {
+		s := NewGeminiInteractionsStreamState("gemini-3.8-flash")
+		s.ClientToolSearchName = "find_tools"
+		for _, ev := range interactionsEvents(t, `{"event_type":"step.start","index":0,"step":{"type":"function_call","id":"c","name":"`+name+`","arguments":{"query":"fx"}}}`, `{"event_type":"step.stop","index":0}`) {
+			out, bErr := s.ToBifrostResponsesStream(ev)
+			require.Nil(t, bErr)
+			for _, e := range out {
+				types = append(types, e.Type)
+				if e.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && e.Item.Arguments != nil {
+					arguments = *e.Item.Arguments
+				}
+			}
+		}
+		return types, arguments
+	}
+	types, arguments := run("find_tools")
+	assert.NotContains(t, types, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta)
+	assert.NotContains(t, types, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone)
+	assert.JSONEq(t, `{"query":"fx"}`, arguments)
+	types, _ = run("other")
+	assert.Contains(t, types, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta)
+}
+
+// TestGeminiInteractionsDeferralWithBothSearches pins that a request declaring a server and a client
+// tool_search loads its tools up front: Google refuses a deferred tool beside a client search.
+func TestGeminiInteractionsDeferralWithBothSearches(t *testing.T) {
+	server := GeminiInteractionsTool{Type: geminiInteractionsToolSearch}
+	client := GeminiInteractionsTool{Type: geminiInteractionsToolSearch, Execution: schemas.Ptr(schemas.ToolSearchExecutionClient), Name: schemas.Ptr("find")}
+	deferred := func(tools ...GeminiInteractionsTool) bool {
+		fn := GeminiInteractionsTool{Type: "function", Name: schemas.Ptr("f"), DeferLoading: schemas.Ptr(true)}
+		out := applyGeminiInteractionsDeferredTools(append(tools, fn), "gemini-3.8-flash", false)
+		last := out[len(tools)]
+		return last.DeferLoading != nil && *last.DeferLoading
+	}
+	assert.True(t, deferred(server))
+	assert.False(t, deferred(server, client))
+	assert.False(t, deferred(client, server))
+}
+
+// TestGeminiInteractionsNamedResultIsNotASearch pins that a result naming another function stays a function
+// result even when its body lists declarations. An unnamed one is still read as the search's answer.
+func TestGeminiInteractionsNamedResultIsNotASearch(t *testing.T) {
+	const declarations = `[{"type":"function","name":"f","parameters":{"type":"object"}}]`
+	isSearch := func(name *string) bool {
+		calls := map[string]struct{}{}
+		ref := &calls
+		_, ok := geminiClientToolSearchStepToResponses(GeminiInteractionsItem{Type: GeminiInteractionsStepFunctionResult, CallID: schemas.Ptr("c"), Name: name, Result: json.RawMessage(declarations)}, "find_tools", ref)
+		return ok
+	}
+	assert.False(t, isSearch(schemas.Ptr("list_tools")))
+	assert.True(t, isSearch(schemas.Ptr("find_tools")))
+	assert.True(t, isSearch(nil))
+}
+
+// TestGeminiToolSearchOutputNames pins that a loaded declaration carries the name the caller declared:
+// Google lists a function under its internal "default_api:" namespace. An MCP server's prefix stays.
+func TestGeminiToolSearchOutputNames(t *testing.T) {
+	got := geminiToolSearchResultToResponsesTools(json.RawMessage(`[{"type":"function","name":"default_api:convert_currency","parameters":{"type":"object"}},{"name":"default_api:get_time"},{"type":"function","name":"gdocs:search"}]`))
+	assert.JSONEq(t, `[{"type":"function","name":"convert_currency","parameters":{"type":"object"}},{"type":"function","name":"get_time"},{"type":"function","name":"gdocs:search"}]`, string(got))
+
+	untouched := json.RawMessage(`[{"type":"function","name":"convert_currency","b":1,"a":2}]`)
+	assert.Equal(t, string(untouched), string(geminiToolSearchResultToResponsesTools(untouched)), "already right, so the bytes are kept")
+}
+
+// TestGeminiInteractionsStreamToolSearch pins the search on a stream: each search step is one
+// whole item, opened and closed when its step ends, with its signature; a call to the caller's own
+// search streams as a client tool_search_call with no argument deltas; and the final response
+// lists them in order.
+func TestGeminiInteractionsStreamToolSearch(t *testing.T) {
+	events := interactionsEvents(t,
+		`{"event_type":"interaction.created","interaction":{"id":"v1_s","model":"gemini-3.8-flash","status":"in_progress"}}`,
+		`{"event_type":"step.start","index":0,"step":{"type":"tool_search_call","id":"ts_1"}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"tool_search_call","arguments":{"function_names":["get_weather"]},"signature":"sig_call"}}`,
+		`{"event_type":"step.stop","index":0}`,
+		`{"event_type":"step.start","index":1,"step":{"type":"tool_search_result","call_id":"ts_1","signature":"sig_result"}}`,
+		`{"event_type":"step.delta","index":1,"delta":{"type":"tool_search_result","result":[{"type":"function","name":"get_weather"}]}}`,
+		`{"event_type":"step.stop","index":1}`,
+		`{"event_type":"step.start","index":2,"step":{"type":"function_call","id":"call_2","name":"search_tool_registry"}}`,
+		`{"event_type":"step.delta","index":2,"delta":{"type":"arguments_delta","arguments":"{\"query\":\"fx\"}"}}`,
+		`{"event_type":"step.stop","index":2}`,
+		`{"event_type":"interaction.completed","interaction":{"id":"v1_s","status":"requires_action","usage":{"total_input_tokens":1,"total_output_tokens":1,"total_tokens":2}}}`,
+	)
+	state := NewGeminiInteractionsStreamState("gemini-3.8-flash")
+	state.ClientToolSearchName = "search_tool_registry"
+	var all []*schemas.BifrostResponsesStreamResponse
+	for _, event := range events {
+		out, err := state.ToBifrostResponsesStream(event)
+		require.Nil(t, err)
+		all = append(all, out...)
+	}
+	var done []string
+	for _, ev := range all {
+		assert.NotEqual(t, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, ev.Type, "a client search carries its arguments whole")
+		if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemDone {
+			raw, err := sonic.Marshal(ev.Item)
+			require.NoError(t, err)
+			done = append(done, string(raw))
+		}
+	}
+	require.Len(t, done, 3)
+	assert.JSONEq(t, `{"type":"tool_search_call","id":"ts_1","call_id":"ts_1","execution":"server","status":"completed","arguments":{"function_names":["get_weather"]},"encrypted_content":"sig_call"}`, done[0])
+	assert.JSONEq(t, `{"type":"tool_search_output","id":"item_v1_s_1","call_id":"ts_1","execution":"server","status":"completed","tools":[{"type":"function","name":"get_weather"}],"encrypted_content":"sig_result"}`, done[1])
+	assert.JSONEq(t, `{"type":"tool_search_call","id":"call_2","call_id":"call_2","execution":"client","status":"completed","arguments":{"query":"fx"}}`, done[2])
+
+	final := all[len(all)-1]
+	require.Equal(t, schemas.ResponsesStreamResponseTypeCompleted, final.Type)
+	var types []schemas.ResponsesMessageType
+	for _, item := range final.Response.Output {
+		types = append(types, *item.Type)
+	}
+	assert.Equal(t, []schemas.ResponsesMessageType{schemas.ResponsesMessageTypeToolSearchCall, schemas.ResponsesMessageTypeToolSearchOutput, schemas.ResponsesMessageTypeToolSearchCall}, types)
+}
+
+// TestGeminiInteractionsRequestToolSearchToBifrost pins the /genai route's translated copy: a native
+// tool_search, deferred function and deferred mcp_server reach the Responses request, and a search
+// in the input history becomes its tool_search items, so a fallback to another provider keeps the
+// deferral and the routing copy no longer drops them.
+func TestGeminiInteractionsRequestToolSearchToBifrost(t *testing.T) {
+	var native GeminiInteractionsRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{
+		"model":"gemini-3.8-flash",
+		"tools":[
+			{"type":"tool_search"},
+			{"type":"function","name":"get_weather","description":"Weather.","short_description":"Weather","defer_loading":true,"parameters":{"type":"object"}},
+			{"type":"mcp_server","name":"dice","url":"https://m.example/mcp","defer_loading":true}
+		],
+		"input":[
+			{"type":"user_input","content":[{"type":"text","text":"Weather?"}]},
+			{"type":"tool_search_call","id":"ts_1","arguments":{"function_names":["get_weather"]},"signature":"sig_call"},
+			{"type":"tool_search_result","call_id":"ts_1","signature":"sig_result","result":[{"type":"function","name":"get_weather"}]}
+		]
+	}`), &native))
+	req, err := native.ToBifrostResponsesRequest()
+	require.NoError(t, err)
+
+	require.Len(t, req.Params.Tools, 3)
+	assert.Equal(t, schemas.ResponsesToolTypeToolSearch, req.Params.Tools[0].Type)
+	assert.False(t, req.Params.Tools[0].IsClientToolSearch())
+	assert.True(t, *req.Params.Tools[1].DeferLoading)
+	assert.True(t, *req.Params.Tools[2].DeferLoading)
+
+	require.Len(t, req.Input, 3)
+	assert.Equal(t, schemas.ResponsesMessageTypeToolSearchCall, *req.Input[1].Type)
+	assert.Equal(t, "sig_call", *req.Input[1].ResponsesReasoning.EncryptedContent)
+	assert.Equal(t, schemas.ResponsesMessageTypeToolSearchOutput, *req.Input[2].Type)
+	assert.JSONEq(t, `[{"type":"function","name":"get_weather"}]`, string(req.Input[2].ToolSearchOutputTools))
+
+	req.Params.Tools = req.Params.Tools[:2] // a translated mcp_server carries no require_approval to send back
+	back, err := ToGeminiInteractionsRequest(req)
+	require.NoError(t, err)
+	steps, err := providerUtils.MarshalSorted(back.Input.Items[1:])
+	require.NoError(t, err)
+	assert.JSONEq(t, `[
+		{"type":"tool_search_call","id":"ts_1","arguments":{"function_names":["get_weather"]},"signature":"sig_call"},
+		{"type":"tool_search_result","call_id":"ts_1","signature":"sig_result","result":[{"type":"function","name":"get_weather"}]}
+	]`, string(steps), "a Gemini fallback gets the steps back unchanged")
+}
+
+// TestToGeminiInteractionToolSearchItems pins an Interactions caller served by another provider:
+// that provider's tool search items come back as the search steps, unary and streamed, and a
+// client search as the function call the caller answers.
+func TestToGeminiInteractionToolSearchItems(t *testing.T) {
+	var output []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"tool_search_call","id":"tsc_1","call_id":"call_s","execution":"server","status":"completed","arguments":{"query":"weather"}},
+		{"type":"tool_search_output","id":"tso_1","call_id":"call_s","execution":"server","status":"completed","tools":[{"type":"function","name":"get_weather"}]},
+		{"type":"tool_search_call","id":"tsc_2","call_id":"call_c","execution":"client","status":"completed","arguments":{"query":"fx"}}
+	]`), &output))
+	interaction := ToGeminiInteraction(&schemas.BifrostResponsesResponse{ID: schemas.Ptr("resp_1"), Model: "gpt-5.5", Status: schemas.Ptr("completed"), Output: output})
+	steps, err := providerUtils.MarshalSorted(interaction.Steps)
+	require.NoError(t, err)
+	want := `[
+		{"type":"tool_search_call","id":"call_s","arguments":{"query":"weather"}},
+		{"type":"tool_search_result","call_id":"call_s","result":[{"type":"function","name":"get_weather"}]},
+		{"type":"function_call","id":"call_c","name":"tool_search","arguments":{"query":"fx"}}
+	]`
+	assert.JSONEq(t, want, string(steps))
+	assert.Equal(t, GeminiInteractionStatusRequiresAction, interaction.Status, "the caller owes the client search an answer")
+
+	state := NewBifrostToGeminiInteractionsStreamState()
+	var started []GeminiInteractionsItem
+	for i := range output {
+		idx := i
+		for _, ev := range []*schemas.BifrostResponsesStreamResponse{
+			{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: &idx, Item: &output[i]},
+			{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &idx, Item: &output[i]},
+		} {
+			for _, event := range state.ToGeminiInteractionsStreamEvents(ev) {
+				if event.EventType == GeminiInteractionsEventStepStart {
+					started = append(started, *event.Step)
+				}
+				// A client search call streams its arguments as a delta; rebuild the step from it.
+				if event.EventType == GeminiInteractionsEventStepDelta && event.Delta.Type == geminiInteractionsDeltaArguments {
+					var fragment string
+					require.NoError(t, sonic.Unmarshal(event.Delta.Arguments, &fragment))
+					started[len(started)-1].Arguments = json.RawMessage(fragment)
+				}
+			}
+		}
+	}
+	streamed, err := providerUtils.MarshalSorted(started)
+	require.NoError(t, err)
+	assert.JSONEq(t, want, string(streamed))
+}
+
+// TestGeminiInteractionsRequestClientSearchHistoryToBifrost pins a translated follow-up that
+// answers the caller's own search: the function_call to the client tool_search and its
+// function_result listing the declarations it found become client tool_search items, instead of
+// the result's declarations being refused as content blocks. A Gemini fallback gets the steps back.
+func TestGeminiInteractionsRequestClientSearchHistoryToBifrost(t *testing.T) {
+	var native GeminiInteractionsRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{
+		"model":"gemini-3.8-flash",
+		"tools":[
+			{"type":"tool_search","execution":"client","name":"find_tools","description":"Find tools.","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}
+		],
+		"input":[
+			{"type":"user_input","content":[{"type":"text","text":"Convert 5 USD"}]},
+			{"type":"function_call","id":"call_c","name":"find_tools","arguments":{"query":"fx"}},
+			{"type":"function_result","call_id":"call_c","name":"find_tools","result":[{"type":"function","name":"get_fx","description":"FX rate.","parameters":{"type":"object"}}]}
+		]
+	}`), &native))
+	req, err := native.ToBifrostResponsesRequest()
+	require.NoError(t, err)
+	require.Len(t, req.Input, 3)
+	call, result := req.Input[1], req.Input[2]
+	require.Equal(t, schemas.ResponsesMessageTypeToolSearchCall, *call.Type)
+	assert.True(t, call.IsClientToolSearchItem())
+	assert.Equal(t, "call_c", *call.CallID)
+	assert.JSONEq(t, `{"query":"fx"}`, *call.Arguments)
+	require.Equal(t, schemas.ResponsesMessageTypeToolSearchOutput, *result.Type)
+	assert.True(t, result.IsClientToolSearchItem())
+	assert.Equal(t, "call_c", *result.CallID)
+	assert.JSONEq(t, `[{"type":"function","name":"get_fx","description":"FX rate.","parameters":{"type":"object"}}]`, string(result.ToolSearchOutputTools))
+
+	back, err := ToGeminiInteractionsRequest(req)
+	require.NoError(t, err)
+	steps, err := providerUtils.MarshalSorted(back.Input.Items[1:])
+	require.NoError(t, err)
+	assert.JSONEq(t, `[
+		{"type":"function_call","id":"call_c","name":"find_tools","arguments":{"query":"fx"}},
+		{"type":"function_result","call_id":"call_c","name":"find_tools","result":[{"type":"function","name":"get_fx","description":"FX rate.","parameters":{"type":"object"}}]}
+	]`, string(steps))
+}
+
+// TestToGeminiInteractionClientSearchStreamsArguments pins that a translated client search call
+// streams its arguments as an arguments delta, as Google streams a function call, so a reader that
+// builds the call from deltas keeps the query.
+func TestToGeminiInteractionClientSearchStreamsArguments(t *testing.T) {
+	var item schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`{"type":"tool_search_call","id":"tsc_2","call_id":"call_c","execution":"client","status":"completed","arguments":{"query":"fx"}}`), &item))
+	state := NewBifrostToGeminiInteractionsStreamState()
+	state.ClientToolSearchName = "find_tools"
+	idx := 0
+	var events []*GeminiInteractionsEvent
+	for _, ev := range []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: &idx, Item: &item},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &idx, Item: &item},
+	} {
+		events = append(events, state.ToGeminiInteractionsStreamEvents(ev)...)
+	}
+	reader := NewGeminiInteractionsStreamState("gemini-3.8-flash")
+	reader.ClientToolSearchName = "find_tools"
+	var done *schemas.ResponsesMessage
+	for _, event := range events {
+		raw, err := sonic.Marshal(event)
+		require.NoError(t, err)
+		parsed, err := ParseGeminiInteractionsEvent(raw)
+		require.NoError(t, err)
+		out, bifrostErr := reader.ToBifrostResponsesStream(parsed)
+		require.Nil(t, bifrostErr)
+		for _, ev := range out {
+			if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemDone {
+				done = ev.Item
+			}
+		}
+	}
+	require.NotNil(t, done)
+	require.Equal(t, schemas.ResponsesMessageTypeToolSearchCall, *done.Type)
+	require.NotNil(t, done.Arguments)
+	assert.JSONEq(t, `{"query":"fx"}`, *done.Arguments)
+}
+
+// TestGeminiInteractionsRequestClientSearchFailedResult pins that a failed answer to the caller's
+// own search stays a failure: the client tool_search_output is incomplete and keeps the error text
+// in memory without sending an error field on the Responses wire, and a Gemini fallback gets back a
+// function_result with is_error and the original text.
+func TestGeminiInteractionsRequestClientSearchFailedResult(t *testing.T) {
+	var native GeminiInteractionsRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{
+		"model":"gemini-3.8-flash",
+		"tools":[{"type":"tool_search","execution":"client","name":"find_tools","parameters":{"type":"object"}}],
+		"input":[
+			{"type":"user_input","content":[{"type":"text","text":"Convert 5 USD"}]},
+			{"type":"function_call","id":"call_c","name":"find_tools","arguments":{"query":"fx"}},
+			{"type":"function_result","call_id":"call_c","name":"find_tools","is_error":true,"result":"registry offline"}
+		]
+	}`), &native))
+	req, err := native.ToBifrostResponsesRequest()
+	require.NoError(t, err)
+	require.Len(t, req.Input, 3)
+	result := req.Input[2]
+	require.Equal(t, schemas.ResponsesMessageTypeToolSearchOutput, *result.Type)
+	require.NotNil(t, result.Status)
+	assert.Equal(t, "incomplete", *result.Status)
+	require.NotNil(t, result.Error)
+	require.NotNil(t, result.Error.ResponsesToolMessageErrorStr)
+	assert.Equal(t, "registry offline", *result.Error.ResponsesToolMessageErrorStr)
+	wire, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	assert.NotContains(t, string(wire), `"error"`, "tool_search_output has no error field on the Responses wire")
+
+	back, err := ToGeminiInteractionsRequest(req)
+	require.NoError(t, err)
+	steps, err := providerUtils.MarshalSorted(back.Input.Items[2:])
+	require.NoError(t, err)
+	assert.JSONEq(t, `[{"type":"function_result","call_id":"call_c","name":"find_tools","is_error":true,"result":"registry offline"}]`, string(steps))
+}
+
+// A client tool_search on the generateContent path goes upstream as a function named after the
+// search, its history as that function's call and response, and the model's call to it comes
+// back as a client tool_search_call, unary and streamed. Before, the tool and its history were
+// dropped, so the model could not call the search the caller declared.
+func TestGeminiResponsesGenerateContentClientToolSearch(t *testing.T) {
+	var tools []schemas.ResponsesTool
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"function","name":"get_weather","defer_loading":true,"parameters":{"type":"object","properties":{"city":{"type":"string"}}}},
+		{"type":"tool_search","execution":"client","description":"Find tools by keyword"}
+	]`), &tools))
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"Forecast for Rome, then convert 5 USD"},
+		{"type":"tool_search_call","execution":"client","call_id":"ts_1","arguments":{"query":"forecast"},"status":"completed"},
+		{"type":"tool_search_output","execution":"client","call_id":"ts_1","status":"completed","tools":[{"type":"function","name":"get_forecast","description":"Daily forecast","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}]}
+	]`), &input))
+	newRequest := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Input: input, Params: &schemas.ResponsesParameters{Tools: tools}}
+	}
+	callPart := `{"functionCall":{"id":"call_9","name":"tool_search","args":{"query":"currency"}}}`
+
+	checkUpstream := func(t *testing.T, body string) {
+		t.Helper()
+		decls := gjson.Get(body, "tools.#.functionDeclarations|@flatten")
+		names := []string{}
+		for _, d := range decls.Array() {
+			names = append(names, d.Get("name").String())
+		}
+		assert.ElementsMatch(t, []string{"get_weather", "tool_search", "get_forecast"}, names, body)
+		search := gjson.Get(body, `tools.#.functionDeclarations|@flatten|#(name=="tool_search")`)
+		assert.Equal(t, "Find tools by keyword", search.Get("description").String(), body)
+		assert.Equal(t, "string", search.Get("parametersJsonSchema.properties.query.type").String(), "a search without parameters gets a query schema: "+body)
+		call := gjson.Get(body, `contents.#.parts|@flatten|#(functionCall.name=="tool_search")`)
+		require.True(t, call.Exists(), "the client search call replays as a functionCall: "+body)
+		assert.Equal(t, "forecast", call.Get("functionCall.args.query").String(), body)
+		result := gjson.Get(body, `contents.#.parts|@flatten|#(functionResponse.name=="tool_search")`)
+		require.True(t, result.Exists(), "the client search output replays as a functionResponse: "+body)
+		assert.Contains(t, result.Get("functionResponse").Raw, "get_forecast", body)
+	}
+	checkCall := func(t *testing.T, item *schemas.ResponsesMessage) {
+		t.Helper()
+		require.NotNil(t, item.Type)
+		assert.Equal(t, schemas.ResponsesMessageTypeToolSearchCall, *item.Type)
+		require.NotNil(t, item.Execution)
+		assert.Equal(t, schemas.ToolSearchExecutionClient, *item.Execution)
+		assert.Nil(t, item.Name)
+		require.NotNil(t, item.CallID)
+		assert.Equal(t, "call_9", *item.CallID)
+		require.NotNil(t, item.Arguments)
+		assert.JSONEq(t, `{"query":"currency"}`, *item.Arguments)
+	}
+
+	t.Run("unary", func(t *testing.T) {
+		var body string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			body = string(raw)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[`+callPart+`]},"finishReason":"STOP"}],"modelVersion":"gemini-2.5-flash"}`)
+		}))
+		defer server.Close()
+		provider := NewGeminiProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL + "/v1beta"}}, nil)
+		key := schemas.Key{Value: schemas.SecretVar{Val: "test-key"}, Models: []string{"*"}}
+		req := newRequest()
+		resp, bErr := provider.Responses(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, req)
+		require.Nil(t, bErr)
+		checkUpstream(t, body)
+		assert.Equal(t, schemas.ResponsesToolTypeToolSearch, req.Params.Tools[1].Type, "the caller's request is not rewritten")
+		assert.Equal(t, schemas.ResponsesMessageTypeToolSearchCall, *req.Input[1].Type, "the caller's history is not rewritten")
+		var calls []schemas.ResponsesMessage
+		for _, item := range resp.Output {
+			if item.Type != nil && (*item.Type == schemas.ResponsesMessageTypeToolSearchCall || *item.Type == schemas.ResponsesMessageTypeFunctionCall) {
+				calls = append(calls, item)
+			}
+		}
+		require.Len(t, calls, 1)
+		checkCall(t, &calls[0])
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		var body string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			body = string(raw)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"candidates":[{"content":{"role":"model","parts":[`+callPart+`]},"finishReason":"STOP"}],"modelVersion":"gemini-2.5-flash"}`+"\n\n")
+		}))
+		defer server.Close()
+		provider := NewGeminiProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL + "/v1beta"}}, nil)
+		key := schemas.Key{Value: schemas.SecretVar{Val: "test-key"}, Models: []string{"*"}}
+		postHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return result, err
+		}
+		stream, bErr := provider.ResponsesStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), postHook, func(context.Context) {}, key, newRequest())
+		require.Nil(t, bErr)
+		var added, done []*schemas.ResponsesMessage
+		var argEvents int
+		for chunk := range stream {
+			require.Nil(t, chunk.BifrostError)
+			ev := chunk.BifrostResponsesStreamResponse
+			if ev == nil {
+				continue
+			}
+			switch ev.Type {
+			case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+				added = append(added, ev.Item)
+			case schemas.ResponsesStreamResponseTypeOutputItemDone:
+				done = append(done, ev.Item)
+			case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+				argEvents++
+			}
+		}
+		checkUpstream(t, body)
+		require.Len(t, added, 1)
+		assert.Equal(t, schemas.ResponsesMessageTypeToolSearchCall, *added[0].Type)
+		assert.Zero(t, argEvents, "a client search call carries its arguments whole, as the Interactions stream does")
+		require.Len(t, done, 1)
+		checkCall(t, done[0])
+	})
+}
+
+// A function a client search loaded that has the search's own name would be read back as the
+// search, so the caller could never dispatch it; it is refused rather than dropped.
+func TestGeminiResponsesClientToolSearchLoadedNameCollision(t *testing.T) {
+	var tools []schemas.ResponsesTool
+	require.NoError(t, sonic.Unmarshal([]byte(`[{"type":"tool_search","execution":"client"}]`), &tools))
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"hi"},
+		{"type":"tool_search_call","execution":"client","call_id":"ts_1","arguments":{"query":"x"}},
+		{"type":"tool_search_output","execution":"client","call_id":"ts_1","tools":[{"type":"function","name":"tool_search","parameters":{"type":"object"}}]}
+	]`), &input))
+	_, err := ToGeminiResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&schemas.BifrostResponsesRequest{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Input: input, Params: &schemas.ResponsesParameters{Tools: tools}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tool_search")
+}
+
+// TestGeminiInteractionsClientToolSearchDescription pins that a client tool_search always reaches
+// the Interactions API with the description Google requires: the caller's, or a default.
+func TestGeminiInteractionsClientToolSearchDescription(t *testing.T) {
+	for decl, want := range map[string]string{
+		`{"type":"tool_search","execution":"client"}`:                            geminiClientToolSearchDescription,
+		`{"type":"tool_search","execution":"client","description":""}`:           geminiClientToolSearchDescription,
+		`{"type":"tool_search","execution":"client","description":"Find tools"}`: "Find tools",
+	} {
+		var tool schemas.ResponsesTool
+		require.NoError(t, sonic.Unmarshal([]byte(decl), &tool))
+		native := toGeminiInteractionsToolSearchTool(tool)
+		require.NotNil(t, native.Description, decl)
+		assert.Equal(t, want, *native.Description, decl)
+	}
+	var server schemas.ResponsesTool
+	require.NoError(t, sonic.Unmarshal([]byte(`{"type":"tool_search"}`), &server))
+	assert.Nil(t, toGeminiInteractionsToolSearchTool(server).Description, "a server search takes no settings")
+}
+
+// TestGeminiInteractionsClientSearchContinuationWithoutName pins a continuation that answers the
+// previous turn's client search with only call_id and the found definitions: it is the search's
+// output, though this request holds neither the call nor the tool's name. An ordinary function
+// result is untouched.
+func TestGeminiInteractionsClientSearchContinuationWithoutName(t *testing.T) {
+	convert := func(result string) schemas.ResponsesMessage {
+		var native GeminiInteractionsRequest
+		require.NoError(t, sonic.Unmarshal([]byte(`{"model":"gpt-5","previous_interaction_id":"resp_prev",
+			"tools":[{"type":"tool_search","execution":"client","name":"find_tools","description":"d"}],
+			"input":[{"type":"function_result","call_id":"call_9","result":`+result+`}]}`), &native))
+		req, err := native.ToBifrostResponsesRequest()
+		require.NoError(t, err)
+		require.Len(t, req.Input, 1)
+		return req.Input[0]
+	}
+	found := convert(`[{"type":"function","name":"convert_currency","parameters":{"type":"object"}}]`)
+	assert.Equal(t, schemas.ResponsesMessageTypeToolSearchOutput, *found.Type)
+	assert.True(t, found.IsClientToolSearchItem())
+	assert.Equal(t, "call_9", *found.CallID)
+	assert.Contains(t, string(found.ToolSearchOutputTools), "convert_currency")
+	for _, result := range []string{`"ok"`, `[]`, `[{"type":"text","text":"42"}]`} {
+		assert.Equal(t, schemas.ResponsesMessageTypeFunctionCallOutput, *convert(result).Type, result)
+	}
+}
+
+// TestGeminiClientSearchFailureAndMessageSurvive pins two search outcomes that carry no tools: a
+// failure still replays as one after a Responses JSON round trip, which keeps only its status, and
+// a no-match message reaches Google again instead of becoming an empty list.
+func TestGeminiClientSearchFailureAndMessageSurvive(t *testing.T) {
+	step := func(item schemas.ResponsesMessage) GeminiInteractionsItem {
+		out, ok, err := responsesToolSearchItemToGeminiInteractionStep(item, "find_tools")
+		require.NoError(t, err)
+		require.True(t, ok)
+		return out
+	}
+	var failed, empty schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`{"type":"tool_search_output","execution":"client","call_id":"c","status":"incomplete","tools":[]}`), &failed))
+	require.NoError(t, sonic.Unmarshal([]byte(`{"type":"tool_search_output","execution":"client","call_id":"c","status":"completed","tools":[]}`), &empty))
+	require.NotNil(t, step(failed).IsError)
+	assert.True(t, *step(failed).IsError)
+	assert.JSONEq(t, `"tool search failed"`, string(step(failed).Result))
+	assert.Nil(t, step(empty).IsError, "a search that found nothing succeeded")
+	assert.JSONEq(t, `[]`, string(step(empty).Result))
+
+	var native GeminiInteractionsRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"model":"gemini-3.8-flash","tools":[{"type":"tool_search","execution":"client","name":"find_tools","description":"d"}],"input":[
+		{"type":"function_call","id":"c","name":"find_tools","arguments":{}},
+		{"type":"function_result","call_id":"c","name":"find_tools","result":"No match. Try billing or weather."}]}`), &native))
+	req, err := native.ToBifrostResponsesRequest()
+	require.NoError(t, err)
+	back, err := ToGeminiInteractionsRequest(req)
+	require.NoError(t, err)
+	assert.JSONEq(t, `"No match. Try billing or weather."`, string(back.Input.Items[1].Result))
+	wire, err := sonic.Marshal(req.Input[1])
+	require.NoError(t, err)
+	assert.NotContains(t, string(wire), `"output"`, "tool_search_output has no output field on the Responses wire")
+
+	lowered, err := ToGeminiResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostResponsesRequest{
+		Provider: schemas.Gemini, Model: "gemini-2.5-flash", Input: req.Input, Params: req.Params})
+	require.NoError(t, err)
+	body, err := sonic.Marshal(lowered)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "No match. Try billing or weather.", "generateContent gets the message too")
+}
+
+// TestGeminiInteractionsRawClientSearchNameEscaped pins that a raw body's client search is found by
+// its decoded type, however the bytes spell it.
+func TestGeminiInteractionsRawClientSearchNameEscaped(t *testing.T) {
+	assert.Equal(t, "find_tools", geminiInteractionsClientToolSearchName([]byte(`{"model":"m","tools":[{"type":"tool`+"\\"+`u005fsearch","execution":"client","name":"find_tools"}]}`)))
+	assert.Empty(t, geminiInteractionsClientToolSearchName([]byte(`{"model":"m","tools":[{"type":"function","name":"f"}]}`)))
+}
+
+// TestToGeminiResponsesRequestLeavesContextAlone pins that the converter has no side effects on the
+// caller's context: the provider records the search name it needs for the response.
+func TestToGeminiResponsesRequestLeavesContextAlone(t *testing.T) {
+	var tools []schemas.ResponsesTool
+	require.NoError(t, sonic.Unmarshal([]byte(`[{"type":"tool_search","execution":"client"}]`), &tools))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := ToGeminiResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Input: []schemas.ResponsesMessage{interactionsUserText("hi")}, Params: &schemas.ResponsesParameters{Tools: tools}})
+	require.NoError(t, err)
+	assert.Empty(t, geminiClientToolSearchFrom(ctx))
 }

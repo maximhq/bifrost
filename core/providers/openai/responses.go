@@ -638,6 +638,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
 		return t.Type == schemas.ResponsesToolTypeComputer
 	})
+	signedSearches := schemas.SignedToolSearchCalls(bifrostReq.Input)
 	for _, message := range bifrostReq.Input {
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
@@ -918,7 +919,21 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// Drop the token for every model: OpenAI never mints encrypted_content on a message item
 		// and rejects any it receives, and the fail-soft retry would then also strip the genuine
 		// reasoning items' tokens. Separate reasoning items are handled below, unchanged.
-		if message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) == 0 &&
+		if message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeToolSearchCall || *message.Type == schemas.ResponsesMessageTypeToolSearchOutput) {
+			// A tool search item's encrypted_content is Google's signature, which only Google reads.
+			stripped, signed := message.WithoutEncryptedContent()
+			message = stripped
+			message.ResponsesReasoning = nil
+			if !signed && message.ResponsesToolMessage != nil && message.CallID != nil {
+				_, signed = signedSearches[*message.CallID]
+			}
+			if signed && !message.IsClientToolSearchItem() {
+				// A signed pair is Google's, which pairs a call and its output by call_id; OpenAI's hosted
+				// items have none, so both are rebuilt with the other providers' (replayTypedToolSearchCalls).
+				message = message.WithoutPreservedBytes()
+			}
+			messages = append(messages, message)
+		} else if message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) == 0 &&
 			message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage {
 			message.ResponsesReasoning = nil
 			messages = append(messages, message)

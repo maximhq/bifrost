@@ -157,9 +157,18 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
 
+	// A client tool_search goes upstream as a function; see lowerGeminiClientToolSearch.
+	var requestTools []schemas.ResponsesTool
+	if bifrostReq.Params != nil {
+		requestTools = bifrostReq.Params.Tools
+	}
+	requestTools, input, _, err := lowerGeminiClientToolSearch(requestTools, bifrostReq.Input)
+	if err != nil {
+		return nil, err
+	}
+
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-		var err error
 		geminiReq.GenerationConfig, err = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params, bifrostReq.Provider, capModel)
 		if err != nil {
 			return nil, err
@@ -167,8 +176,8 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 		geminiReq.ExtraParams = responsesExtraParamsWithoutGenerationConfigKeys(bifrostReq.Params.ExtraParams)
 		includeServerSideToolInvocations := bifrostReq.Params.IncludeServerSideToolInvocations != nil && *bifrostReq.Params.IncludeServerSideToolInvocations
 		// Handle tool-related parameters
-		if len(bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools, err = convertResponsesToolsToGemini(bifrostReq.Params.Tools, includeServerSideToolInvocations, bifrostReq.Provider, bifrostReq.Model)
+		if len(requestTools) > 0 {
+			geminiReq.Tools, err = convertResponsesToolsToGemini(requestTools, includeServerSideToolInvocations, bifrostReq.Provider, bifrostReq.Model)
 			if err != nil {
 				return nil, err
 			}
@@ -230,8 +239,8 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 	}
 
 	// Convert ResponsesInput messages to Gemini contents
-	if bifrostReq.Input != nil {
-		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, capModel, bifrostReq.Provider, allowedImageURLSchemes...)
+	if input != nil {
+		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(input, capModel, bifrostReq.Provider, allowedImageURLSchemes...)
 		if err != nil {
 			return nil, err
 		}
@@ -1423,6 +1432,10 @@ type GeminiResponsesStreamState struct {
 	ToolCallNames       map[int]string // Maps output_index to tool name
 	ToolArgumentBuffers map[int]string // Accumulates tool arguments as JSON
 
+	// ClientToolSearchName is the function a client tool_search went upstream as; the model's
+	// call to it streams as a client tool_search_call.
+	ClientToolSearchName string
+
 	// OutputItems maps output_index to the completed output item, for response.completed's
 	// Output array. Recorded as items close, since an item closed mid-stream is not
 	// reconstructible from the remaining state at finish time.
@@ -1528,6 +1541,7 @@ func ReleaseGeminiResponsesStreamState(state *GeminiResponsesStreamState) {
 }
 
 func (state *GeminiResponsesStreamState) flush() {
+	state.ClientToolSearchName = ""
 	// Clear maps
 	if state.ItemIDs == nil {
 		state.ItemIDs = make(map[int]string)
@@ -2139,6 +2153,31 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 	}
 
 	responses = append(responses, addedEvent)
+
+	if state.ClientToolSearchName != "" && part.FunctionCall.Name == state.ClientToolSearchName {
+		// A call to the caller's tool_search is a client tool_search_call, which carries its
+		// arguments whole, so none stream as deltas (as on the Interactions stream).
+		toClientToolSearchCall(addedEvent.Item)
+		addedEvent.Item.Arguments = nil
+		args := argsJSON
+		doneItem := &schemas.ResponsesMessage{
+			ID:                   &toolUseID,
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			Status:               schemas.Ptr("completed"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &toolUseID, Name: &part.FunctionCall.Name, Arguments: &args},
+		}
+		toClientToolSearchCall(doneItem)
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    &outputIndex,
+			ItemID:         &toolUseID,
+			Item:           doneItem,
+		})
+		delete(state.ToolArgumentBuffers, outputIndex)
+		state.HasStartedToolCall = true
+		return responses
+	}
 
 	// Generate synthetic argument deltas to simulate streaming behavior
 	if argsJSON != "" {

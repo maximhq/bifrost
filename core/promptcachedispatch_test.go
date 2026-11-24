@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/openai"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -223,6 +224,49 @@ func TestPrepareResponsesCodexClientToolSearchForcedLoadedTool(test *testing.T) 
 	assert.JSONEq(test, `{"type":"tool","name":"mcp__linear__create_issue"}`, providerUtils.GetJSONField(body, "tool_choice").Raw, string(body))
 }
 
+// TestPrepareResponsesClientToolSearchForGeminiGenerateContent pins a client tool search on
+// Gemini's generateContent, which has no tool search: the tools the search loaded, a namespace
+// here, are declared before namespaces are flattened, so the model can call them under the same
+// flat names the rest of the request uses and the call is restored to its namespace. A Gemini
+// turn on the Interactions API is left alone, since Google loads the tools from the result.
+func TestPrepareResponsesClientToolSearchForGeminiGenerateContent(test *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var incoming openai.OpenAIResponsesRequest
+	require.NoError(test, schemas.Unmarshal([]byte(fmt.Sprintf(codexClientToolSearchRequest, "gemini-2.5-flash")), &incoming))
+	request := incoming.ToBifrostResponsesRequest(ctx)
+	request.Provider = schemas.Gemini
+	request.Model = "gemini-2.5-flash"
+	before, err := schemas.Marshal(request)
+	require.NoError(test, err)
+
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, request)
+	require.Nil(test, bifrostErr)
+	native, err := gemini.ToGeminiResponsesRequest(ctx, prepared)
+	require.NoError(test, err)
+	body, err := schemas.Marshal(native)
+	require.NoError(test, err)
+	wire := string(body)
+	declared := providerUtils.GetJSONField(body, "tools.#.functionDeclarations|@flatten|#.name").Raw
+	assert.Contains(test, declared, `"tool_search"`, wire)
+	assert.Contains(test, declared, `"mcp__linear__create_issue"`, "the namespace member the search loaded is declared under its flat name: %s", wire)
+	assert.Contains(test, providerUtils.GetJSONField(body, `contents.#.parts|@flatten|#.functionCall.name`).Raw, `"mcp__linear__create_issue"`,
+		"the later call uses the same flat name: %s", wire)
+	require.NotNil(test, prepared.NamespaceToolAliases)
+	assert.Equal(test, "mcp__linear", prepared.NamespaceToolAliases["mcp__linear__create_issue"].Namespace)
+
+	after, err := schemas.Marshal(request)
+	require.NoError(test, err)
+	assert.JSONEq(test, string(before), string(after), "the shared request was mutated")
+
+	interactions := *request
+	params := *request.Params
+	params.PreviousResponseID = schemas.Ptr("v1_prev")
+	interactions.Params = &params
+	hoisted, bifrostErr := hoistClientToolSearchOutputTools(ctx, &interactions)
+	require.Nil(test, bifrostErr)
+	assert.Same(test, &interactions, hoisted, "an Interactions turn keeps Google's own loading")
+}
+
 // TestHoistClientToolSearchOutputTools covers the declaration of tools a client-run
 // tool search loaded: deferred, declared once however many searches found them, merged
 // into a namespace the request already declares, and left alone off Claude or without
@@ -286,7 +330,7 @@ func TestHoistClientToolSearchOutputTools(test *testing.T) {
 	for _, testCase := range []struct {
 		name, model, tools string
 	}{
-		{name: "non-Claude model", model: "gemini-2.5-flash", tools: search},
+		{name: "a model that loads searched tools itself", model: "gpt-5.4", tools: search},
 		{name: "server-run tool_search", model: "claude-sonnet-4-6", tools: `{"type":"tool_search"}`},
 	} {
 		test.Run(testCase.name+" is left alone", func(test *testing.T) {

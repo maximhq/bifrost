@@ -185,8 +185,9 @@ func IsGeminiInteractionsAgentRequest(ctx *schemas.BifrostContext, request *sche
 
 // ShouldUseGeminiInteractions reports whether a Responses request must run on the Interactions
 // API instead of generateContent: the caller came in on the Interactions route, or the request
-// needs what only Interactions offers (a stored previous turn, a background run, an agent). Every
-// other request keeps generateContent, so the common case pays a context read and three checks.
+// needs what only Interactions offers (a stored previous turn, a background run, an agent, a tool
+// search Google runs). Every other request keeps generateContent, so the common case pays a
+// context read, three checks and a pass over its tools.
 func ShouldUseGeminiInteractions(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) bool {
 	if ctx != nil {
 		if v, ok := ctx.Value(schemas.BifrostContextKeyInteractionsAPI).(bool); ok && v {
@@ -201,6 +202,9 @@ func ShouldUseGeminiInteractions(ctx *schemas.BifrostContext, request *schemas.B
 			return true
 		}
 		if p.Background != nil && *p.Background {
+			return true
+		}
+		if hasGeminiServerToolSearch(p.Tools) {
 			return true
 		}
 	}
@@ -371,6 +375,11 @@ type GeminiInteractionsTool struct {
 	Name        *string                         `json:"name,omitempty"`
 	Description *string                         `json:"description,omitempty"`
 	Parameters  *schemas.ToolFunctionParameters `json:"parameters,omitempty"`
+
+	// tool retrieval: defer_loading on function and mcp_server, execution on tool_search
+	DeferLoading     *bool   `json:"defer_loading,omitempty"`
+	ShortDescription *string `json:"short_description,omitempty"` // a deferred function's search text
+	Execution        *string `json:"execution,omitempty"`         // "client" on a caller-run tool_search
 
 	// file_search
 	FileSearchStoreNames []string        `json:"file_search_store_names,omitempty"`
@@ -561,7 +570,11 @@ func toGeminiInteractionsRequest(request *schemas.BifrostResponsesRequest, agent
 		out.SystemInstruction = &joined
 	}
 
-	input, err := toGeminiInteractionsInput(conversational)
+	clientSearchName := ""
+	if params != nil {
+		clientSearchName = geminiClientToolSearchName(params.Tools)
+	}
+	input, err := toGeminiInteractionsInput(conversational, clientSearchName)
 	if err != nil {
 		return nil, err
 	}
@@ -601,12 +614,13 @@ func toGeminiInteractionsRequest(request *schemas.BifrostResponsesRequest, agent
 	// Responses caps built-in calls with max_tool_calls, and Interactions has no such cap.
 	if params.MaxToolCalls != nil {
 		for _, tool := range tools {
-			if tool.Type != "function" {
+			if tool.Type != "function" && tool.Execution == nil { // a client tool_search is the caller's own call
 				return nil, providerUtils.InvalidRequestErrorf("the interactions API cannot apply max_tool_calls to a %q tool; remove it or route the request to a provider that serves it", tool.Type)
 			}
 		}
 	}
-	out.Tools = tools
+	callerSearches := schemas.ClientToolSearchFunctionName(params.Tools, request.Input) != ""
+	out.Tools = applyGeminiInteractionsDeferredTools(tools, request.Model, callerSearches)
 
 	config := &GeminiInteractionsGenerationConfig{
 		MaxOutputTokens: params.MaxOutputTokens,
@@ -830,11 +844,13 @@ func toGeminiInteractionsTools(tools []schemas.ResponsesTool) ([]GeminiInteracti
 	for _, tool := range tools {
 		switch tool.Type {
 		case schemas.ResponsesToolTypeFunction:
-			native := GeminiInteractionsTool{Type: "function", Name: tool.Name, Description: tool.Description}
+			native := GeminiInteractionsTool{Type: "function", Name: tool.Name, Description: tool.Description, DeferLoading: tool.DeferLoading}
 			if tool.ResponsesToolFunction != nil {
 				native.Parameters = tool.ResponsesToolFunction.Parameters
 			}
 			out = append(out, native)
+		case schemas.ResponsesToolTypeToolSearch:
+			out = append(out, toGeminiInteractionsToolSearchTool(tool))
 		case schemas.ResponsesToolTypeWebSearch, schemas.ResponsesToolTypeWebSearchPreview:
 			native := GeminiInteractionsTool{Type: "google_search"}
 			if ws := tool.ResponsesToolWebSearch; ws != nil {
@@ -894,7 +910,7 @@ func toGeminiInteractionsTools(tools []schemas.ResponsesTool) ([]GeminiInteracti
 				return nil, providerUtils.InvalidRequestErrorf("the interactions API runs MCP tools without an approval step; send require_approval \"never\" on the mcp tool, or route the request to a provider that asks for approval")
 			}
 			label := mcp.ServerLabel
-			native := GeminiInteractionsTool{Type: "mcp_server", Name: &label, URL: mcp.ServerURL}
+			native := GeminiInteractionsTool{Type: "mcp_server", Name: &label, URL: mcp.ServerURL, DeferLoading: tool.DeferLoading}
 			native.Headers = geminiInteractionsMCPHeaders(mcp)
 			allowed, err := toGeminiInteractionsMCPAllowedTools(mcp.AllowedTools)
 			if err != nil {
@@ -918,7 +934,7 @@ func toGeminiInteractionsTools(tools []schemas.ResponsesTool) ([]GeminiInteracti
 // toGeminiInteractionsInput builds the input. All-user text with no media is one string; all-user
 // content is a list of content blocks; anything with model turns or tool traffic is a list of
 // steps.
-func toGeminiInteractionsInput(messages []schemas.ResponsesMessage) (*GeminiInteractionsInput, error) {
+func toGeminiInteractionsInput(messages []schemas.ResponsesMessage, clientSearchName string) (*GeminiInteractionsInput, error) {
 	if len(messages) == 0 {
 		return nil, nil
 	}
@@ -947,7 +963,7 @@ func toGeminiInteractionsInput(messages []schemas.ResponsesMessage) (*GeminiInte
 	steps := make([]GeminiInteractionsItem, 0, len(messages))
 	var callNames map[string]*string // call id -> function name, for outputs that name none
 	for _, msg := range messages {
-		step, ok, err := toGeminiInteractionsStep(msg)
+		step, ok, err := toGeminiInteractionsStep(msg, clientSearchName)
 		if err != nil {
 			return nil, err
 		}
@@ -981,8 +997,9 @@ func isResponsesUserMessage(msg schemas.ResponsesMessage) bool {
 }
 
 // toGeminiInteractionsStep converts one Responses item into a step. ok is false for an item that
-// carries nothing to send (an empty reasoning item).
-func toGeminiInteractionsStep(msg schemas.ResponsesMessage) (GeminiInteractionsItem, bool, error) {
+// carries nothing to send (an empty reasoning item). clientSearchName is the name of the caller's
+// client tool_search, which its tool_search items replay under.
+func toGeminiInteractionsStep(msg schemas.ResponsesMessage, clientSearchName string) (GeminiInteractionsItem, bool, error) {
 	msgType := schemas.ResponsesMessageTypeMessage
 	if msg.Type != nil {
 		msgType = *msg.Type
@@ -1048,6 +1065,9 @@ func toGeminiInteractionsStep(msg schemas.ResponsesMessage) (GeminiInteractionsI
 			step.IsError = schemas.Ptr(true)
 		}
 		return step, true, nil
+
+	case schemas.ResponsesMessageTypeToolSearchCall, schemas.ResponsesMessageTypeToolSearchOutput:
+		return responsesToolSearchItemToGeminiInteractionStep(msg, clientSearchName)
 	}
 	// A built-in tool a previous turn ran on the provider's side is history, not input: Google
 	// has no step that replays it without the signature it was issued with, so it is dropped.
@@ -1317,7 +1337,7 @@ func (r *GeminiInteractionsRequest) ToBifrostResponsesRequest() (*schemas.Bifros
 		params.Instructions = &instructions
 	}
 	if r.Input != nil {
-		input, err := geminiInteractionsInputToResponses(r.Input)
+		input, err := geminiInteractionsInputToResponses(r.Input, GeminiInteractionsRequestClientToolSearchName(r.Tools))
 		if err != nil {
 			return nil, err
 		}
@@ -1427,13 +1447,18 @@ func (r *GeminiInteractionsRequest) ValidateTranslatable() error {
 	return nil
 }
 
-func geminiInteractionsInputToResponses(in *GeminiInteractionsInput) ([]schemas.ResponsesMessage, error) {
+// geminiInteractionsInputToResponses converts the request input. clientSearchName is the name of the
+// caller's client tool_search, "" when it declares none: the model's call to it and the caller's
+// answer become client tool_search items, so the declarations the answer lists are not read as
+// content blocks.
+func geminiInteractionsInputToResponses(in *GeminiInteractionsInput, clientSearchName string) ([]schemas.ResponsesMessage, error) {
 	if in.Text != nil {
 		text := *in.Text
 		return []schemas.ResponsesMessage{userResponsesMessage(&schemas.ResponsesMessageContent{ContentStr: &text})}, nil
 	}
 	var out []schemas.ResponsesMessage
 	var pendingUser []schemas.ResponsesMessageContentBlock
+	var clientCalls map[string]struct{} // ids of calls to the client search, for results that omit the name
 	flushUser := func() {
 		if len(pendingUser) == 0 {
 			return
@@ -1451,6 +1476,12 @@ func geminiInteractionsInputToResponses(in *GeminiInteractionsInput) ([]schemas.
 			continue
 		}
 		flushUser()
+		if clientSearchName != "" {
+			if msg, ok := geminiClientToolSearchStepToResponses(item, clientSearchName, &clientCalls); ok {
+				out = append(out, msg)
+				continue
+			}
+		}
 		msgs, err := geminiInteractionsStepToResponses(item, true)
 		if err != nil {
 			return nil, err
@@ -1631,6 +1662,9 @@ func geminiInteractionsStepToResponses(step GeminiInteractionsItem, input bool) 
 			tool.Error = geminiInteractionsFunctionResultError(step)
 		}
 		return []schemas.ResponsesMessage{{Type: &msgType, ResponsesToolMessage: tool}}, nil
+
+	case GeminiInteractionsStepToolSearchCall, GeminiInteractionsStepToolSearchResult:
+		return []schemas.ResponsesMessage{geminiToolSearchStepToResponses(step, input)}, nil
 	}
 	if input {
 		return nil, providerUtils.InvalidRequestErrorf("interactions %q steps are served by gemini and vertex only; route the request to one of them", step.Type)
@@ -1693,12 +1727,22 @@ func geminiInteractionsToolsToResponses(tools []GeminiInteractionsTool) ([]schem
 	for _, tool := range tools {
 		switch tool.Type {
 		case "function":
+			// short_description has no Responses field; a provider that searches deferred tools
+			// reads the description instead.
 			out = append(out, schemas.ResponsesTool{
 				Type:                  schemas.ResponsesToolTypeFunction,
 				Name:                  tool.Name,
 				Description:           tool.Description,
+				DeferLoading:          tool.DeferLoading,
 				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: tool.Parameters},
 			})
+		case geminiInteractionsToolSearch:
+			search := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeToolSearch}
+			if tool.Execution != nil && *tool.Execution == schemas.ToolSearchExecutionClient {
+				search.Name, search.Description = tool.Name, tool.Description
+				search.ResponsesToolToolSearch = &schemas.ResponsesToolToolSearch{Execution: tool.Execution, Parameters: tool.Parameters}
+			}
+			out = append(out, search)
 		case "google_search":
 			search := &schemas.ResponsesToolWebSearch{}
 			for _, searchType := range tool.SearchTypes {
@@ -1746,7 +1790,7 @@ func geminiInteractionsToolsToResponses(tools []GeminiInteractionsTool) ([]schem
 			if len(names) > 0 {
 				mcp.AllowedTools = &schemas.ResponsesToolMCPAllowedTools{ToolNames: names}
 			}
-			out = append(out, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeMCP, ResponsesToolMCP: mcp})
+			out = append(out, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeMCP, DeferLoading: tool.DeferLoading, ResponsesToolMCP: mcp})
 		case "computer_use":
 			// Another provider would offer the actions the caller excluded.
 			if excluded := bytes.TrimSpace(tool.ExcludedPredefinedFunctions); len(excluded) > 0 && !bytes.Equal(excluded, []byte("null")) && !bytes.Equal(excluded, []byte("[]")) {
@@ -2096,6 +2140,12 @@ func (u *GeminiInteractionsUsage) toResponsesUsage(model string) *schemas.Respon
 // ToGeminiInteraction renders a Responses response as an Interaction, for an Interactions caller
 // whose request ran on a provider other than Gemini or Vertex.
 func ToGeminiInteraction(resp *schemas.BifrostResponsesResponse) *GeminiInteraction {
+	return ToGeminiInteractionWithClientSearch(resp, "")
+}
+
+// ToGeminiInteractionWithClientSearch is ToGeminiInteraction for a request that declared a client
+// tool_search: a client search item that comes back without a name takes clientSearchName.
+func ToGeminiInteractionWithClientSearch(resp *schemas.BifrostResponsesResponse, clientSearchName string) *GeminiInteraction {
 	if resp == nil {
 		return nil
 	}
@@ -2114,7 +2164,7 @@ func ToGeminiInteraction(resp *schemas.BifrostResponsesResponse) *GeminiInteract
 
 	hasFunctionCall := false
 	for _, item := range resp.Output {
-		for _, step := range responsesItemToGeminiInteractionSteps(item) {
+		for _, step := range responsesItemToGeminiInteractionSteps(item, clientSearchName) {
 			if step.Type == GeminiInteractionsStepFunctionCall {
 				hasFunctionCall = true
 			}
@@ -2149,9 +2199,12 @@ func responsesStatusToGeminiInteraction(status *string, hasFunctionCall bool) st
 
 // responsesItemToGeminiInteractionSteps renders one output item as its steps: one for a message,
 // a thought or a function call, a call and a result for a built-in tool.
-func responsesItemToGeminiInteractionSteps(item schemas.ResponsesMessage) []GeminiInteractionsItem {
+func responsesItemToGeminiInteractionSteps(item schemas.ResponsesMessage, clientSearchName string) []GeminiInteractionsItem {
 	if item.Type != nil && isResponsesServerToolItem(*item.Type) {
 		return responsesServerToolItemToGeminiInteractionSteps(item)
+	}
+	if item.Type != nil && isResponsesToolSearchItem(*item.Type) {
+		return responsesToolSearchItemToGeminiInteractionSteps(item, clientSearchName)
 	}
 	step, ok := responsesItemToGeminiInteractionStep(item)
 	if !ok {
@@ -2294,6 +2347,9 @@ type GeminiInteractionsStreamState struct {
 	done map[int]schemas.ResponsesMessage
 	// tools holds the items of a built-in call until its result step closes them, by call id.
 	tools map[string][]geminiInteractionsStreamToolItem
+	// ClientToolSearchName is the name of the request's client tool_search; a function call to it
+	// streams as a client tool_search_call. Empty when the request has none.
+	ClientToolSearchName string
 }
 
 // geminiInteractionsStreamToolItem is one open item of a built-in tool call.
@@ -2313,6 +2369,7 @@ type geminiInteractionsStreamStep struct {
 	summaries   []string // thought summary items, each its own part
 	signature   string
 	held        bool                                   // a function_call named "server:tool", see heldCalls
+	search      bool                                   // a function call to the client tool_search, streamed as a tool_search_call
 	blocks      []schemas.ResponsesMessageContentBlock // an answer's parts in arrival order; the open text part's is filled when it closes
 	textPart    *geminiInteractionsTextPart            // the text part written last, kept open for its citations
 	tool        GeminiInteractionsItem                 // a built-in call or result step, filled in by its delta
@@ -2433,6 +2490,7 @@ func (s *GeminiInteractionsStreamState) ToBifrostResponsesStream(event *GeminiIn
 		if event.Interaction != nil {
 			full := event.Interaction.ToBifrostResponsesResponse()
 			if full != nil && len(full.Output) > 0 {
+				markGeminiClientToolSearchCalls(full.Output, s.ClientToolSearchName)
 				final.Output = full.Output
 			}
 			s.recoverLost(mcpSteps(event.Interaction.Steps))
@@ -2615,6 +2673,12 @@ func (s *GeminiInteractionsStreamState) startStep(index int, step *GeminiInterac
 		empty := ""
 		callID, name := st.callID, st.name
 		item = &schemas.ResponsesMessage{ID: &st.itemID, Type: &msgType, Status: &status, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &name, Arguments: &empty}}
+		if s.ClientToolSearchName != "" && st.name == s.ClientToolSearchName {
+			// A client search item carries its arguments whole, as an object, so none stream as deltas.
+			st.search = true
+			toClientToolSearchCall(item)
+			item.Arguments = nil
+		}
 	default:
 		// A built-in tool step opens its items once its call is known (see stopStep); any other
 		// step with no Responses item is not streamed.
@@ -2704,8 +2768,11 @@ func (s *GeminiInteractionsStreamState) applyDelta(index int, delta *GeminiInter
 		}
 		return nil
 	}
-	if delta.Type == st.stepType && (isGeminiServerToolCall(st.stepType) || isGeminiServerToolResult(st.stepType) || st.stepType == GeminiInteractionsStepFunctionResult) {
+	if delta.Type == st.stepType && (isGeminiServerToolCall(st.stepType) || isGeminiServerToolResult(st.stepType) || isGeminiToolSearchStep(st.stepType) || st.stepType == GeminiInteractionsStepFunctionResult) {
 		// The whole call or result arrives in this one delta.
+		if delta.Signature != nil && *delta.Signature != "" {
+			st.tool.Signature = delta.Signature
+		}
 		if len(delta.Arguments) > 0 {
 			st.tool.Arguments = delta.Arguments
 		}
@@ -2767,6 +2834,9 @@ func (s *GeminiInteractionsStreamState) applyDelta(index int, delta *GeminiInter
 			return nil
 		}
 		st.arguments.WriteString(fragment)
+		if st.search {
+			return nil
+		}
 		return []*schemas.BifrostResponsesStreamResponse{{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, OutputIndex: &outIdx, ItemID: &itemID, Delta: &fragment}}
 	case geminiInteractionsDeltaAnnotations:
 		if st.stepType != GeminiInteractionsStepModelOutput {
@@ -2927,6 +2997,18 @@ func (s *GeminiInteractionsStreamState) stopToolStep(st *geminiInteractionsStrea
 			s.nativeSteps = append(s.nativeSteps, st.tool) // as the unary conversion keeps it
 		}
 		out = append(out, s.finishTools(open)...)
+	case isGeminiToolSearchStep(st.stepType):
+		// A search call or result is one whole item, known once its step ends.
+		item := geminiToolSearchStepToResponses(st.tool, false)
+		if item.ID == nil || *item.ID == "" {
+			itemID := st.itemID
+			item.ID = &itemID
+		}
+		outIdx := s.outputIndex
+		s.outputIndex++
+		added := cloneGeminiInteractionsResponsesMessage(item)
+		out = append(out, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: &outIdx, Item: &added})
+		out = append(out, s.finishTools([]geminiInteractionsStreamToolItem{{outputIndex: outIdx, item: item}})...)
 	}
 	return out
 }
@@ -3071,19 +3153,26 @@ func (s *GeminiInteractionsStreamState) stopStep(index int) []*schemas.BifrostRe
 	case GeminiInteractionsStepFunctionCall:
 		args := st.arguments.String()
 		if args == "" && st.startArgs != "" {
-			// The whole arguments came on step.start. They stream here, once no fragment can replace them.
 			args = st.startArgs
+		}
+		if st.arguments.Len() == 0 && st.startArgs != "" && !st.search {
+			// The whole arguments came on step.start. They stream here, once no fragment can replace them.
 			delta := args
 			out = append(out, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, OutputIndex: &outIdx, ItemID: &itemID, Delta: &delta})
 		}
 		if args == "" {
 			args = "{}"
 		}
-		doneArgs := args
-		out = append(out, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, OutputIndex: &outIdx, ItemID: &itemID, Arguments: &doneArgs})
 		msgType := schemas.ResponsesMessageTypeFunctionCall
 		callID, name := st.callID, st.name
-		out = append(out, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &outIdx, Item: &schemas.ResponsesMessage{ID: &itemID, Type: &msgType, Status: &completed, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &name, Arguments: &args}}})
+		item := &schemas.ResponsesMessage{ID: &itemID, Type: &msgType, Status: &completed, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &name, Arguments: &args}}
+		if st.search {
+			toClientToolSearchCall(item)
+		} else {
+			doneArgs := args
+			out = append(out, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, OutputIndex: &outIdx, ItemID: &itemID, Arguments: &doneArgs})
+		}
+		out = append(out, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &outIdx, Item: item})
 	}
 	for _, ev := range out {
 		if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && ev.Item != nil {
@@ -3122,6 +3211,8 @@ type BifrostToGeminiInteractionsStreamState struct {
 	ids     map[string]int                   // item id -> output index, for every item streamed
 	done    map[int]schemas.ResponsesMessage // finished built-in tool items, by output index
 	usage   *schemas.ResponsesResponseUsage
+
+	ClientToolSearchName string // the request's client tool_search name, for unnamed client search items
 }
 
 // NewBifrostToGeminiInteractionsStreamState starts a state for one stream.
@@ -3222,7 +3313,7 @@ func (s *BifrostToGeminiInteractionsStreamState) ToGeminiInteractionsStreamEvent
 		if resp.OutputIndex == nil || resp.Item == nil {
 			return nil
 		}
-		if resp.Item.Type != nil && isResponsesServerToolItem(*resp.Item.Type) {
+		if resp.Item.Type != nil && (isResponsesServerToolItem(*resp.Item.Type) || isResponsesToolSearchItem(*resp.Item.Type)) {
 			// A built-in tool's call and result are only known once it finishes.
 			s.tools[*resp.OutputIndex] = true
 			return nil
@@ -3307,14 +3398,20 @@ func (s *BifrostToGeminiInteractionsStreamState) ToGeminiInteractionsStreamEvent
 			s.first[*resp.OutputIndex] = s.next
 			s.done[*resp.OutputIndex] = *resp.Item
 			s.identify(resp.Item, *resp.OutputIndex)
-			for _, step := range responsesServerToolItemToGeminiInteractionSteps(*resp.Item) {
+			for _, step := range responsesItemToGeminiInteractionSteps(*resp.Item, s.ClientToolSearchName) {
 				idx := s.next
 				s.next++
 				startStep := step
-				out = append(out,
-					&GeminiInteractionsEvent{EventType: GeminiInteractionsEventStepStart, EventID: s.nextEventID(), Index: &idx, Step: &startStep},
-					&GeminiInteractionsEvent{EventType: GeminiInteractionsEventStepStop, EventID: s.nextEventID(), Index: &idx},
-				)
+				out = append(out, &GeminiInteractionsEvent{EventType: GeminiInteractionsEventStepStart, EventID: s.nextEventID(), Index: &idx, Step: &startStep})
+				if step.Type == GeminiInteractionsStepFunctionCall && len(step.Arguments) > 0 {
+					// The caller's search is a function call: its arguments stream as a delta, as Google
+					// streams them, so a reader that builds the call from deltas keeps them.
+					startStep.Arguments = nil
+					if fragment, err := providerUtils.MarshalSorted(string(step.Arguments)); err == nil {
+						out = append(out, &GeminiInteractionsEvent{EventType: GeminiInteractionsEventStepDelta, EventID: s.nextEventID(), Index: &idx, Delta: &GeminiInteractionsDelta{Type: geminiInteractionsDeltaArguments, Arguments: fragment}})
+					}
+				}
+				out = append(out, &GeminiInteractionsEvent{EventType: GeminiInteractionsEventStepStop, EventID: s.nextEventID(), Index: &idx})
 			}
 			return out
 		}
@@ -3347,7 +3444,7 @@ func (s *BifrostToGeminiInteractionsStreamState) ToGeminiInteractionsStreamEvent
 			out = append(out, &GeminiInteractionsEvent{EventType: GeminiInteractionsEventStepStop, EventID: s.nextEventID(), Index: &i})
 		}
 		s.steps = map[int]string{}
-		final := ToGeminiInteraction(s.inStepOrder(resp.Response))
+		final := ToGeminiInteractionWithClientSearch(s.inStepOrder(resp.Response), s.ClientToolSearchName)
 		if final == nil {
 			final = &GeminiInteraction{Object: "interaction", Status: GeminiInteractionStatusCompleted}
 		}

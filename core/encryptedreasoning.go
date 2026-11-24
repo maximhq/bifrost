@@ -729,11 +729,27 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 	// only rewrite it accepts is deleting the block (see dropsWholeReasoningBlocks).
 	dropWhole := dropsWholeReasoningBlocks(ctx, targetModel)
 
+	signedSearches := schemas.SignedToolSearchCalls(input)
 	stripped := make([]schemas.ResponsesMessage, 0, len(input))
 	changed := false
 
 	for _, message := range input {
 		messageChanged := false
+
+		// A tool search item is history, not reasoning: it outlives the signature Google put on it, and
+		// is held in decoded form so a converter can rebuild it without one.
+		if message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeToolSearchCall || *message.Type == schemas.ResponsesMessageTypeToolSearchOutput) {
+			unsigned, signed := message.WithoutEncryptedContent()
+			if !signed && message.ResponsesToolMessage != nil && message.CallID != nil {
+				_, signed = signedSearches[*message.CallID] // the other half of a signed pair
+			}
+			if signed {
+				unsigned.ResponsesReasoning = nil
+				stripped = append(stripped, unsigned.WithoutPreservedBytes())
+				changed = true
+				continue
+			}
+		}
 
 		// Gemini and Vertex mint no encrypted_content: the thought signature rides on the
 		// function call, and the converters carry it inside the call id as

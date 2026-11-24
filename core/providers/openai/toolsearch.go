@@ -6,6 +6,7 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 const toolSearchExecutionServer = "server"
@@ -139,7 +140,15 @@ func (req *OpenAIResponsesRequest) replayTypedToolSearchCalls() {
 		return
 	}
 	replayed := make([]schemas.ResponsesMessage, 0, len(input)+1)
+	// A Gemini search carries its definitions on the output, with no references on the call.
+	supplied := make(map[string]json.RawMessage)
+	for i := range input {
+		if isTypedToolSearchOutput(input[i]) && input[i].CallID != nil && len(input[i].ToolSearchOutputTools) > 0 {
+			supplied[*input[i].CallID] = input[i].ToolSearchOutputTools
+		}
+	}
 	replayedCalls := make(map[string]struct{})
+	loaded := make(map[string]struct{}) // functions a supplied output loaded
 	for i := range input {
 		msg := input[i]
 		if isTypedToolSearchOutput(msg) && msg.CallID != nil {
@@ -148,7 +157,7 @@ func (req *OpenAIResponsesRequest) replayTypedToolSearchCalls() {
 			}
 		}
 		if !isTypedToolSearchCall(msg) {
-			replayed = append(replayed, msg)
+			replayed = append(replayed, req.namespaceLoadedCall(msg, loaded))
 			continue
 		}
 		args := "{}"
@@ -175,8 +184,57 @@ func (req *OpenAIResponsesRequest) replayTypedToolSearchCalls() {
 			},
 			req.toolSearchOutputItem(nil, toolSearchExecutionServer, refs),
 		)
+		if len(refs) == 0 && msg.ResponsesToolMessage != nil && msg.CallID != nil {
+			if tools, ok := supplied[*msg.CallID]; ok {
+				replayed[len(replayed)-1].ToolSearchOutputTools = deferLoadedTools(tools)
+				gjson.ParseBytes(tools).ForEach(func(_, tool gjson.Result) bool {
+					if tool.Get("type").String() == string(schemas.ResponsesToolTypeFunction) {
+						loaded[tool.Get("name").String()] = struct{}{}
+					}
+					return true
+				})
+			}
+		}
 	}
 	req.Input.OpenAIResponsesRequestInputArray = replayed
+}
+
+// namespaceLoadedCall gives a call to a function another provider's search loaded the namespace OpenAI
+// puts such a function in, its own name; OpenAI refuses the call without it. A call that names one, or to
+// a function the request also declares up front, is returned as it is. msg is not modified.
+func (req *OpenAIResponsesRequest) namespaceLoadedCall(msg schemas.ResponsesMessage, loaded map[string]struct{}) schemas.ResponsesMessage {
+	if len(loaded) == 0 || msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeFunctionCall || msg.ResponsesToolMessage == nil ||
+		msg.Name == nil || msg.Namespace != nil {
+		return msg
+	}
+	if _, ok := loaded[*msg.Name]; !ok {
+		return msg
+	}
+	if slices.ContainsFunc(req.Tools, func(t schemas.ResponsesTool) bool {
+		return t.Type == schemas.ResponsesToolTypeFunction && t.Name != nil && *t.Name == *msg.Name && (t.DeferLoading == nil || !*t.DeferLoading)
+	}) {
+		return msg
+	}
+	call := *msg.ResponsesToolMessage
+	call.Namespace = call.Name
+	msg.ResponsesToolMessage = &call
+	return msg
+}
+
+// deferLoadedTools marks the functions another provider's search loaded as deferred: OpenAI refuses a
+// tool_search_output that loads a top-level function without it, and Google's list leaves it out. tools
+// is not modified.
+func deferLoadedTools(tools json.RawMessage) json.RawMessage {
+	out := tools
+	gjson.ParseBytes(tools).ForEach(func(index, tool gjson.Result) bool {
+		if tool.Get("type").String() == string(schemas.ResponsesToolTypeFunction) && !tool.Get("defer_loading").Bool() {
+			if marked, err := providerUtils.SetRawJSONField(out, index.String()+".defer_loading", []byte("true")); err == nil {
+				out = marked
+			}
+		}
+		return true
+	})
+	return out
 }
 
 // toolChoiceNamesFunction reports whether choice pins the function called name, as a
