@@ -612,6 +612,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_disable_content_logging_columns"}, run: migrationAddDisableContentLoggingColumns},
 	{IDs: []string{"add_key_disable_content_logging_column"}, run: migrationAddKeyDisableContentLoggingColumn},
 	{IDs: []string{"add_warp_virtual_key_id_column"}, run: migrationAddWarpVirtualKeyIDColumn},
+	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
+	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 	{IDs: []string{"add_rapidmlx_key_config_column"}, run: migrationAddRapidMLXKeyConfigColumn},
 }
 
@@ -1229,6 +1231,59 @@ func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger sch
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableNotification{})
+		},
+	})
+}
+
+// notificationSubjectResolutionColumns let a producer tag a notification with
+// the thing it is about and later mark it resolved once that thing is handled.
+var notificationSubjectResolutionColumns = []string{"subject_type", "subject_id", "resolved_at", "resolution"}
+
+func migrationAddNotificationSubjectResolutionColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_notification_subject_resolution_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range notificationSubjectResolutionColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableNotification{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			for _, column := range notificationSubjectResolutionColumns {
+				if err := dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableNotification{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
+}
+
+// migrationAddNotificationSubjectIndex builds the subject lookup index outside a
+// transaction, so postgres can build it concurrently.
+func migrationAddNotificationSubjectIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_notification_subject_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	const name = "idx_notifications_subject"
+	return RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return ensureIndexConcurrently(tx.WithContext(ctx), "notifications", name, "subject_type, subject_id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropIndexConcurrently(tx.WithContext(ctx), "notifications", name)
 		},
 	})
 }
