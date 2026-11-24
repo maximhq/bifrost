@@ -314,7 +314,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		const budgets = modelConfig.budgets ?? (modelConfig.budget ? [modelConfig.budget] : []);
 		return (
 			<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
-				<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4" data-testid="model-limit-sheet">
+				<SheetContent resizeKey="model-limit" className="flex w-full flex-col overflow-x-hidden pt-4" data-testid="model-limit-sheet">
 					<SheetHeader className="flex flex-col items-start p-0 px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 						<SheetTitle>{t("modelLimits.viewLimit")}</SheetTitle>
 						<SheetDescription>{t("modelLimits.managedDescription")}</SheetDescription>
@@ -437,6 +437,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
+				resizeKey="model-limit"
 				className="flex w-full flex-col overflow-x-hidden pt-4"
 				onInteractOutside={(e) => {
 					if (isEditing ? form.formState.isDirty : !!form.watch("modelName") || hasAnyLimit) e.preventDefault();

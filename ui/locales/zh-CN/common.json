@@ -191,8 +191,7 @@
 		"toggle": "切换侧边栏"
 	},
 	"sheet": {
-		"collapse": "折叠",
-		"expand": "展开"
+		"resizeHandle": "调整面板大小"
 	},
 	"tabs": {
 		"showMore_one": "再显示 {{count}} 个标签页",

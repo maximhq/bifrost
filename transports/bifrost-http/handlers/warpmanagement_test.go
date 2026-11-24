@@ -122,7 +122,7 @@ func TestWarpManagementCallRunsAsTheDashboardUser(t *testing.T) {
 	dashboard := initCtx(&req)
 
 	// Through the snapshot the chat route takes, which is what outlives the request.
-	snapshot, cancel, err := snapshotWarpContext(dashboard, time.Minute)
+	snapshot, cancel, err := snapshotWarpContext(dashboard, time.Minute, "")
 	if err != nil {
 		t.Fatal(err)
 	}

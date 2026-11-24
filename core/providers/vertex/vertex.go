@@ -1219,6 +1219,10 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
+		if malformedErr := geminiResponse.MalformedOutputError(); malformedErr != nil {
+			return nil, providerUtils.EnrichError(ctx, malformedErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+
 		response := geminiResponse.ToBifrostChatResponse()
 		response.ExtraFields.Latency = latency.Milliseconds()
 		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
@@ -1806,6 +1810,10 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+
+		if malformedErr := geminiResponse.MalformedOutputError(); malformedErr != nil {
+			return nil, providerUtils.EnrichError(ctx, malformedErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		response := geminiResponse.ToResponsesBifrostResponsesResponse()
