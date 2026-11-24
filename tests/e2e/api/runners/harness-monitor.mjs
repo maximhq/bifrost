@@ -495,7 +495,7 @@ function readNewBytes() {
 // tests - they are the entire basis of this table's numbers.
 
 function inferProviderFromLine(line, h) {
-  return providerOfLogLine(line, h.seqFolder, matchProvider);
+  return providerOfLogLine(line, h.seqFolder, matchProvider, h.seqPendingName || "");
 }
 
 // Sequential attribution, all held on the tail handle (see ensureTail):
@@ -650,20 +650,16 @@ function handleLine(line, h) {
       if (fromFolder) h.seqProvider = fromFolder;
       return;
     }
-    // A "↳ name" line names the request but not the backend - plenty of rows are
-    // called things like "Prompt caching (cache_control: ephemeral)". The URL on
-    // the following METHOD line is the same string the denominator pass matched
-    // on, so deferring attribution until that line is what keeps pass+fail from
-    // exceeding a provider's own total.
+    // Wait for the METHOD line so attribution can consider both the URL and
+    // request name, just as the denominator does. The name can identify the
+    // backend even when the URL only identifies an SDK ingress provider.
     if ((m = t.match(RE_REQUEST))) {
       if (h.seqProvider) finalizeRequest(h, state.providers[h.seqProvider]);
       h.seqPendingName = m[1].trim();
       return;
     }
     if (RE_METHOD_URL.test(t)) {
-      const inferred =
-        inferProviderFromLine(t, h) ||
-        (h.seqPendingName ? inferProviderFromLine(h.seqPendingName, h) : null);
+      const inferred = inferProviderFromLine(t, h);
       if (inferred && inferred !== h.seqProvider) {
         // Commit the outgoing provider's deferred request before handing over.
         if (h.seqProvider) finalizeRequest(h, state.providers[h.seqProvider]);
