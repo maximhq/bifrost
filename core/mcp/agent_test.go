@@ -559,7 +559,7 @@ func TestExecuteAgentForChatRequest_BifrostInjectedCodeModeToolStillAutoExecutes
 		}, nil
 	}
 
-	result, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, originalReq, response, makeReq, nil, executeToolFunc, &codeModeAutoExecClientManager{toolsToAutoExecute: schemas.WhiteList{ToolTypeListToolFiles}})
+	result, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, originalReq, response, makeReq, nil, executeToolFunc, &MockClientManager{})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1312,112 +1312,11 @@ func TestAgentMode_CodeModeToolInsertedByBifrostIsAutoExecutedAfterInjection(t *
 	}
 	agentModeExecutor := &AgentModeExecutor{logger: &MockLogger{}}
 
-	_, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, injected.ChatRequest, codeModeToolCallResponse(ToolTypeListToolFiles, `{}`), makeReq, nil, executeToolFunc, &codeModeAutoExecClientManager{toolsToAutoExecute: schemas.WhiteList{ToolTypeListToolFiles}})
+	_, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, injected.ChatRequest, codeModeToolCallResponse(ToolTypeListToolFiles, `{}`), makeReq, nil, executeToolFunc, &MockClientManager{})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 	if llmCaller.chatCallCount != 1 {
 		t.Errorf("a listToolFiles Bifrost inserted must still be auto-executed (1 follow-up LLM call), got %d", llmCaller.chatCallCount)
-	}
-}
-
-// codeModeAutoExecClientManager is a client manager with one code mode client whose
-// tools_to_auto_execute is the given list.
-type codeModeAutoExecClientManager struct {
-	*MockClientManager
-	toolsToAutoExecute schemas.WhiteList
-}
-
-func (m *codeModeAutoExecClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
-	return map[string][]schemas.ChatTool{"codemode": nil}
-}
-
-func (m *codeModeAutoExecClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
-	if clientName != "codemode" {
-		return nil
-	}
-	return &schemas.MCPClientState{
-		Name: "codemode",
-		ExecutionConfig: &schemas.MCPClientConfig{
-			ID:                 "codemode",
-			Name:               "codemode",
-			IsCodeModeClient:   true,
-			ToolsToExecute:     schemas.WhiteList{"*"},
-			ToolsToAutoExecute: m.toolsToAutoExecute,
-		},
-	}
-}
-
-// Agent mode is opt-in. The list, read, and docs meta-tools only discover and describe tools,
-// but they are still auto-executed only when a code mode client's tools_to_auto_execute names
-// them or is "*"; with nothing listed, or only entries for other tools, the call goes back to
-// the caller. See #9714.
-func TestAgentMode_CodeModeDiscoveryToolsFollowToolsToAutoExecute(t *testing.T) {
-	cases := []struct {
-		name               string
-		toolsToAutoExecute schemas.WhiteList
-		wantAutoExecuted   bool
-	}{
-		{"names the tool", schemas.WhiteList{ToolTypeListToolFiles, ToolTypeReadToolFile, ToolTypeGetToolDocs}, true},
-		{"wildcard", schemas.WhiteList{"*"}, true},
-		{"nothing configured", nil, false},
-		{"only unrelated entries", schemas.WhiteList{"some_tool", ToolTypeExecuteToolCode}, false},
-	}
-	for _, toolName := range []string{ToolTypeListToolFiles, ToolTypeReadToolFile, ToolTypeGetToolDocs} {
-		for _, tc := range cases {
-			t.Run(toolName+"/"+tc.name, func(t *testing.T) {
-				// Bifrost inserted the tool, so the only question is the allow-list.
-				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, toolName)
-
-				llmCaller := &MockLLMCaller{
-					chatResponses: []*schemas.BifrostChatResponse{
-						{
-							Choices: []schemas.BifrostResponseChoice{
-								{
-									FinishReason: schemas.Ptr("stop"),
-									ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
-										Message: &schemas.ChatMessage{
-											Role:    schemas.ChatMessageRoleAssistant,
-											Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("done")},
-										},
-									},
-								},
-							},
-						},
-					},
-				}
-				makeReq := func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-					return llmCaller.ChatCompletionRequest(ctx, req)
-				}
-				executed := false
-				executeToolFunc := func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-					executed = true
-					return &schemas.BifrostMCPResponse{
-						ChatMessage: &schemas.ChatMessage{
-							Role:            schemas.ChatMessageRoleTool,
-							Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("[]")},
-							ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
-						},
-					}, nil
-				}
-				originalReq := &schemas.BifrostChatRequest{
-					Provider: schemas.OpenAI,
-					Model:    "gpt-4",
-					Input: []schemas.ChatMessage{
-						{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
-					},
-				}
-				agentModeExecutor := &AgentModeExecutor{logger: &MockLogger{}}
-
-				_, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, originalReq, codeModeToolCallResponse(toolName, `{}`), makeReq, nil, executeToolFunc, &codeModeAutoExecClientManager{toolsToAutoExecute: tc.toolsToAutoExecute})
-				if err != nil {
-					t.Fatalf("expected no error, got: %v", err)
-				}
-				if executed != tc.wantAutoExecuted {
-					t.Errorf("%s with tools_to_auto_execute %v: auto-executed = %v, want %v", toolName, tc.toolsToAutoExecute, executed, tc.wantAutoExecuted)
-				}
-			})
-		}
 	}
 }

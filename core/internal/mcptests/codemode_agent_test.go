@@ -1027,9 +1027,8 @@ func TestCodeModeAgent_ToolErrorInCode(t *testing.T) {
 
 // The delivery proof: starlark's tests pin that the stub carries the text, this one pins that it
 // reaches the model, via the follow-up request the agent loop builds after auto-executing
-// readToolFile. That tool is auto-executed only when the code mode client's tools_to_auto_execute
-// lists it, which the sample agent client config does, and only when Bifrost added it to the
-// request, which injectToolsAsGatewayDoes does.
+// readToolFile. That tool is auto-executed unconditionally, so no allow-list setup is needed, but only
+// when Bifrost added it to the request, which injectToolsAsGatewayDoes does.
 func TestCodeModeAgent_ServerInstructionsReachTheModel(t *testing.T) {
 	t.Parallel()
 
