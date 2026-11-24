@@ -6302,6 +6302,10 @@
           "type": "string",
           "description": "ID of one of the provider's configured keys to pin Warp to. Omit to load-balance across the provider's keys, or for a provider that needs no key."
         },
+        "virtual_key_id": {
+          "type": "string",
+          "description": "ID of a virtual key (governance.virtual_keys[].id) that Warp's model calls present when the person asking has no user identity of their own: the local admin, or a deployment without an identity provider. Required for that caller while client.enforce_auth_on_inference is true. Signed-in users are governed as themselves and never use it. The key's permits, budgets and rate limits apply, and Warp's spend is attributed to it. Omitted keeps the stored value; an empty string clears it."
+        },
         "additional_models": {
           "type": "array",
           "maxItems": 20,
