@@ -616,6 +616,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.GuardrailOutcomes) > 0 {
 		baseQuery = s.applyGuardrailOutcomeFilter(baseQuery, filters.GuardrailOutcomes)
 	}
+	if len(filters.GuardrailActions) > 0 || len(filters.GuardrailRuleIDs) > 0 || len(filters.GuardrailProfileIDs) > 0 || len(filters.GuardrailPhases) > 0 {
+		baseQuery = s.applyGuardrailMatchFilter(baseQuery, filters)
+	}
 	if filters.ContentSearch != "" {
 		dialect := s.db.Dialector.Name()
 		if dialect == "postgres" {
@@ -728,6 +731,96 @@ func (s *RDBLogStore) applyGuardrailOutcomeFilter(baseQuery *gorm.DB, outcomes [
 		if expr, ok := jsonArrayNotEmptyExpr(dialect, "guardrail_debug", "detections"); ok {
 			clauses = append(clauses, expr)
 		}
+	}
+	if len(clauses) == 0 {
+		return baseQuery.Where("1 = 0")
+	}
+	return baseQuery.Where("("+strings.Join(clauses, " OR ")+")", args...)
+}
+
+// Guardrail match actions accepted by SearchFilters.GuardrailActions: what a
+// guardrail did for one recorded match, as the logs UI labels it.
+const (
+	GuardrailMatchActionBlocked   = "blocked"
+	GuardrailMatchActionRedacted  = "redacted"
+	GuardrailMatchActionDetected  = "detected"
+	GuardrailMatchActionMonitored = "monitored"
+)
+
+// applyGuardrailMatchFilter keeps rows with one recorded guardrail match that
+// meets every set guardrail match filter. An intervention is a block; a
+// detection is labelled by its action unless it was not enforced, which makes
+// it monitored, matching how the logs UI labels each match. A block logged
+// before interventions were recorded names no rule, profile or phase, so it is
+// matched by its error type only when none of those is asked for. Unknown
+// actions are dropped, and a list of only unknown ones matches nothing rather
+// than every log.
+func (s *RDBLogStore) applyGuardrailMatchFilter(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
+	dialect := s.db.Dialector.Name()
+	elem, ok := newJSONArrayElementSQL(dialect)
+	if !ok {
+		return baseQuery.Where("1 = 0")
+	}
+	actions := filters.GuardrailActions
+	if len(actions) == 0 {
+		actions = []string{GuardrailMatchActionBlocked, GuardrailMatchActionRedacted, GuardrailMatchActionDetected, GuardrailMatchActionMonitored}
+	}
+
+	// The rule, profile and phase conditions apply to the same match as the action.
+	var shared []string
+	var sharedArgs []any
+	if len(filters.GuardrailRuleIDs) > 0 {
+		shared = append(shared, elem.num("rule_id")+" IN ?")
+		sharedArgs = append(sharedArgs, filters.GuardrailRuleIDs)
+	}
+	if len(filters.GuardrailProfileIDs) > 0 {
+		shared = append(shared, elem.num("profile_id")+" IN ?")
+		sharedArgs = append(sharedArgs, filters.GuardrailProfileIDs)
+	}
+	if len(filters.GuardrailPhases) > 0 {
+		shared = append(shared, elem.str("phase")+" IN ?")
+		sharedArgs = append(sharedArgs, filters.GuardrailPhases)
+	}
+
+	enforced := elem.boolean("enforced") + " <> 'false'"
+	detectionAction := "COALESCE(" + elem.str("action") + ", '')"
+	var detectionConds []string
+	for _, action := range actions {
+		switch action {
+		case GuardrailMatchActionBlocked:
+			detectionConds = append(detectionConds, "("+detectionAction+" = 'block' AND "+enforced+")")
+		case GuardrailMatchActionRedacted:
+			detectionConds = append(detectionConds, "("+detectionAction+" IN ('redact', 'transform') AND "+enforced+")")
+		case GuardrailMatchActionDetected:
+			detectionConds = append(detectionConds, "("+detectionAction+" NOT IN ('block', 'redact', 'transform') AND "+enforced+")")
+		case GuardrailMatchActionMonitored:
+			detectionConds = append(detectionConds, "("+elem.boolean("enforced")+" = 'false')")
+		}
+	}
+
+	var clauses []string
+	var args []any
+	if slices.Contains(actions, GuardrailMatchActionBlocked) {
+		if len(shared) == 0 {
+			if expr, ok := jsonArrayNotEmptyExpr(dialect, "guardrail_debug", "interventions"); ok {
+				clauses = append(clauses, expr)
+			}
+			if expr, ok := jsonObjectFieldExpr(dialect, "error_details", "error", "type"); ok {
+				clauses = append(clauses, expr+" = ?")
+				args = append(args, guardrailInterventionErrorType)
+			}
+		} else {
+			clauses = append(clauses, elem.exists("guardrail_debug", "interventions", strings.Join(shared, " AND ")))
+			args = append(args, sharedArgs...)
+		}
+	}
+	if len(detectionConds) > 0 {
+		cond := "(" + strings.Join(detectionConds, " OR ") + ")"
+		if len(shared) > 0 {
+			cond += " AND " + strings.Join(shared, " AND ")
+		}
+		clauses = append(clauses, elem.exists("guardrail_debug", "detections", cond))
+		args = append(args, sharedArgs...)
 	}
 	if len(clauses) == 0 {
 		return baseQuery.Where("1 = 0")

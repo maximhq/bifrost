@@ -258,24 +258,45 @@ func TestParseMetadataFilters(t *testing.T) {
 	})
 }
 
-// TestParseGuardrailOutcomesFilter verifies guardrail_outcomes reaches the list and histogram filters.
-func TestParseGuardrailOutcomesFilter(t *testing.T) {
+// TestParseGuardrailFilters verifies the guardrail params reach the list and histogram filters.
+func TestParseGuardrailFilters(t *testing.T) {
 	t.Run("parses comma-separated outcomes", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		ctx.QueryArgs().Set("guardrail_outcomes", "blocked,detected")
 		filters := &logstore.SearchFilters{}
 
-		parseGuardrailOutcomesFilter(ctx, filters)
+		parseGuardrailFilters(ctx, filters)
 
 		if got, want := filters.GuardrailOutcomes, []string{"blocked", "detected"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("guardrail outcomes = %#v, want %#v", got, want)
 		}
 	})
 
+	t.Run("parses comma-separated guardrail match filters", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("guardrail_actions", "blocked,redacted")
+		ctx.QueryArgs().Set("guardrail_rule_ids", "3,7")
+		ctx.QueryArgs().Set("guardrail_profile_ids", "12")
+		ctx.QueryArgs().Set("guardrail_phases", "input")
+		filters := &logstore.SearchFilters{}
+
+		parseGuardrailFilters(ctx, filters)
+
+		want := logstore.SearchFilters{
+			GuardrailActions:    []string{"blocked", "redacted"},
+			GuardrailRuleIDs:    []string{"3", "7"},
+			GuardrailProfileIDs: []string{"12"},
+			GuardrailPhases:     []string{"input"},
+		}
+		if !reflect.DeepEqual(*filters, want) {
+			t.Fatalf("guardrail match filters = %#v, want %#v", *filters, want)
+		}
+	})
+
 	t.Run("leaves filters unchanged when parameter is absent", func(t *testing.T) {
 		filters := &logstore.SearchFilters{}
 
-		parseGuardrailOutcomesFilter(&fasthttp.RequestCtx{}, filters)
+		parseGuardrailFilters(&fasthttp.RequestCtx{}, filters)
 
 		if filters.GuardrailOutcomes != nil {
 			t.Fatalf("guardrail outcomes = %#v, want nil", filters.GuardrailOutcomes)
