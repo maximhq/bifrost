@@ -227,6 +227,12 @@ func (h *WSCodexPassthroughHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		SendBifrostError(ctx, newBifrostError(fasthttp.StatusUpgradeRequired, "upgrade_required", "the Codex WebSocket relay needs a ChatGPT sign-in token; send this request over HTTP"))
 		return
 	}
+	if h.config.StreamsRewritten() {
+		// The relay writes the upstream's frames to Codex as they arrive, past any plugin that may block or rewrite
+		// them. 426 moves Codex to HTTP, where the route runs those plugins on every turn.
+		SendBifrostError(ctx, newBifrostError(fasthttp.StatusUpgradeRequired, "upgrade_required", "send this request over HTTP"))
+		return
+	}
 	if _, status, err := integrations.ResolveChatGPTPassthroughProvider(ctx, h.handlerStore); err != nil {
 		SendBifrostError(ctx, newBifrostError(status, "invalid_request_error", err.Error()))
 		return
@@ -547,6 +553,8 @@ func (r *codexRelay) touch() {
 
 // closeWhenIdle ends a session that has no open turn and has carried no frame for the idle
 // timeout, so an abandoned socket does not hold a connection slot and an upstream socket forever.
+// A session with no open turn also ends once a loaded plugin may block or rewrite streams, which
+// the relay cannot apply: Codex reconnects and its upgrade is refused to HTTP.
 func (r *codexRelay) closeWhenIdle(stop <-chan struct{}, done chan<- struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(r.handler.idleCheck)
@@ -560,7 +568,7 @@ func (r *codexRelay) closeWhenIdle(stop <-chan struct{}, done chan<- struct{}) {
 		// Judged under the lock that admits turns, and marked closing in the same step, so a turn
 		// arriving between this judgement and the close is refused rather than forwarded and cut off.
 		r.mu.Lock()
-		idle := len(r.open) == 0 && time.Since(time.Unix(0, r.lastActivity.Load())) >= r.handler.idleTimeout
+		idle := len(r.open) == 0 && (time.Since(time.Unix(0, r.lastActivity.Load())) >= r.handler.idleTimeout || r.handler.config.StreamsRewritten())
 		if idle {
 			r.closing = true
 		}

@@ -9022,6 +9022,25 @@ func (c *Config) GetStreamChunkInterceptor() StreamChunkInterceptor {
 	return &pluginChunkInterceptor{plugins: plugins}
 }
 
+// StreamsRewritten reports whether a loaded LLM plugin may block or rewrite streamed turns (schemas.StreamRewriter),
+// so a transport that could relay a stream past the plugin hooks takes a road that applies them instead. It reads the
+// plugin list in place, since it runs per turn.
+func (c *Config) StreamsRewritten() bool {
+	if c == nil {
+		return false
+	}
+	plugins := c.LLMPlugins.Load()
+	if plugins == nil {
+		return false
+	}
+	for _, plugin := range *plugins {
+		if rewriter, ok := plugin.(schemas.StreamRewriter); ok && rewriter.RewritesStreams() {
+			return true
+		}
+	}
+	return false
+}
+
 // GetAsyncJobExecutor returns the async job executor.
 // Returns nil if LogsStore or governance plugin is not configured.
 func (c *Config) GetAsyncJobExecutor() *logstore.AsyncJobExecutor {

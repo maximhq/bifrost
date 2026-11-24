@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net"
 	"net/http"
 	"strings"
@@ -126,6 +127,7 @@ func (h *WSResponsesHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 
 // sessionHeaders holds request headers and credentials captured during session setup.
 type sessionHeaders struct {
+	path          string
 	authorization string
 	virtualKey    string
 	apiKey        string
@@ -135,9 +137,10 @@ type sessionHeaders struct {
 	headers       map[string][]string
 }
 
-// captureSessionHeaders copies all request headers for use after the setup request ends.
+// captureSessionHeaders copies the upgrade path and all request headers for use after the setup request ends.
 func captureSessionHeaders(ctx *fasthttp.RequestCtx) *sessionHeaders {
 	capturedHeaders := &sessionHeaders{
+		path:          string(ctx.Path()),
 		authorization: string(ctx.Request.Header.Peek("Authorization")),
 		virtualKey:    string(ctx.Request.Header.Peek("x-bf-vk")),
 		apiKey:        string(ctx.Request.Header.Peek("x-api-key")),
@@ -152,6 +155,21 @@ func captureSessionHeaders(ctx *fasthttp.RequestCtx) *sessionHeaders {
 		capturedHeaders.headers[k] = append(capturedHeaders.headers[k], string(value))
 	}
 	return capturedHeaders
+}
+
+// httpRequest returns the upgrade request as the HTTP request transport plugin hooks read, keeping each header's
+// first value. A session set up without captured headers yields a bare GET.
+func (s *sessionHeaders) httpRequest() *schemas.HTTPRequest {
+	if s == nil {
+		return &schemas.HTTPRequest{Method: fasthttp.MethodGet}
+	}
+	headers := make(map[string]string, len(s.headers))
+	for key, values := range s.headers {
+		if len(values) > 0 {
+			headers[key] = values[0]
+		}
+	}
+	return &schemas.HTTPRequest{Method: fasthttp.MethodGet, Path: s.path, Headers: headers}
 }
 
 // eventLoop reads events from the client WebSocket and processes them.
@@ -238,6 +256,13 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, setupHe
 	}
 	h.pinSessionKey(bifrostCtx, session, bifrostReq)
 
+	// The native upstream forwards the client's event and the provider's frames as they are, so while a plugin may
+	// block or rewrite streams, the turn takes the HTTP bridge, which applies its hook results.
+	if h.config.StreamsRewritten() {
+		h.executeHTTPBridge(session, setupHeaders, bifrostCtx, cancel, bifrostReq)
+		return
+	}
+
 	// Rewrite the raw event for upstream: strip provider/ prefix from model,
 	// apply store override. The original bytes contain the bifrost-format model
 	// (e.g. "openai/gpt-5.5") which upstream providers don't understand.
@@ -254,7 +279,7 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, setupHe
 	}
 
 	// Fall back to HTTP bridge
-	h.executeHTTPBridge(session, bifrostCtx, cancel, bifrostReq)
+	h.executeHTTPBridge(session, setupHeaders, bifrostCtx, cancel, bifrostReq)
 }
 
 // pinSessionKey keeps a Responses WS turn on the key that served the session's last turn.
@@ -857,6 +882,9 @@ func createBifrostContextFromHeaders(handlerStore lib.HandlerStore, setupHeaders
 			}
 		}
 		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, requestHeaders)
+		// Guardrail rules match headers through their own key, which an HTTP request's pre-hook fills. No HTTP hook
+		// runs for a turn on this connection, so the headers it presented at upgrade are given to them here.
+		ctx.SetValue(schemas.BifrostContextKeyGuardrailHeaders, maps.Clone(requestHeaders))
 	}
 
 	if sessionID := lib.ParseSessionIDFromBaggage(setupHeaders.baggage); sessionID != "" {
@@ -991,9 +1019,11 @@ func hasWebSocketForwardedHeaders(ctx *schemas.BifrostContext) bool {
 	return false
 }
 
-// executeHTTPBridge runs the response through the existing streaming inference pipeline.
+// executeHTTPBridge runs the response through the existing streaming inference pipeline. Each chunk passes the
+// transport plugins' stream chunk hooks, as on the HTTP streaming route, so a plugin can rewrite, drop or stop it.
 func (h *WSResponsesHandler) executeHTTPBridge(
 	session *bfws.Session,
+	setupHeaders *sessionHeaders,
 	ctx *schemas.BifrostContext,
 	cancel context.CancelFunc,
 	req *schemas.BifrostResponsesRequest,
@@ -1010,10 +1040,34 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 		return
 	}
 
+	interceptor := h.config.GetStreamChunkInterceptor()
+	var httpReq *schemas.HTTPRequest
+	if interceptor != nil {
+		httpReq = setupHeaders.httpRequest()
+	}
+
 	// Relay streaming chunks as WS messages
 	for chunk := range stream {
 		if chunk == nil {
 			continue
+		}
+		if interceptor != nil {
+			var err error
+			chunk, err = interceptor.InterceptChunk(ctx, httpReq, chunk)
+			if err != nil && chunk == nil {
+				// A plugin stopped the stream: end the turn with its error and drop what remains.
+				writeWSInterceptionError(session, err)
+				cancel()
+				for range stream {
+				}
+				return
+			}
+			if err != nil {
+				logger.Warn("%v", err)
+			}
+			if chunk == nil {
+				continue
+			}
 		}
 
 		chunkJSON, err := sonic.Marshal(chunk)
@@ -1063,6 +1117,19 @@ func wsErrorEvent(status int, code, message string) ([]byte, error) {
 			Message: message,
 		},
 	})
+}
+
+// writeWSInterceptionError sends the error a stream chunk hook stopped a stream with as a WS error event: the plugin's
+// own error, sanitized for the client, or a generic server error for an unstructured one.
+func writeWSInterceptionError(w wsWriter, err error) {
+	var interception *schemas.StreamInterceptionError
+	if errors.As(err, &interception) && interception != nil {
+		if sanitized := lib.SanitizeBifrostErrorForClient(interception.BifrostError); sanitized != nil {
+			writeWSBifrostError(w, sanitized)
+			return
+		}
+	}
+	writeWSError(w, fasthttp.StatusInternalServerError, "server_error", err.Error())
 }
 
 // writeWSBifrostError converts a BifrostError to a WS error event.
