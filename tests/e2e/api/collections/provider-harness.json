@@ -349469,7 +349469,95 @@
       ]
     },
     {
-      "name": "380. Gemini chat replays extra_content.google.thought_signature (#8149 / PR #8775) (extra content signature)",
+      "name": "381. Logs list leaves detail-only fields to the by-id read (logs list projection)",
+      "description": "GET /api/logs carried fields that only the log detail sheet reads, and the sheet renders from GET /api/logs/{id} anyway. The list projection now leaves out alias_model_family, server_side_fallback_model, served_model, routing_engines_used, complexity_mechanism, model_router_id, model_router_name, video_generation_input and cache_debug; the by-id read still returns them.\n\n381.1 sends one OpenAI chat, whose answer names a dated snapshot so served_model is set, reads the log by id and asserts served_model is there, then lists the same row by request_id and asserts none of the detail-only keys appear while id, model, status and a real created_at do.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - the list row omits served_model and the other detail-only fields that GET /api/logs/{id} returns - openai/gpt-4o-mini - logs list projection",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var id = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('x-bifrost-request-id names the log entry', function () { pm.expect(id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "var DETAIL_ONLY = ['alias_model_family', 'server_side_fallback_model', 'served_model', 'routing_engines_used', 'complexity_mechanism', 'model_router_id', 'model_router_name', 'video_generation_input', 'cache_debug'];",
+                  "function checkList(full) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + encodeURIComponent(id) + '&limit=1', method: 'GET' }, function (err, res) {",
+                  "    var text = err ? String(err) : (res.code + ' ' + res.text());",
+                  "    pm.test('GET /api/logs answers 200', function () { pm.expect(err, text).to.eql(null); pm.expect(res.code, text).to.eql(200); });",
+                  "    var logs = []; try { logs = (res.json() || {}).logs || []; } catch (e) { logs = []; }",
+                  "    pm.test('the list finds the row by request_id', function () { pm.expect(logs.length, text.slice(0, 600)).to.eql(1); });",
+                  "    var row = logs[0] || {};",
+                  "    pm.test('the list row leaves every detail-only field to GET /api/logs/{id}', function () {",
+                  "      var present = DETAIL_ONLY.filter(function (k) { return Object.prototype.hasOwnProperty.call(row, k); });",
+                  "      pm.expect(present, JSON.stringify(row).slice(0, 800)).to.eql([]);",
+                  "    });",
+                  "    pm.test('the list row still carries the summary fields the table and other readers use', function () {",
+                  "      pm.expect(row.id, JSON.stringify(row).slice(0, 800)).to.eql(id);",
+                  "      pm.expect(row.model, JSON.stringify(row).slice(0, 800)).to.eql(full.model);",
+                  "      pm.expect(row.status, JSON.stringify(row).slice(0, 800)).to.eql('success');",
+                  "      pm.expect(row.created_at, 'created_at must be the real time, not the zero value').to.be.a('string').and.not.match(/^0001-/);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+                  "    var text = err ? String(err) : (res.code + ' ' + res.text());",
+                  "    if (err || (res.code !== 200 && res.code !== 404)) {",
+                  "      pm.test('GET /api/logs/{id} answers 200, or 404 before the row is written', function () { pm.expect.fail(text); });",
+                  "      return;",
+                  "    }",
+                  "    var j = null; if (res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('GET /api/logs/{id} carries served_model, the dated snapshot OpenAI answered with', function () {",
+                  "        pm.expect(j.served_model, JSON.stringify(j).slice(0, 800)).to.be.a('string').and.not.empty;",
+                  "        pm.expect(j.served_model, JSON.stringify(j).slice(0, 800)).to.not.eql(j.model);",
+                  "      });",
+                  "      checkList(j);",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 15) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('GET /api/logs/{id} carries served_model, the dated snapshot OpenAI answered with', function () { pm.expect.fail('log ' + id + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (id) { checkLog(0); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "382. Gemini chat replays extra_content.google.thought_signature (#8149 / PR #8775) (extra content signature)",
       "description": "convertBifrostMessagesToGemini recovered a replayed tool call's thought signature only from the \"<id>_ts_<sig>\" id suffix and from reasoning_details, and wrote skip_thought_signature_validator otherwise. A client that sends the signature back as extra_content.google.thought_signature, the field Google's OpenAI-compatible endpoint uses, got its real signature replaced by the sentinel. The signature is captured from a live turn (Gemini validates what it is given, so a made-up blob would fail for an unrelated reason), moved by the replay row into extra_content on a bare id with no reasoning_details, and the case reads the request Bifrost sent upstream (x-bf-send-back-raw-request) to pin that the same signature, not the sentinel, is on the wire. The capture row fails when no signature came back, and the replay row fails when the capture stored nothing, so a run cannot pass having tested nothing.",
       "item": [
         {
