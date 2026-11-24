@@ -185,6 +185,7 @@
                   "providers/supported-providers/typesafe",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
+                  "providers/supported-providers/voyage",
                   "providers/supported-providers/wafer",
                   "providers/supported-providers/xai"
                 ]

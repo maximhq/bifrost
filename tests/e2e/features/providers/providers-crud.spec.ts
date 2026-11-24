@@ -652,6 +652,44 @@ test.describe("Providers", () => {
       expect(saved, "saved key must be listed").toBeTruthy();
       expect(saved?.models).toEqual(["*"]);
     });
+
+    test("should add Voyage from the provider dropdown and save an API key", async ({
+      providersPage,
+      page,
+    }) => {
+      if (!(await providersPage.providerExists("voyage"))) {
+        await providersPage.addKnownProviderFromDropdown("voyage");
+        createdProviders.push("voyage");
+      }
+      await expect(providersPage.getProviderItem("voyage")).toBeVisible({
+        timeout: 15000,
+      });
+      await providersPage.selectProvider("voyage");
+
+      const keyName = `Voyage-Key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      createdKeys.push({ provider: "voyage", keyName });
+
+      await providersPage.dismissToasts();
+      await providersPage.addKeyBtn.click();
+      await expect(providersPage.keyForm).toBeVisible();
+      await page.getByLabel("Name").fill(keyName);
+      await page.getByLabel("API Key").fill("e2e-voyage-api-key");
+
+      // Model discovery runs on save and fails against a fake key; the key must still save.
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+      expect(await providersPage.keyExists(keyName)).toBe(true);
+
+      const keysResponse = await page.request.get("/api/providers/voyage/keys");
+      expect(keysResponse.ok()).toBe(true);
+      const provider = (await keysResponse.json()) as {
+        keys: { name: string; value?: { value?: string } }[];
+      };
+      const saved = provider.keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.value?.value, "the stored secret must come back masked").not.toBe("e2e-voyage-api-key");
+    });
   });
 
   test.describe("Custom Providers", () => {

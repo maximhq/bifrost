@@ -44,6 +44,7 @@ ModelProvider:
     - baseten
     - kimchi
     - soniox
+    - voyage
 
 Fallback:
   type: object

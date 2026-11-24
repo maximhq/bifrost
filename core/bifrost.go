@@ -61,6 +61,7 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/providers/vllm"
+	"github.com/maximhq/bifrost/core/providers/voyage"
 	"github.com/maximhq/bifrost/core/providers/wafer"
 	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -5298,6 +5299,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return baseten.NewBasetenProvider(config, bifrost.logger)
 	case schemas.Kimchi:
 		return kimchi.NewKimchiProvider(config, bifrost.logger)
+	case schemas.Voyage:
+		return voyage.NewVoyageProvider(config, bifrost.logger)
 	case schemas.Cloudflare:
 		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:
