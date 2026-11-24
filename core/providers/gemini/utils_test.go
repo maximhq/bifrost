@@ -376,6 +376,20 @@ func TestBatchAudioURLErrorKeepsInternalFaultsAs500(t *testing.T) {
 	require.Nil(t, bErr.StatusCode, "a non-caller fault keeps the operation-error default")
 }
 
+// An interrupted inline-batch download must classify like the converter path: a deadline is a
+// 504 RequestTimedOut and a cancellation is RequestCancelled, not a typeless 500.
+func TestBatchAudioURLErrorMapsContextErrorsLikeConverter(t *testing.T) {
+	deadline := BatchAudioURLError(0, "x", errors.Join(errors.New("download"), context.DeadlineExceeded))
+	require.NotNil(t, deadline.StatusCode)
+	require.Equal(t, 504, *deadline.StatusCode)
+	require.NotNil(t, deadline.Error.Type)
+	require.Equal(t, schemas.RequestTimedOut, *deadline.Error.Type)
+
+	cancelled := BatchAudioURLError(0, "x", errors.Join(errors.New("download"), context.Canceled))
+	require.NotNil(t, cancelled.Error.Type)
+	require.Equal(t, schemas.RequestCancelled, *cancelled.Error.Type)
+}
+
 // The check runs on every Gemini chat request, so a request with no audio URL must
 // pay for a scan and nothing else.
 func BenchmarkResolveChatAudioURLs(b *testing.B) {

@@ -104,6 +104,11 @@ func BatchAudioURLError(index int, customID string, err error) *schemas.BifrostE
 		badRequest.Error.Message = fmt.Sprintf("batch request item %d (custom_id %q): %s", index, customID, badRequest.Error.Message)
 		return badRequest
 	}
+	// A deadline or cancellation while downloading audio gets the converter path's 504 or
+	// RequestCancelled, so the same deadline reads the same on both paths.
+	if contextErr, ok := providerUtils.AsBifrostContextError(err); ok {
+		return contextErr
+	}
 	return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to resolve audio URLs for batch request item %d (custom_id %q)", index, customID), err)
 }
 
