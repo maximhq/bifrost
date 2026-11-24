@@ -656,7 +656,7 @@ func forwardGCSAudioChatMessages(input []schemas.ChatMessage, isAnthropicFamily 
 	copied := slices.Clone(input)
 	for mi := range copied {
 		msg := &copied[mi]
-		if msg.Content == nil || !chatBlocksForwardGCSAudio(msg.Content.ContentBlocks, isAnthropicFamily) {
+		if !chatMessageForwardsGCSAudio(*msg, isAnthropicFamily) {
 			continue
 		}
 		content := *msg.Content
@@ -751,11 +751,19 @@ func resolveVertexBatchAudio(ctx *schemas.BifrostContext, requests []schemas.Bat
 
 func chatInputForwardsGCSAudio(input []schemas.ChatMessage, isAnthropicFamily bool) bool {
 	for i := range input {
-		if input[i].Content != nil && chatBlocksForwardGCSAudio(input[i].Content.ContentBlocks, isAnthropicFamily) {
+		if chatMessageForwardsGCSAudio(input[i], isAnthropicFamily) {
 			return true
 		}
 	}
 	return false
+}
+
+// chatMessageForwardsGCSAudio reports whether msg carries gs:// audio to forward.
+// Tool results are skipped: their media stays on the converter's text-placeholder
+// path, so a tool turn never fails on an audio URL it cannot type.
+func chatMessageForwardsGCSAudio(msg schemas.ChatMessage, isAnthropicFamily bool) bool {
+	return msg.Role != schemas.ChatMessageRoleTool && msg.Content != nil &&
+		chatBlocksForwardGCSAudio(msg.Content.ContentBlocks, isAnthropicFamily)
 }
 
 func chatBlocksForwardGCSAudio(blocks []schemas.ChatContentBlock, isAnthropicFamily bool) bool {

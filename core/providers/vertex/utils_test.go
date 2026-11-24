@@ -1339,6 +1339,21 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 		}
 	})
 
+	// A tool result keeps its media on the converter's text-placeholder path, so gs:// audio
+	// there is never forwarded or typed, and an untypeable URL cannot fail the tool turn.
+	t.Run("tool result audio is not forwarded", func(t *testing.T) {
+		request := chatRequest("gemini-2.5-flash", "gs://bucket/generated/result", nil)
+		request.Input[0].Role = schemas.ChatMessageRoleTool
+		got, err := forwardGCSAudioChat(ctx, request)
+		if err != nil || got != request {
+			t.Fatalf("got %#v, err = %v, want the same request and no error", got, err)
+		}
+		block := request.Input[0].Content.ContentBlocks[0]
+		if block.InputAudio == nil || block.File != nil {
+			t.Fatalf("tool audio block rewritten: %#v", block)
+		}
+	})
+
 	t.Run("untouched", func(t *testing.T) {
 		for _, tc := range []struct{ model, url string }{
 			{"gemini-2.5-flash", "https://example.com/clip.wav"},
