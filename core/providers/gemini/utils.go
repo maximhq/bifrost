@@ -3708,6 +3708,16 @@ var uriExtensionMIMETypes = map[string]string{
 	".mpeg": "video/mpeg",
 }
 
+// AudioMIMETypeFromURI returns the audio/* type a URI's own file extension declares, or "" when
+// the URI states no extension or a non-audio one. Vertex forwards gs:// audio as fileData and
+// needs a type it can send; this never invents one.
+func AudioMIMETypeFromURI(uri string) string {
+	if mimeType := mimeTypeFromURI(uri); strings.HasPrefix(mimeType, "audio/") {
+		return mimeType
+	}
+	return ""
+}
+
 func mimeTypeFromURI(uri string) string {
 	if uri == "" {
 		return ""

@@ -1177,7 +1177,10 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 			if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, original); err != nil {
 				t.Fatalf("%s: inlineRemoteURLSources: %v", tc.name, err)
 			}
-			request := forwardGCSAudioChat(ctx, original)
+			request, err := forwardGCSAudioChat(ctx, original)
+			if err != nil {
+				t.Fatalf("%s: forwardGCSAudioChat: %v", tc.name, err)
+			}
 			origBlock := original.Input[0].Content.ContentBlocks[0]
 			if origBlock.Type != schemas.ChatContentBlockTypeInputAudio || origBlock.InputAudio == nil || origBlock.File != nil {
 				t.Fatalf("%s: original block changed: %#v", tc.name, origBlock)
@@ -1213,7 +1216,10 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 			t.Fatalf("inlineDocumentURLsResponses: %v", err)
 		}
 		original := request
-		request = forwardGCSAudioResponses(ctx, request)
+		request, err := forwardGCSAudioResponses(ctx, request)
+		if err != nil {
+			t.Fatalf("forwardGCSAudioResponses: %v", err)
+		}
 		origBlock := original.Input[0].Content.ContentBlocks[0]
 		if origBlock.Type != schemas.ResponsesInputMessageContentBlockTypeAudio || origBlock.Audio == nil || origBlock.ResponsesInputMessageContentBlockFile != nil {
 			t.Fatalf("original block changed: %#v", origBlock)
@@ -1271,7 +1277,10 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 
 		for _, model := range []string{"gemini-3-pro-preview", "gemini-2.5-flash"} {
 			original := toolOutputRequest(model)
-			request := forwardGCSAudioResponses(ctx, original)
+			request, err := forwardGCSAudioResponses(ctx, original)
+			if err != nil {
+				t.Fatalf("%s: forwardGCSAudioResponses: %v", model, err)
+			}
 			if request != original {
 				t.Fatalf("%s: got a copy, want the same request with tool output audio left alone", model)
 			}
@@ -1301,6 +1310,35 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 		}
 	})
 
+	// Vertex rejects fileData with an empty mimeType, so gs:// audio with no format must take its
+	// type from an audio extension or come back as a 400 naming the block, never reach Vertex.
+	t.Run("no format and no audio extension is a bad request", func(t *testing.T) {
+		for _, objectURL := range []string{"gs://bucket/audio/clip.m4a", "gs://bucket/audio/clip", "gs://bucket/audio/report.pdf"} {
+			_, err := forwardGCSAudioChat(ctx, chatRequest("gemini-2.5-flash", objectURL, nil))
+			if err == nil || !providerUtils.IsInvalidRequestError(err) || !strings.Contains(err.Error(), "messages[0].content[0]") {
+				t.Fatalf("chat %s: err = %v, want a 400 naming messages[0].content[0]", objectURL, err)
+			}
+			if bifrostErr := gcsAudioForwardError(err); bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+				t.Fatalf("chat %s: forward error = %#v, want status 400", objectURL, bifrostErr)
+			}
+
+			responses := &schemas.BifrostResponsesRequest{
+				Model: "gemini-2.5-flash",
+				Input: []schemas.ResponsesMessage{{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type:  schemas.ResponsesInputMessageContentBlockTypeAudio,
+						Audio: &schemas.ResponsesInputMessageContentBlockAudio{URL: objectURL},
+					}}},
+				}},
+			}
+			_, err = forwardGCSAudioResponses(ctx, responses)
+			if err == nil || !providerUtils.IsInvalidRequestError(err) || !strings.Contains(err.Error(), "input[0].content[0]") {
+				t.Fatalf("responses %s: err = %v, want a 400 naming input[0].content[0]", objectURL, err)
+			}
+		}
+	})
+
 	t.Run("untouched", func(t *testing.T) {
 		for _, tc := range []struct{ model, url string }{
 			{"gemini-2.5-flash", "https://example.com/clip.wav"},
@@ -1310,7 +1348,7 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 			if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, request); err != nil {
 				t.Fatalf("%s %s: %v", tc.model, tc.url, err)
 			}
-			if got := forwardGCSAudioChat(ctx, request); got != request {
+			if got, err := forwardGCSAudioChat(ctx, request); err != nil || got != request {
 				t.Fatalf("%s %s: got a copy, want the same request", tc.model, tc.url)
 			}
 			block := request.Input[0].Content.ContentBlocks[0]
@@ -1331,7 +1369,7 @@ func TestVertexGeminiGCSAudioURLForwardedAsFileURI(t *testing.T) {
 			if err := provider.inlineDocumentURLsResponses(ctx, schemas.Key{}, responses); err != nil {
 				t.Fatalf("responses %s %s: %v", tc.model, tc.url, err)
 			}
-			if got := forwardGCSAudioResponses(ctx, responses); got != responses {
+			if got, err := forwardGCSAudioResponses(ctx, responses); err != nil || got != responses {
 				t.Fatalf("responses %s %s: got a copy, want the same request", tc.model, tc.url)
 			}
 			rblock := responses.Input[0].Content.ContentBlocks[0]
