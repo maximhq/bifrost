@@ -1045,6 +1045,7 @@ false
 {{- if hasKey . "stream_replay_event_interval_ms" }}{{- $_ := set $rule "stream_replay_event_interval_ms" .stream_replay_event_interval_ms }}{{- end }}
 {{- if .output_mode }}{{- $_ := set $rule "output_mode" .output_mode }}{{- end }}
 {{- if .input_timing }}{{- $_ := set $rule "input_timing" .input_timing }}{{- end }}
+{{- if .fail_closed }}{{- $_ := set $rule "fail_closed" .fail_closed }}{{- end }}
 {{- if .profile_execution_mode }}{{- $_ := set $rule "profile_execution_mode" .profile_execution_mode }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
