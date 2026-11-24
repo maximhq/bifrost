@@ -532,3 +532,268 @@ func TestAuditChange_ProxyURLPasswordMaskedWhenURLDoesNotParse(t *testing.T) {
 		t.Fatalf("after snapshot missing the saved URL: %s", change.After)
 	}
 }
+
+// commitPointTestManager reads reloads from the real store and fails the method named in fail.
+type commitPointTestManager struct {
+	pricingOverrideTestGovernanceManager
+	store configstore.ConfigStore
+	fail  string
+}
+
+var errCommitPointInjected = errors.New("injected failure after commit")
+
+func (m *commitPointTestManager) ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error) {
+	if m.fail == "ReloadVirtualKey" {
+		return nil, errCommitPointInjected
+	}
+	return m.store.GetVirtualKey(ctx, id)
+}
+
+func (m *commitPointTestManager) RemoveVirtualKey(context.Context, string) error { return nil }
+
+func (m *commitPointTestManager) ReloadTeam(ctx context.Context, id string) (*configstoreTables.TableTeam, error) {
+	if m.fail == "ReloadTeam" {
+		return nil, errCommitPointInjected
+	}
+	return m.store.GetTeam(ctx, id)
+}
+
+func (m *commitPointTestManager) ReloadCustomer(ctx context.Context, id string) (*configstoreTables.TableCustomer, error) {
+	if m.fail == "ReloadCustomer" {
+		return nil, errCommitPointInjected
+	}
+	return m.store.GetCustomer(ctx, id)
+}
+
+func (m *commitPointTestManager) ReloadModelConfig(ctx context.Context, id string) (*configstoreTables.TableModelConfig, error) {
+	if m.fail == "ReloadModelConfig" {
+		return nil, errCommitPointInjected
+	}
+	return m.store.GetModelConfigByID(ctx, id)
+}
+
+func (m *commitPointTestManager) ResetBudgetUsageInMemory(context.Context, BudgetUsageResetOwner, []string) error {
+	if m.fail == "ResetBudgetUsageInMemory" {
+		return errCommitPointInjected
+	}
+	return nil
+}
+
+func (m *commitPointTestManager) UpsertPricingOverride(context.Context, *configstoreTables.TablePricingOverride) error {
+	if m.fail == "UpsertPricingOverride" {
+		return errCommitPointInjected
+	}
+	return nil
+}
+
+// liveAuditChanges returns the recorded changes a handler did not discard.
+func liveAuditChanges(ctx *fasthttp.RequestCtx) []configstore.AuditChange {
+	changes, _ := ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+	out := make([]configstore.AuditChange, 0, len(changes))
+	for _, c := range changes {
+		if !c.Discarded {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// requireCommitPointChange asserts exactly one live change named eventName whose after
+// snapshot has field equal to want.
+func requireCommitPointChange(t *testing.T, ctx *fasthttp.RequestCtx, eventName, field string, want any) configstore.AuditChange {
+	t.Helper()
+	changes := liveAuditChanges(ctx)
+	if len(changes) != 1 || changes[0].EventName != eventName {
+		t.Fatalf("want one %s change, got %+v", eventName, changes)
+	}
+	var after map[string]any
+	if err := json.Unmarshal(changes[0].After, &after); err != nil {
+		t.Fatalf("decode after %s: %v", changes[0].After, err)
+	}
+	if field != "" && after[field] != want {
+		t.Fatalf("after.%s = %v, want %v (after=%s)", field, after[field], want, changes[0].After)
+	}
+	return changes[0]
+}
+
+func requireStatus(t *testing.T, ctx *fasthttp.RequestCtx, want int) {
+	t.Helper()
+	if got := ctx.Response.StatusCode(); got != want {
+		t.Fatalf("status = %d, want %d: %s", got, want, ctx.Response.Body())
+	}
+}
+
+func newCommitPointGovernanceHandler(t *testing.T) (*GovernanceHandler, *commitPointTestManager, configstore.ConfigStore) {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	if err := store.CreateCustomer(context.Background(), &configstoreTables.TableCustomer{ID: "cust-audit", Name: "Audit Customer"}); err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	manager := &commitPointTestManager{store: store}
+	return &GovernanceHandler{configStore: store, governanceManager: manager}, manager, store
+}
+
+func TestCommitPoint_VirtualKeyUpdateRecordedWhenReloadFails(t *testing.T) {
+	h, manager, store := newCommitPointGovernanceHandler(t)
+	_, vkID, value := createAuditVK(t, h, store)
+	manager.fail = "ReloadVirtualKey"
+
+	ctx := newTestRequestCtx(`{"description":"second"}`)
+	ctx.SetUserValue("vk_id", vkID)
+	h.updateVirtualKey(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "virtual_key.updated", "description", "second")
+	requireNoSecret(t, change, value)
+}
+
+func TestCommitPoint_BudgetOverrideRecordedWhenReloadFails(t *testing.T) {
+	h, manager, store := newCommitPointGovernanceHandler(t)
+	ctx := context.Background()
+	active := true
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-override", Name: "override", Value: *schemas.NewSecretVar("sk-bf-override"), IsActive: &active}
+	if err := store.CreateVirtualKey(ctx, vk); err != nil {
+		t.Fatalf("create virtual key: %v", err)
+	}
+	scopeID := vk.ID
+	if err := store.CreateModelConfig(ctx, &configstoreTables.TableModelConfig{
+		ID: "mc-override", ModelName: configstoreTables.ModelConfigAllModels, Scope: configstoreTables.ModelConfigScopeVirtualKey, ScopeID: &scopeID,
+		Budgets: []configstoreTables.TableBudget{{ID: "budget-override", MaxLimit: 100, ResetDuration: "1d"}},
+	}); err != nil {
+		t.Fatalf("create model config: %v", err)
+	}
+	manager.fail = "ReloadVirtualKey"
+
+	req := newTestRequestCtx(`{"amount":25,"mode":"cycles","cycles":4}`)
+	req.SetUserValue("vk_id", vk.ID)
+	req.SetUserValue("budget_id", "budget-override")
+	h.updateVirtualKeyBudgetOverride(req)
+
+	requireStatus(t, req, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, req, "virtual_key.budget_override_updated", "override_mode", "cycles")
+	var after struct {
+		Amount    *float64 `json:"override_amount"`
+		Remaining *int     `json:"override_cycles_remaining"`
+		Total     *int     `json:"override_cycles_total"`
+		MaxLimit  float64  `json:"max_limit"`
+	}
+	if err := json.Unmarshal(change.After, &after); err != nil {
+		t.Fatalf("decode after: %v", err)
+	}
+	if after.Amount == nil || *after.Amount != 25 || after.Remaining == nil || *after.Remaining != 4 || after.Total == nil || *after.Total != 4 || after.MaxLimit != 100 {
+		t.Fatalf("after = %s, want amount 25, 4 of 4 cycles and max_limit 100", change.After)
+	}
+}
+
+func TestCommitPoint_TeamUpdate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fail   string
+		status int
+	}{
+		{"success records the reloaded row", "", fasthttp.StatusOK},
+		{"reload failure still records the write", "ReloadTeam", fasthttp.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, manager, store := newCommitPointGovernanceHandler(t)
+			if err := store.CreateTeam(context.Background(), &configstoreTables.TableTeam{ID: "team-1", Name: "before"}); err != nil {
+				t.Fatalf("create team: %v", err)
+			}
+			manager.fail = tc.fail
+			ctx := newTestRequestCtx(`{"name":"after"}`)
+			ctx.SetUserValue("team_id", "team-1")
+			h.updateTeam(ctx)
+			requireStatus(t, ctx, tc.status)
+			requireCommitPointChange(t, ctx, "team.updated", "name", "after")
+		})
+	}
+}
+
+func TestCommitPoint_CustomerUpdate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fail   string
+		status int
+	}{
+		{"success records the reloaded row", "", fasthttp.StatusOK},
+		{"reload failure still records the write", "ReloadCustomer", fasthttp.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, manager, _ := newCommitPointGovernanceHandler(t)
+			manager.fail = tc.fail
+			ctx := newTestRequestCtx(`{"name":"Renamed Customer"}`)
+			ctx.SetUserValue("customer_id", "cust-audit")
+			h.updateCustomer(ctx)
+			requireStatus(t, ctx, tc.status)
+			requireCommitPointChange(t, ctx, "customer.updated", "name", "Renamed Customer")
+		})
+	}
+}
+
+func TestCommitPoint_ModelConfigUpdate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fail   string
+		status int
+	}{
+		{"success records the reloaded row", "", fasthttp.StatusOK},
+		{"reload failure still records the write", "ReloadModelConfig", fasthttp.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, manager, store := newCommitPointGovernanceHandler(t)
+			if err := store.CreateModelConfig(context.Background(), &configstoreTables.TableModelConfig{ID: "mc-1", ModelName: "gpt-4o", Scope: configstoreTables.ModelConfigScopeGlobal}); err != nil {
+				t.Fatalf("create model config: %v", err)
+			}
+			manager.fail = tc.fail
+			ctx := newTestRequestCtx(`{"model_name":"gpt-4.1"}`)
+			ctx.SetUserValue("mc_id", "mc-1")
+			h.updateModelConfig(ctx)
+			requireStatus(t, ctx, tc.status)
+			requireCommitPointChange(t, ctx, "model_config.updated", "model_name", "gpt-4.1")
+		})
+	}
+}
+
+func TestCommitPoint_ProviderGovernanceRecordedWhenUsageResetFails(t *testing.T) {
+	h, manager, store := newCommitPointGovernanceHandler(t)
+	if err := store.AddProvider(context.Background(), schemas.OpenAI, configstore.ProviderConfig{}); err != nil {
+		t.Fatalf("add provider: %v", err)
+	}
+	seed := newTestRequestCtx(`{"budgets":[{"max_limit":10,"reset_duration":"1d"}]}`)
+	seed.SetUserValue("provider_name", "openai")
+	h.updateProviderGovernance(seed)
+	requireStatus(t, seed, fasthttp.StatusOK)
+
+	manager.fail = "ResetBudgetUsageInMemory"
+	ctx := newTestRequestCtx(`{"budgets":[{"max_limit":20,"reset_duration":"1d"}],"reset_budget_usage":true}`)
+	ctx.SetUserValue("provider_name", "openai")
+	h.updateProviderGovernance(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "provider_governance.updated", "provider", "openai")
+	var after ProviderGovernanceResponse
+	if err := json.Unmarshal(change.After, &after); err != nil {
+		t.Fatalf("decode after: %v", err)
+	}
+	if len(after.Budgets) != 1 || after.Budgets[0].MaxLimit != 20 {
+		t.Fatalf("after = %s, want the new max_limit 20", change.After)
+	}
+}
+
+func TestCommitPoint_PricingOverrideRecordedWhenUpsertFails(t *testing.T) {
+	h, manager, _ := newCommitPointGovernanceHandler(t)
+	manager.fail = "UpsertPricingOverride"
+	body := `{"name":"Override","scope_kind":"global","match_type":"exact","pattern":"gpt-4.1","request_types":["chat_completion"],"patch":{"input_cost_per_token":1}}`
+
+	create := newTestRequestCtx(body)
+	h.createPricingOverride(create)
+	requireStatus(t, create, fasthttp.StatusInternalServerError)
+	created := requireCommitPointChange(t, create, "pricing_override.created", "name", "Override")
+
+	update := newTestRequestCtx(`{"name":"Renamed","scope_kind":"global","match_type":"exact","pattern":"gpt-4.1","request_types":["chat_completion"],"patch":{"input_cost_per_token":2}}`)
+	update.SetUserValue("id", created.TargetID)
+	h.updatePricingOverride(update)
+	requireStatus(t, update, fasthttp.StatusInternalServerError)
+	requireCommitPointChange(t, update, "pricing_override.updated", "name", "Renamed")
+}

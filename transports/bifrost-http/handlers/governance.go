@@ -2698,17 +2698,16 @@ func (h *GovernanceHandler) mutateVirtualKeyBudgetOverride(ctx *fasthttp.Request
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to update budget override")
 		return
 	}
-	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vkID); err != nil {
-		logger.Error("failed to reload virtual key after budget override: %v", err)
-		SendError(ctx, fasthttp.StatusInternalServerError, "budget override saved but virtual key reload failed")
-		return
-	}
-
 	event := "virtual_key.budget_override_updated"
 	if clear {
 		event = "virtual_key.budget_override_removed"
 	}
 	lib.RecordAuditChange(ctx, event, "virtual_key", vkID, vkName, before, auditBudgetOverride(budget))
+	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vkID); err != nil {
+		logger.Error("failed to reload virtual key after budget override: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "budget override saved but virtual key reload failed")
+		return
+	}
 	SendJSON(ctx, BudgetOverrideResponse{
 		Budget:            budget,
 		EffectiveMaxLimit: budget.EffectiveMaxLimit(),
@@ -3224,6 +3223,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 	// Reverse-map governance from VK-scoped model configs for display.
 	h.hydrateVKGovernance(ctx, preloadedVk)
+	rec := lib.RecordAuditChange(ctx, "virtual_key.updated", "virtual_key", vk.ID, vk.Name, before, auditVirtualKey(preloadedVk))
 
 	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID); err != nil {
 		// Should never happen but just in case
@@ -3299,7 +3299,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	lib.RecordAuditChange(ctx, "virtual_key.updated", "virtual_key", vk.ID, vk.Name, before, auditVirtualKey(preloadedVk))
+	rec.SetAfter(auditVirtualKey(preloadedVk))
 	SendJSON(ctx, map[string]interface{}{
 		"message":     "Virtual key updated successfully",
 		"virtual_key": preloadedVk,
@@ -3816,6 +3816,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	// ordered after the reload and depends on it having happened, so continuing
 	// would clear usage against stale in-memory config while the database already
 	// holds the new one, and still answer 200 with the pre-update team.
+	rec := lib.RecordAuditChange(ctx, "team.updated", "team", team.ID, team.Name, before, auditTeam(team))
 	preloadedTeam, err := h.governanceManager.ReloadTeam(ctx, team.ID)
 	if err != nil {
 		logger.Error("failed to reload team: %v", err)
@@ -3847,7 +3848,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	if after == nil {
 		after = auditTeam(team)
 	}
-	lib.RecordAuditChange(ctx, "team.updated", "team", team.ID, team.Name, before, after)
+	rec.SetAfter(after)
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Team updated successfully",
 		"team":    preloadedTeam,
@@ -4201,6 +4202,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	// Not swallowed on this path: the usage reset below is ordered after the reload
 	// and depends on it, so continuing would clear usage against stale in-memory
 	// config and still answer 200 with the pre-update customer.
+	rec := lib.RecordAuditChange(ctx, "customer.updated", "customer", customer.ID, customer.Name, before, auditCustomer(customer))
 	preloadedCustomer, err := h.governanceManager.ReloadCustomer(ctx, customer.ID)
 	if err != nil {
 		logger.Error("failed to reload customer: %v", err)
@@ -4234,7 +4236,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	if after == nil {
 		after = auditCustomer(customer)
 	}
-	lib.RecordAuditChange(ctx, "customer.updated", "customer", customer.ID, customer.Name, before, after)
+	rec.SetAfter(after)
 	SendJSON(ctx, map[string]interface{}{
 		"message":  "Customer updated successfully",
 		"customer": preloadedCustomer,
@@ -5005,6 +5007,7 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 	// Not swallowed on this path: the usage reset below is ordered after the reload
 	// and depends on it, so continuing would clear usage against stale in-memory
 	// config and still answer 200 with the pre-update model config.
+	rec := lib.RecordAuditChange(ctx, "model_config.updated", "model_config", mc.ID, mc.ModelName, before, mc)
 	updatedMC, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID)
 	if err != nil {
 		logger.Error("failed to reload model config in memory: %v", err)
@@ -5023,7 +5026,7 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 	}
 	h.resolveModelConfigScopeName(ctx, updatedMC, map[string]string{})
 	h.resolveModelConfigManagedBy(ctx, updatedMC, map[string]configstoreTables.SourceRef{})
-	lib.RecordAuditChange(ctx, "model_config.updated", "model_config", mc.ID, mc.ModelName, before, updatedMC)
+	rec.SetAfter(updatedMC)
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config updated successfully",
 		"model_config": updatedMC,
@@ -5345,6 +5348,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			resp = r
 		}
 	}
+	lib.RecordAuditChange(ctx, "provider_governance.updated", "provider_governance", providerName, providerName, before, resp)
 	// Clear usage in the store that enforces spend. This runs after the reload,
 	// which deliberately carries each budget's cached usage forward and would
 	// otherwise undo the reset. Skipped when the governance was deleted outright,
@@ -5367,7 +5371,6 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
-	lib.RecordAuditChange(ctx, "provider_governance.updated", "provider_governance", providerName, providerName, before, resp)
 	SendJSON(ctx, map[string]interface{}{
 		"message":  "Provider governance updated successfully",
 		"provider": resp,
@@ -5627,13 +5630,13 @@ func (h *GovernanceHandler) createPricingOverride(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to create pricing override")
 		return
 	}
+	lib.RecordAuditChange(ctx, "pricing_override.created", "pricing_override", override.ID, override.Name, nil, override)
 
 	if err := h.governanceManager.UpsertPricingOverride(ctx, &override); err != nil {
 		logger.Error("failed to upsert pricing override: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to upsert pricing override")
 		return
 	}
-	lib.RecordAuditChange(ctx, "pricing_override.created", "pricing_override", override.ID, override.Name, nil, override)
 	SendJSONWithStatus(ctx, map[string]interface{}{
 		"message":          "Pricing override created successfully",
 		"pricing_override": override,
@@ -5749,13 +5752,13 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to update pricing override")
 		return
 	}
+	lib.RecordAuditChange(ctx, "pricing_override.updated", "pricing_override", override.ID, override.Name, existing, override)
 
 	if err := h.governanceManager.UpsertPricingOverride(ctx, &override); err != nil {
 		logger.Error("failed to upsert pricing override: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to upsert pricing override")
 		return
 	}
-	lib.RecordAuditChange(ctx, "pricing_override.updated", "pricing_override", override.ID, override.Name, existing, override)
 	SendJSON(ctx, map[string]interface{}{
 		"message":          "Pricing override updated successfully",
 		"pricing_override": override,
