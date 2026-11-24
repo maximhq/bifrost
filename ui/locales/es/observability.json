@@ -797,6 +797,7 @@
 			"toastExported_other": "Se exportaron {{count}} registros",
 			"toastFailed": "Error al exportar: {{error}}",
 			"summary": {
+				"jobId": "ID del job: {{value}}",
 				"search": "búsqueda \"{{value}}\"",
 				"request": "solicitud \"{{value}}\"",
 				"providers": "proveedores ({{total}})",
@@ -823,6 +824,20 @@
 		"batchMixedModel": "mixto"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "La fila de liquidación se eliminó antes del cobro",
+			"relay_job_no_usage": "La respuesta final no tenía uso que cobrar",
+			"relay_job_rejected": "El upstream rechazó el id del job",
+			"relay_job_access_denied": "El upstream denegó el acceso al job",
+			"relay_job_gone": "El upstream ya no reconoce el job",
+			"relay_job_timeout": "No terminó antes del tiempo límite",
+			"relay_job_params": "No se pudo leer la configuración del job"
+		},
+		"jobOutcome": {
+			"unpriced": "Sin precio",
+			"failed": "Fallido",
+			"succeeded": "Completado"
+		},
 		"fields": {
 			"relay": "Relay",
 			"kind": "Tipo",
@@ -841,6 +856,9 @@
 			"no": "No"
 		},
 		"columns": {
+			"startsJob": "Inicia el job {{id}}",
+			"jobUnpriced": "Sin precio: {{reason}}",
+			"jobFailed": "Fallido: {{status}}",
 			"jobBadge": "JOB",
 			"noRoute": "Sin ruta",
 			"route": "Ruta {{route}}",
@@ -881,6 +899,12 @@
 			"perRequest": "{{value}}/solicitud"
 		},
 		"detail": {
+			"jobStatusStat": "Estado del job",
+			"jobNotSettled": "Aún no liquidado",
+			"jobSettlement": "Liquidación del job",
+			"costUnpriced": "sin precio",
+			"unpricedBody": "Bifrost no pudo poner precio a este job, así que su coste es desconocido y el job no se cobró. La llamada de inicio conservó su propio cobro.",
+			"unpricedTitle": "Job sin precio",
 			"loadingDetails": "Cargando los detalles del log de relay",
 			"notFound": "No se encontró el log de relay",
 			"loadFailed": "No se pudo cargar este log de relay.",
@@ -926,6 +950,7 @@
 			"contentHidden": "El registro de contenido se deshabilitó para esta solicitud."
 		},
 		"filters": {
+			"unpriced": "Jobs sin precio",
 			"reset": "Restablecer",
 			"searchRelays": "Buscar relays",
 			"searchMethods": "Buscar métodos",

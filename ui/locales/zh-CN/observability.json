@@ -792,6 +792,7 @@
 			"toastExported_other": "已导出 {{count}} 条日志",
 			"toastFailed": "导出失败：{{error}}",
 			"summary": {
+				"jobId": "作业 ID：{{value}}",
 				"search": "搜索“{{value}}”",
 				"request": "请求“{{value}}”",
 				"providers": "供应商（{{total}}）",
@@ -818,6 +819,20 @@
 		"batchMixedModel": "混合"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "结算行在扣费前已被删除",
+			"relay_job_no_usage": "最终回复中没有可计价的用量",
+			"relay_job_rejected": "上游拒绝了作业 ID",
+			"relay_job_access_denied": "上游拒绝访问该作业",
+			"relay_job_gone": "上游已找不到该作业",
+			"relay_job_timeout": "未在超时前完成",
+			"relay_job_params": "无法读取作业设置"
+		},
+		"jobOutcome": {
+			"unpriced": "未计价",
+			"failed": "失败",
+			"succeeded": "成功"
+		},
 		"fields": {
 			"relay": "中继",
 			"kind": "类型",
@@ -836,6 +851,9 @@
 			"no": "否"
 		},
 		"columns": {
+			"startsJob": "启动作业 {{id}}",
+			"jobUnpriced": "未计价：{{reason}}",
+			"jobFailed": "失败：{{status}}",
 			"jobBadge": "作业",
 			"noRoute": "无路由",
 			"route": "路由 {{route}}",
@@ -876,6 +894,12 @@
 			"perRequest": "{{value}}/请求"
 		},
 		"detail": {
+			"jobStatusStat": "作业状态",
+			"jobNotSettled": "尚未结算",
+			"jobSettlement": "作业结算",
+			"costUnpriced": "未计价",
+			"unpricedBody": "Bifrost 无法为此作业计价，因此其费用未知，作业本身未扣费。启动调用保留其自身的扣费。",
+			"unpricedTitle": "未计价的作业",
 			"loadingDetails": "正在加载中继日志详情",
 			"notFound": "未找到中继日志",
 			"loadFailed": "无法加载此中继日志。",
@@ -921,6 +945,7 @@
 			"contentHidden": "此请求已禁用内容日志记录。"
 		},
 		"filters": {
+			"unpriced": "未计价的作业",
 			"reset": "重置",
 			"searchRelays": "搜索中继",
 			"searchMethods": "搜索方法",

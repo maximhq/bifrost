@@ -797,6 +797,7 @@
 			"toastExported_other": "{{count}} logs exportados",
 			"toastFailed": "Falha na exportação: {{error}}",
 			"summary": {
+				"jobId": "ID da tarefa: {{value}}",
 				"search": "pesquisa \"{{value}}\"",
 				"request": "solicitação \"{{value}}\"",
 				"providers": "provedores ({{total}})",
@@ -823,6 +824,20 @@
 		"batchMixedModel": "misto"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "A linha de liquidação foi excluída antes da cobrança",
+			"relay_job_no_usage": "A resposta final não tinha uso para cobrar",
+			"relay_job_rejected": "O upstream recusou o id da tarefa",
+			"relay_job_access_denied": "O upstream negou acesso à tarefa",
+			"relay_job_gone": "O upstream não reconhece mais a tarefa",
+			"relay_job_timeout": "Não terminou antes do tempo limite",
+			"relay_job_params": "Não foi possível ler as configurações da tarefa"
+		},
+		"jobOutcome": {
+			"unpriced": "Sem preço",
+			"failed": "Falhou",
+			"succeeded": "Concluído"
+		},
 		"fields": {
 			"relay": "Relay",
 			"kind": "Tipo",
@@ -841,6 +856,9 @@
 			"no": "Não"
 		},
 		"columns": {
+			"startsJob": "Inicia a tarefa {{id}}",
+			"jobUnpriced": "Sem preço: {{reason}}",
+			"jobFailed": "Falhou: {{status}}",
 			"jobBadge": "TAREFA",
 			"noRoute": "Sem rota",
 			"route": "Rota {{route}}",
@@ -881,6 +899,12 @@
 			"perRequest": "{{value}}/pedido"
 		},
 		"detail": {
+			"jobStatusStat": "Status da tarefa",
+			"jobNotSettled": "Ainda não liquidado",
+			"jobSettlement": "Liquidação da tarefa",
+			"costUnpriced": "sem preço",
+			"unpricedBody": "O Bifrost não conseguiu precificar esta tarefa, então o custo é desconhecido e a tarefa não foi cobrada. A chamada de início manteve sua própria cobrança.",
+			"unpricedTitle": "Tarefa sem preço",
 			"loadingDetails": "A carregar detalhes do registo de relay",
 			"notFound": "Registo de relay não encontrado",
 			"loadFailed": "Não foi possível carregar este registo de relay.",
@@ -926,6 +950,7 @@
 			"contentHidden": "O registo de conteúdo foi desativado para este pedido."
 		},
 		"filters": {
+			"unpriced": "Tarefas sem preço",
 			"reset": "Repor",
 			"searchRelays": "Pesquisar relays",
 			"searchMethods": "Pesquisar métodos",

@@ -46,6 +46,7 @@ export function buildRelayLogQuery(filters: RelayLogFilters, pagination?: RelayL
 	if (filters.request_id) params.set("request_id", filters.request_id);
 	if (filters.session_id) params.set("session_id", filters.session_id);
 	if (filters.job_id) params.set("job_id", filters.job_id);
+	if (filters.unpriced) params.set("unpriced", "true");
 	if (filters.parent_request_id) params.set("parent_request_id", filters.parent_request_id);
 	if (filters.agent_correlation_id) params.set("agent_correlation_id", filters.agent_correlation_id);
 	if (filters.search) params.set("search", filters.search);

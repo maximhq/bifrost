@@ -792,6 +792,7 @@
 			"toastExported_other": "已匯出 {{count}} 筆日誌",
 			"toastFailed": "匯出失敗：{{error}}",
 			"summary": {
+				"jobId": "作業 ID：{{value}}",
 				"search": "搜尋「{{value}}」",
 				"request": "請求「{{value}}」",
 				"providers": "供應商（{{total}}）",
@@ -818,6 +819,20 @@
 		"batchMixedModel": "混合"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "結算列在扣款前已被刪除",
+			"relay_job_no_usage": "最終回覆中沒有可計價的用量",
+			"relay_job_rejected": "上游拒絕了作業 ID",
+			"relay_job_access_denied": "上游拒絕存取該作業",
+			"relay_job_gone": "上游已找不到該作業",
+			"relay_job_timeout": "未在逾時前完成",
+			"relay_job_params": "無法讀取作業設定"
+		},
+		"jobOutcome": {
+			"unpriced": "未計價",
+			"failed": "失敗",
+			"succeeded": "成功"
+		},
 		"fields": {
 			"relay": "轉送",
 			"kind": "類型",
@@ -836,6 +851,9 @@
 			"no": "否"
 		},
 		"columns": {
+			"startsJob": "啟動作業 {{id}}",
+			"jobUnpriced": "未計價：{{reason}}",
+			"jobFailed": "失敗：{{status}}",
 			"jobBadge": "作業",
 			"noRoute": "無路由",
 			"route": "路由 {{route}}",
@@ -876,6 +894,12 @@
 			"perRequest": "{{value}}/請求"
 		},
 		"detail": {
+			"jobStatusStat": "作業狀態",
+			"jobNotSettled": "尚未結算",
+			"jobSettlement": "作業結算",
+			"costUnpriced": "未計價",
+			"unpricedBody": "Bifrost 無法為此作業計價，因此其費用未知，作業本身未扣款。啟動呼叫保留其自身的扣款。",
+			"unpricedTitle": "未計價的作業",
 			"loadingDetails": "正在載入轉送日誌詳細資料",
 			"notFound": "找不到轉送日誌",
 			"loadFailed": "無法載入此轉送日誌。",
@@ -921,6 +945,7 @@
 			"contentHidden": "此請求已停用內容記錄。"
 		},
 		"filters": {
+			"unpriced": "未計價的作業",
 			"reset": "重設",
 			"searchRelays": "搜尋轉送",
 			"searchMethods": "搜尋方法",

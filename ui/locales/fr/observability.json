@@ -773,6 +773,7 @@
 			"toastExported_other": "{{count}} journaux exportés",
 			"toastFailed": "Échec de l’exportation : {{error}}",
 			"summary": {
+				"jobId": "ID de tâche : {{value}}",
 				"search": "recherche « {{value}} »",
 				"request": "requête « {{value}} »",
 				"providers": "fournisseurs ({{total}})",
@@ -823,6 +824,20 @@
 		"batchMixedModel": "mixte"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "La ligne de règlement a été supprimée avant la facturation",
+			"relay_job_no_usage": "La réponse finale ne contenait aucun usage à facturer",
+			"relay_job_rejected": "L’upstream a refusé l’ID de la tâche",
+			"relay_job_access_denied": "L’upstream a refusé l’accès à la tâche",
+			"relay_job_gone": "L’upstream ne connaît plus la tâche",
+			"relay_job_timeout": "Non terminée avant le délai",
+			"relay_job_params": "Paramètres de la tâche illisibles"
+		},
+		"jobOutcome": {
+			"unpriced": "Sans prix",
+			"failed": "Échoué",
+			"succeeded": "Réussi"
+		},
 		"fields": {
 			"relay": "Relais",
 			"kind": "Type",
@@ -841,6 +856,9 @@
 			"no": "Non"
 		},
 		"columns": {
+			"startsJob": "Démarre la tâche {{id}}",
+			"jobUnpriced": "Sans prix : {{reason}}",
+			"jobFailed": "Échoué : {{status}}",
 			"jobBadge": "TÂCHE",
 			"noRoute": "Aucune route",
 			"route": "Route {{route}}",
@@ -881,6 +899,12 @@
 			"perRequest": "{{value}}/req"
 		},
 		"detail": {
+			"jobStatusStat": "Statut de la tâche",
+			"jobNotSettled": "Pas encore réglé",
+			"jobSettlement": "Règlement de la tâche",
+			"costUnpriced": "sans prix",
+			"unpricedBody": "Bifrost n’a pas pu fixer le prix de cette tâche : son coût est inconnu et la tâche elle-même n’a pas été facturée. L’appel de démarrage garde sa propre facturation.",
+			"unpricedTitle": "Tâche sans prix",
 			"loadingDetails": "Chargement des détails du journal de relais",
 			"notFound": "Journal de relais introuvable",
 			"loadFailed": "Ce journal de relais n’a pas pu être chargé.",
@@ -926,6 +950,7 @@
 			"contentHidden": "La journalisation du contenu a été désactivée pour cette requête."
 		},
 		"filters": {
+			"unpriced": "Tâches sans prix",
 			"reset": "Réinitialiser",
 			"searchRelays": "Rechercher des relais",
 			"searchMethods": "Rechercher des méthodes",

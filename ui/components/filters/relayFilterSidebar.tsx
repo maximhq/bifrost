@@ -169,7 +169,7 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 					</FilterSection>
 					<FilterSection
 						title={t("relayLogs.fields.kind")}
-						defaultOpen={(filters.kinds ?? []).length > 0}
+						defaultOpen={(filters.kinds ?? []).length > 0 || filters.unpriced === true}
 						testId="relay-kind-filter-toggle"
 					>
 						<CheckboxFilterItem
@@ -183,6 +183,12 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 							checked={(filters.kinds ?? []).includes("job")}
 							onCheckedChange={() => toggle("kinds", "job")}
 							testId="relay-kind-filter-checkbox-job"
+						/>
+						<CheckboxFilterItem
+							label={t("relayLogs.filters.unpriced")}
+							checked={filters.unpriced === true}
+							onCheckedChange={() => onFiltersChange({ ...filters, unpriced: filters.unpriced ? undefined : true })}
+							testId="relay-kind-filter-checkbox-unpriced"
 						/>
 					</FilterSection>
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />

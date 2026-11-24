@@ -31,7 +31,7 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { logAppDisplayName, mapAppToClientApp, mapUserAgentToApp, type Status } from "@/lib/constants/logs";
-import { useGetRelayLogQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
+import { useGetRelayLogQuery, useGetRelayLogsQuery, useGetUserAgentMappingsQuery } from "@/lib/store";
 import type { RelayLog } from "@/lib/types/relays";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
@@ -44,6 +44,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getLocale } from "@/lib/i18n";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
+import { RELAY_JOB_OUTCOME_CLASS, relayJobOutcome, relayJobReason, relayJobSettledAt } from "../relayJob";
 
 interface RelayLogDetailSheetProps {
 	log: RelayLog | null;
@@ -147,6 +148,20 @@ function CorrelationLink({
 	);
 }
 
+/** Opens another Relay Logs row in this sheet, by its row id. */
+function LogLink({ id, testId, children }: { id: string; testId?: string; children?: React.ReactNode }) {
+	return (
+		<Link
+			to="/workspace/relay-logs"
+			search={(prev) => ({ ...prev, selected_log: id })}
+			className="font-mono text-xs text-blue-600 hover:underline dark:text-blue-400"
+			data-testid={testId}
+		>
+			{children ?? id}
+		</Link>
+	);
+}
+
 function HeadersGrid({ headers }: { headers: Record<string, string> }) {
 	const entries = Object.entries(headers).sort(([a], [b]) => a.localeCompare(b));
 	if (entries.length === 0) return null;
@@ -191,20 +206,27 @@ export function RelayLogDetailSheet({
 	const start = display ? new Date(display.timestamp) : null;
 	const hasStart = start !== null && isValid(start);
 	const hasLatency = display?.latency != null && !isNaN(display.latency);
-	const end = hasStart && hasLatency ? addMilliseconds(start, display.latency as number) : null;
+	// A job row's time is its start call's; it ended when it was settled.
+	const settledAt = display ? relayJobSettledAt(display) : null;
+	const end = settledAt ?? (hasStart && hasLatency ? addMilliseconds(start, display.latency as number) : null);
 	const errorMessage = display?.error_details?.error?.message;
 	const errorRaw = display?.error_details?.error?.error;
-	const showError = !!display && (display.status === "error" || !!errorMessage);
+	const jobOutcome = display?.kind === "job" ? relayJobOutcome(display) : undefined;
+	// An unpriced job is a settlement without a price, not a failed call: it gets its own notice.
+	const showError = !!display && jobOutcome !== "unpriced" && (display.status === "error" || !!errorMessage);
+	// A start call shows what became of its job: the settlement row, once the job has one.
+	const startedJobId = open && display?.kind === "call" ? display.job_id : undefined;
+	const { currentData: settlementPage } = useGetRelayLogsQuery(
+		{ filters: { job_id: startedJobId, kinds: ["job"] }, pagination: { limit: 1, offset: 0, sort_by: "timestamp", order: "desc" } },
+		{ skip: !startedJobId },
+	);
+	const settlement = startedJobId ? settlementPage?.logs?.[0] : undefined;
 	// The row stores the redacted query on the path; split it back out as the LLM sheet shows Path and Query.
 	const queryIndex = display?.path.indexOf("?") ?? -1;
 	const pathOnly = display ? (queryIndex >= 0 ? display.path.slice(0, queryIndex) : display.path) : "";
 	const queryOnly = display && queryIndex >= 0 ? display.path.slice(queryIndex + 1) : "";
 	const queryParams = useMemo(() => [...new URLSearchParams(queryOnly).entries()], [queryOnly]);
-	const requestLine = display
-		? display.kind === "job"
-			? t("relayLogs.detail.jobLine", { id: display.job_id ?? "—" })
-			: `${display.method} ${pathOnly}`
-		: "";
+	const requestLine = display ? (display.kind === "job" ? (display.job_id ?? "—") : `${display.method} ${pathOnly}`) : "";
 
 	// Client app, mapped the same way the LLM sheet maps it: the backend-detected app first, then the User-Agent.
 	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery(undefined, { skip: !open });
@@ -346,6 +368,15 @@ export function RelayLogDetailSheet({
 												</Badge>
 											)}
 											<StatusPill status={display.status as Status} />
+											{jobOutcome && (
+												<Badge
+													variant="outline"
+													className={cn("rounded-sm px-2 py-0.5 font-medium", RELAY_JOB_OUTCOME_CLASS[jobOutcome])}
+													data-testid="relay-log-job-outcome"
+												>
+													{t(`relayLogs.jobOutcome.${jobOutcome}`)}
+												</Badge>
+											)}
 											{!display.billable && (
 												<Badge variant="outline" className="bg-card text-muted-foreground rounded-sm px-2 py-0.5 font-normal">
 													{t("relayLogs.fields.notBillable")}
@@ -414,17 +445,29 @@ export function RelayLogDetailSheet({
 												: display.cost_per_request != null
 													? t("relayLogs.detail.perCall", { cost: formatCostPrecise(display.cost_per_request) })
 													: display.cost == null
-														? t("relayLogs.detail.notCharged")
+														? jobOutcome === "unpriced"
+															? t("relayLogs.detail.costUnpriced")
+															: t("relayLogs.detail.notCharged")
 														: ""
 										}
 										hasRightBorder
 									/>
-									<HeroStat
-										label={t("relayLogs.detail.bytesOut")}
-										mono
-										value={formatCompactNumber(display.bytes_out)}
-										sub={display.bytes_out.toLocaleString(getLocale())}
-									/>
+									{display.kind === "job" ? (
+										// A job row sends no bytes; the job's own status takes the slot.
+										<HeroStat
+											label={t("relayLogs.detail.jobStatusStat")}
+											mono
+											value={display.job_status ?? "—"}
+											sub={jobOutcome ? t(`relayLogs.jobOutcome.${jobOutcome}`) : ""}
+										/>
+									) : (
+										<HeroStat
+											label={t("relayLogs.detail.bytesOut")}
+											mono
+											value={formatCompactNumber(display.bytes_out)}
+											sub={display.bytes_out.toLocaleString(getLocale())}
+										/>
+									)}
 								</div>
 							</div>
 
@@ -579,8 +622,12 @@ export function RelayLogDetailSheet({
 													}
 												/>
 											)}
-											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.method")} value={display.method || "—"} />
-											<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.path")} value={pathOnly || "—"} />
+											{display.kind !== "job" && (
+												<>
+													<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.method")} value={display.method || "—"} />
+													<LogEntryDetailsView className="w-full" label={t("relayLogs.fields.path")} value={pathOnly || "—"} />
+												</>
+											)}
 											<LogEntryDetailsView
 												className="w-full"
 												label={t("relayLogs.detail.matchedRoute")}
@@ -591,18 +638,40 @@ export function RelayLogDetailSheet({
 												label={t("relayLogs.fields.billable")}
 												value={display.billable ? t("relayLogs.fields.yes") : t("relayLogs.fields.no")}
 											/>
-											<LogEntryDetailsView
-												className="w-full"
-												label={t("relayLogs.fields.streamed")}
-												value={display.streamed ? t("relayLogs.fields.yes") : t("relayLogs.fields.no")}
-											/>
+											{display.kind !== "job" && (
+												<LogEntryDetailsView
+													className="w-full"
+													label={t("relayLogs.fields.streamed")}
+													value={display.streamed ? t("relayLogs.fields.yes") : t("relayLogs.fields.no")}
+												/>
+											)}
 											{display.model && <LogEntryDetailsView className="w-full" label={t("labels.model")} value={display.model} />}
 											<CorrelationLink
 												label={t("relayLogs.fields.job")}
 												id={display.job_id}
 												filterKey="job_id"
-												suffix={display.job_id ? (display.job_status ?? "-") : undefined}
+												suffix={display.kind === "job" && display.job_id ? (display.job_status ?? "-") : undefined}
 											/>
+											{startedJobId && (
+												<LogEntryDetailsView
+													className="w-full"
+													label={t("relayLogs.detail.jobSettlement")}
+													value={
+														settlement ? (
+															<LogLink id={settlement.id} testId="relay-log-job-settlement-link">
+																{[
+																	t(`relayLogs.jobOutcome.${relayJobOutcome(settlement)}`),
+																	settlement.cost != null ? formatCostPrecise(settlement.cost) : "",
+																]
+																	.filter(Boolean)
+																	.join(" · ")}
+															</LogLink>
+														) : (
+															t("relayLogs.detail.jobNotSettled")
+														)
+													}
+												/>
+											)}
 											<CorrelationLink label={t("filters.sessionID")} id={display.session_id} filterKey="session_id" />
 											<CorrelationLink
 												label={t("logs.detail.parentRequestID")}
@@ -618,7 +687,7 @@ export function RelayLogDetailSheet({
 												<LogEntryDetailsView
 													className="w-full"
 													label={t("relayLogs.detail.parentLog")}
-													value={<code className="font-mono text-xs">{display.parent_log_id}</code>}
+													value={<LogLink id={display.parent_log_id} testId="relay-log-parent-link" />}
 												/>
 											)}
 											{display.job_debug && (
@@ -656,14 +725,7 @@ export function RelayLogDetailSheet({
 														<LogEntryDetailsView
 															className="w-full"
 															label={t("relayLogs.detail.jobSettledBy")}
-															value={<code className="font-mono text-xs">{display.job_debug.settled_by_request_id}</code>}
-														/>
-													)}
-													{display.job_debug.last_error && (
-														<LogEntryDetailsView
-															className="w-full"
-															label={t("relayLogs.detail.jobLastError")}
-															value={display.job_debug.last_error}
+															value={<LogLink id={display.job_debug.settled_by_request_id} testId="relay-log-settled-by-link" />}
 														/>
 													)}
 												</>
@@ -755,6 +817,27 @@ export function RelayLogDetailSheet({
 									)}
 								</div>
 							</details>
+
+							{jobOutcome === "unpriced" && (
+								<div
+									className="rounded-sm border border-amber-200 bg-amber-50/70 p-5 dark:border-amber-900 dark:bg-amber-950/30"
+									data-testid="relay-log-job-unpriced"
+								>
+									<div className="flex items-center gap-2 text-amber-800 dark:text-amber-300">
+										<AlertCircle className="h-4 w-4 shrink-0" />
+										<span className="text-[12.5px] font-semibold">{t("relayLogs.detail.unpricedTitle")}</span>
+									</div>
+									<p className="mt-2 text-[13px] leading-relaxed text-amber-800 dark:text-amber-300">
+										{t("relayLogs.detail.unpricedBody")}
+									</p>
+									<p className="mt-2 text-[13px] leading-relaxed font-medium break-words text-amber-900 dark:text-amber-200">
+										{relayJobReason(display)}
+									</p>
+									{errorMessage && errorMessage !== relayJobReason(display) ? (
+										<p className="mt-1 font-mono text-[12px] break-words text-amber-900/80 dark:text-amber-200/80">{errorMessage}</p>
+									) : null}
+								</div>
+							)}
 
 							{showError && (
 								<div

@@ -37,9 +37,17 @@ describe("buildRelayLogQuery", () => {
 
 	it("sends the correlation ids and the content search", () => {
 		const params = new URLSearchParams(
-			buildRelayLogQuery({ session_id: "s-1", job_id: "job-1", parent_request_id: "p-1", agent_correlation_id: "a-1", content_search: "wombat" }),
+			buildRelayLogQuery({
+				session_id: "s-1",
+				job_id: "job-1",
+				parent_request_id: "p-1",
+				agent_correlation_id: "a-1",
+				content_search: "wombat",
+			}),
 		);
 		expect(params.get("job_id")).toBe("job-1");
+		expect(new URLSearchParams(buildRelayLogQuery({ unpriced: true })).get("unpriced")).toBe("true");
+		expect(new URLSearchParams(buildRelayLogQuery({})).has("unpriced")).toBe(false);
 		expect(params.get("session_id")).toBe("s-1");
 		expect(params.get("parent_request_id")).toBe("p-1");
 		expect(params.get("agent_correlation_id")).toBe("a-1");

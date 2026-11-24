@@ -48,10 +48,20 @@ func TestRelayLogsRoundTrip(t *testing.T) {
 	got, err = store.FindRelayLog(ctx, "c-job")
 	require.NoError(t, err)
 	assert.Equal(t, &RelayJobDebug{Polls: 3, LastStatus: "SUCCEEDED", LastHTTPStatus: 200, SettledAt: now}, got.JobDebugParsed, "a job row's polling details round-trip")
+	// Job rows have no latency, and unpriced ones no cost: they sort last either way, and search finds a job id.
+	for _, order := range []string{"asc", "desc"} {
+		page, err := store.SearchRelayLogs(ctx, RelayLogFilters{}, PaginationOptions{Limit: 10, SortBy: "latency", Order: order})
+		require.NoError(t, err)
+		assert.Nil(t, page.Logs[len(page.Logs)-1].Latency, "a row with no latency sorts last (%s)", order)
+	}
+	page, err := store.SearchRelayLogs(ctx, RelayLogFilters{Search: "j-1"}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, page.Logs, 1)
+	assert.Equal(t, "c-job", page.Logs[0].ID)
 	_, err = store.FindRelayLog(ctx, "missing")
 	require.ErrorIs(t, err, ErrNotFound)
 
-	page, err := store.SearchRelayLogs(ctx, RelayLogFilters{EndpointNames: []string{"tavily"}}, PaginationOptions{Limit: 10})
+	page, err = store.SearchRelayLogs(ctx, RelayLogFilters{EndpointNames: []string{"tavily"}}, PaginationOptions{Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, page.Logs, 2)
 	assert.Equal(t, "b", page.Logs[0].ID, "newest first")

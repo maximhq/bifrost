@@ -148,3 +148,37 @@ describe("normalizeRelayExportFilters", () => {
 		expect(normalizeRelayExportFilters(fixed)).toBe(fixed);
 	});
 });
+
+describe("job rows in the export", () => {
+	const base = {
+		id: "j",
+		request_id: "j",
+		timestamp: "2026-11-24T10:00:00Z",
+		relay_name: "r",
+		kind: "job",
+		method: "",
+		path: "",
+		status: "success",
+		status_code: 0,
+		billable: true,
+		streamed: false,
+		bytes_out: 0,
+		job_id: "job-1",
+		job_status: "IN_PROGRESS",
+	} as unknown as RelayLog;
+	const col = (log: RelayLog, name: (typeof RELAY_LOGS_CSV_HEADERS)[number]) => relayLogToCSVRow(log)[RELAY_LOGS_CSV_HEADERS.indexOf(name)];
+	it("carries how a job ended and why it was not priced", () => {
+		const unpriced = {
+			...base,
+			error_details: { error: { type: "relay_job_timeout", message: "job did not finish" } },
+			job_debug: { outcome: "unpriced", polls: 3, settled_at: "2026-11-24T11:00:00Z" },
+		} as unknown as RelayLog;
+		expect(col(unpriced, "Job Status")).toBe("IN_PROGRESS");
+		expect(col(unpriced, "Job Outcome")).toBe("unpriced");
+		expect(col(unpriced, "Job Settled At")).toBe("2026-11-24T11:00:00Z");
+		expect(col(unpriced, "Unpriced Reason")).toBe("Did not finish before its timeout");
+		// A row written before job_debug had an outcome is read off its cost.
+		expect(col({ ...base, cost: 0.2 } as RelayLog, "Job Outcome")).toBe("succeeded");
+		expect(col({ ...base, kind: "call" } as RelayLog, "Job Outcome")).toBe("");
+	});
+});

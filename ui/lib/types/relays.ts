@@ -237,6 +237,7 @@ export type RelayLogStatus = "success" | "error" | "cancelled" | "processing";
 
 /** How a job row's job was polled (job_debug); poll replies are never stored. */
 export interface RelayJobDebug {
+	outcome?: "succeeded" | "failed" | "unpriced";
 	polls: number;
 	last_status?: string;
 	last_http_status?: number;
@@ -331,6 +332,8 @@ export interface RelayLogFilters {
 	session_id?: string;
 	/** Exact job id: a job route's start call and the settlement rows it produced. */
 	job_id?: string;
+	/** Job rows that ended without a price. */
+	unpriced?: boolean;
 	parent_request_id?: string;
 	agent_correlation_id?: string;
 	search?: string;

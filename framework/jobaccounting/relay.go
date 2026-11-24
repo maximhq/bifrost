@@ -475,7 +475,12 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 	if e.verdict.status != "" {
 		entry.JobDebugParsed.LastStatus = e.verdict.status
 	}
+	entry.JobDebugParsed.Outcome = logstore.RelayJobOutcomeFailed
+	if e.verdict.succeeded {
+		entry.JobDebugParsed.Outcome = logstore.RelayJobOutcomeSucceeded
+	}
 	if e.unpriced {
+		entry.JobDebugParsed.Outcome = logstore.RelayJobOutcomeUnpriced
 		entry.Cost, entry.CostPerRequest, entry.CostPerUnit = nil, nil, nil
 		message := e.verdict.reason
 		if e.verdict.reasonErr != nil {
@@ -504,7 +509,7 @@ func copyStartAttribution(entry, start *logstore.RelayLog) {
 	entry.TeamName, entry.CustomerName = start.TeamName, start.CustomerName
 	entry.BusinessUnitID, entry.BusinessUnitName = start.BusinessUnitID, start.BusinessUnitName
 	entry.ProjectID, entry.ProjectName = start.ProjectID, start.ProjectName
-	entry.SessionID, entry.AgentCorrelationID = start.SessionID, start.AgentCorrelationID
+	entry.SessionID, entry.AgentCorrelationID, entry.ParentRequestID = start.SessionID, start.AgentCorrelationID, start.ParentRequestID
 	entry.UserAgent, entry.App = start.UserAgent, start.App
 	entry.TeamIDsParsed, entry.TeamNamesParsed = start.TeamIDsParsed, start.TeamNamesParsed
 	entry.CustomerIDsParsed, entry.CustomerNamesParsed = start.CustomerIDsParsed, start.CustomerNamesParsed

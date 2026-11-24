@@ -181,6 +181,7 @@ func TestEndpointJobSweeperSettlesOnce(t *testing.T) {
 	assert.Equal(t, 2, row.JobDebugParsed.Polls, "one poll found it running, one found it done")
 	assert.Equal(t, "SUCCEEDED", row.JobDebugParsed.LastStatus)
 	assert.Equal(t, 200, row.JobDebugParsed.LastHTTPStatus)
+	assert.Equal(t, logstore.RelayJobOutcomeSucceeded, row.JobDebugParsed.Outcome)
 	assert.Empty(t, row.JobDebugParsed.LastError)
 	assert.Equal(t, "textract-v2", row.Model)
 	assert.Equal(t, "/jobs", row.RoutePath)
@@ -341,6 +342,7 @@ func TestEndpointJobSweeperPollsOnceMorePastTimeout(t *testing.T) {
 	assert.Equal(t, 1, row.JobDebugParsed.Polls)
 	assert.Equal(t, "IN_PROGRESS", row.JobDebugParsed.LastStatus)
 	assert.Contains(t, row.JobDebugParsed.LastError, "did not finish")
+	assert.Equal(t, logstore.RelayJobOutcomeUnpriced, row.JobDebugParsed.Outcome)
 	assert.Empty(t, row.Model, "no start row to copy from leaves the job row as it was")
 }
 
