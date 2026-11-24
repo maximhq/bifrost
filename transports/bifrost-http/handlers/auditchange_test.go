@@ -12,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
@@ -1435,6 +1436,330 @@ func TestCommitPoint_PluginUpdateLoadFailure(t *testing.T) {
 			changes := liveAuditChanges(ctx)
 			if tc.wantRecorded != (len(changes) == 1 && changes[0].EventName == "plugin.updated") {
 				t.Fatalf("recorded=%v, changes=%+v", tc.wantRecorded, changes)
+			}
+		})
+	}
+}
+
+// marshallerOnLoadPluginsLoader can redact a plugin's config only after loading it.
+type marshallerOnLoadPluginsLoader struct {
+	noopPluginsLoader
+	loaded bool
+}
+
+func (l *marshallerOnLoadPluginsLoader) ReloadPlugin(context.Context, string, *string, any, *schemas.PluginPlacement, *int) error {
+	l.loaded = true
+	return nil
+}
+
+func (l *marshallerOnLoadPluginsLoader) ExpandPluginConfigForAPI(string, map[string]any) (map[string]any, error) {
+	if !l.loaded {
+		return nil, nil
+	}
+	return map[string]any{"token": "redacted"}, nil
+}
+
+func TestCommitPoint_PluginEnableRecordsConfigRedactedByTheLoadedPlugin(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const secret = "plugin-secret-commit-point"
+	store := setupPricingOverrideHandlerStore(t)
+	if err := store.CreatePlugin(context.Background(), &configstoreTables.TablePlugin{Name: "otel", Config: map[string]any{"token": secret}}); err != nil {
+		t.Fatalf("seed plugin: %v", err)
+	}
+	h := &PluginsHandler{pluginsLoader: &marshallerOnLoadPluginsLoader{}, configStore: store}
+	ctx := newTestRequestCtx(`{"enabled":true,"config":{"token":"` + secret + `"}}`)
+	ctx.Request.Header.SetMethod("PUT")
+	ctx.SetUserValue("name", "otel")
+	h.updatePlugin(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusOK)
+	change := requireCommitPointChange(t, ctx, "plugin.updated", "enabled", true)
+	requireNoSecret(t, change, secret)
+	if !strings.Contains(string(change.After), `"token":"redacted"`) {
+		t.Fatalf("after = %s, want the redacted config", change.After)
+	}
+}
+
+// failingRuleReloadManager fails the in-memory reload after a routing rule write commits.
+type failingRuleReloadManager struct {
+	RoutingManager
+}
+
+func (failingRuleReloadManager) ReloadRoutingRule(context.Context, string) error {
+	return errCommitPointInjected
+}
+
+func TestCommitPoint_RoutingRuleWritesRecordedWhenReloadFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	ok := &RoutingHandler{configStore: store, routingManager: &reloadRecordingRoutingManager{}}
+	failing := &RoutingHandler{configStore: store, routingManager: failingRuleReloadManager{}}
+
+	createCtx := newTestRequestCtx(`{"name":"audit-rule","cel_expression":"true","targets":[{"provider":"openai","weight":1}]}`)
+	failing.createRoutingRule(createCtx)
+	requireStatus(t, createCtx, fasthttp.StatusInternalServerError)
+	created := requireCommitPointChange(t, createCtx, "routing_rule.created", "name", "audit-rule")
+
+	updateCtx := newTestRequestCtx(`{"name":"audit-rule-renamed","cel_expression":"true","targets":[{"provider":"openai","weight":1}]}`)
+	updateCtx.SetUserValue("rule_id", created.TargetID)
+	failing.updateRoutingRule(updateCtx)
+	requireStatus(t, updateCtx, fasthttp.StatusInternalServerError)
+	requireCommitPointChange(t, updateCtx, "routing_rule.updated", "name", "audit-rule-renamed")
+
+	successCtx := newTestRequestCtx(`{"name":"audit-rule-final","cel_expression":"true","targets":[{"provider":"openai","weight":1}]}`)
+	successCtx.SetUserValue("rule_id", created.TargetID)
+	ok.updateRoutingRule(successCtx)
+	requireStatus(t, successCtx, fasthttp.StatusOK)
+	requireCommitPointChange(t, successCtx, "routing_rule.updated", "name", "audit-rule-final")
+}
+
+func TestCommitPoint_ComplexityUpdateRecordedWhenReloadFails(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		reloadErr  error
+		wantStatus int
+	}{
+		{"reload fails", errCommitPointInjected, fasthttp.StatusInternalServerError},
+		{"reload succeeds", nil, fasthttp.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := setupPricingOverrideHandlerStore(t)
+			h := &RoutingHandler{configStore: store, routingManager: &mockRoutingManager{reloadErr: tc.reloadErr}}
+			custom := complexity.DefaultAnalyzerConfig()
+			custom.TierBoundaries.MediumComplex = 0.55
+
+			ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, custom))
+			h.updateComplexityAnalyzerConfig(ctx)
+
+			requireStatus(t, ctx, tc.wantStatus)
+			change := requireCommitPointChange(t, ctx, "complexity_analyzer_config.updated", "", nil)
+			if !strings.Contains(string(change.After), "0.55") {
+				t.Fatalf("after = %s, want the saved boundary", change.After)
+			}
+		})
+	}
+}
+
+// skillReadBackFailStore commits skill writes and fails every read-back after the write.
+type skillReadBackFailStore struct {
+	configstore.ConfigStore
+	skill    *configstoreTables.TableSkill
+	getCalls int
+	failRead bool
+}
+
+func (s *skillReadBackFailStore) GetSkillLean(context.Context, string) (*configstoreTables.TableSkill, error) {
+	copied := *s.skill
+	return &copied, nil
+}
+
+func (s *skillReadBackFailStore) GetSkill(context.Context, string) (*configstoreTables.TableSkill, error) {
+	s.getCalls++
+	if s.failRead && s.getCalls > 1 {
+		return nil, errCommitPointInjected
+	}
+	copied := *s.skill
+	return &copied, nil
+}
+
+func (s *skillReadBackFailStore) ShiftSkillVersion(_ context.Context, _ string, version string, _ objectstore.ObjectStore) error {
+	s.getCalls++ // the shift has no pre-read GetSkill, so the next GetSkill is the read-back
+	return nil
+}
+
+func (s *skillReadBackFailStore) UpdateSkill(_ context.Context, skill *configstoreTables.TableSkill, _ string, _ bool, _ objectstore.ObjectStore) error {
+	s.skill.Description = skill.Description
+	return nil
+}
+
+func TestCommitPoint_SkillWritesRecordedWhenReadBackFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	newStore := func(failRead bool) *skillReadBackFailStore {
+		return &skillReadBackFailStore{skill: &configstoreTables.TableSkill{ID: "sk-1", Name: "audit-skill", Description: "old", LatestVersion: "1.0.0"}, failRead: failRead}
+	}
+	params := map[string]string{"id": "sk-1"}
+	updateBody := `{"description":"new","skill_md_body":"# body","version":"1.0.1"}`
+
+	t.Run("version shift", func(t *testing.T) {
+		h := &SkillsHandler{store: newStore(true)}
+		ctx := runWithParams(h.shiftVersion, `{"version":"1.0.1"}`, params)
+		requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+		requireCommitPointChange(t, ctx, "skill.version_shifted", "serving_version", "1.0.1")
+		var prev map[string]any
+		if err := json.Unmarshal(change.Before, &prev); err != nil {
+			t.Fatalf("decode before: %v", err)
+		}
+		if len(prev) != 3 || prev["latest_version"] != "1.0.0" {
+			t.Fatalf("before = %s, want the same three fields as after", change.Before)
+		}
+	})
+	t.Run("version shift success records the read-back", func(t *testing.T) {
+		h := &SkillsHandler{store: newStore(false)}
+		ctx := runWithParams(h.shiftVersion, `{"version":"1.0.1"}`, params)
+		requireStatus(t, ctx, fasthttp.StatusOK)
+		change := requireCommitPointChange(t, ctx, "skill.version_shifted", "description", "old")
+		if !strings.Contains(string(change.Before), `"description":"old"`) {
+			t.Fatalf("before = %s, want the full snapshot", change.Before)
+		}
+	})
+	t.Run("update", func(t *testing.T) {
+		h := &SkillsHandler{store: newStore(true)}
+		ctx := runWithParams(h.updateSkill, updateBody, params)
+		requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+		requireCommitPointChange(t, ctx, "skill.updated", "description", "new")
+	})
+	t.Run("update success records the read-back", func(t *testing.T) {
+		h := &SkillsHandler{store: newStore(false)}
+		ctx := runWithParams(h.updateSkill, updateBody, params)
+		requireStatus(t, ctx, fasthttp.StatusOK)
+		requireCommitPointChange(t, ctx, "skill.updated", "description", "new")
+	})
+}
+
+// virtualMCPKeysFailStore commits the virtual MCP update and fails the key assignment read.
+type virtualMCPKeysFailStore struct {
+	configstore.ConfigStore
+}
+
+func (virtualMCPKeysFailStore) GetVirtualMCPByID(context.Context, uint) (*configstoreTables.TableVirtualMCP, error) {
+	return &configstoreTables.TableVirtualMCP{ID: 7, Name: "old-name", Enabled: true}, nil
+}
+
+func (virtualMCPKeysFailStore) UpdateVirtualMCP(context.Context, *configstoreTables.TableVirtualMCP) error {
+	return nil
+}
+
+func (virtualMCPKeysFailStore) GetVirtualKeyIDsForVirtualMCP(context.Context, uint) ([]string, error) {
+	return nil, errCommitPointInjected
+}
+
+func TestCommitPoint_VirtualMCPUpdateRecordedWhenKeyReadFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	h := &VirtualMCPHandler{store: &lib.Config{ConfigStore: virtualMCPKeysFailStore{}}, logger: &mockLogger{}}
+	ctx := runWithParams(h.updateVirtualMCP, `{"name":"new-name"}`, map[string]string{"id": "7"})
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	requireCommitPointChange(t, ctx, "virtual_mcp.updated", "name", "new-name")
+}
+
+// pluginCreateFailStore fails the rollback delete or the read-back after createPlugin commits.
+type pluginCreateFailStore struct {
+	configstore.ConfigStore
+	failDelete   bool
+	failReadBack bool
+	getCalls     int
+}
+
+func (s *pluginCreateFailStore) DeletePlugin(ctx context.Context, name string, tx ...*gorm.DB) error {
+	if s.failDelete {
+		return errCommitPointInjected
+	}
+	return s.ConfigStore.DeletePlugin(ctx, name, tx...)
+}
+
+func (s *pluginCreateFailStore) GetPlugin(ctx context.Context, name string) (*configstoreTables.TablePlugin, error) {
+	s.getCalls++
+	if s.failReadBack && s.getCalls > 1 {
+		return nil, errCommitPointInjected
+	}
+	return s.ConfigStore.GetPlugin(ctx, name)
+}
+
+func TestCommitPoint_PluginCreate(t *testing.T) {
+	path := "/opt/bifrost/plugins/trusted.so"
+	for _, tc := range []struct {
+		name         string
+		loader       PluginsLoader
+		enabled      bool
+		failDelete   bool
+		failReadBack bool
+		wantRecorded bool
+	}{
+		{"load fails, rollback succeeds", failingReloadPluginsLoader{}, true, false, false, false},
+		{"load fails, rollback fails", failingReloadPluginsLoader{}, true, true, false, true},
+		{"read-back fails", noopPluginsLoader{}, false, false, true, true},
+		{"success", noopPluginsLoader{}, false, false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := &pluginCreateFailStore{ConfigStore: setupPricingOverrideHandlerStore(t), failDelete: tc.failDelete, failReadBack: tc.failReadBack}
+			h := &PluginsHandler{pluginsLoader: tc.loader, configStore: store}
+			body, err := json.Marshal(map[string]any{"name": "audit-plugin", "enabled": tc.enabled, "path": path})
+			if err != nil {
+				t.Fatalf("marshal body: %v", err)
+			}
+			ctx := newTestRequestCtx(string(body))
+			ctx.Request.Header.SetMethod("POST")
+			h.createPlugin(ctx)
+
+			changes := liveAuditChanges(ctx)
+			recorded := len(changes) == 1 && changes[0].EventName == "plugin.created"
+			if recorded != tc.wantRecorded || (!tc.wantRecorded && len(changes) != 0) {
+				t.Fatalf("status %d, changes %+v, want recorded=%v", ctx.Response.StatusCode(), changes, tc.wantRecorded)
+			}
+		})
+	}
+}
+
+// droppingReloadWebhookManager reports a clean reload but leaves the endpoint out of memory.
+type droppingReloadWebhookManager struct{ configWebhookManager }
+
+func (m droppingReloadWebhookManager) ReloadWebhookEndpoint(_ context.Context, id string) error {
+	m.config.RemoveWebhookEndpoint(id)
+	return nil
+}
+
+func TestCommitPoint_WebhookUpdate(t *testing.T) {
+	handler, config := newWebhookTestHandler(t)
+	id, _ := createTestWebhookEndpoint(t, handler, "audit-hook")
+	body := func(name string) string {
+		return `{"name":"` + name + `","url":"https://93.184.216.34/hook","events":["async_job.completed"]}`
+	}
+
+	okCtx := newWebhookRequestCtx(body("audit-hook-renamed"), map[string]string{"id": id})
+	handler.updateWebhookEndpoint(okCtx)
+	requireStatus(t, okCtx, fasthttp.StatusOK)
+	requireCommitPointChange(t, okCtx, "webhook.updated", "name", "audit-hook-renamed")
+
+	dropping := NewWebhookHandler(droppingReloadWebhookManager{configWebhookManager{config}}, config, nil)
+	missingCtx := newWebhookRequestCtx(body("audit-hook-missing"), map[string]string{"id": id})
+	dropping.updateWebhookEndpoint(missingCtx)
+	requireStatus(t, missingCtx, fasthttp.StatusInternalServerError)
+	requireCommitPointChange(t, missingCtx, "webhook.updated", "name", "audit-hook-missing")
+}
+
+func TestCommitPoint_ConfigCompatReloadFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		failRestore  bool
+		wantStatus   int
+		wantRecorded bool
+	}{
+		{"restore succeeds records nothing", false, fasthttp.StatusBadRequest, false},
+		{"failed restore keeps the event", true, fasthttp.StatusInternalServerError, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := newRealOAuth2Store(t)
+			var cfgStore configstore.ConfigStore = store
+			writes := 0
+			if tc.failRestore {
+				cfgStore = failingRestoreStore{store, &writes}
+			}
+			cfg := newTestOAuth2Config(cfgStore, configstoreTables.MCPServerAuthModeHeaders, false)
+			cfg.ClientConfig.Compat = configstore.CompatConfig{ConvertTextToChat: true}
+			if err := store.UpdateClientConfig(context.Background(), cfg.ClientConfig); err != nil {
+				t.Fatalf("seed config: %v", err)
+			}
+			h := &ConfigHandler{store: cfg, configManager: &recordingCompatConfigManager{failReload: true}}
+
+			ctx := putConfigCtx(compatAllOffPayload)
+			h.updateConfig(ctx)
+
+			requireStatus(t, ctx, tc.wantStatus)
+			changes := liveAuditChanges(ctx)
+			if tc.wantRecorded != (len(changes) == 1 && changes[0].EventName == "config.updated") || (!tc.wantRecorded && len(changes) != 0) {
+				t.Fatalf("changes = %+v, want recorded=%v", changes, tc.wantRecorded)
 			}
 		})
 	}
