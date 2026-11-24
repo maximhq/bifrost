@@ -70,3 +70,18 @@ func BenchmarkRecordAuditChange(b *testing.B) {
 		RecordAuditChange(ctx, "team.updated", "team", "t1", "Team", before, after)
 	}
 }
+
+func TestAuditRecordSetAfterKeepsSnapshotOnEncodeFailure(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	rec := RecordAuditChange(ctx, "team.created", "team", "t1", "Team", nil, map[string]any{"name": "t"})
+	rec.SetAfter(make(chan int))
+	changes := ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+	if string(changes[0].After) != `{"name":"t"}` {
+		t.Fatalf("after = %s, want the commit-time snapshot", changes[0].After)
+	}
+	rec.SetAfter(nil)
+	changes = ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+	if changes[0].After != nil {
+		t.Fatalf("after = %s, want nil", changes[0].After)
+	}
+}

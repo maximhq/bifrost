@@ -46,7 +46,11 @@ func (r *AuditRecord) SetAfter(after any) {
 	if r == nil {
 		return
 	}
-	r.update(func(c *configstore.AuditChange) { c.After = AuditSnapshot(after) })
+	data := AuditSnapshot(after)
+	if data == nil && after != nil {
+		return // unencodable: a nil After would read as a delete, so keep the commit-time snapshot
+	}
+	r.update(func(c *configstore.AuditChange) { c.After = data })
 }
 
 // Discard drops the change, for a handler whose rollback undid the write.
