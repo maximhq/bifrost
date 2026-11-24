@@ -458,6 +458,8 @@
 				"responses_cancel": "Antworten abbrechen",
 				"responses_input_items": "Antworten-Eingabeelemente",
 				"embedding": "Embedding",
+				"search": "Websuche",
+				"fetch": "Seitenabruf",
 				"speech": "Sprachsynthese",
 				"speech_stream": "Sprachsynthese-Stream",
 				"transcription": "Transkription",

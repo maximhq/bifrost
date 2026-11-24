@@ -413,6 +413,8 @@ var modelAddressingByRequestType = map[string]bool{
 	"ImageVariationRequest":        false,
 	"VideoGenerationRequest":       false,
 	"RerankRequest":                true,
+	"SearchRequest":                false,
+	"FetchRequest":                 false,
 	"DecisionRequest":              true,
 	"OCRRequest":                   false,
 	"CountTokensRequest":           true,

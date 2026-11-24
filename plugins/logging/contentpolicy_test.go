@@ -366,3 +366,19 @@ func TestResolveContentPolicyRetainOffKeepsCurrentBehaviour(t *testing.T) {
 	assert.False(t, policy.storeContent)
 	assert.False(t, policy.hidden)
 }
+
+func TestRedactFetchURL_KeepsThePageDropsTheSecrets(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"query token", "https://example.com/report?access_token=secret", "https://example.com/report"},
+		{"fragment", "https://example.com/page#section", "https://example.com/page"},
+		{"userinfo", "https://user:pass@example.com/page", "https://example.com/page"},
+		{"plain url unchanged", "https://example.com/page", "https://example.com/page"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactFetchURL(tc.in); got != tc.want {
+				t.Fatalf("redactFetchURL(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

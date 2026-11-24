@@ -5,6 +5,9 @@
 
 ## ✨ Features
 
+- [feat]: Search and Fetch fallbacks may name a provider alone; an unknown one is refused [@Radiergummi](https://github.com/Radiergummi)
+- [feat]: `POST /v1/tools/search` takes the provider-neutral Search fields [@Radiergummi](https://github.com/Radiergummi)
+- [feat]: DeepSeek web tools at `POST /v1/tools/search` and `POST /v1/tools/fetch`, routed to DeepSeek when a body carries no model [@jimaldon](https://github.com/jimaldon)
 - **Model Routers** - Named model routers classify each request into SIMPLE, MEDIUM or COMPLEX with a semantic, decision-model or LLM classifier, and send each tier to its own weighted provider/model/key targets with fallbacks. A router takes the requests its routing matches (global, team, customer, virtual key or user scope, an optional CEL condition and a priority) after the routing rules run. Routers are managed from the new Routers section in the dashboard, under `/api/routing/model-routers`, or in config.json, and request logs record which router routed each request. The existing Complexity Router config keeps filling `complexity_tier` for routing rules unchanged, and the router page warns about routing rules that still read `complexity_tier`
 - **Complexity Router Phrase Suggestions** - A model router can sample its traffic, cluster it on a schedule within a spend budget and suggest phrases for each tier. The suggestions view shows their impact on past traffic, adds accepted phrases to the router, backfills its window from existing logs, and can classify a test statement against the router's tiers. Runs can also be started on demand through the API. The dashboard view is behind a feature flag
 - **Bifrost MCP Server** - `POST /v1/mcp` serves Bifrost's own HTTP API as MCP tools, so MCP clients such as Claude Code can manage a gateway and call its inference routes. Every tool call runs through the same auth and permission checks as a direct `/api` request. Configured with `client.bifrost_url`, `client.bifrost_mcp_allow_writes` (reads only by default) and `framework.pricing.openapi_url`, or `BIFROST_MCP_SPEC` for air-gapped installs
@@ -47,6 +50,7 @@
 
 ## 🐞 Fixed
 
+- [fix]: Search accepts DeepSeek's native `count` and `need_content`, and the tools routes refuse a bare model name instead of routing it as a provider [@jimaldon](https://github.com/jimaldon)
 - **Custom Provider Prefixes on Create** - A provider created through the API resolves by its `name/model` prefix as soon as its configuration is stored, so requests sent during the post-create reload and model discovery are no longer load balanced to another provider. A create that is rolled back also stops any workers such a request started
 - **Mid-Conversation System Reminders** - Claude Code's trailing system reminder now keeps one form (native or `<system-reminder>`) across turns, decided from the messages actually sent. On Bedrock InvokeModel the changing form had invalidated the prompt cache every turn, cutting cached input and raising cost. The `<system-reminder>` envelope also drops its trailing newline, and the cache breakpoint stays on the marked block. Native placement is now controlled by the `supports_native_mid_conversation_system` datasheet field
 - **Vertex Prompt Cache Misses** - Vertex Claude request bodies always end with `tools`, `system`, `messages`, so turn-to-turn cache reads no longer miss when a client sends `messages` first

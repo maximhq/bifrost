@@ -9875,6 +9875,40 @@ func TestPatternKeyAliasTemplateFollowsSelectedKey(t *testing.T) {
 	}
 }
 
+// The SDK reaches FetchRequest without passing through the HTTP route, so the URL rules the
+// route applies must hold here too: a provider is never asked to read a URL the gateway would
+// refuse from a client. Both paths use schemas.ValidateFetchURL.
+func TestFetchRequest_ValidatesTheURLBeforeDispatch(t *testing.T) {
+	bifrost := &Bifrost{}
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{name: "empty", url: ""},
+		{name: "whitespace", url: "  "},
+		{name: "no scheme", url: "example.com/page"},
+		{name: "file scheme", url: "file:///etc/passwd"},
+		{name: "no host", url: "https://"},
+		{name: "credentials", url: "https://user:pass@example.com/page"},
+		{name: "too long", url: "https://example.com/" + strings.Repeat("a", schemas.MaxFetchURLLength)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, bifrostErr := bifrost.FetchRequest(ctx, &schemas.BifrostFetchRequest{Provider: schemas.DeepSeek, URL: tc.url})
+			if resp != nil || bifrostErr == nil {
+				t.Fatalf("FetchRequest(%q) = (%v, %v), want a validation error before dispatch", tc.url, resp, bifrostErr)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message == "" {
+				t.Fatalf("error = %+v, want the caller-facing reason", bifrostErr)
+			}
+		})
+	}
+	if err := schemas.ValidateFetchURL("https://example.com/page"); err != nil {
+		t.Fatalf("ValidateFetchURL(valid url) = %v, want nil", err)
+	}
+}
+
 // TestKeyAliasResolvesAdvisorToolModel pins that advisor tool models follow the attempt key's alias.
 func TestKeyAliasResolvesAdvisorToolModel(t *testing.T) {
 	var mu sync.Mutex

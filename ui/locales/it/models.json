@@ -458,6 +458,8 @@
 				"responses_cancel": "Annulla Responses",
 				"responses_input_items": "Elementi input Responses",
 				"embedding": "Embedding",
+				"search": "Ricerca web",
+				"fetch": "Recupero pagina",
 				"speech": "Voce",
 				"speech_stream": "Stream voce",
 				"transcription": "Trascrizione",

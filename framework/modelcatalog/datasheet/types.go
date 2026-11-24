@@ -451,6 +451,17 @@ type costInput struct {
 	// tied to a specific model. Currently only used for container creates.
 	containerIdentifierString string
 	tier                      serviceTier
+	// emptySearchResults marks a successful Search that matched nothing. DeepSeek does not
+	// bill an empty result set, so its response carries no usage on purpose. That absence is
+	// not the same as a billable call that reported nothing, so the per-request fallback needs
+	// this marker to tell them apart.
+	emptySearchResults bool
+	// emptyFetchContent marks a Fetch that returned no page content and no usage. DeepSeek
+	// bills a Fetch only when it produces page content, so such a response carries no usage on
+	// purpose and must not reach the per-request fallback. A Fetch that reported usage is never
+	// marked — repricing rebuilds the response without content, so only the recorded usage can
+	// tell a billed page from an unbilled one.
+	emptyFetchContent bool
 }
 
 // customPricingEntry is one flattened override ready for lookup.
@@ -517,6 +528,7 @@ var pricingLookupModes = map[string]struct{}{
 	"completion": {}, "chat": {}, "responses": {}, "embedding": {}, "rerank": {}, "decisions": {},
 	"audio_speech": {}, "audio_transcription": {}, "image_generation": {}, "image_edit": {},
 	"video_generation": {}, "ocr": {}, "container_create": {}, "live": {},
+	"search": {}, "fetch": {},
 }
 
 // PricingLookupModes returns the pricing modes, sorted.
@@ -549,6 +561,10 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "embedding"
 	case schemas.RerankRequest:
 		return "rerank"
+	case schemas.SearchRequest:
+		return "search"
+	case schemas.FetchRequest:
+		return "fetch"
 	case schemas.DecisionRequest:
 		return "decisions"
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:

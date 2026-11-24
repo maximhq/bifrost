@@ -2281,7 +2281,7 @@ func TestNormalizedUsageCoversEveryUsageBearingFamily(t *testing.T) {
 // normalizedUsageFamilies lists what NormalizedUsage reads.
 var normalizedUsageFamilies = []string{
 	"TextCompletionResponse", "ChatResponse", "ResponsesResponse", "CompactionResponse",
-	"EmbeddingResponse", "RerankResponse", "DecisionResponse", "TranscriptionResponse",
+	"EmbeddingResponse", "RerankResponse", "SearchResponse", "FetchResponse", "DecisionResponse", "TranscriptionResponse",
 	"SpeechResponse", "ImageGenerationResponse", "PassthroughResponse",
 }
 
@@ -3132,5 +3132,29 @@ func TestToolChoiceAllowedTools_CustomEntryNameSurvivesResponses(t *testing.T) {
 	back := rtc.ToChatToolChoice().ChatToolChoiceStruct.AllowedTools.Tools[0]
 	if back.Type != "custom" || back.Custom == nil || back.Custom.Name != "exec" || back.Function.Name != "" {
 		t.Fatalf("chat entry = %+v", back)
+	}
+}
+
+// The family-coverage test above proves the Search and Fetch branches are listed; it does not
+// prove they return the response's usage. Both feed logging and tracing, so pin the values.
+func TestNormalizedUsageReturnsSearchAndFetchUsage(t *testing.T) {
+	searchUsage := &BifrostLLMUsage{Cost: &BifrostCost{TotalCost: 0.00075}}
+	fetchUsage := &BifrostLLMUsage{Cost: &BifrostCost{TotalCost: 0.00075}}
+
+	got := (&BifrostResponse{SearchResponse: &BifrostSearchResponse{Usage: searchUsage}}).NormalizedUsage()
+	if got != searchUsage || got.Cost == nil || got.Cost.TotalCost != 0.00075 {
+		t.Fatalf("search usage = %+v, want the response's own usage", got)
+	}
+	got = (&BifrostResponse{FetchResponse: &BifrostFetchResponse{Usage: fetchUsage}}).NormalizedUsage()
+	if got != fetchUsage || got.Cost == nil || got.Cost.TotalCost != 0.00075 {
+		t.Fatalf("fetch usage = %+v, want the response's own usage", got)
+	}
+
+	// An absent usage stays absent rather than becoming an empty one.
+	if got := (&BifrostResponse{SearchResponse: &BifrostSearchResponse{}}).NormalizedUsage(); got != nil {
+		t.Fatalf("search usage = %+v, want nil when the response carries none", got)
+	}
+	if got := (&BifrostResponse{FetchResponse: &BifrostFetchResponse{}}).NormalizedUsage(); got != nil {
+		t.Fatalf("fetch usage = %+v, want nil when the response carries none", got)
 	}
 }

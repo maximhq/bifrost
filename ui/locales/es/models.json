@@ -458,6 +458,8 @@
 				"responses_cancel": "Respuestas Cancelar",
 				"responses_input_items": "Respuestas Temas de entrada",
 				"embedding": "Incrustación",
+				"search": "Búsqueda web",
+				"fetch": "Obtención de página",
 				"speech": "Discurso",
 				"speech_stream": "Voz en streaming",
 				"transcription": "Transcripción",

@@ -458,6 +458,8 @@
 				"responses_cancel": "取消 Responses",
 				"responses_input_items": "Responses 输入项",
 				"embedding": "嵌入",
+				"search": "网页搜索",
+				"fetch": "页面抓取",
 				"speech": "语音生成",
 				"speech_stream": "流式语音生成",
 				"transcription": "语音转写",

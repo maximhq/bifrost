@@ -108,6 +108,8 @@ export const RequestTypes = [
 	"responses_input_items",
 	"embedding",
 	"rerank",
+	"search",
+	"fetch",
 	"decisions",
 	"speech",
 	"speech_stream",
@@ -348,6 +350,8 @@ export const RequestTypeLabels = {
 
 	embedding: "Embedding",
 	rerank: "Rerank",
+	search: "Web Search",
+	fetch: "Page Fetch",
 	decisions: "Decisions",
 
 	speech: "Speech",
@@ -449,6 +453,8 @@ export const RequestTypeColors = {
 
 	embedding: "bg-red-100 text-red-800",
 	rerank: "bg-fuchsia-100 text-fuchsia-800",
+	search: "bg-sky-100 text-sky-800",
+	fetch: "bg-emerald-100 text-emerald-800",
 	decisions: "bg-cyan-100 text-cyan-800",
 
 	speech: "bg-purple-100 text-purple-800",

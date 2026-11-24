@@ -220,6 +220,30 @@ var rerankParamsKnownFields = map[string]bool{
 	"next_token":         true,
 }
 
+// Known fields for SearchHandlerRequest.
+var searchParamsKnownFields = map[string]bool{
+	"model":           true,
+	"fallbacks":       true,
+	"query":           true,
+	"max_results":     true,
+	"include_content": true,
+	// DeepSeek-native aliases for max_results and include_content. A native client
+	// changing only its base URL must not have these land in ExtraParams.
+	"count":            true,
+	"need_content":     true,
+	"include_domains":  true,
+	"exclude_domains":  true,
+	"published_after":  true,
+	"published_before": true,
+}
+
+// Known fields for FetchHandlerRequest.
+var fetchParamsKnownFields = map[string]bool{
+	"model":     true,
+	"fallbacks": true,
+	"url":       true,
+}
+
 var decisionParamsKnownFields = map[string]bool{
 	"model":             true,
 	"input":             true,
@@ -661,6 +685,26 @@ type RerankRequest struct {
 	*schemas.RerankParameters
 }
 
+// SearchHandlerRequest is a bifrost web search request.
+type SearchHandlerRequest struct {
+	Query           string   `json:"query"`
+	MaxResults      *int     `json:"max_results"`
+	IncludeContent  *bool    `json:"include_content"`
+	Count           *int     `json:"count"`
+	NeedContent     *bool    `json:"need_content"`
+	IncludeDomains  []string `json:"include_domains"`
+	ExcludeDomains  []string `json:"exclude_domains"`
+	PublishedAfter  *string  `json:"published_after"`
+	PublishedBefore *string  `json:"published_before"`
+	BifrostParams
+}
+
+// FetchHandlerRequest is a bifrost page fetch request.
+type FetchHandlerRequest struct {
+	URL string `json:"url"`
+	BifrostParams
+}
+
 // DecisionHandlerRequest is a bifrost decision request
 type DecisionHandlerRequest struct {
 	Input            schemas.DecisionInput      `json:"input"`
@@ -831,6 +875,8 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/responses":              schemas.ResponsesRequest,
 	"/v1/embeddings":             schemas.EmbeddingRequest,
 	"/v1/rerank":                 schemas.RerankRequest,
+	"/v1/tools/search":           schemas.SearchRequest,
+	"/v1/tools/fetch":            schemas.FetchRequest,
 	"/v1/decisions":              schemas.DecisionRequest,
 	"/v1/ocr":                    schemas.OCRRequest,
 	"/v1/audio/speech":           schemas.SpeechRequest,
@@ -890,6 +936,8 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/v1/responses/{response_id}/input_items", lib.ChainMiddlewares(h.responsesInputItems, responsesInputItemsMW...))
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
 	r.POST("/v1/rerank", lib.ChainMiddlewares(h.rerank, baseMiddlewares...))
+	r.POST("/v1/tools/search", lib.ChainMiddlewares(h.search, baseMiddlewares...))
+	r.POST("/v1/tools/fetch", lib.ChainMiddlewares(h.fetch, baseMiddlewares...))
 	r.POST("/v1/decisions", lib.ChainMiddlewares(h.evaluation, baseMiddlewares...))
 	r.POST("/v1/ocr", lib.ChainMiddlewares(h.ocr, baseMiddlewares...))
 	// ElevenLabs sound-effect models also flow through /v1/audio/speech; the
@@ -1446,6 +1494,207 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
+}
+
+// search handles POST /v1/tools/search - run a web search through the provider's tools API.
+func (h *CompletionHandler) search(ctx *fasthttp.RequestCtx) {
+	bifrostSearchReq, err := prepareSearchRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.SearchRequest(bifrostCtx, bifrostSearchReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
+}
+
+// fetch handles POST /v1/tools/fetch - retrieve one page as Markdown through the provider's
+// tools API.
+func (h *CompletionHandler) fetch(ctx *fasthttp.RequestCtx) {
+	bifrostFetchReq, err := prepareFetchRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.FetchRequest(bifrostCtx, bifrostFetchReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
+}
+
+// prepareSearchRequest builds a BifrostSearchRequest from the HTTP body.
+//
+// Only what holds for every provider is checked here: a query, and dates a provider can parse.
+// Each provider refuses the bounds and filters it cannot honour, because those differ (DeepSeek
+// caps a query at 128 characters and has no date filter).
+// Fields outside the neutral shape, such as DeepSeek's ori_question, arrive in ExtraParams.
+func prepareSearchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostSearchRequest, error) {
+	req, base, err := prepareRequest[SearchHandlerRequest](ctx, config, searchParamsKnownFields)
+	if err != nil {
+		return nil, err
+	}
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		return nil, fmt.Errorf("query is required for search")
+	}
+	for name, value := range map[string]*string{"published_after": req.PublishedAfter, "published_before": req.PublishedBefore} {
+		if value != nil && !isSearchDate(*value) {
+			return nil, fmt.Errorf("%s must be an RFC 3339 date or date-time", name)
+		}
+	}
+	fallbacks, err := parseToolsFallbacks(req.Fallbacks)
+	if err != nil {
+		return nil, err
+	}
+	// DeepSeek's native body names these count and need_content. The neutral field wins
+	// when a caller sends both, so a drop-in native body and a neutral body cannot disagree.
+	maxResults := req.MaxResults
+	if maxResults == nil {
+		maxResults = req.Count
+	}
+	includeContent := req.IncludeContent
+	if includeContent == nil {
+		includeContent = req.NeedContent
+	}
+	provider, model, err := resolveToolsRouting(base)
+	if err != nil {
+		return nil, err
+	}
+	return &schemas.BifrostSearchRequest{
+		Provider:        provider,
+		Model:           model,
+		Query:           query,
+		MaxResults:      maxResults,
+		IncludeContent:  includeContent,
+		IncludeDomains:  req.IncludeDomains,
+		ExcludeDomains:  req.ExcludeDomains,
+		PublishedAfter:  req.PublishedAfter,
+		PublishedBefore: req.PublishedBefore,
+		Fallbacks:       fallbacks,
+		ExtraParams:     base.ExtraParams,
+	}, nil
+}
+
+// isSearchDate reports whether value is an RFC 3339 date (2026-01-02) or date-time.
+func isSearchDate(value string) bool {
+	if _, err := time.Parse(time.DateOnly, value); err == nil {
+		return true
+	}
+	_, err := time.Parse(time.RFC3339, value)
+	return err == nil
+}
+
+// prepareFetchRequest builds a BifrostFetchRequest from the HTTP body.
+//
+// The URL checks are the ones the core SDK entry point applies too (schemas.ValidateFetchURL):
+// an absolute HTTP(S) URL with a host and no embedded credentials, at most 8192 characters.
+// Validating here keeps an obviously malformed URL from costing a request.
+func prepareFetchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostFetchRequest, error) {
+	req, base, err := prepareRequest[FetchHandlerRequest](ctx, config, fetchParamsKnownFields)
+	if err != nil {
+		return nil, err
+	}
+	rawURL := strings.TrimSpace(req.URL)
+	if err := schemas.ValidateFetchURL(rawURL); err != nil {
+		return nil, err
+	}
+	fallbacks, err := parseToolsFallbacks(req.Fallbacks)
+	if err != nil {
+		return nil, err
+	}
+	provider, model, err := resolveToolsRouting(base)
+	if err != nil {
+		return nil, err
+	}
+	return &schemas.BifrostFetchRequest{
+		Provider:    provider,
+		Model:       model,
+		URL:         rawURL,
+		Fallbacks:   fallbacks,
+		ExtraParams: base.ExtraParams,
+	}, nil
+}
+
+// parseToolsFallbacks reads Search and Fetch fallbacks. These operations carry no model, so a
+// fallback may name a provider alone, which parseFallbacks would drop for having no
+// model. A provider/model entry still names a routing model, as on the primary. An entry that
+// names no known provider is refused rather than dropped, so a typo never quietly removes the
+// fallback a caller relied on.
+func parseToolsFallbacks(entries []string) ([]schemas.Fallback, error) {
+	fallbacks := make([]schemas.Fallback, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if schemas.IsKnownProvider(entry) {
+			fallbacks = append(fallbacks, schemas.Fallback{Provider: schemas.ModelProvider(entry)})
+			continue
+		}
+		provider, model := schemas.ParseModelString(entry, "")
+		if provider == "" || model == "" {
+			return nil, fmt.Errorf("fallback %q must name a provider, or a provider/model", entry)
+		}
+		fallbacks = append(fallbacks, schemas.Fallback{Provider: provider, Model: model})
+	}
+	return fallbacks, nil
+}
+
+// resolveToolsRouting resolves the provider for a tools request.
+//
+// Search and Fetch carry no model upstream, so an absent model means DeepSeek, the provider
+// that serves these operations. A bare token in "model" is read as a provider name, because
+// there is no model for the caller to name. A token that is not a known or custom provider
+// is refused: it is almost certainly a model name, and routing it as a provider would fail
+// later with a misleading provider-not-found error.
+func resolveToolsRouting(base *requestBase) (schemas.ModelProvider, string, error) {
+	if base == nil {
+		return schemas.DeepSeek, "", nil
+	}
+	if base.Provider != "" {
+		return base.Provider, base.ModelName, nil
+	}
+	if base.ModelName != "" {
+		if !schemas.IsKnownProvider(base.ModelName) {
+			return "", "", fmt.Errorf("model %q must be a provider name, or a provider/model", base.ModelName)
+		}
+		return schemas.ModelProvider(base.ModelName), "", nil
+	}
+	return schemas.DeepSeek, "", nil
 }
 
 // prepareDecisionRequest prepares a BifrostDecisionRequest from the HTTP

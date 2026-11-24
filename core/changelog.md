@@ -1,3 +1,10 @@
+- [fix]: the SDK Fetch path trims the URL before validating and dispatching it [@jimaldon](https://github.com/jimaldon)
+- [fix]: a Fetch that returns no page content is not billed, matching Search's empty-result rule [@jimaldon](https://github.com/jimaldon)
+- [fix]: Fetch URLs are validated on the core SDK path too, and a null DeepSeek tools option counts as absent [@jimaldon](https://github.com/jimaldon)
+- [fix]: DeepSeek Search keeps `rerank_score` 0 as a real score and passes `authority` -1 through as DeepSeek's unknown tier, with the mapping comments stating what the upstream contract means [@jimaldon](https://github.com/jimaldon)
+- [fix]: decode DeepSeek tools responses into an owned body, including compressed ones [@Radiergummi](https://github.com/Radiergummi)
+- [feat]: Search takes one provider-neutral request and result shape [@Radiergummi](https://github.com/Radiergummi)
+- [feat]: DeepSeek provider - add Search and Fetch as first-class operations (`POST /v1/tools/search`, `POST /v1/tools/fetch`), model-less and priced per request [@jimaldon](https://github.com/jimaldon)
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
 - feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)

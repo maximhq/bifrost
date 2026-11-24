@@ -458,6 +458,8 @@
 				"responses_cancel": "応答をキャンセル",
 				"responses_input_items": "回答入力項目",
 				"embedding": "埋め込み",
+				"search": "ウェブ検索",
+				"fetch": "ページ取得",
 				"speech": "スピーチ",
 				"speech_stream": "音声ストリーム",
 				"transcription": "文字起こし",

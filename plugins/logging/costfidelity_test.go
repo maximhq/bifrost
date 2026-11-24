@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -1803,4 +1805,143 @@ func TestTypedPassthroughRowRepricesAsItsType(t *testing.T) {
 	legacy, err := plugin.calculateCostForLog(row(string(schemas.PassthroughRequest), true, false))
 	require.NoError(t, err)
 	assert.Zero(t, legacy, "an untyped passthrough row has nothing to reprice from")
+}
+
+// ---------------------------------------------------------------------------
+// Search repricing
+// ---------------------------------------------------------------------------
+
+// newSearchRepricePlugin prices DeepSeek Search the way an operator configuring it per request
+// would: a cost_per_request override on a model-less search, with the provider's own reported
+// cost ignored. DeepSeek bills nothing for a search that matched nothing and reports its fee on
+// the response, so ignoring that report is what makes the price come off the configured row —
+// and therefore off the row's own columns on a reprice.
+func newSearchRepricePlugin(t *testing.T) *LoggerPlugin {
+	t.Helper()
+	const searchCostPerRequest = 0.00075
+	plugin := newCostFidelityPlugin(t)
+	providerID := "deepseek"
+	require.NoError(t, plugin.pricingManager.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "deepseek-search-cost",
+		ScopeKind:        "provider",
+		ProviderID:       &providerID,
+		MatchType:        "exact",
+		Pattern:          "deepseek-search",
+		RequestTypes:     []schemas.RequestType{schemas.SearchRequest},
+		PricingPatchJSON: `{"cost_per_request":0.00075}`,
+	}}))
+	plugin.pricingManager.SetIgnoreProviderCost(schemas.DeepSeek, true)
+	return plugin
+}
+
+// searchResponse is the response DeepSeek returns for a Search: a result per match, and its
+// reported fee on the usage when anything matched (an empty result set bills nothing).
+func searchResponse(provider schemas.ModelProvider, results ...schemas.BifrostSearchResult) *schemas.BifrostResponse {
+	resp := &schemas.BifrostSearchResponse{
+		Results: results,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.SearchRequest,
+			RoutingInfo: schemas.RoutingInfo{Provider: provider, Model: "deepseek-search"},
+		},
+	}
+	if len(results) > 0 {
+		resp.Usage = &schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{TotalCost: 0.00075}}
+	}
+	return &schemas.BifrostResponse{SearchResponse: resp}
+}
+
+// searchLogRow is a completed Search row as the logging plugin writes it: the input it captured
+// and, through the output application under test, the result count cost recomputation reads.
+func searchLogRow(t *testing.T, plugin *LoggerPlugin, resp *schemas.BifrostResponse, contentLoggingEnabled bool) *logstore.Log {
+	t.Helper()
+	entry := &logstore.Log{
+		ID:        "search-row",
+		Timestamp: time.Now().UTC(),
+		Object:    string(schemas.SearchRequest),
+		Provider:  string(schemas.DeepSeek),
+		Model:     "deepseek-search",
+		Status:    "success",
+		ParamsParsed: toolsSearchLogParams{
+			Query:          "bifrost gateway",
+			IncludeContent: bifrost.Ptr(true),
+		},
+	}
+	plugin.applyNonStreamingOutputToEntry(entry, resp, true, contentLoggingEnabled)
+	require.NoError(t, entry.SerializeFields())
+	return entry
+}
+
+// TestSearchRepriceMatchesLiveCost is the regression test for a Search that was billed live and
+// repriced to nothing. The reprice rebuilds the response from the row, and the row keeps no
+// result pages — so a rebuild with an empty result set read as "matched nothing", which pricing
+// deliberately leaves free, dropping the fee the request was actually charged.
+func TestSearchRepriceMatchesLiveCost(t *testing.T) {
+	plugin := newSearchRepricePlugin(t)
+	resp := searchResponse(schemas.DeepSeek,
+		schemas.BifrostSearchResult{URL: "https://example.com/a", Title: "a", Snippet: "a"},
+		schemas.BifrostSearchResult{URL: "https://example.com/b", Title: "b"},
+	)
+
+	live := liveCost(t, plugin, resp, string(schemas.DeepSeek))
+	require.InDelta(t, 0.00075, live, 1e-12, "the live request is billed the configured per-request fee")
+
+	// Read the row back the way the recalc job does: serialized, then deserialized from storage.
+	stored, err := sonic.Marshal(searchLogRow(t, plugin, resp, false))
+	require.NoError(t, err)
+	reloaded := &logstore.Log{}
+	require.NoError(t, sonic.Unmarshal(stored, &reloaded))
+	require.NoError(t, reloaded.DeserializeFields())
+	require.NotNil(t, reloaded.SearchResultCount, "the row must carry the result count the reprice bills from")
+
+	repriced, err := plugin.calculateCostForLog(reloaded)
+	require.NoError(t, err)
+	assertCostsEqual(t, "matching Search", repriced, live)
+}
+
+// TestEmptySearchRepricesFree is the other half of the same column: a Search that matched
+// nothing is a successful answer the provider does not bill, and a reprice must not turn its
+// configured per-request row into a charge. The count is written as 0, which is what tells the
+// reprice that this row is the no-match case rather than one whose count was never captured.
+func TestEmptySearchRepricesFree(t *testing.T) {
+	plugin := newSearchRepricePlugin(t)
+	resp := searchResponse(schemas.DeepSeek, []schemas.BifrostSearchResult{}...)
+
+	live := liveCost(t, plugin, resp, string(schemas.DeepSeek))
+	assert.Zero(t, live, "an empty Search is not billed live")
+
+	entry := searchLogRow(t, plugin, resp, false)
+	require.NotNil(t, entry.SearchResultCount)
+	require.Zero(t, *entry.SearchResultCount, "an empty result set is recorded as 0, not left NULL")
+
+	// The reprice job asks for the inputs it would need before pricing: an empty Search, like
+	// DeepSeek's, reports no usage at all, so the generic reprice leaves the row alone exactly
+	// as it did before — the risk this test guards is a row picking up the per-request fee, not
+	// how the job counts it.
+	if repriced, err := plugin.calculateCostForLog(entry); err == nil {
+		assert.Zero(t, repriced, "an empty Search must stay free on reprice, not pick up the per-request fee")
+	}
+}
+
+// TestLegacySearchRowRepricesAsBefore pins what a row written before search_result_count existed
+// does. Its count is NULL, indistinguishable from the no-match case, so the reprice keeps the
+// behaviour such a row had: the reconstructed response reports no results and prices as free
+// rather than inventing a fee the row has no evidence for. Rows written from now on carry a count
+// and reprice correctly (see TestSearchRepriceMatchesLiveCost).
+func TestLegacySearchRowRepricesAsBefore(t *testing.T) {
+	plugin := newSearchRepricePlugin(t)
+	entry := &logstore.Log{
+		ID:               "legacy-search-row",
+		Timestamp:        time.Now().UTC(),
+		Object:           string(schemas.SearchRequest),
+		Provider:         string(schemas.DeepSeek),
+		Model:            "deepseek-search",
+		Status:           "success",
+		TokenUsageParsed: &schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{TotalCost: 0.00075}},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.Nil(t, entry.SearchResultCount)
+
+	repriced, err := plugin.calculateCostForLog(entry)
+	require.NoError(t, err)
+	assert.Zero(t, repriced, "a row with no recorded count is not priced from a fee it cannot evidence")
 }

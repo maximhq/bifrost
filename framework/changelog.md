@@ -1,3 +1,6 @@
+- [fix]: a Fetch that returns no page content stays free through the `cost_per_request` fallback [@jimaldon](https://github.com/jimaldon)
+- [fix]: record a Search row's result count so a reprice bills a matched call and leaves an empty one free [@jimaldon](https://github.com/jimaldon)
+- [feat]: price model-less Search and Fetch calls from a provider-reported per-request cost, with a `cost_per_request` fallback [@jimaldon](https://github.com/jimaldon)
 - feat: model routers - `model_routers` and `model_router_targets` tables with config.json support, and the log-store tables and columns for phrase suggestions and routed requests
 - feat: client gateways - `oauth2_server_config.gateways` and device-code columns on `oauth2_authorize_requests` for Claude Code gateway sign-in
 - feat: datasheet overrides - `governance_datasheet_overrides` table merged over the synced datasheet, surviving upstream sync
