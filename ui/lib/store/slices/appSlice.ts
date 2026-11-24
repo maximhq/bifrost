@@ -143,7 +143,11 @@ const appSlice = createSlice({
 		setNotifications: (state, action: PayloadAction<Notification[]>) => {
 			const now = Date.now();
 			const byID = new Map(state.notifications.map((notification) => [notification.id, notification]));
-			action.payload.forEach((notification) => byID.set(notification.id, notification));
+			action.payload.forEach((notification) => {
+				// Resolution is terminal: a list response fetched before a resolve event must not reopen the row.
+				if (byID.get(notification.id)?.resolved_at && !notification.resolved_at) return;
+				byID.set(notification.id, notification);
+			});
 			state.notifications = Array.from(byID.values())
 				.filter((notification) => isLive(notification, now))
 				.sort(byNewestFirst)
@@ -152,6 +156,8 @@ const appSlice = createSlice({
 
 		addNotification: (state, action: PayloadAction<Notification>) => {
 			const now = Date.now();
+			// Resolution is terminal: an unresolved publish delivered after its resolve event must not reopen the row.
+			if (!action.payload.resolved_at && state.notifications.some((n) => n.id === action.payload.id && n.resolved_at)) return;
 			state.notifications = [action.payload, ...state.notifications.filter((notification) => notification.id !== action.payload.id)]
 				.filter((notification) => isLive(notification, now))
 				.sort(byNewestFirst)
@@ -276,7 +282,8 @@ export const selectVisibleNotifications = createSelector(
 );
 export const selectUnreadNotificationsCount = createSelector(
 	[selectVisibleNotifications, selectReadNotificationIds],
-	(notifications, readIds) => notifications.filter((notification) => !readIds.includes(notification.id)).length,
+	(notifications, readIds) =>
+		notifications.filter((notification) => !notification.resolved_at && !readIds.includes(notification.id)).length,
 );
 export const selectNotificationPreferences = (state: { app: AppState }) => state.app.notificationPreferences;
 export const selectSettings = (state: { app: AppState }) => state.app.settings;

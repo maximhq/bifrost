@@ -18,6 +18,20 @@ type recordingNotificationStore struct {
 	rows    []tables.TableNotification
 }
 
+// ResolveNotifications marks matching stored rows in place and returns only the
+// rows this call changed, matching the RDB store's first-resolution-wins contract.
+func (s *recordingNotificationStore) ResolveNotifications(_ context.Context, subjectType, subjectID string, resolvedAt time.Time, resolution string) ([]tables.TableNotification, error) {
+	var changed []tables.TableNotification
+	for i := range s.created {
+		row := &s.created[i]
+		if row.SubjectType == subjectType && row.SubjectID == subjectID && row.ResolvedAt == nil {
+			row.ResolvedAt, row.Resolution = &resolvedAt, resolution
+			changed = append(changed, *row)
+		}
+	}
+	return changed, nil
+}
+
 func (s *recordingNotificationStore) CreateNotification(_ context.Context, notification *tables.TableNotification) error {
 	s.created = append(s.created, *notification)
 	return nil
@@ -112,6 +126,10 @@ type endlessNotificationStore struct{ calls int }
 
 func (s *endlessNotificationStore) CreateNotification(context.Context, *tables.TableNotification) error {
 	return nil
+}
+
+func (s *endlessNotificationStore) ResolveNotifications(context.Context, string, string, time.Time, string) ([]tables.TableNotification, error) {
+	return nil, nil
 }
 
 func (s *endlessNotificationStore) DeleteExpiredNotifications(context.Context, time.Time) (int64, error) {
@@ -232,4 +250,66 @@ func TestNotificationCursorRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, wantTime, gotTime)
 	require.Equal(t, wantID, gotID)
+}
+
+func TestNotificationServiceResolve(t *testing.T) {
+	store := &recordingNotificationStore{}
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	service := &NotificationService{store: store, now: func() time.Time { return now }}
+
+	_, err := service.Publish(context.Background(), schemas.NotificationInput{
+		Audience: schemas.NotificationAudienceAll, Severity: schemas.NotificationSeverityInfo, Title: "Half", Message: "m", SubjectType: "budget_request",
+	})
+	require.ErrorContains(t, err, "must be provided together")
+
+	published, err := service.Publish(context.Background(), schemas.NotificationInput{
+		Audience: schemas.NotificationAudienceAll, Severity: schemas.NotificationSeverityInfo, Title: "Tagged", Message: "m",
+		SubjectType: "budget_request", SubjectID: "req-1",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "req-1", store.created[0].SubjectID)
+
+	_, err = service.Resolve(context.Background(), schemas.NotificationResolveInput{SubjectType: "budget_request", Resolution: "Approved"})
+	require.ErrorContains(t, err, "must be provided together")
+	_, err = service.Resolve(context.Background(), schemas.NotificationResolveInput{SubjectType: "budget_request", SubjectID: "req-1", Resolution: "  "})
+	require.ErrorContains(t, err, "resolution is required")
+
+	resolved, err := service.Resolve(context.Background(), schemas.NotificationResolveInput{SubjectType: "budget_request", SubjectID: "req-1", Resolution: "Approved by Ada"})
+	require.NoError(t, err)
+	require.Len(t, resolved, 1)
+	require.Equal(t, published.ID, resolved[0].ID)
+	require.Equal(t, now, *resolved[0].ResolvedAt)
+	require.Equal(t, "Approved by Ada", resolved[0].Resolution)
+
+	resolved, err = service.Resolve(context.Background(), schemas.NotificationResolveInput{SubjectType: "budget_request", SubjectID: "req-1", Resolution: "Denied by Bob"})
+	require.NoError(t, err)
+	require.Empty(t, resolved, "a resolved subject stays resolved with its first outcome")
+	require.Equal(t, "Approved by Ada", store.created[0].Resolution)
+
+	other, err := service.Publish(context.Background(), schemas.NotificationInput{
+		Audience: schemas.NotificationAudienceAll, Severity: schemas.NotificationSeverityInfo, Title: "Other", Message: "m",
+		SubjectType: "budget_request", SubjectID: "req-2",
+	})
+	require.NoError(t, err)
+	resolved, err = service.Resolve(context.Background(), schemas.NotificationResolveInput{SubjectType: "budget_request", SubjectID: "req-2", Resolution: "Cancelled by the requester"})
+	require.NoError(t, err)
+	require.Len(t, resolved, 1)
+	require.Equal(t, other.ID, resolved[0].ID)
+}
+
+// partialResolveStore commits one row and then fails, as a store does when a later row update errors.
+type partialResolveStore struct{ recordingNotificationStore }
+
+func (s *partialResolveStore) ResolveNotifications(_ context.Context, subjectType, subjectID string, resolvedAt time.Time, resolution string) ([]tables.TableNotification, error) {
+	row := tables.TableNotification{ID: "first", Audience: "all", Severity: "info", Title: "t", Message: "m", SubjectType: subjectType, SubjectID: subjectID, ResolvedAt: &resolvedAt, Resolution: resolution}
+	return []tables.TableNotification{row}, fmt.Errorf("connection reset")
+}
+
+func TestNotificationServiceResolveKeepsCommittedRowsOnError(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	service := &NotificationService{store: &partialResolveStore{}, websocket: NewWebSocketHandler(context.Background(), nil), now: func() time.Time { return now }}
+	resolved, err := service.Resolve(context.Background(), schemas.NotificationResolveInput{SubjectType: "budget_request", SubjectID: "req-1", Resolution: "Approved"})
+	require.ErrorContains(t, err, "connection reset")
+	require.Len(t, resolved, 1, "rows committed before the failure are still returned and broadcast")
+	require.Equal(t, "first", resolved[0].ID)
 }

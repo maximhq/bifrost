@@ -54,7 +54,11 @@ func TestModelRoutingColumnsFilter(t *testing.T) {
 	res, err := store.SearchLogs(ctx, byRouter, PaginationOptions{Limit: 1})
 	require.NoError(t, err)
 	require.Len(t, res.Logs, 1)
-	got := res.Logs[0]
+	// The router columns are detail-only: the list row leaves them out and
+	// the by-id read returns them.
+	assert.Nil(t, res.Logs[0].ModelRouterName, "/api/logs leaves model_router_name to the detail read")
+	got, err := store.FindByID(ctx, res.Logs[0].ID)
+	require.NoError(t, err)
 	require.NotNil(t, got.ModelRouterName)
 	assert.Equal(t, "Support", *got.ModelRouterName)
 
