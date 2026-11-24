@@ -6717,7 +6717,9 @@ func BenchmarkRelayLogHooks(b *testing.B) {
 }
 
 func TestRelayLogQueryRedaction(t *testing.T) {
-	got := redactQuery("q=private-search&api_key=sk-123&access_token=tok&page=2&Signature=abc&flag")
+	got := redactQuery("q=private-search&api_key=sk-123&access_token=tok&page=2&Signature=abc&X-Amz-Credential=akid&pwd=hunter2&flag")
+	require.NotContains(t, got, "akid", "the AWS presign parameters job validation refuses are masked too")
+	require.NotContains(t, got, "hunter2")
 	require.NotContains(t, got, "sk-123")
 	require.NotContains(t, got, "tok&")
 	require.NotContains(t, got, "abc")

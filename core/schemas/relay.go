@@ -176,18 +176,6 @@ const JobIDPlaceholder = "{{job.id}}"
 // DefaultRelayJobTimeoutSeconds is how long a job is polled when timeout_seconds is unset.
 const DefaultRelayJobTimeoutSeconds = 3600
 
-// credentialQueryParams are query parameter names that carry a credential.
-var credentialQueryParams = map[string]struct{}{
-	"key": {}, "api_key": {}, "apikey": {}, "api-key": {}, "token": {}, "access_token": {}, "auth": {},
-	"secret": {}, "client_secret": {}, "password": {}, "signature": {}, "sig": {}, "code": {},
-	"x-amz-signature": {}, "x-amz-credential": {}, "x-amz-security-token": {},
-}
-
-func isCredentialQueryParam(name string) bool {
-	_, ok := credentialQueryParams[strings.ToLower(strings.TrimSpace(name))]
-	return ok
-}
-
 func headersMention(headers map[string]string, s string) bool {
 	for _, v := range headers {
 		if strings.Contains(v, s) {
@@ -542,7 +530,7 @@ func (j *RelayJobConfig) validate(field string, route RelayRouteConfig, base *Re
 		}
 		// The poll is stored in plain text; the relay adds its own credential.
 		for name := range values {
-			if isEndpointCredentialHeader(name) || isCredentialQueryParam(name) || (auth.Type == RelayAuthQuery && strings.EqualFold(name, strings.TrimSpace(auth.QueryParam))) {
+			if isEndpointCredentialHeader(name) || IsCredentialQueryParam(name) || (auth.Type == RelayAuthQuery && strings.EqualFold(name, strings.TrimSpace(auth.QueryParam))) {
 				return fmt.Errorf("%s.poll.path: query parameter %q carries a credential; the relay adds its own to every poll", field, name)
 			}
 		}

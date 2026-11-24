@@ -663,13 +663,9 @@ func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, relayName str
 	}
 }
 
-// sensitiveQueryKeys are query parameter names that carry credentials but no header pattern names.
-var sensitiveQueryKeys = map[string]struct{}{"key": {}, "token": {}, "apikey": {}, "password": {}, "pwd": {}, "sig": {}, "signature": {}}
-
 // redactQuery masks the values of credential-bearing query parameters (api_key, access_token, ...)
-// before a query is stored with the path, keeping the parameter order and names. A key is
-// sensitive when the header rules name it (with "_" read as "-") or it is a well-known credential
-// parameter.
+// before a query is stored with the path, keeping the parameter order and names. Which names count
+// is schemas.IsCredentialQueryParam, the same check relay job validation uses.
 func redactQuery(raw string) string {
 	parts := strings.Split(raw, "&")
 	for i, part := range parts {
@@ -681,8 +677,7 @@ func redactQuery(raw string) string {
 		if err != nil {
 			key = name
 		}
-		normalized := strings.ToLower(strings.ReplaceAll(key, "_", "-"))
-		if _, ok := sensitiveQueryKeys[strings.ReplaceAll(normalized, "-", "")]; ok || schemas.IsSensitiveHeader(normalized) {
+		if schemas.IsCredentialQueryParam(key) {
 			parts[i] = name + "=" + url.QueryEscape(schemas.RedactedAttrValue)
 		}
 	}

@@ -530,6 +530,21 @@ func TestRelayJobRefusesABlankPollHeader(t *testing.T) {
 	require.ErrorContains(t, job.validate("job", RelayRouteConfig{Method: "POST", Path: "/jobs"}, nil, RelayAuthConfig{Type: RelayAuthBearer}), `"X-Op" has no value`)
 }
 
+// A poll query refuses credential names, but not generic words like code that status APIs use.
+func TestRelayJobPollQueryCredentials(t *testing.T) {
+	route := RelayRouteConfig{Method: "POST", Path: "/jobs"}
+	poll := func(query string) *RelayJobConfig {
+		return &RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"},
+			Poll: RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}?" + query}}
+	}
+	for _, q := range []string{"api_key=x", "refresh_token=x", "pwd=x", "X-Amz-Signature=x"} {
+		require.ErrorContains(t, poll(q).validate("job", route, nil, RelayAuthConfig{Type: RelayAuthBearer}), "carries a credential", q)
+	}
+	for _, q := range []string{"code=pending", "auth=none", "view=full"} {
+		require.NoError(t, poll(q).validate("job", route, nil, RelayAuthConfig{Type: RelayAuthBearer}), q)
+	}
+}
+
 // A relay can name its own key parameter, which no built-in credential list knows.
 func TestRelayJobRefusesTheRelaysOwnQueryCredential(t *testing.T) {
 	job := &RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"},
