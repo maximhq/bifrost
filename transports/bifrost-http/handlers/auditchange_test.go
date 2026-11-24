@@ -1772,7 +1772,24 @@ func TestCommitPoint_ConfigCompatReloadFailure(t *testing.T) {
 			h.updateConfig(ctx)
 
 			requireStatus(t, ctx, tc.wantStatus)
-			requireRecordedOrNone(t, liveAuditChanges(ctx), tc.wantRecorded, "config.updated")
+			changes := liveAuditChanges(ctx)
+			requireRecordedOrNone(t, changes, tc.wantRecorded, "config.updated")
+			if !tc.wantRecorded {
+				return
+			}
+			saved, err := store.GetClientConfig(context.Background())
+			if err != nil {
+				t.Fatalf("read saved config: %v", err)
+			}
+			var after struct {
+				Compat configstore.CompatConfig `json:"compat"`
+			}
+			if err := json.Unmarshal(changes[0].After, &after); err != nil {
+				t.Fatalf("decode after %s: %v", changes[0].After, err)
+			}
+			if saved.Compat.ConvertTextToChat || after.Compat != saved.Compat {
+				t.Fatalf("after compat = %+v, saved compat = %+v, want the saved all-off config", after.Compat, saved.Compat)
+			}
 		})
 	}
 }
