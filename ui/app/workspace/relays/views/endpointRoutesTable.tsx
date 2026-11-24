@@ -10,7 +10,6 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CardHeader, CardTitle } from "@/components/ui/card";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -23,16 +22,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { getErrorMessage, useUpdateRelayMutation } from "@/lib/store";
 import type { Relay } from "@/lib/types/relays";
 import { cn } from "@/lib/utils";
-import { cleanUsage, describePricing, mergeUsage, routeBillableByDefault, toRelayForm } from "@/lib/utils/relayForm";
 import type { OpenAPIImport } from "@/lib/utils/openapiImport";
+import { cleanUsage, describePricing, mergeUsage, routeBillableByDefault, toRelayForm } from "@/lib/utils/relayForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { EllipsisIcon, FileUpIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
-import { useState, type ReactNode } from "react";
-import { toast } from "sonner";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { HeaderActionButton } from "../fragments/headerActionButton";
-import { OpenAPIImportDialog } from "../fragments/openapiImportDialog";
 import { withRoutes, type RouteForm } from "../routes.utils";
+import { OpenAPIImportSheet } from "../sheets/openapiImportSheet";
 import { RouteSheet } from "../sheets/routeSheet";
 
 function RouteActionsMenu({
@@ -57,22 +56,20 @@ function RouteActionsMenu({
 			<DropdownMenuContent align="end">
 				<DropdownMenuItem onSelect={onEdit} disabled={!hasUpdateAccess} data-testid={`relay-route-edit-${index}`}>
 					<PencilIcon className="mr-1 h-4 w-4" />
-						{t("edit", { ns: "common" })}
-
+					{t("edit", { ns: "common" })}
 				</DropdownMenuItem>
 				<DropdownMenuSeparator />
 				<DropdownMenuItem variant="destructive" onSelect={onDelete} disabled={!hasUpdateAccess} data-testid={`relay-route-remove-${index}`}>
 					<TrashIcon className="mr-1 h-4 w-4" />
-						{t("delete", { ns: "common" })}
-
+					{t("delete", { ns: "common" })}
 				</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);
 }
 
-/** The routes of a relay, in the same card and table shape as a provider's configured keys. */
-export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Relay; headerActions?: ReactNode }) {
+/** The routes of a relay, with their own toolbar for adding and importing routes. */
+export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 	const { t } = useTranslation("config");
 	const canUpdate = useRbac(RbacResource.Relays, RbacOperation.Update);
 	const [updateEndpoint, { isLoading: saving }] = useUpdateRelayMutation();
@@ -125,38 +122,47 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 	};
 
 	return (
-		<div className="w-full">
-			<CardHeader className="mb-4 px-0">
-				<CardTitle className="flex flex-col items-stretch gap-3 md:flex-row md:items-center md:justify-between">
-					<div className="flex items-center gap-2">{t("relays.routes.title")}</div>
-					<div className="flex min-w-0 flex-wrap items-center gap-2">
-						{headerActions}
-						{canUpdate && (
-							<HeaderActionButton
-								variant="outline"
-								icon={<FileUpIcon className="h-4 w-4" />}
-								label={t("relays.routes.importOpenapi")}
-								aria-label={t("relays.routes.importOpenapi")}
-								disabled={saving}
-								onClick={() => setImportOpen(true)}
-								data-testid="relay-routes-import"
-							/>
-						)}
-						{canUpdate && (
-							<HeaderActionButton
-								icon={<PlusIcon className="h-4 w-4" />}
-								label={t("relays.routes.addRoute")}
-								aria-label={t("relays.routes.addRoute")}
-								disabled={saving}
-								onClick={() => setEditing({ index: -1, route: { method: "POST", path: "/", headers: [], enabled: true } })}
-								data-testid="relay-routes-add"
-							/>
-						)}
-					</div>
-				</CardTitle>
-			</CardHeader>
-			<div className="flex w-full flex-col gap-2 rounded-sm border">
-				<Table className="w-full min-w-[640px] table-fixed" data-testid="relay-routes-table">
+		<section className="@container/card-header flex w-full flex-col gap-3 md:min-h-64 md:flex-1" data-testid="relay-routes">
+			<div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+				<div className="min-w-0">
+					<h3 className="flex items-center gap-2 text-base font-semibold">
+						{t("relays.routes.title")}
+						<Badge variant="secondary" className="font-normal" data-testid="relay-routes-count">
+							{routes.length}
+						</Badge>
+					</h3>
+					<p className="text-muted-foreground mt-0.5 text-sm">{t("relays.routes.description")}</p>
+				</div>
+				<div className="flex shrink-0 items-center gap-2">
+					{canUpdate && (
+						<HeaderActionButton
+							variant="outline"
+							icon={<FileUpIcon className="h-4 w-4" />}
+							label={t("relays.routes.importOpenapi")}
+							aria-label={t("relays.routes.importOpenapi")}
+							disabled={saving}
+							onClick={() => setImportOpen(true)}
+							data-testid="relay-routes-import"
+						/>
+					)}
+					{canUpdate && (
+						<HeaderActionButton
+							icon={<PlusIcon className="h-4 w-4" />}
+							label={t("relays.routes.addRoute")}
+							aria-label={t("relays.routes.addRoute")}
+							disabled={saving}
+							onClick={() => setEditing({ index: -1, route: { method: "POST", path: "/", headers: [], enabled: true } })}
+							data-testid="relay-routes-add"
+						/>
+					)}
+				</div>
+			</div>
+			<div className="flex w-full flex-col overflow-hidden rounded-sm border md:min-h-0">
+				<Table
+					className="w-full min-w-[640px] table-fixed"
+					containerClassName="custom-scrollbar md:min-h-0 md:overflow-y-auto"
+					data-testid="relay-routes-table"
+				>
 					<colgroup>
 						<col className="w-24" />
 						<col className="w-[36%]" />
@@ -164,7 +170,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 						<col className="w-[12%]" />
 						<col className="w-[10%]" />
 					</colgroup>
-					<TableHeader>
+					<TableHeader className="bg-muted sticky top-0 z-10">
 						<TableRow>
 							<TableHead>{t("relays.routes.columns.method")}</TableHead>
 							<TableHead>{t("relays.routes.columns.route")}</TableHead>
@@ -177,9 +183,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 						{routes.length === 0 && (
 							<TableRow data-testid="relay-routes-empty">
 								<TableCell colSpan={5} className="py-6 text-center">
-									{endpoint.skip_route_check
-										? t("relays.routes.emptyAnyPath")
-										: t("relays.routes.empty")}
+									{endpoint.skip_route_check ? t("relays.routes.emptyAnyPath") : t("relays.routes.empty")}
 								</TableCell>
 							</TableRow>
 						)}
@@ -191,7 +195,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 								<TableRow
 									key={`${route.method}-${route.path}-${index}`}
 									data-testid={`relay-route-row-${index}`}
-									className={cn("text-sm transition-colors hover:bg-white", !enabled && "opacity-60")}
+									className={cn("hover:bg-muted/40 text-sm transition-colors", !enabled && "opacity-60")}
 								>
 									<TableCell>
 										<Badge variant="secondary" className="font-mono">
@@ -219,8 +223,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 										)}
 										{override && billable && (
 											<Badge variant="outline" className="ml-2">
-													{t("relays.routes.overrideBadge")}
-
+												{t("relays.routes.overrideBadge")}
 											</Badge>
 										)}
 									</TableCell>
@@ -277,8 +280,7 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 					</AlertDialogHeader>
 					<AlertDialogFooter className="pt-4">
 						<AlertDialogCancel onClick={() => setDeleting(null)} disabled={saving}>
-								{t("cancel", { ns: "common" })}
-
+							{t("cancel", { ns: "common" })}
 						</AlertDialogCancel>
 						<AlertDialogAction
 							disabled={saving || !canUpdate}
@@ -294,24 +296,25 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 									setDeleting(null);
 							}}
 						>
-								{t("delete", { ns: "common" })}
-							</AlertDialogAction>
+							{t("delete", { ns: "common" })}
+						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
-			<OpenAPIImportDialog open={importOpen} onClose={() => setImportOpen(false)} onImport={stageImport} />
+			<OpenAPIImportSheet open={importOpen} onClose={() => setImportOpen(false)} onImport={stageImport} />
 			<AlertDialog open={pendingImport !== null} onOpenChange={(o) => !o && setPendingImport(null)}>
 				<AlertDialogContent data-testid="relay-import-review">
 					<AlertDialogHeader>
 						<AlertDialogTitle>{t("relays.routes.importReview.title")}</AlertDialogTitle>
 						<AlertDialogDescription asChild>
 							<div className="space-y-2">
-								<p>
-									{t("relays.routes.importReview.body", { count: pendingImport?.routes.length ?? 0 })}
-								</p>
+								<p>{t("relays.routes.importReview.body", { count: pendingImport?.routes.length ?? 0 })}</p>
 								{pendingImport && pendingImport.dropped.length > 0 && (
 									<p className="text-destructive">
-										{t("relays.routes.importReview.dropped", { count: pendingImport.dropped.length, routes: pendingImport.dropped.join(", ") })}
+										{t("relays.routes.importReview.dropped", {
+											count: pendingImport.dropped.length,
+											routes: pendingImport.dropped.join(", "),
+										})}
 									</p>
 								)}
 							</div>
@@ -330,13 +333,11 @@ export function EndpointRoutesTable({ endpoint, headerActions }: { endpoint: Rel
 								if (await save(imported, t("relays.routes.toastImported", { count: imported.length }))) setPendingImport(null);
 							}}
 						>
-							
-								{t("relays.routes.importReview.apply")}
-
+							{t("relays.routes.importReview.apply")}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
-		</div>
+		</section>
 	);
 }

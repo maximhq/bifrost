@@ -1,4 +1,6 @@
 import { ModelAccessSelector } from "@/components/modelAccess";
+import { ContentLoggingSelect } from "@/components/contentLoggingSelect";
+import { contentLoggingChoice, contentLoggingValue } from "@/components/contentLoggingSelect.utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { DefaultAnthropicWorkloadIdentityConfig, DefaultVertexAWSWorkloadIdentityConfig, OAuthSigningAlgorithms } from "@/lib/types/config";
@@ -525,6 +527,29 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 									}
 								/>
 							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.disable_content_logging`}
+					render={({ field }) => (
+						<FormItem className="px-0.5">
+							<FormLabel>{t("providers.keys.contentLogging")}</FormLabel>
+							<FormControl>
+								<ContentLoggingSelect
+									value={contentLoggingChoice(field.value)}
+									onValueChange={(choice) => field.onChange(contentLoggingValue(choice))}
+									labels={{
+										inherit: t("providers.keys.contentLoggingInherit"),
+										off: t("providers.keys.contentLoggingOff"),
+										on: t("providers.keys.contentLoggingOn"),
+									}}
+									testIdPrefix="apikey-content-logging"
+								/>
+							</FormControl>
+							<FormDescription>{t("providers.keys.contentLoggingHelp")}</FormDescription>
 							<FormMessage />
 						</FormItem>
 					)}
@@ -1180,6 +1205,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								} else {
 									form.setValue("key.databricks_key_config.client_id", undefined, { shouldDirty: true });
 									form.setValue("key.databricks_key_config.client_secret", undefined, { shouldDirty: true });
+									form.setValue("key.databricks_key_config.scopes", undefined, { shouldDirty: true });
 								}
 							}}
 						>
@@ -1247,6 +1273,26 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 												placeholder={t("providers.keys.databricksClientSecretPlaceholder")}
 												type="text"
 												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name="key.databricks_key_config.scopes"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>{t("providers.keys.scopesOptional")}</FormLabel>
+										<FormDescription>{t("providers.keys.databricksScopesHelp")}</FormDescription>
+										<FormControl>
+											<TagInput
+												data-testid="key-input-databricks-scopes"
+												placeholder={t("providers.keys.addScopePlaceholder")}
+												value={field.value ?? []}
+												// Scopes go out space-joined, so a pasted "a b" is two scopes, not one.
+												onValueChange={(v) => field.onChange(v.flatMap((s) => s.split(/\s+/)).filter(Boolean))}
 											/>
 										</FormControl>
 										<FormMessage />

@@ -126,18 +126,32 @@ func (f *Fleet) routeFleetControl(w http.ResponseWriter, r *http.Request) {
 			body["tls_url"] = tlsURL
 			body["tls_cert_pem"] = certPEM
 		}
+		if proxy := f.proxyState(); proxy != nil {
+			body["proxy"] = proxy
+		}
 		writeJSON(w, http.StatusOK, body)
 	case http.MethodPost:
 		var body struct {
 			Add    string `json:"add"`
 			Remove string `json:"remove"`
 			Reset  string `json:"reset"`
+			// Proxy sets the forward proxy's mode; clear_log also empties its log.
+			Proxy *struct {
+				ProxyMode
+				ClearLog bool `json:"clear_log"`
+			} `json:"proxy"`
 		}
 		if err := decodeBody(r, &body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		switch {
+		case body.Proxy != nil:
+			if err := f.setProxy(body.Proxy.ProxyMode, body.Proxy.ClearLog); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"proxy": f.proxyState()})
 		case body.Add != "":
 			s := f.Add(body.Add)
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -155,7 +169,7 @@ func (f *Fleet) routeFleetControl(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"reset": body.Reset, "state": s.State()})
 		default:
-			http.Error(w, "specify add, remove or reset", http.StatusBadRequest)
+			http.Error(w, "specify add, remove, reset or proxy", http.StatusBadRequest)
 		}
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -425,7 +439,7 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		if s.rest.remove(body.Method, body.Path) == 0 {
 			return errBadRequest("no route matched")
 		}
-	case "oauth/expire", "oauth/revoke", "oauth/fail":
+	case "oauth/expire", "oauth/revoke", "oauth/fail", "oauth/forget":
 		return s.applyOAuthControl(strings.TrimSuffix(verb, "/"), body)
 	case "llm/script", "llm/append":
 		return s.applyLLMScript(strings.TrimSuffix(verb, "/") == "llm/script", body)
@@ -457,6 +471,10 @@ func (s *Server) applyOAuthControl(verb string, body controlBody) error {
 	case "oauth/revoke":
 		if s.oauth.revoke(body.Identity, body.Token) == 0 {
 			return errBadRequest("no live grant matched")
+		}
+	case "oauth/forget":
+		if s.oauth.forget() == 0 {
+			return errBadRequest("no dynamically registered client to forget")
 		}
 	case "oauth/fail":
 		if body.Fail == nil {

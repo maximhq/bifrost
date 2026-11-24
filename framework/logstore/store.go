@@ -67,6 +67,15 @@ func logTimestampFromContext(ctx context.Context) (time.Time, bool) {
 	return ts, ok && !ts.IsZero()
 }
 
+// withLogTimestamp attaches ts as the row timestamp hint (LogTimestampContextKey)
+// when it is set, so a store can bound the id lookup an update or read makes.
+func withLogTimestamp(ctx context.Context, ts time.Time) context.Context {
+	if ts.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, LogTimestampContextKey, ts)
+}
+
 // LogStore is the interface for the log store.
 type LogStore interface {
 	// WarpConversationStore is Warp's saved-chat surface. Transcripts live here
@@ -76,6 +85,10 @@ type LogStore interface {
 	// WarpTopicStore is where Warp's topics, and each request's place among
 	// them, are kept. See warptopics.go.
 	WarpTopicStore
+	// ComplexitySuggestionStore is where the complexity router's phrase
+	// suggestions, and the runs that wrote them, are kept. See
+	// complexitysuggestions.go.
+	ComplexitySuggestionStore
 
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
@@ -177,6 +190,8 @@ type LogStore interface {
 	DeleteLog(ctx context.Context, id string) error
 	DeleteLogs(ctx context.Context, ids []string) error
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+	// RetentionInterval is how often the retention cleaner runs; it lives here so wrappers that embed LogStore forward it.
+	RetentionInterval() time.Duration
 
 	CreateUserAgentMapping(ctx context.Context, mapping *UserAgentMapping) error
 	UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error
@@ -199,6 +214,8 @@ type LogStore interface {
 
 	// MCP Tool Log histogram methods
 	GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error)
+	// GetMCPLatencyHistogram returns time-bucketed latency percentiles of finished MCP tool calls.
+	GetMCPLatencyHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error)
 	GetMCPCostHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPCostHistogramResult, error)
 	GetMCPTopTools(ctx context.Context, filters MCPToolLogSearchFilters, limit int) (*MCPTopToolsResult, error)
 	// GetMCPToolCountsByDimension returns how many distinct tools each user,
@@ -225,6 +242,8 @@ type LogStore interface {
 	// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs.
 	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error)
+	// GetDistinctMCPKeyPairs returns one MCP tool log dimension's id/name pairs for the filter sidebar.
+	GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error)
 
 	// Agent Gateway log methods.
 	BatchCreateAgentLogsIfNotExists(ctx context.Context, entries []*AgentLog) ([]string, error)

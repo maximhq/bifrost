@@ -198,7 +198,7 @@ func (h *MCPHandler) runOAuthBootstrap(ctx *fasthttp.RequestCtx, oauthCfg *OAuth
 		Resource:        oauthCfg.Resource,
 
 		RequirePublicTarget:       requirePublicTarget,
-		ClientMetadataURL:         base + oauthClientMetadataPath,
+		ClientMetadataURL:         h.oauthHandler.oauthProvider.ClientMetadataDocumentURL(redirectURI),
 		UseClientMetadataDocument: oauthCfg.UseClientMetadataDocument,
 	})
 }
@@ -283,13 +283,16 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has not completed initial OAuth authorization yet; use initiate-verification instead")
 		return
 	}
-	if clientConfig.PendingVerification {
+	if clientConfig.PendingVerification && !awaitsVerificationOnItsRegistration(clientConfig) {
 		// A config.json-bootstrapped client links OauthConfigID before the
 		// admin ever completes consent (see InitiateOAuthFlow), so the check
 		// above alone doesn't catch this case. Reauthorizing here would
 		// resolve to the same flow_mode='admin' + mcp_client_id lookup as
 		// the in-flight bootstrap flow and rotate its state/code_verifier,
 		// breaking the bootstrap authorize URL the admin already has open.
+		// A client pending on the registration it already has (see
+		// awaitsVerificationOnItsRegistration) has no bootstrap to break:
+		// either route signs its admin in, and complete-oauth verifies it.
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has not completed initial OAuth authorization yet; use initiate-verification instead")
 		return
 	}
@@ -379,39 +382,10 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("A new OAuth client was registered and installed (client_id %s replaces %s), but starting consent with it failed: %v. Do not retry this request, which would register another client: call reauthorize to run consent against the client that is now stored", newClientID, previousClientID, err))
 	}
 
-	flowInitiation, flowID, err := h.store.OAuthProvider.InitiateUserOAuthFlow(ctx, *clientConfig.OauthConfigID, clientConfig.ID, redirectURI, schemas.MCPAuthModeAdmin)
+	response, failed, err := h.startAdminSignIn(ctx, clientConfig, redirectURI, "Failed to initiate reauthorization", "reconnect")
 	if err != nil {
-		failConsentSetup("Failed to initiate reauthorization", err)
+		failConsentSetup(failed, err)
 		return
-	}
-	authorizeURL, err := h.store.OAuthProvider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
-	if err != nil {
-		failConsentSetup("Failed to build authorize URL", err)
-		return
-	}
-
-	completeURL := lib.WithBasePath(fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID))
-	// status_url carries the flow id: this client's oauth_configs row has
-	// been "authorized" since its original bootstrap and that status never
-	// regresses (see isPrematureOAuthCompletion), so a poller reading the
-	// bare config status would see "authorized" before the admin has even
-	// signed in. With flow_id the status endpoint answers from the flow row
-	// instead, which stays "pending" until the callback actually completes.
-	statusURL := lib.WithBasePath(fmt.Sprintf("/api/oauth/config/%s/status?flow_id=%s", flowInitiation.OauthConfigID, url.QueryEscape(flowID)))
-	response := map[string]any{
-		"status":          "pending_oauth",
-		"oauth_config_id": flowInitiation.OauthConfigID,
-		"flow_id":         flowID,
-		"authorize_url":   authorizeURL,
-		"expires_at":      flowInitiation.ExpiresAt,
-		"mcp_client_id":   clientConfig.ID,
-		"complete_url":    completeURL,
-		"status_url":      statusURL,
-		"next_steps": []string{
-			"1. Open authorize_url in a browser to approve access",
-			"2. Poll status_url to check when status becomes 'authorized'",
-			"3. POST complete_url to reconnect the MCP client",
-		},
 	}
 	// Reported back so the caller can show which client_id the consent it is
 	// about to run actually belongs to. Present only when a registration
@@ -423,10 +397,48 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 	} else {
 		h.recordMCPClientAction(ctx, "mcp_client.reauthorization_started", clientConfig.ID, clientConfig.Name, map[string]any{
 			"auth_type":       clientConfig.AuthType,
-			"oauth_config_id": flowInitiation.OauthConfigID,
+			"oauth_config_id": response["oauth_config_id"],
 		})
 	}
 	SendJSON(ctx, response)
+}
+
+// startAdminSignIn opens an admin-mode flow on clientConfig's stored OAuth
+// registration and returns the pending_oauth response handing back its
+// upstream authorize URL. On failure it returns the message to report:
+// initiateFailure when the flow could not be opened. completeStep names what
+// POSTing complete_url does, for next_steps.
+//
+// status_url carries the flow id: the client's oauth_configs row has been
+// "authorized" since its original bootstrap and that status never regresses
+// (see isPrematureOAuthCompletion), so a poller reading the bare config status
+// would see "authorized" before the admin has even signed in. With flow_id the
+// status endpoint answers from the flow row instead, which stays "pending"
+// until the callback actually completes.
+func (h *MCPHandler) startAdminSignIn(ctx *fasthttp.RequestCtx, clientConfig *schemas.MCPClientConfig, redirectURI, initiateFailure, completeStep string) (map[string]any, string, error) {
+	flowInitiation, flowID, err := h.store.OAuthProvider.InitiateUserOAuthFlow(ctx, *clientConfig.OauthConfigID, clientConfig.ID, redirectURI, schemas.MCPAuthModeAdmin)
+	if err != nil {
+		return nil, initiateFailure, err
+	}
+	authorizeURL, err := h.store.OAuthProvider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
+	if err != nil {
+		return nil, "Failed to build authorize URL", err
+	}
+	return map[string]any{
+		"status":          "pending_oauth",
+		"oauth_config_id": flowInitiation.OauthConfigID,
+		"flow_id":         flowID,
+		"authorize_url":   authorizeURL,
+		"expires_at":      flowInitiation.ExpiresAt,
+		"mcp_client_id":   clientConfig.ID,
+		"complete_url":    lib.WithBasePath(fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID)),
+		"status_url":      lib.WithBasePath(fmt.Sprintf("/api/oauth/config/%s/status?flow_id=%s", flowInitiation.OauthConfigID, url.QueryEscape(flowID))),
+		"next_steps": []string{
+			"1. Open authorize_url in a browser to approve access",
+			"2. Poll status_url to check when status becomes 'authorized'",
+			fmt.Sprintf("3. POST complete_url to %s the MCP client", completeStep),
+		},
+	}, "", nil
 }
 
 // initiateMCPClientVerification handles
@@ -472,6 +484,15 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if clientConfig.PendingOAuthConfig == nil {
+		// The admin verifies a client pending on the registration it already
+		// has by signing in on that registration, as reauthorize would, so its
+		// callers keep their sign-ins; a new registration would end every one
+		// of them. When its provider no longer recognises that client,
+		// reregister gets it a new one.
+		if awaitsVerificationOnItsRegistration(clientConfig) {
+			h.initiateVerificationOnRegistration(ctx, clientConfig)
+			return
+		}
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has no pending OAuth bootstrap config to initiate from")
 		return
 	}
@@ -512,6 +533,39 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 			"3. POST complete_url to activate the MCP client",
 		},
 	})
+}
+
+// awaitsVerificationOnItsRegistration reports whether config is a per_user_oauth
+// client pending its admin step on the OAuth registration it already has, with
+// no bootstrap stash: what turning per_user_discovery off leaves. Unlike a
+// config.json client still in its first sign-in, nothing is in flight that
+// reauthorize or reregister could break.
+func awaitsVerificationOnItsRegistration(config *schemas.MCPClientConfig) bool {
+	return config.AuthType == schemas.MCPAuthTypePerUserOauth && config.PendingVerification &&
+		config.PendingOAuthConfig == nil && config.OauthConfigID != nil && *config.OauthConfigID != ""
+}
+
+// initiateVerificationOnRegistration starts the admin sign-in that verifies
+// clientConfig, a per_user_oauth client pending its admin step, on the OAuth
+// registration it already has. complete-oauth finishes it like a config.json
+// bootstrap: it discovers the tools with the admin's token, keeps that token as
+// the admin credential and clears the pending record.
+func (h *MCPHandler) initiateVerificationOnRegistration(ctx *fasthttp.RequestCtx, clientConfig *schemas.MCPClientConfig) {
+	if h.store.OAuthProvider == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth provider not configured")
+		return
+	}
+	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+	response, failed, err := h.startAdminSignIn(ctx, clientConfig, redirectURI, "Failed to initiate OAuth flow", "activate")
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("%s: %v", failed, err))
+		return
+	}
+	h.recordMCPClientAction(ctx, "mcp_client.verification_initiated", clientConfig.ID, clientConfig.Name, map[string]any{
+		"auth_type":       clientConfig.AuthType,
+		"oauth_config_id": response["oauth_config_id"],
+	})
+	SendJSON(ctx, response)
 }
 
 // VerifyMCPClientHeadersRequest is the body for
@@ -786,6 +840,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		ClientID:               clientConfig.ID,
 		Name:                   clientConfig.Name,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
 		ConnectionType:         string(clientConfig.ConnectionType),
 		ConnectionString:       clientConfig.ConnectionString,
 		StdioConfig:            clientConfig.StdioConfig,
@@ -995,6 +1050,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		ClientID:               clientConfig.ID,
 		Name:                   clientConfig.Name,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
 		ConnectionType:         string(clientConfig.ConnectionType),
 		ConnectionString:       clientConfig.ConnectionString,
 		StdioConfig:            clientConfig.StdioConfig,
@@ -1895,6 +1951,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			Name:                   dbClient.Name,
 			EndpointSlug:           dbClient.EndpointSlug,
 			IsCodeModeClient:       dbClient.IsCodeModeClient,
+			ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
 			ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:       dbClient.ConnectionString,
 			StdioConfig:            dbClient.StdioConfig,
@@ -2270,6 +2327,7 @@ type MCPClientUpdateRequest struct {
 	Disabled               *bool                           `json:"disabled,omitempty"`
 	AllowByDefault         *bool                           `json:"allow_by_default,omitempty"`
 	IsCodeModeClient       *bool                           `json:"is_code_mode_client,omitempty"`
+	ServerTypeOnSlug       *string                         `json:"server_type_on_slug,omitempty"` // "inherit", "enabled" or "disabled"
 	IsPingAvailable        *bool                           `json:"is_ping_available,omitempty"`
 	NeedsSessionStickiness *bool                           `json:"needs_session_stickiness,omitempty"`
 	ToolSyncInterval       *MCPSyncInterval                `json:"tool_sync_interval,omitempty"`
@@ -2304,6 +2362,15 @@ func (req *MCPClientUpdateRequest) resolvedAllowByDefault(existing bool) bool {
 		return existing
 	}
 	return schemas.ResolveAllowByDefault(req.AllowByDefault, req.AllowOnAllVirtualKeys)
+}
+
+// resolvedServerTypeOnSlug applies PATCH semantics to server_type_on_slug: existing when the request
+// omits it, otherwise the sent value ("inherit" clears the override).
+func (req *MCPClientUpdateRequest) resolvedServerTypeOnSlug(existing schemas.MCPServerTypeOnSlug) (schemas.MCPServerTypeOnSlug, error) {
+	if req.ServerTypeOnSlug == nil {
+		return existing, nil
+	}
+	return schemas.ParseMCPServerTypeOnSlug(*req.ServerTypeOnSlug)
 }
 
 // rejectPrivateMCPTargetIfAuthBypassed refuses to register an HTTP/SSE MCP
@@ -2633,7 +2700,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, msg)
 			return
 		}
-		prepared, status, msg := prepareOpenAPIConfig(ctx, req.Name, req.OpenAPIConfig)
+		prepared, status, msg := prepareOpenAPIConfig(ctx, req.Name, req.OpenAPIConfig, h.store.MCPOpenAPIMaxSpecBytes())
 		if status != 0 {
 			SendError(ctx, status, msg)
 			return
@@ -2757,6 +2824,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Name:                   req.Name,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ServerTypeOnSlug:       req.ServerTypeOnSlug,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       resolvedToolSyncInterval,
@@ -2839,6 +2907,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 			return
 		}
+		h.relinkConfigVirtualMCPs(ctx, schemasConfig.Name)
 
 		message := fmt.Sprintf("MCP client registered. %d tools discovered. Each user will submit their own headers on first tool use.", len(discovery.Tools))
 		if perUserDiscoveryOn(schemasConfig) {
@@ -2915,6 +2984,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Name:                   req.Name,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ServerTypeOnSlug:       req.ServerTypeOnSlug,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       resolvedToolSyncInterval,
@@ -3001,6 +3071,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 			return
 		}
+		h.relinkConfigVirtualMCPs(ctx, schemasConfig.Name)
 
 		// Retain the admin credential for the periodic tool syncer and the
 		// refresh worker, mirroring the per-user OAuth promotion and the
@@ -3062,6 +3133,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Name:                   req.Name,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ServerTypeOnSlug:       req.ServerTypeOnSlug,
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       resolvedToolSyncInterval,
@@ -3152,6 +3224,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			Name:                   req.Name,
 			EndpointSlug:           req.EndpointSlug,
 			IsCodeModeClient:       req.IsCodeModeClient,
+			ServerTypeOnSlug:       req.ServerTypeOnSlug,
 			IsPingAvailable:        req.IsPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       resolvedToolSyncInterval,
@@ -3209,6 +3282,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		Name:                   req.Name,
 		EndpointSlug:           req.EndpointSlug,
 		IsCodeModeClient:       req.IsCodeModeClient,
+		ServerTypeOnSlug:       req.ServerTypeOnSlug,
 		ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
 		ConnectionString:       req.ConnectionString,
 		RequirePublicTarget:    req.RequirePublicTarget,
@@ -3266,6 +3340,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
 		return
 	}
+	h.relinkConfigVirtualMCPs(ctx, schemasConfig.Name)
 
 	lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", schemasConfig.ID, schemasConfig.Name, nil, auditMCPClient(h.store, schemasConfig))
 	SendJSON(ctx, map[string]any{
@@ -3365,6 +3440,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	isCodeMode := existingConfig.IsCodeModeClient
 	if req.IsCodeModeClient != nil {
 		isCodeMode = *req.IsCodeModeClient
+	}
+	serverTypeOnSlug, err := req.resolvedServerTypeOnSlug(existingConfig.ServerTypeOnSlug)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
 	}
 	isPingAvailable := existingConfig.IsPingAvailable
 	if req.IsPingAvailable != nil {
@@ -3547,7 +3627,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// later connects from the document fresh.
 		rebuildOpenAPIServer = !disabled && req.OpenAPIConfig == nil && existingConfig.OpenAPIConfig != nil &&
 			strings.TrimSpace(existingConfig.OpenAPIConfig.Spec) == "" && existingConfig.OpenAPIConfig.SpecURL != nil
-		prepared, status, msg := prepareOpenAPIConfig(ctx, name, candidate)
+		prepared, status, msg := prepareOpenAPIConfig(ctx, name, candidate, h.store.MCPOpenAPIMaxSpecBytes())
 		if status != 0 {
 			SendError(ctx, status, msg)
 			return
@@ -3889,6 +3969,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ClientID:               id,
 		Name:                   name,
 		IsCodeModeClient:       isCodeMode,
+		ServerTypeOnSlug:       serverTypeOnSlug,
 		ConnectionType:         string(existingConfig.ConnectionType),
 		ConnectionString:       existingConfig.ConnectionString,
 		RequirePublicTarget:    requirePublicTarget,
@@ -3990,6 +4071,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ID:                     id,
 		Name:                   name,
 		IsCodeModeClient:       isCodeMode,
+		ServerTypeOnSlug:       serverTypeOnSlug,
 		ConnectionType:         existingConfig.ConnectionType,
 		ConnectionString:       existingConfig.ConnectionString,
 		RequirePublicTarget:    requirePublicTarget,
@@ -4689,6 +4771,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		ClientID:               clientConfig.ID,
 		Name:                   clientConfig.Name,
 		IsCodeModeClient:       clientConfig.IsCodeModeClient,
+		ServerTypeOnSlug:       clientConfig.ServerTypeOnSlug,
 		ConnectionType:         string(clientConfig.ConnectionType),
 		ConnectionString:       clientConfig.ConnectionString,
 		StdioConfig:            clientConfig.StdioConfig,
@@ -4903,6 +4986,23 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			SendJSON(ctx, map[string]any{"status": "success", "message": successMsg})
 			return
 		}
+		// A per_user_oauth client verifying on the registration it kept (see
+		// initiateVerificationOnRegistration) has had an "authorized" config
+		// since it was first verified, so the status check above passes before
+		// the admin has signed in. That sign-in leaves a fresh ACTIVE
+		// auth_mode='shared' token, as the admin repair's does; without one,
+		// nothing new happened yet.
+		if dbClient.AuthType == string(schemas.MCPAuthTypePerUserOauth) && dbClient.PendingOAuthConfig == nil {
+			sharedToken, tokErr := h.store.ConfigStore.GetSharedOauthTokenByConfigID(ctx, oauthConfigID)
+			if tokErr != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to look up the admin sign-in token: %v", tokErr))
+				return
+			}
+			if sharedToken == nil || sharedToken.Status != "active" {
+				SendError(ctx, fasthttp.StatusConflict, "Authorization has not completed yet: the admin has not finished signing in. Wait for it to finish, or call initiate-verification again.")
+				return
+			}
+		}
 		mcpClientConfig, err = h.store.ConfigStore.GetMCPClientConfigByID(ctx, dbClient.ClientID)
 		if err != nil || mcpClientConfig == nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load MCP client: %v", err))
@@ -4974,6 +5074,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				ClientID:               mcpClientConfig.ID,
 				Name:                   mcpClientConfig.Name,
 				IsCodeModeClient:       mcpClientConfig.IsCodeModeClient,
+				ServerTypeOnSlug:       mcpClientConfig.ServerTypeOnSlug,
 				ConnectionType:         string(mcpClientConfig.ConnectionType),
 				ConnectionString:       mcpClientConfig.ConnectionString,
 				StdioConfig:            mcpClientConfig.StdioConfig,
@@ -5043,6 +5144,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 				return
 			}
+			h.relinkConfigVirtualMCPs(ctx, mcpClientConfig.Name)
 		}
 
 		// Set discovered tools on the client
@@ -5114,6 +5216,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			ClientID:               mcpClientConfig.ID,
 			Name:                   mcpClientConfig.Name,
 			IsCodeModeClient:       mcpClientConfig.IsCodeModeClient,
+			ServerTypeOnSlug:       mcpClientConfig.ServerTypeOnSlug,
 			ConnectionType:         string(mcpClientConfig.ConnectionType),
 			ConnectionString:       mcpClientConfig.ConnectionString,
 			StdioConfig:            mcpClientConfig.StdioConfig,
@@ -5192,6 +5295,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
 			return
 		}
+		h.relinkConfigVirtualMCPs(ctx, mcpClientConfig.Name)
 	}
 
 	// Clear pending MCP client config from oauth_config (cleanup)
@@ -5514,4 +5618,59 @@ func (h *MCPHandler) recordMCPClientOAuthCompletion(ctx *fasthttp.RequestCtx, cf
 	if !isUpdateFlow {
 		lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", cfg.ID, cfg.Name, nil, auditMCPClient(h.store, cfg))
 	}
+}
+
+// relinkConfigVirtualMCPs links a newly registered MCP client into the config.json Virtual MCP
+// declarations that name it, so a Virtual MCP loaded while the client was missing, or while it
+// was registered under a since-deleted id, picks the client up without a restart. Each rewritten
+// Virtual MCP is reloaded through the governance manager, like any other Virtual MCP write. Best effort:
+// a failure is logged and never fails the client registration. A failed reload is retried here,
+// since the row is already rewritten and no later reconcile would report it again.
+func (h *MCPHandler) relinkConfigVirtualMCPs(ctx context.Context, clientName string) {
+	if h.store == nil {
+		return
+	}
+	ids, err := h.store.ReconcileFileVirtualMCPsForClient(ctx, clientName)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("failed to link MCP client %q into config.json virtual MCPs: %v", clientName, err))
+		return
+	}
+	if h.governanceManager == nil {
+		return
+	}
+	for _, id := range ids {
+		if err := h.reloadVirtualMCPWithRetry(ctx, id); err != nil {
+			logger.Error(fmt.Sprintf("failed to reload virtual MCP %d after linking MCP client %q; its cache keeps the previous tools until it is next saved or Bifrost restarts: %v", id, clientName, err))
+		}
+	}
+}
+
+// relinkReloadAttempts and relinkReloadBackoff bound the retries of a Virtual MCP cache reload
+// after a registration re-links it: a few attempts, doubling from the backoff.
+const (
+	relinkReloadAttempts = 3
+	relinkReloadBackoff  = 100 * time.Millisecond
+)
+
+// reloadVirtualMCPWithRetry reloads one Virtual MCP into the cache, retrying a failure with a
+// doubling backoff, and returns the last error once the attempts run out or ctx ends.
+func (h *MCPHandler) reloadVirtualMCPWithRetry(ctx context.Context, id uint) error {
+	backoff := relinkReloadBackoff
+	var err error
+	for attempt := 1; attempt <= relinkReloadAttempts; attempt++ {
+		if _, err = h.governanceManager.ReloadVirtualMCP(ctx, id); err == nil {
+			return nil
+		}
+		if attempt == relinkReloadAttempts {
+			break
+		}
+		logger.Warn(fmt.Sprintf("failed to reload virtual MCP %d (attempt %d of %d), retrying: %v", id, attempt, relinkReloadAttempts, err))
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+	return err
 }

@@ -292,7 +292,7 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 			// A client with a visible tool is one the caller can reach, so its
 			// instructions apply. A code mode client's ride in its stub instead
 			// (see GetAggregatedServerInstructions for the scoping rule).
-			if withInstructions && !client.ExecutionConfig.IsCodeModeClient {
+			if withInstructions && !client.ExecutionConfig.CodeModeFor(ctx) {
 				if instructions := discovery.GetInstructions(); instructions != "" {
 					if result.Instructions == nil {
 						result.Instructions = make([]schemas.MCPServerInstructions, 0, len(clientNames))
@@ -789,8 +789,9 @@ var relayedClientCapabilities = mcp.ClientCapabilities{
 
 // BifrostContextKeyMCPToolListing values.
 const (
-	listModelTools = "model"
-	listAllTools   = "all"
+	listModelTools   = "model"
+	listAllTools     = "all"
+	listGatewayTools = "gateway"
 )
 
 // WithModelToolsOnly hides app-only tools from listings on ctx. Code mode uses it, since a model writes its scripts.
@@ -802,6 +803,22 @@ func WithModelToolsOnly(ctx context.Context) context.Context {
 // WithAllTools lists app-only tools on ctx too. Only for the gateway's sync; calls still follow AppToolsAllowed.
 func WithAllTools(ctx context.Context) context.Context {
 	return context.WithValue(ctx, schemas.BifrostContextKeyMCPToolListing, listAllTools)
+}
+
+// WithGatewayTools is WithAllTools plus every tool either /mcp or a client's /mcp/<slug> may serve, for
+// the gateway's install. Each request still sees only what CodeModeFor gives it.
+func WithGatewayTools(ctx context.Context) context.Context {
+	return context.WithValue(ctx, schemas.BifrostContextKeyMCPToolListing, listGatewayTools)
+}
+
+// codeModeListing reports whether a listing on ctx shows the client's own tools directly, and whether
+// the client needs the code-mode tools listed.
+func codeModeListing(ctx context.Context, client *schemas.MCPClientConfig) (direct, codeMode bool) {
+	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listGatewayTools {
+		return client.ServesOwnToolsGlobalOrSlug(), client.UsesCodeModeGlobalOrSlug()
+	}
+	codeMode = client.CodeModeFor(ctx)
+	return !codeMode, codeMode
 }
 
 // AppToolsAllowed reports whether the request may see and call app-only tools: a /mcp/<slug> request for
@@ -816,6 +833,80 @@ func AppToolsAllowed(ctx context.Context) bool {
 	if client, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string); client == "" {
 		return false
 	}
+	return CallerDeclaresApps(ctx)
+}
+
+// InputRequiredForLog returns, for the MCP log, what a relayed input_required result asked the caller;
+// ok is false for any other message.
+func InputRequiredForLog(message *schemas.ChatMessage) (asked any, ok bool) {
+	if message == nil || message.ChatToolMessage == nil {
+		return nil, false
+	}
+	result := message.ChatToolMessage.MCPResult(message.Content)
+	if result == nil || !result.NeedsInput() {
+		return nil, false
+	}
+	if len(result.InputRequests) == 0 {
+		return nil, true // a retry-later round asks nothing
+	}
+	return map[string]any{"input_requests": result.InputRequests}, true
+}
+
+// InputResumptionForLog returns the answers a gateway caller's retry carried.
+func InputResumptionForLog(ctx context.Context) any {
+	resume, _ := ctx.Value(schemas.BifrostContextKeyMCPInputResumption).(*mcp.MultiRoundTripParams)
+	if resume == nil || len(resume.InputResponses) == 0 {
+		return nil
+	}
+	return resume.InputResponses
+}
+
+// roundTripStatePrefix marks a requestState Bifrost wrapped: "bfrt1.<round-trip id>.<upstream's state>".
+const roundTripStatePrefix = "bfrt1."
+
+const roundTripIDLen = 16
+
+// RoundTripID is the id every round of one gateway tool call shares in the MCP logs: a short hash of the
+// first round's request id.
+func RoundTripID(requestID string) string {
+	sum := sha256.Sum256([]byte(requestID))
+	return hex.EncodeToString(sum[:roundTripIDLen/2])
+}
+
+// CallRoundTripID is the round-trip id of the gateway tool call on ctx: the one its retry carried, else
+// one derived from this request.
+func CallRoundTripID(ctx context.Context) string {
+	if carried, _ := ctx.Value(schemas.BifrostContextKeyMCPRoundTripID).(string); carried != "" {
+		return carried
+	}
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	return RoundTripID(requestID)
+}
+
+// WrapRoundTripState is the requestState Bifrost hands its caller: the upstream's state behind the call's
+// round-trip id, so the retry names the call it continues.
+func WrapRoundTripState(id, state string) string {
+	return roundTripStatePrefix + id + "." + state
+}
+
+// UnwrapRoundTripState splits a caller's requestState into the round-trip id and the upstream's state. A
+// state Bifrost did not wrap comes back unchanged, with no id.
+func UnwrapRoundTripState(state string) (id, upstream string) {
+	rest, ok := strings.CutPrefix(state, roundTripStatePrefix)
+	if !ok || len(rest) <= roundTripIDLen || rest[roundTripIDLen] != '.' {
+		return "", state
+	}
+	for _, c := range rest[:roundTripIDLen] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", state
+		}
+	}
+	return rest[:roundTripIDLen], rest[roundTripIDLen+1:]
+}
+
+// CallerDeclaresApps reports whether ctx carries a gateway caller's capabilities that declare MCP Apps,
+// on any gateway endpoint.
+func CallerDeclaresApps(ctx context.Context) bool {
 	caller, _ := ctx.Value(schemas.BifrostContextKeyMCPCallerCapabilities).(*mcp.ClientCapabilities)
 	if caller == nil {
 		return false
@@ -826,7 +917,7 @@ func AppToolsAllowed(ctx context.Context) bool {
 
 // listsAppTools reports whether a tool listing on ctx includes app-only tools.
 func listsAppTools(ctx context.Context) bool {
-	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listAllTools {
+	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listAllTools || listing == listGatewayTools {
 		return true
 	}
 	return AppToolsAllowed(ctx)

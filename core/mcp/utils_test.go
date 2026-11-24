@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -389,6 +390,99 @@ func TestGetInjectedTool(t *testing.T) {
 type fakeCodeMode struct{ CodeMode }
 
 func (fakeCodeMode) IsCodeModeTool(toolName string) bool { return toolName == "executeToolCode" }
+
+func (fakeCodeMode) GetTools() []schemas.ChatTool {
+	return []schemas.ChatTool{{Type: "function", Function: &schemas.ChatToolFunction{Name: "executeToolCode"}}}
+}
+
+// onClientSlug is a request on name's /mcp/<slug>, as admitBySlug stamps it.
+func onClientSlug(name string) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.MCPContextKeyIncludeTools, []string{name + "-*"})
+	ctx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, name)
+	return ctx
+}
+
+// setServerTypeOnSlug sets name's server_type_on_slug override.
+func setServerTypeOnSlug(m *MCPManager, name string, mode schemas.MCPServerTypeOnSlug) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clientMap[name+"-id"].ExecutionConfig.ServerTypeOnSlug = mode
+}
+
+// listedToolNames is what GetAvailableTools lists on ctx, sorted.
+func listedToolNames(m *MCPManager, ctx *schemas.BifrostContext) []string {
+	names := []string{}
+	for _, tool := range m.GetAvailableTools(ctx) {
+		names = append(names, tool.Function.Name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// The slug override decides the listing only on the client's own /mcp/<slug>; the gateway's install
+// lists what either endpoint may serve.
+func TestGetAvailableTools_FollowsServerTypeOnSlug(t *testing.T) {
+	plain := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	install := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(WithGatewayTools(context.Background()), schemas.NoDeadline)
+	}
+
+	t.Run("code mode client with slug disabled", func(t *testing.T) {
+		m := newManagerWithInstructions(t)
+		addCodeModeClient(t, m, "codey")
+		m.toolsManager.SetCodeMode(fakeCodeMode{})
+		setServerTypeOnSlug(m, "codey", schemas.MCPServerTypeOnSlugDisabled)
+
+		assert.Equal(t, []string{"alpha-echo", "beta-echo", "executeToolCode"}, listedToolNames(m, plain()))
+		assert.Equal(t, []string{"codey-run"}, listedToolNames(m, onClientSlug("codey")))
+		assert.Equal(t, []string{"alpha-echo"}, listedToolNames(m, onClientSlug("alpha")))
+		assert.Equal(t, []string{"alpha-echo", "beta-echo", "codey-run", "executeToolCode"}, listedToolNames(m, install()))
+	})
+
+	t.Run("direct client with slug enabled", func(t *testing.T) {
+		m := newManagerWithInstructions(t)
+		m.toolsManager.SetCodeMode(fakeCodeMode{})
+		setServerTypeOnSlug(m, "alpha", schemas.MCPServerTypeOnSlugEnabled)
+
+		assert.Equal(t, []string{"alpha-echo", "beta-echo"}, listedToolNames(m, plain()))
+		assert.Equal(t, []string{"executeToolCode"}, listedToolNames(m, onClientSlug("alpha")))
+		assert.Equal(t, []string{"beta-echo"}, listedToolNames(m, onClientSlug("beta")))
+		assert.Equal(t, []string{"alpha-echo", "beta-echo", "executeToolCode"}, listedToolNames(m, install()))
+	})
+
+	t.Run("inherit keeps code mode on the slug", func(t *testing.T) {
+		m := newManagerWithInstructions(t)
+		addCodeModeClient(t, m, "codey")
+		m.toolsManager.SetCodeMode(fakeCodeMode{})
+
+		assert.Equal(t, []string{"executeToolCode"}, listedToolNames(m, onClientSlug("codey")))
+		assert.Equal(t, []string{"alpha-echo", "beta-echo", "executeToolCode"}, listedToolNames(m, install()))
+	})
+}
+
+// executeToolCode is callable on a client's slug exactly when that slug lists it.
+func TestPrepareToolExecution_CodeModeToolFollowsServerTypeOnSlug(t *testing.T) {
+	m := newManagerWithInstructions(t)
+	addCodeModeClient(t, m, "codey")
+	m.toolsManager.SetCodeMode(fakeCodeMode{})
+	name := "executeToolCode"
+	request := &schemas.BifrostMCPRequest{
+		RequestType:                  schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name}},
+	}
+
+	setServerTypeOnSlug(m, "codey", schemas.MCPServerTypeOnSlugDisabled)
+	_, _, _, err := m.prepareToolExecution(onClientSlug("codey"), request)
+	assert.ErrorContains(t, err, "not permitted", "slug disabled: the code-mode tools are not served there")
+
+	setServerTypeOnSlug(m, "alpha", schemas.MCPServerTypeOnSlugEnabled)
+	_, _, release, err := m.prepareToolExecution(onClientSlug("alpha"), request)
+	require.NoError(t, err, "slug enabled: the code-mode tools are served there")
+	release()
+}
 
 // A code-mode tool is listed only when the request can reach a code-mode client, so calling it
 // by name must be refused under the same rule.
@@ -893,4 +987,27 @@ func TestToolClientName(t *testing.T) {
 	assert.Equal(t, "apps", ToolClientName("apps-my-tool"))
 	assert.Equal(t, "", ToolClientName("executeToolCode"), "an unprefixed tool has no client")
 	assert.Equal(t, "", ToolClientName("-x"))
+}
+
+// TestRoundTripState: Bifrost's wrap of a requestState round-trips, keeps one id across a call's rounds,
+// and leaves a state it did not wrap alone.
+func TestRoundTripState(t *testing.T) {
+	id := RoundTripID("req-1")
+	assert.Len(t, id, 16)
+	assert.NotEqual(t, id, RoundTripID("req-2"), "separate calls get separate ids")
+
+	for _, upstream := range []string{"busy", "", "a.b.c", "bfrt1.0123456789abcdef.inner"} {
+		gotID, gotState := UnwrapRoundTripState(WrapRoundTripState(id, upstream))
+		assert.Equal(t, id, gotID)
+		assert.Equal(t, upstream, gotState, "the upstream's own state comes back unchanged")
+	}
+	for _, foreign := range []string{"", "busy", "bfrt1.", "bfrt1.0123456789abcdef", "bfrt1.0123456789ABCDEF.x", "bfrt1.0123456789abcdeg.x", "bfrt1.short.x"} {
+		gotID, gotState := UnwrapRoundTripState(foreign)
+		assert.Empty(t, gotID, foreign)
+		assert.Equal(t, foreign, gotState, foreign)
+	}
+
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
+	assert.Equal(t, RoundTripID("req-2"), CallRoundTripID(ctx), "a first round's id comes from its request")
+	assert.Equal(t, id, CallRoundTripID(context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, id)), "a retry keeps the id it carried")
 }

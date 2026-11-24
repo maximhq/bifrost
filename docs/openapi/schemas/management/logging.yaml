@@ -66,6 +66,13 @@ LogEntry:
     routing_rule_name:
       type: string
       nullable: true
+    model_router_id:
+      type: string
+      nullable: true
+      description: The model router that took the request; omitted when none did.
+    model_router_name:
+      type: string
+      nullable: true
     complexity_tier:
       type: string
       enum: ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"]
@@ -402,16 +409,49 @@ MCPToolLogStats:
   properties:
     total_executions:
       type: integer
-      description: Total number of tool executions
+      description: Total number of tool executions, including calls still running
+    success_count:
+      type: integer
+      description: Finished calls that succeeded
+    error_count:
+      type: integer
+      description: Finished calls that failed
+    cancelled_count:
+      type: integer
+      description: Finished calls the caller cancelled
     success_rate:
       type: number
-      description: Success rate percentage
+      description: >-
+        Percentage of finished calls (succeeded, failed or cancelled) that succeeded,
+        as on the LLM logs stats
     average_latency:
       type: number
-      description: Average execution latency in milliseconds
+      description: Average execution latency in milliseconds, over finished calls
     total_cost:
       type: number
-      description: Total cost in dollars for all executions
+      description: Total cost in dollars of finished calls
+
+MCPLogStatsResponse:
+  description: >-
+    MCP tool log statistics for the requested window. The current period's fields
+    are at the top level, so a request without `compare_to_previous` returns exactly
+    the MCPToolLogStats shape.
+  allOf:
+    - $ref: '#/MCPToolLogStats'
+    - type: object
+      properties:
+        has_previous_period:
+          type: boolean
+          description: >-
+            True when `previous` is populated. False when the comparison was not
+            requested, the window is unbounded, or the previous-period query failed.
+        previous:
+          allOf:
+            - $ref: '#/MCPToolLogStats'
+          description: >-
+            The same statistics for the preceding window of equal length, ending
+            immediately before the requested window starts. Present only when
+            `compare_to_previous` is true and `has_previous_period` is true.
 
 SearchMCPLogsResponse:
   type: object
@@ -456,6 +496,16 @@ MCPLogsFilterDataResponse:
       items:
         type: string
       description: All unique server labels
+    apps:
+      type: array
+      items:
+        type: string
+      description: All unique detected client apps
+    user_agents:
+      type: array
+      items:
+        type: string
+      description: All unique raw User-Agent strings
     virtual_keys:
       type: array
       items:
@@ -471,6 +521,49 @@ MCPLogsFilterDataResponse:
             type: string
             description: Virtual key value (redacted if applicable)
       description: All unique virtual keys
+    apps:
+      type: array
+      items:
+        type: string
+      description: Client apps detected from the callers' User-Agent, for the `apps` dimension.
+    user_agents:
+      type: array
+      items:
+        type: string
+      description: Raw caller User-Agent strings, for the `user_agents` dimension.
+    users:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Users that appear in the MCP logs, for the `users` dimension. A user with
+        no recorded name is listed with an empty name.
+    teams:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Teams that appear in the MCP logs, for the `teams` dimension, including
+        every team of a call recorded under several.
+    customers:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Customers that appear in the MCP logs, for the `customers` dimension,
+        including every customer of a call recorded under several.
+    business_units:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Business units that appear in the MCP logs, for the `business_units`
+        dimension, including every business unit of a call recorded under several.
+    projects:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: Projects that appear in the MCP logs, for the `projects` dimension.
 
 DeleteMCPLogsRequest:
   type: object
@@ -558,6 +651,93 @@ SearchFilters:
       type: boolean
     content_search:
       type: string
+    aliases:
+      type: array
+      items:
+        type: string
+    stop_reasons:
+      type: array
+      items:
+        type: string
+    tool_call_names:
+      type: array
+      items:
+        type: string
+      description: Requests whose response called any of these function names
+    parent_request_id:
+      type: string
+    request_id:
+      type: string
+      description: Exact match on the log ID (the request ID); time-range filters are skipped when set
+    team_ids:
+      type: array
+      items:
+        type: string
+    customer_ids:
+      type: array
+      items:
+        type: string
+    user_ids:
+      type: array
+      items:
+        type: string
+    business_unit_ids:
+      type: array
+      items:
+        type: string
+    complexity_tiers:
+      type: array
+      items:
+        type: string
+      description: Routing complexity tiers (SIMPLE, MEDIUM, COMPLEX)
+    complexity_mechanisms:
+      type: array
+      items:
+        type: string
+      description: Complexity decision mechanisms (semantic, decision, llm, session, skipped)
+    agent_names:
+      type: array
+      items:
+        type: string
+    session_id:
+      type: string
+    agent_correlation_id:
+      type: string
+    apps:
+      type: array
+      items:
+        type: string
+    user_agents:
+      type: array
+      items:
+        type: string
+    cache_hit_types:
+      type: array
+      items:
+        type: string
+      description: Local-cache hit types (direct, semantic)
+    guardrail_outcomes:
+      type: array
+      items:
+        type: string
+        enum: [blocked, detected]
+    error_types:
+      type: array
+      items:
+        type: string
+    error_codes:
+      type: array
+      items:
+        type: string
+    status_codes:
+      type: array
+      items:
+        type: integer
+    metadata_filters:
+      type: object
+      description: Exact-match filters on custom log metadata, keyed by metadata key
+      additionalProperties:
+        type: string
 
 SearchLogsResponse:
   type: object
@@ -961,6 +1141,18 @@ LatencyHistogramBucket:
       type: number
     p99_latency:
       type: number
+    avg_overhead:
+      type: number
+      description: Average Bifrost overhead in milliseconds (total minus upstream latency). Always 0 for MCP tool calls, which record no overhead.
+    p90_overhead:
+      type: number
+      description: 90th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls.
+    p95_overhead:
+      type: number
+      description: 95th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls.
+    p99_overhead:
+      type: number
+      description: 99th percentile Bifrost overhead in milliseconds. Always 0 for MCP tool calls.
     total_requests:
       type: integer
       format: int64
@@ -1365,6 +1557,10 @@ MCPHistogramBucket:
     error:
       type: integer
       format: int64
+    cancelled:
+      type: integer
+      format: int64
+      description: Calls the caller cancelled
 
 MCPHistogramResult:
   type: object
@@ -1433,6 +1629,8 @@ RankingDimension:
     - virtual_key
     - app
     - user_agent
+    - model_router
+    - complexity_tier
 
 DimensionRankingEntry:
   type: object
@@ -1700,3 +1898,295 @@ UserRankingResult:
       type: array
       items:
         $ref: '#/UserRankingEntry'
+
+UserAgentMappingInput:
+  type: object
+  description: |
+    A rule that maps matching User-Agent values to an app label. `pattern` and
+    `app` are trimmed and must be non-empty. On update every field is replaced:
+    an omitted `logo` is cleared and an omitted `is_active` becomes false.
+  required:
+    - pattern
+    - match_type
+    - app
+  properties:
+    pattern:
+      type: string
+      maxLength: 512
+      description: Value to match against the User-Agent; a Go regular expression when `match_type` is `regex`
+    match_type:
+      type: string
+      enum: [contains, starts_with, exact, regex]
+    app:
+      type: string
+      maxLength: 128
+      description: App label assigned to matching requests
+    logo:
+      type: string
+      format: byte
+      description: Base64-encoded logo image
+    logo_mime:
+      type: string
+      maxLength: 128
+      description: MIME type of `logo`, for example `image/png`
+    is_active:
+      type: boolean
+      description: Whether the rule is applied
+
+UserAgentMapping:
+  allOf:
+    - $ref: '#/UserAgentMappingInput'
+    - type: object
+      required:
+        - id
+        - is_active
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+          description: Zero-valued in the update response, which echoes the submitted mapping
+        updated_at:
+          type: string
+          format: date-time
+
+UserAgentMappingList:
+  type: object
+  required:
+    - mappings
+  properties:
+    mappings:
+      type: array
+      description: Every mapping, active or not, oldest first
+      items:
+        $ref: '#/UserAgentMapping'
+
+RequestTrace:
+  type: object
+  description: The causal chain behind one request, ordered by fallback index
+  required:
+    - root_id
+    - chain_length
+    - nodes
+    - truncated_chain
+  properties:
+    root_id:
+      type: string
+      description: ID of the chain's root request
+    chain_length:
+      type: integer
+      description: Number of nodes returned
+    nodes:
+      type: array
+      items:
+        $ref: '#/RequestTraceNode'
+    truncated_chain:
+      type: boolean
+      description: True when the chain has more fallback hops than were returned
+    final_status:
+      type: string
+      description: Status of the chain's last hop. Omitted when the chain is truncated.
+
+RequestTraceNode:
+  type: object
+  description: One request in a chain, the root (fallback index 0) or a fallback hop
+  required:
+    - id
+    - fallback_index
+    - timestamp
+    - provider
+    - model
+    - status
+  properties:
+    id:
+      type: string
+    fallback_index:
+      type: integer
+    timestamp:
+      type: string
+      format: date-time
+    provider:
+      type: string
+    model:
+      type: string
+    status:
+      type: string
+    stop_reason:
+      type: string
+    latency_ms:
+      type: number
+    upstream_latency_ms:
+      type: number
+    overhead_latency_ms:
+      type: number
+    number_of_retries:
+      type: integer
+    attempts:
+      type: array
+      description: Retry attempts, up to 20
+      items:
+        type: object
+        properties:
+          attempt:
+            type: integer
+          key_name:
+            type: string
+          fail_reason:
+            type: string
+          triggered_rotation:
+            type: boolean
+    error:
+      type: object
+      properties:
+        status_code:
+          type: integer
+        type:
+          type: string
+        code:
+          type: string
+        message:
+          type: string
+          description: Truncated to 300 characters
+    cache:
+      type: object
+      properties:
+        hit:
+          type: boolean
+        hit_type:
+          type: string
+        similarity:
+          type: number
+        threshold:
+          type: number
+    guardrails:
+      type: array
+      description: Guardrail judge calls, up to 20
+      items:
+        type: object
+        properties:
+          phase:
+            type: string
+          rule_name:
+            type: string
+          guardrail_name:
+            type: string
+          action:
+            type: string
+          reason:
+            type: string
+    plugin_logs:
+      type: array
+      description: Plugin log lines in the order they happened, up to 20
+      items:
+        type: object
+        properties:
+          plugin:
+            type: string
+          timestamp:
+            type: string
+          level:
+            type: string
+          message:
+            type: string
+    routing_engine_logs:
+      type: array
+      description: The most recent routing engine log lines, up to 20
+      items:
+        type: string
+    overhead_breakdown:
+      type: array
+      description: Self-time spans of Bifrost's own overhead
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          duration_ms:
+            type: number
+
+LogSearchResult:
+  type: object
+  description: Logged conversations matching a search by meaning, best match first
+  required:
+    - rows
+    - returned
+    - threshold
+  properties:
+    rows:
+      type: array
+      items:
+        $ref: '#/LogSearchRow'
+    returned:
+      type: integer
+      description: Number of rows returned
+    threshold:
+      type: number
+      description: The Warp similarity a row had to reach to be returned, on the same 0-1 scale as score
+
+LogSearchRow:
+  type: object
+  description: A compact log row with its similarity score and a content preview
+  required:
+    - score
+    - id
+    - timestamp
+    - provider
+    - model
+    - status
+  properties:
+    score:
+      type: number
+      description: Warp similarity of the row's best-matching phrasing, on a 0-1 scale, (1 + cosine) / 2
+    id:
+      type: string
+    timestamp:
+      type: string
+      format: date-time
+    provider:
+      type: string
+    model:
+      type: string
+    status:
+      type: string
+    latency_ms:
+      type: number
+    input_tokens:
+      type: integer
+    output_tokens:
+      type: integer
+    cost:
+      type: number
+    virtual_key_name:
+      type: string
+    user_id:
+      type: string
+    error_message:
+      type: string
+    error_type:
+      type: string
+    error_code:
+      type: string
+    status_code:
+      type: integer
+    routing_rule:
+      type: string
+    provider_key:
+      type: string
+    alias:
+      type: string
+    complexity_tier:
+      type: string
+    tool_calls:
+      type: array
+      items:
+        type: string
+    content:
+      type: string
+      description: A preview of the request and response content
+    link:
+      type: string
+      description: Dashboard path that opens this log

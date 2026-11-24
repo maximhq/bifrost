@@ -21,6 +21,22 @@ func TestStripVertexGeminiUnsupportedFieldsRawPreservesOrdering(t *testing.T) {
 	assert.Equal(t, `{"contents":[{"role":"user","parts":[{"functionCall":{"name":"lookup","args":{"z":1,"a":2}}},{"functionResponse":{"name":"lookup","response":{"output":{"z":1,"a":2}}}}]}],"generationConfig":{"temperature":0.2}}`, string(got))
 }
 
+// TestStripVertexGeminiUnsupportedFieldsSkipsNilParts pins that a nil part (a JSON null in
+// the client's parts array) is skipped instead of dereferenced, and that the function-call
+// and function-response parts after it still have their IDs stripped for Vertex.
+func TestStripVertexGeminiUnsupportedFieldsSkipsNilParts(t *testing.T) {
+	call := &gemini.FunctionCall{ID: "call_1", Name: "lookup"}
+	resp := &gemini.FunctionResponse{ID: "call_1", Name: "lookup"}
+	req := &gemini.GeminiGenerationRequest{Contents: []gemini.Content{{
+		Role:  "user",
+		Parts: []*gemini.Part{nil, {FunctionCall: call}, {FunctionResponse: resp}},
+	}}}
+
+	require.NotPanics(t, func() { stripVertexGeminiUnsupportedFields(req) })
+	assert.Empty(t, call.ID, "function_call id after a nil part must be stripped")
+	assert.Empty(t, resp.ID, "function_response id after a nil part must be stripped")
+}
+
 func TestStripVertexCountTokensUnsupportedFields(t *testing.T) {
 	t.Run("keeps fields that contribute to the count", func(t *testing.T) {
 		raw := []byte(`{"model":"gemini-3.6-flash","contents":[{"role":"user","parts":[{"text":"hi"}]}],"systemInstruction":{"parts":[{"text":"be terse"}]},"tools":[{"functionDeclarations":[{"name":"probe"}]}],"generationConfig":{"temperature":0.2}}`)
@@ -78,4 +94,47 @@ func TestVertexGeminiResponsesNativeToolSubFieldsReachWire(t *testing.T) {
 	}
 	assert.Equal(t, retrieval, gotRetrieval, "retrieval tool must reach Vertex unchanged; body %s", wire)
 	assert.Equal(t, searchRetrieval, gotSearchRetrieval, "googleSearchRetrieval must reach Vertex unchanged; body %s", wire)
+}
+
+// Vertex Gemini image requests must keep Bifrost output_format/output_compression as imageOutputOptions
+// mimeType/compressionQuality
+// on the body Vertex receives, through the same strip/marshal/region-removal steps as ImageGeneration/ImageEdit.
+func TestVertexGeminiImageOutputFormatReachesWire(t *testing.T) {
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	jpeg := "jpeg"
+	genReq := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Vertex,
+		Model:    "gemini-2.5-flash-image",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a red apple"},
+		Params:   &schemas.ImageGenerationParameters{OutputFormat: &jpeg, OutputCompression: schemas.Ptr(60)},
+	}
+	editReq := &schemas.BifrostImageEditRequest{
+		Provider: schemas.Vertex,
+		Model:    "gemini-2.5-flash-image",
+		Input: &schemas.ImageEditInput{
+			Prompt: "make it pop",
+			Images: []schemas.ImageInput{{Image: png}},
+		},
+		Params: &schemas.ImageEditParameters{OutputFormat: &jpeg, OutputCompression: schemas.Ptr(60)},
+	}
+
+	toWire := func(t *testing.T, reqBody *gemini.GeminiGenerationRequest) []byte {
+		t.Helper()
+		require.NotNil(t, reqBody)
+		stripVertexGeminiUnsupportedFields(reqBody)
+		raw, err := providerUtils.MarshalSorted(reqBody)
+		require.NoError(t, err)
+		raw, err = providerUtils.DeleteJSONField(raw, "region")
+		require.NoError(t, err)
+		return stripVertexGeminiUnsupportedFieldsRaw(raw)
+	}
+
+	cases := map[string][]byte{
+		"generation": toWire(t, gemini.ToGeminiImageGenerationRequest(genReq)),
+		"edit":       toWire(t, gemini.ToGeminiImageEditRequest(editReq)),
+	}
+	for name, body := range cases {
+		assert.Equal(t, "image/jpeg", gjson.GetBytes(body, "generationConfig.imageConfig.imageOutputOptions.mimeType").String(), "%s body %s", name, body)
+		assert.Equal(t, int64(60), gjson.GetBytes(body, "generationConfig.imageConfig.imageOutputOptions.compressionQuality").Int(), "%s body %s", name, body)
+	}
 }

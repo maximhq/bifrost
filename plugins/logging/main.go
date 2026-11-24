@@ -185,14 +185,17 @@ type contentPolicy struct {
 func (c contentPolicy) visible() bool { return c.storeContent && !c.hidden }
 
 // resolveContentPolicy resolves content handling for this request. Three
-// layers decide whether content logging is disabled, each overriding the one
+// sources decide whether content logging is disabled, each overriding the one
 // before it in both directions:
 //  1. the static disable_content_logging client config;
-//  2. governance's decision for the request, stamped as
-//     BifrostContextKeyGovernanceDisableContentLogging: the resolved virtual
-//     key's own disable_content_logging, or that of a project the request is
-//     scoped to, which overrides the key's (absent when both inherit). Admin
-//     configuration, so it needs no gate;
+//  2. the admin-configured content-logging layers stamped on the context
+//     (business unit, team, user, then the credential tier of provider key,
+//     virtual key and access profile), resolved top down by
+//     schemas.ResolveAdminContentLogging. The virtual key's layer carries a
+//     project's decision when the request is scoped to one, which overrides
+//     the key's. A layer that inherits is absent, and when every layer
+//     inherits the client config stands. Admin configuration, so it needs no
+//     gate;
 //  3. the x-bf-disable-content-logging header, honored only when
 //     BifrostContextKeyAllowPerRequestStorageOverride is true in context (set
 //     by ConvertToBifrostContext from allow_per_request_content_storage_override
@@ -207,8 +210,8 @@ func (c contentPolicy) visible() bool { return c.storeContent && !c.hidden }
 func (p *LoggerPlugin) resolveContentPolicy(ctx *schemas.BifrostContext) contentPolicy {
 	disabled := p.disableContentLogging != nil && *p.disableContentLogging
 	if ctx != nil {
-		if virtualKeyDecision, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
-			disabled = virtualKeyDecision
+		if adminDisabled, decided := schemas.ResolveAdminContentLogging(ctx); decided {
+			disabled = adminDisabled
 		}
 		if perRequestAllowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); perRequestAllowed {
 			if override, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
@@ -260,37 +263,74 @@ func dropCapturedInput(entry *logstore.Log) {
 	entry.PassthroughRequestBody = ""
 }
 
-// governanceDecisionPending reports whether governance may still stamp a content-logging decision
-// for this request after our hook has run, so the policy on the context is not final yet. Two
-// things carry such a decision: a presented virtual key governance has not resolved onto the context
-// yet, and a project the request named that governance has not admitted yet (a project's decision
-// overrides the key's).
+// contentDecisionScope says which layers can still be stamped after a pre-hook runs.
+type contentDecisionScope int
+
+const (
+	// contentScopeMCP: only the caller's layers, which governance stamps in its own pre-hook. MCP
+	// calls and relays use it, since neither picks a provider key.
+	contentScopeMCP contentDecisionScope = iota
+	// contentScopeLLM: the caller's layers, plus the provider key, which core picks after every
+	// PreLLMHook.
+	contentScopeLLM
+)
+
+// contentDecisionPending reports whether a layer stamped after our pre-hook could still change this
+// request's content decision, so whatever the pre-hook captures is provisional and the post-hook's
+// final policy keeps or drops it.
 //
-// A named project is read off the request headers the way the governance funnel reads it, so a
-// header that arrived empty still counts as having named one, and it is admitted once the request's
-// identity carries it. The presented key is read the way governance reads it: off the settled
-// identity first, then off the transport's context key.
-func governanceDecisionPending(ctx *schemas.BifrostContext) bool {
+//   - An allowed x-bf-disable-content-logging header outranks every layer, so nothing stamped later
+//     can change the decision.
+//   - The caller's layers (business unit, team, user, virtual key, access profile) are pending while
+//     the request presented a caller, or named a project, that governance has not marked resolved
+//     yet. A project governance admits overrides the virtual key's decision, and governance admits it
+//     while it resolves the caller, so the same marker ends both waits.
+//   - On the LLM path the provider key is pending unless a layer already stamped leaves it nothing to
+//     change (a higher tier decided, or a peer in its tier already turned content off).
+func contentDecisionPending(ctx *schemas.BifrostContext, scope contentDecisionScope) bool {
 	if ctx == nil {
 		return false
 	}
-	var identity schemas.Identity
-	if grant := ctx.Grant(); grant != nil {
-		identity = grant.Identity()
-	}
-	if identity == nil || identity.Project() == nil {
-		headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-		for _, header := range []string{schemas.HeaderGovernanceProjectID, schemas.HeaderGovernanceProjectName} {
-			if _, named := headers[header]; named {
-				return true
-			}
+	if perRequestAllowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); perRequestAllowed {
+		if _, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
+			return false
 		}
 	}
-	if stamped, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); stamped != "" {
-		return false
-	}
-	if identity != nil && identity.Credential().Kind == string(schemas.EntityVirtualKey) {
+	if !schemas.CallerContentLoggingResolved(ctx) && (callerPresented(ctx) || projectNamed(ctx)) {
 		return true
+	}
+	if scope == contentScopeLLM {
+		return schemas.ContentLoggingLayerCanChange(ctx, schemas.BifrostContextKeyProviderKeyDisableContentLogging)
+	}
+	return false
+}
+
+// projectNamed reports whether the request named a project that its settled identity does not carry
+// yet. The project is read off the request headers the way the governance funnel reads it, so a header
+// that arrived empty still counts as having named one.
+func projectNamed(ctx *schemas.BifrostContext) bool {
+	if grant := ctx.Grant(); grant != nil {
+		if identity := grant.Identity(); identity != nil && identity.Project() != nil {
+			return false
+		}
+	}
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	for _, header := range []string{schemas.HeaderGovernanceProjectID, schemas.HeaderGovernanceProjectName} {
+		if _, named := headers[header]; named {
+			return true
+		}
+	}
+	return false
+}
+
+// callerPresented reports whether the request presented a caller governance will resolve: any
+// credential or user the transport settled on the identity, or, for a context nothing settled an
+// identity on, a virtual key stamped on the context directly.
+func callerPresented(ctx *schemas.BifrostContext) bool {
+	if grant := ctx.Grant(); grant != nil {
+		if identity := grant.Identity(); identity != nil {
+			return identity.Credential().Kind != "" || identity.User() != nil
+		}
 	}
 	presented, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
 	return presented != ""
@@ -352,6 +392,60 @@ func applyMCPCorrelationFieldsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
+// applyMCPRoundTrip records an MCP multi round-trip on entry: an input_required round's status and what it
+// asked, the answers a retry carried (content-gated, like arguments), and round_trip_id, which every round
+// of one gateway tool call shares (see mcp.CallRoundTripID).
+func applyMCPRoundTrip(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog, resp *schemas.BifrostMCPResponse, contentVisible bool) {
+	if carried, _ := ctx.Value(schemas.BifrostContextKeyMCPRoundTripID).(string); carried != "" {
+		entry.RoundTripID = &carried
+	}
+	if answers := mcp.InputResumptionForLog(ctx); answers != nil && contentVisible {
+		setMCPLogMetadata(entry, "input_responses", answers)
+	}
+	if resp == nil {
+		return
+	}
+	asked, ok := mcp.InputRequiredForLog(resp.ChatMessage)
+	if !ok {
+		return
+	}
+	entry.Status = logStatusInputRequired
+	entry.ResultParsed = nil
+	if asked == nil {
+		setMCPLogMetadata(entry, "retry_later", true)
+	} else if contentVisible {
+		entry.ResultParsed = asked
+	}
+	if entry.RoundTripID == nil {
+		id := mcp.CallRoundTripID(ctx)
+		entry.RoundTripID = &id
+	}
+}
+
+// applyMCPAppsMetadata marks an MCP call that involved MCP Apps: the caller hosts apps, the tool opens a
+// ui:// resource or is app-only, or the caller used the server's own tool name (as an app's code does).
+func applyMCPAppsMetadata(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
+	if mcp.CallerDeclaresApps(ctx) {
+		setMCPLogMetadata(entry, "mcp_apps", true)
+	}
+	if uri, _ := ctx.Value(schemas.BifrostContextKeyMCPToolUIResourceURI).(string); uri != "" {
+		setMCPLogMetadata(entry, "ui_resource_uri", resourceURIForLog(uri))
+	}
+	if appOnly, _ := ctx.Value(schemas.BifrostContextKeyMCPToolAppOnly).(bool); appOnly {
+		setMCPLogMetadata(entry, "app_only", true)
+	}
+	if name, _ := ctx.Value(schemas.BifrostContextKeyMCPRequestedToolName).(string); name != "" {
+		setMCPLogMetadata(entry, "requested_name", name)
+	}
+}
+
+func setMCPLogMetadata(entry *logstore.MCPToolLog, key string, value any) {
+	if entry.MetadataParsed == nil {
+		entry.MetadataParsed = map[string]interface{}{}
+	}
+	entry.MetadataParsed[key] = value
+}
+
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
 // applyErrorBillingFromBilledUsage backfills a failed/cancelled request's log
 // entry from the usage the provider already processed before the failure
@@ -363,14 +457,14 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	if billed == nil {
 		return
 	}
-	if entry.TokenUsageParsed == nil {
+	if entry.TokenUsageParsed == nil || billed.Estimation != nil {
 		entry.TokenUsageParsed = billed.DeepCopy()
 		p.dropIgnoredProviderCost(entry)
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
 	}
-	if entry.Cost == nil && p.pricingManager != nil {
+	if (entry.Cost == nil || billed.Estimation != nil) && p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 		if bd := p.pricingManager.CalculateCostBreakdownForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); bd != nil && bd.TotalCost > 0 {
 			total := bd.TotalCost
@@ -2005,6 +2099,11 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if liveUnit != "" {
 		initialData.Object = liveSessionObject
 	}
+	if req.RequestType == schemas.SpeechStreamRequest {
+		if speechSession, _ := ctx.Value(schemas.BifrostContextKeySpeechSession).(bool); speechSession {
+			initialData.Object = speechSessionObject
+		}
+	}
 
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
@@ -2016,16 +2115,16 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 	}
 
-	// Capture while content is on, and also while governance has yet to resolve the presented virtual
-	// key or the named project: it may stamp a decision that turns content on after ours runs (the
-	// passthrough path, and any request that names a project).
-	// PostLLMHook applies the final policy and drops whatever it does not allow, and the processing
-	// notification below never carries input captured this way.
+	// Capture while content is on, and also while a layer stamped after ours could still turn it on:
+	// governance resolves some callers and admits a named project after this hook (the passthrough
+	// path, and any request that names a project), and core stamps the provider key only once it picks
+	// one. PostLLMHook applies the final policy and drops whatever it does not allow, and the
+	// processing notification below never carries input captured this way.
 	if req.PassthroughRequest != nil {
 		initialData.PassthroughMethod = req.PassthroughRequest.Method
 		initialData.PassthroughPath = req.PassthroughRequest.Path
 	}
-	captureProvisional := governanceDecisionPending(ctx)
+	captureProvisional := contentDecisionPending(ctx, contentScopeLLM)
 	requestContentPolicy := p.resolveContentPolicy(ctx)
 	if requestContentPolicy.storeContent || captureProvisional {
 		p.captureRequestInput(ctx, req, initialData)
@@ -2287,6 +2386,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if hasComplexityScore {
 				entry.ComplexityScore = &complexityScore
 			}
+			applyModelRoutingFields(ctx, entry)
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 			entry.GuardrailDebugParsed = guardrailMetadata
 			entry.RoutingMetadataParsed = routingMetadata
@@ -2435,6 +2535,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if hasComplexityScore {
 		entry.ComplexityScore = &complexityScore
 	}
+	applyModelRoutingFields(ctx, entry)
 	applyResolvedAliasInfo(entry, resolvedKeyAlias)
 	// Attach cluster governance metadata for disconnected node usage recovery
 	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
@@ -2600,6 +2701,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		if entry.ErrorDetailsParsed != nil {
 			entry.Status = logStatusForError(entry.ErrorDetailsParsed)
 		}
+		applySpeechSessionInput(entry, result, contentLoggingEnabled)
 		// Backfill passthrough status_code from response (streaming path)
 		if result != nil && result.PassthroughResponse != nil {
 			if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
@@ -3283,6 +3385,15 @@ func applyA2ATransports(entry *logstore.AgentLog, ctx *schemas.BifrostContext) {
 	}
 }
 
+// applyA2ACallerCorrelation records the delegating agent's x-bf-agent-correlation-id (its A2A task) on the
+// operation, so a subagent's work nests under its caller. A value captured earlier in the operation is kept.
+func applyA2ACallerCorrelation(entry *logstore.AgentLog, ctx *schemas.BifrostContext) {
+	if entry == nil || ctx == nil || entry.CallerCorrelationID != nil {
+		return
+	}
+	entry.CallerCorrelationID = optionalBoundedA2AValue(requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"), maxPersistedAgentCorrelationIDLen)
+}
+
 func applyA2AContentPolicy(entry *logstore.AgentLog, policy contentPolicy) {
 	if entry == nil {
 		return
@@ -3320,6 +3431,7 @@ func (p *LoggerPlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 	entry.ApplyGovernanceContext(ctx)
 	applyA2ATransports(entry, ctx)
+	applyA2ACallerCorrelation(entry, ctx)
 	entry.TraceID = optionalBoundedA2AValue(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyTraceID), 255)
 	entry.RequestBody = req.RequestBody
 	applyA2ARequestCorrelation(entry, req)
@@ -3363,6 +3475,7 @@ func (p *LoggerPlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	// attribution captured earlier in the operation.
 	entry.ApplyGovernanceContext(ctx)
 	applyA2ATransports(entry, ctx)
+	applyA2ACallerCorrelation(entry, ctx)
 	if resp != nil {
 		latency := float64(resp.ExtraFields.Latency)
 		entry.Latency = &latency
@@ -3698,13 +3811,13 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	entry.ClientIP = optionalString(p.clientIPFromContext(ctx))
 
 	// Set arguments if content logging is enabled. Governance's PreMCPHook runs after ours, so a
-	// request that presents a virtual key or names a project governance has not stamped yet has no
-	// final content decision: hold the arguments aside instead of putting them on the pending entry,
-	// where the pre-hook callback and the stale-entry reaper would expose them. PostMCPHook attaches
-	// them once the policy is final; a stale entry never gets them.
-	// The hold does not depend on the current policy: a key or project that turns content on over a
-	// disabled client flag is entitled to its arguments once PostMCPHook sees the final decision.
-	if governanceDecisionPending(ctx) {
+	// request whose caller (a virtual key, or a user who authenticated without one) or named project
+	// governance has not resolved yet has no final content decision: hold the arguments aside instead of putting
+	// them on the pending entry, where the pre-hook callback and the stale-entry reaper would expose
+	// them. PostMCPHook attaches them once the policy is final; a stale entry never gets them.
+	// The hold does not depend on the current policy: a caller or project that turns content on over a disabled
+	// client flag is entitled to its arguments once PostMCPHook sees the final decision.
+	if contentDecisionPending(ctx, contentScopeMCP) {
 		p.provisionalMCPArguments.Store(mcpLogID, arguments)
 	} else if p.contentLoggingEnabled(ctx) {
 		entry.ArgumentsParsed = arguments
@@ -3886,6 +3999,8 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 			},
 		}
 	}
+	applyMCPRoundTrip(ctx, entry, resp, contentVisible)
+	applyMCPAppsMetadata(ctx, entry)
 
 	p.mu.Lock()
 	callback := p.mcpToolLogCallback
@@ -4046,7 +4161,13 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 			Model:    req.PassthroughRequest.Model,
 		}
 		initialData.Params = passthroughParams
-		if len(req.PassthroughRequest.Body) > 0 {
+		if len(req.PassthroughRequest.Body) == 0 && req.PassthroughRequest.Form != nil {
+			// A streamed multipart upload: summarize its parsed form, never the file contents.
+			if summary, ok := passthroughparse.SummarizeMultipartForm(req.PassthroughRequest.Form, req.PassthroughRequest.FormTypes); ok {
+				initialData.PassthroughRequestBody = string(summary)
+				passthroughParams.MultipartSummary = true
+			}
+		} else if len(req.PassthroughRequest.Body) > 0 {
 			rawCT := req.PassthroughRequest.SafeHeaders["content-type"]
 			ct := strings.ToLower(rawCT)
 			if strings.Contains(ct, "application/json") {

@@ -286,3 +286,165 @@ func TestPreRequestHook(t *testing.T) {
 		})
 	}
 }
+
+// TestKeySelectionBypass pins the resolution of a request that skips key selection (Claude Code
+// OAuth passthrough, issue #5792). Such a request is pinned to the provider of the route it came in
+// on only when the catalog cannot resolve the model, because a zero-key passthrough provider never
+// appears in the catalog. Whenever the catalog does resolve, its pick, candidates and fallbacks are
+// unchanged, and a routing allowlist that excludes the route's provider prevents the pin.
+func TestKeySelectionBypass(t *testing.T) {
+	everyCandidate := []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.OpenAI}
+	for _, tc := range []struct {
+		name           string
+		model          string
+		skip           bool
+		integration    string
+		allowed        []schemas.ModelProvider
+		wantSelected   schemas.ModelProvider
+		wantCandidates []schemas.ModelProvider
+	}{
+		{
+			name:         "a bare model on the anthropic route resolves to anthropic although the catalog has no provider for it",
+			model:        "claude-sonnet-4-6",
+			skip:         true,
+			integration:  "anthropic",
+			wantSelected: schemas.Anthropic,
+		},
+		{
+			name:           "on the anthropic route the catalog pick and its candidates stand when the catalog serves the model",
+			model:          "shared-model",
+			skip:           true,
+			integration:    "anthropic",
+			wantSelected:   schemas.Anthropic,
+			wantCandidates: everyCandidate,
+		},
+		{
+			name:           "on the anthropic route a model only another provider serves still resolves to that provider",
+			model:          "solo-model",
+			skip:           true,
+			integration:    "anthropic",
+			wantSelected:   schemas.OpenAI,
+			wantCandidates: []schemas.ModelProvider{schemas.OpenAI},
+		},
+		{
+			name:           "an allowlist that prunes the catalog's candidates still leaves the allowed one to the catalog",
+			model:          "shared-model",
+			skip:           true,
+			integration:    "anthropic",
+			allowed:        []schemas.ModelProvider{schemas.Azure},
+			wantSelected:   schemas.Azure,
+			wantCandidates: []schemas.ModelProvider{schemas.Azure},
+		},
+		{
+			name:         "an allowlist that prunes every candidate but allows the route's provider pins to it",
+			model:        "solo-model",
+			skip:         true,
+			integration:  "anthropic",
+			allowed:      []schemas.ModelProvider{schemas.Anthropic},
+			wantSelected: schemas.Anthropic,
+		},
+		{
+			name:        "an allowlist that excludes the route's provider prevents the pin",
+			model:       "claude-sonnet-4-6",
+			skip:        true,
+			integration: "anthropic",
+			allowed:     []schemas.ModelProvider{schemas.Bedrock},
+		},
+		{
+			name:        "without the flag a model the catalog does not serve still resolves to nothing",
+			model:       "claude-sonnet-4-6",
+			integration: "anthropic",
+		},
+		{
+			name:        "a route with no canonical provider falls through to the catalog",
+			model:       "claude-sonnet-4-6",
+			skip:        true,
+			integration: "langchain",
+		},
+		{
+			name:           "a request with no route falls through to the catalog",
+			model:          "shared-model",
+			skip:           true,
+			wantSelected:   schemas.Anthropic,
+			wantCandidates: everyCandidate,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := newTestContext()
+			if tc.skip {
+				ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+			}
+			if tc.integration != "" {
+				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tc.integration)
+			}
+			if tc.allowed != nil {
+				ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, tc.allowed)
+			}
+			selected, candidates := ResolveProviderFromCatalog(ctx, testCatalog(), tc.model)
+			if selected != tc.wantSelected {
+				t.Fatalf("selected %q, want %q", selected, tc.wantSelected)
+			}
+			if !slices.Equal(candidates, tc.wantCandidates) {
+				t.Fatalf("candidates %v, want %v", candidates, tc.wantCandidates)
+			}
+		})
+	}
+
+	runHook := func(t *testing.T, model string) (*schemas.BifrostContext, *schemas.BifrostRequest) {
+		t.Helper()
+		plugin, err := Init(testCatalog(), nil)
+		if err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		ctx := newTestContext()
+		ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Model: model},
+		}
+		if err := plugin.PreRequestHook(ctx, req); err != nil {
+			t.Fatalf("PreRequestHook: %v", err)
+		}
+		return ctx, req
+	}
+
+	t.Run("the hook pins the provider, adds no fallbacks and logs the pin rather than a catalog pick", func(t *testing.T) {
+		ctx, req := runHook(t, "claude-sonnet-4-6")
+		provider, _, fallbacks := req.GetRequestFields()
+		if provider != schemas.Anthropic || len(fallbacks) != 0 {
+			t.Fatalf("got provider %q with fallbacks %v, want anthropic with none", provider, fallbacks)
+		}
+		requireLog(t, ctx, "key selection is bypassed, so pinned to the integration's provider anthropic")
+		for _, message := range catalogLogs(ctx) {
+			if strings.Contains(message, "options in model catalog") || strings.Contains(message, "request will fail provider validation") {
+				t.Fatalf("the pin was logged as a catalog pick or a failure: %q", message)
+			}
+		}
+		engines, _ := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
+		if !slices.Contains(engines, schemas.RoutingEngineModelCatalog) {
+			t.Fatalf("model-catalog not recorded as a routing engine used: %v", engines)
+		}
+	})
+
+	t.Run("with the flag set a model the catalog serves keeps its catalog fallbacks and is not logged as a pin", func(t *testing.T) {
+		ctx, req := runHook(t, "shared-model")
+		provider, _, fallbacks := req.GetRequestFields()
+		if provider != schemas.Anthropic {
+			t.Fatalf("got provider %q, want anthropic", provider)
+		}
+		got := make([]schemas.ModelProvider, len(fallbacks))
+		for i, fb := range fallbacks {
+			got[i] = fb.Provider
+		}
+		if !slices.Equal(got, []schemas.ModelProvider{schemas.Azure, schemas.OpenAI}) {
+			t.Fatalf("fallbacks %v, want [azure openai]", got)
+		}
+		requireLog(t, ctx, "found 3 options in model catalog")
+		for _, message := range catalogLogs(ctx) {
+			if strings.Contains(message, "key selection is bypassed") {
+				t.Fatalf("a catalog pick was logged as a pin: %q", message)
+			}
+		}
+	})
+}

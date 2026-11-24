@@ -30,6 +30,12 @@ virtual-mcps:
         description: Search by name.
         schema:
           type: string
+      - name: mcp_client_id
+        in: query
+        description: >-
+          Only Virtual MCPs with a tool spec for this MCP client (exact `client_id` match). `total_count` counts only the matches, so this answers which Virtual MCPs bundle a server without paging through every Virtual MCP.
+        schema:
+          type: string
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []

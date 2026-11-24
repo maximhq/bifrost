@@ -218,6 +218,7 @@ func TestWithWireModelForAgentAPI(t *testing.T) {
 		name      string
 		model     string
 		hasPreset bool
+		param     string // ExtraParams key: "preset" (default) or "effort"
 		preset    string
 		want      string
 	}{
@@ -227,12 +228,19 @@ func TestWithWireModelForAgentAPI(t *testing.T) {
 		{name: "prefixed preset sentinel + non-empty preset: model cleared for preset to control", model: "perplexity/preset", hasPreset: true, preset: "fast", want: ""},
 		{name: "preset sentinel + preset key present but empty value: left untouched", model: "preset", hasPreset: true, preset: "", want: "preset"},
 		{name: "third-party model + preset: explicit model wins", model: "openai/gpt-5.6-sol", hasPreset: true, preset: "fast", want: "openai/gpt-5.6-sol"},
+		{name: "prefixed preset sentinel + non-empty effort: model cleared for effort to control", model: "perplexity/preset", hasPreset: true, param: "effort", preset: "high", want: ""},
+		{name: "preset sentinel + effort key present but empty value: left untouched", model: "preset", hasPreset: true, param: "effort", preset: "", want: "preset"},
+		{name: "third-party model + effort: explicit model wins", model: "openai/gpt-5.6-sol", hasPreset: true, param: "effort", preset: "high", want: "openai/gpt-5.6-sol"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &schemas.BifrostResponsesRequest{Model: tt.model}
 			if tt.hasPreset {
-				req.Params = &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"preset": tt.preset}}
+				param := tt.param
+				if param == "" {
+					param = "preset"
+				}
+				req.Params = &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{param: tt.preset}}
 			}
 			got := withWireModelForAgentAPI(req)
 			if got.Model != tt.want {

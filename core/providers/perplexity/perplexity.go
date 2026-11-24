@@ -164,7 +164,7 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*PerplexityChatRequest, error) {
 			return ToPerplexityChatCompletionRequest(request), nil
 		})
 	if err != nil {
@@ -212,6 +212,9 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	customRequestConverter := func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
 		reqBody := ToPerplexityChatCompletionRequest(request)
+		if reqBody == nil {
+			return nil, nil // a literal nil: a nil pointer would pass the interface nil check
+		}
 		reqBody.Stream = schemas.Ptr(true)
 		return reqBody, nil
 	}
@@ -281,8 +284,9 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 // withWireModelForAgentAPI returns request unchanged, or a shallow copy with Model
 // cleared, so the caller's request is never mutated.
 //
-// A `preset` (fast/low/medium/high/xhigh/wide-research — see
-// docs.perplexity.ai/docs/agent-api/presets) can supply its own default model,
+// An `effort` (fast/low/medium/high/xhigh/ultra — see
+// docs.perplexity.ai/docs/agent-api/effort; `preset` is its earlier name and is
+// still honoured) can supply its own default model,
 // but only when the wire request carries no `model` field at all: an explicit
 // model, even an empty string, always wins over the preset's default.
 // Live-verified against api.perplexity.ai on 2026-09-24:
@@ -297,8 +301,8 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 // Perplexity itself already resolves correctly (an explicit model always wins).
 func withWireModelForAgentAPI(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
 	if strings.TrimPrefix(request.Model, "perplexity/") == perplexityAgentPresetModel && request.Params != nil {
-		if presetVal, ok := request.Params.ExtraParams["preset"]; ok {
-			if preset, ok := presetVal.(string); ok && preset != "" {
+		for _, param := range perplexityAgentEffortParams {
+			if value, ok := request.Params.ExtraParams[param].(string); ok && value != "" {
 				reqCopy := *request
 				reqCopy.Model = ""
 				return &reqCopy

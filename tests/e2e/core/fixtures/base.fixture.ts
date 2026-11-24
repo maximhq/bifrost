@@ -21,8 +21,10 @@ import { ConfigSettingsPage } from "../../features/config/pages/config-settings.
 import { GovernancePage } from "../../features/governance/pages/governance.page";
 import { MCPAuthConfigPage } from "../../features/mcp-auth-config/pages/mcp-auth-config.page";
 import { MCPSettingsPage } from "../../features/mcp-settings/pages/mcp-settings.page";
+import { ClaudeCodeGatewayPage } from "../../features/claude-code-gateway/pages/claude-code-gateway.page";
 import { MCPToolGroupsPage } from "../../features/mcp-tool-groups/pages/mcp-tool-groups.page";
 import { ModelLimitsPage } from "../../features/model-limits/pages/model-limits.page";
+import { DatasheetPage } from "../../features/datasheet/pages/datasheet.page";
 
 /**
  * Custom test fixtures type
@@ -49,7 +51,9 @@ type BifrostFixtures = {
 	configSettingsPage: ConfigSettingsPage;
 	governancePage: GovernancePage;
 	modelLimitsPage: ModelLimitsPage;
+	datasheetPage: DatasheetPage;
 	mcpSettingsPage: MCPSettingsPage;
+	claudeCodeGatewayPage: ClaudeCodeGatewayPage;
 	mcpToolGroupsPage: MCPToolGroupsPage;
 	mcpAuthConfigPage: MCPAuthConfigPage;
 };
@@ -236,8 +240,16 @@ export const test = base.extend<BifrostFixtures>({
 		await use(new ModelLimitsPage(page));
 	},
 
+	datasheetPage: async ({ page }, use) => {
+		await use(new DatasheetPage(page));
+	},
+
 	mcpSettingsPage: async ({ page }, use) => {
 		await use(new MCPSettingsPage(page));
+	},
+
+	claudeCodeGatewayPage: async ({ page }, use) => {
+		await use(new ClaudeCodeGatewayPage(page));
 	},
 
 	mcpToolGroupsPage: async ({ page }, use) => {

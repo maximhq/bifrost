@@ -45,6 +45,7 @@ type mockModelsManager struct {
 	narrowCalls  int
 	// reloadNew is, for each reload, whether it was told the provider was just added.
 	reloadNew []bool
+	remove    func(context.Context, schemas.ModelProvider) error // stands in for the server's config removal
 }
 
 func (m *mockModelsManager) ResolveAccess(_ *schemas.BifrostContext) (schemas.Access, error) {
@@ -78,7 +79,10 @@ func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.M
 	return nil, nil
 }
 
-func (m *mockModelsManager) RemoveProvider(_ context.Context, _ schemas.ModelProvider) error {
+func (m *mockModelsManager) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
+	if m.remove != nil {
+		return m.remove(ctx, provider)
+	}
 	return nil
 }
 
@@ -180,6 +184,51 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	}
 	if _, exists := h.inMemoryStore.Providers["mock-openai"]; !exists {
 		t.Fatalf("expected provider to be added to in-memory store")
+	}
+}
+
+// A custom provider created with no keys (direct-key callers bring their own) must resolve
+// by its "name/model" prefix from creation, and stop resolving once deleted.
+func TestAddProvider_ZeroKeyCustomProviderResolvesByPrefix(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	const name = schemas.ModelProvider("harness-zero-key-direct")
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(name) })
+	cfg := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}}
+	h := &ProviderHandler{
+		inMemoryStore: cfg,
+		// The server removes the configuration, which is what unregisters the prefix.
+		modelsManager: &mockModelsManager{remove: cfg.RemoveProvider},
+	}
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider:             name,
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+
+	h.addProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if provider, model := schemas.ParseModelString(string(name)+"/gpt-4o-mini", ""); provider != name || model != "gpt-4o-mini" {
+		t.Fatalf("after create: ParseModelString = (%q, %q), want (%q, %q)", provider, model, name, "gpt-4o-mini")
+	}
+
+	delCtx := &fasthttp.RequestCtx{}
+	delCtx.Request.Header.SetMethod(fasthttp.MethodDelete)
+	delCtx.SetUserValue("provider", string(name))
+	h.deleteProvider(delCtx)
+
+	if provider, _ := schemas.ParseModelString(string(name)+"/gpt-4o-mini", ""); provider != "" {
+		t.Fatalf("after delete: prefix still resolves to %q", provider)
 	}
 }
 
@@ -1002,6 +1051,9 @@ func TestAddProvider_ReturnsErrorWhenRuntimeReloadFails(t *testing.T) {
 	if _, exists := h.inMemoryStore.Providers["mock-openai"]; exists {
 		t.Fatalf("expected provider rollback after reload failure")
 	}
+	if schemas.IsKnownProvider("mock-openai") {
+		t.Fatal("failed reload left a registered provider prefix")
+	}
 }
 
 // TestUpdateProvider_RejectsKeysInBody guards against a silent-discard regression
@@ -1687,6 +1739,79 @@ func TestListModels_DecisionsOllamaListsSystemOneModels(t *testing.T) {
 	slices.Sort(names)
 	if want := []string{"clef-flash", "nimble", "tev1:0.8b"}; !slices.Equal(names, want) {
 		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsBasetenListsDecisionModels pins that decisions=true lists
+// Baseten's decision-models/ slugs, which its Decision call serves on /v1/systemone,
+// and not its chat models.
+func TestListModels_DecisionsBasetenListsDecisionModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"decision-models/baseten-joey-2b-latest", "decision-models/baseten-elephant-9b-latest", "zai-org/GLM-5.3"}
+	h := providerHandlerForTest(schemas.Baseten, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=baseten&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"decision-models/baseten-elephant-9b-latest", "decision-models/baseten-joey-2b-latest"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsGeminiListsDecisionModels pins that decisions=true lists
+// Gemini's Decision models, which its Decision call serves on /v1beta/decisions, and
+// not its chat models, for Gemini itself and for a custom provider on the Gemini
+// base, which its Decision gates by the same name.
+func TestListModels_DecisionsGeminiListsDecisionModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	for _, provider := range []schemas.ModelProvider{schemas.Gemini, "my-gemini"} {
+		models := []string{"gemini-decision-1", "gemini-3-flash", "gemini-embedding-001"}
+		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
+		if provider != schemas.Gemini {
+			config := h.inMemoryStore.Providers[provider]
+			config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
+			h.inMemoryStore.Providers[provider] = config
+		}
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
+		h.listModels(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", provider, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		names := make([]string, 0, len(resp.Models))
+		for _, model := range resp.Models {
+			names = append(names, model.Name)
+		}
+		if want := []string{"gemini-decision-1"}; !slices.Equal(names, want) {
+			t.Fatalf("%s: expected %v, got %v", provider, want, names)
+		}
 	}
 }
 
@@ -2899,7 +3024,7 @@ func TestParseVKValueFromRequest(t *testing.T) {
 // express what the caller may reach rather than a copy of the key's rows.
 func accessForProviderPermits(permits ...schemas.ProviderPermit) schemas.Access {
 	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-test", "Test VK", true, false, permits, nil)
-	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	return grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 }
 
 // accessAllowingAllProviders builds the access a caller permitted every provider carries, the way
@@ -2909,7 +3034,7 @@ func accessAllowingAllProviders(configured []string, permits ...schemas.Provider
 	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-test", "Test VK", true, false,
 		governanceplugin.AppendAllProviderPermits(permits, configured), nil,
 		grant.WithAllowAllProviders(true))
-	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	return grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 }
 
 // A caller permitted every provider is listed every provider, including ones it holds no provider
@@ -3334,7 +3459,7 @@ func TestListModels_UnfilteredListingSkipsCallerAccess(t *testing.T) {
 
 	sessionAccess := func(permits ...schemas.ProviderPermit) schemas.Access {
 		permit := grant.NewPermit(grant.PermitAccessProfile, "profile-test", "Test Profile", true, false, permits, nil)
-		return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+		return grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 	}
 	signedIn := func(ctx *fasthttp.RequestCtx) {
 		ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialSessionToken, "session-token"))
@@ -3720,5 +3845,207 @@ func TestProviderBaseURLShape(t *testing.T) {
 		if err := validateProviderBaseURLShape(raw); err != nil {
 			t.Errorf("rejected %q: %v", raw, err)
 		}
+	}
+}
+
+// datasheetHandlerForTest boots a real catalog on sqlite with a local
+// datasheet, wired into a ProviderHandler the way the server wires it.
+func datasheetHandlerForTest(t *testing.T) *ProviderHandler {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	ctx := context.Background()
+	dir := t.TempDir()
+	pricingPath := filepath.Join(dir, "pricing.json")
+	paramsPath := filepath.Join(dir, "params.json")
+	if err := os.WriteFile(pricingPath, []byte(`{"gpt-4o":{"provider":"openai","mode":"chat","context_length":128000,"input_cost_per_token":0.0000025,"output_cost_per_token":0.00001}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paramsPath, []byte(`{"gpt-4o":{"provider":"openai","mode":"chat","max_output_tokens":16384}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(dir, "config.db")},
+	}, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close(ctx) })
+	pricingURL, paramsURL := "file://"+pricingPath, "file://"+paramsPath
+	disabled := int64(0)
+	mc, err := modelcatalog.Init(ctx, &modelcatalog.Config{PricingURL: &pricingURL, ModelParametersURL: &paramsURL, MCPLibrarySyncInterval: &disabled}, cs, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mc.Cleanup() })
+	return &ProviderHandler{inMemoryStore: &lib.Config{ModelCatalog: mc}, dbStore: cs}
+}
+
+// datasheetRequest builds a RequestCtx through Init so it carries a server and
+// works as a context.Context for the real config store underneath.
+func datasheetRequest(method, uri, body string) *fasthttp.RequestCtx {
+	var req fasthttp.Request
+	req.Header.SetMethod(method)
+	req.SetRequestURI(uri)
+	if body != "" {
+		req.SetBodyString(body)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, nil, nil)
+	return ctx
+}
+
+// Save, list, read and reset an override through the HTTP handlers.
+func TestDatasheetOverrideHandlers_SaveListResetDelete(t *testing.T) {
+	h := datasheetHandlerForTest(t)
+
+	save := datasheetRequest("PUT", "/api/models/datasheet/overrides",
+		`{"provider":"openai","model":"gpt-4o","mode":"chat","pricing_patch":{"context_length":64000},"params_patch":{"max_output_tokens":4096}}`)
+	h.saveDatasheetOverride(save)
+	if save.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("save: %d %s", save.Response.StatusCode(), save.Response.Body())
+	}
+	var saved struct {
+		Override configstoreTables.TableDatasheetOverride `json:"override"`
+	}
+	if err := json.Unmarshal(save.Response.Body(), &saved); err != nil || saved.Override.ID == "" {
+		t.Fatalf("save response: %v %s", err, save.Response.Body())
+	}
+
+	list := datasheetRequest("GET", "/api/models/datasheet?query=gpt-4o&overridden_only=true", "")
+	h.listDatasheetEntries(list)
+	var listed ListDatasheetEntriesResponse
+	if err := json.Unmarshal(list.Response.Body(), &listed); err != nil {
+		t.Fatalf("list: %v %s", err, list.Response.Body())
+	}
+	if listed.TotalCount != 1 || *listed.Entries[0].Effective.ContextLength != 64000 || *listed.Entries[0].Upstream.ContextLength != 128000 {
+		t.Fatalf("list returned %s", list.Response.Body())
+	}
+
+	entry := datasheetRequest("GET", "/api/models/datasheet/entry?provider=openai&model=gpt-4o&mode=chat", "")
+	h.getDatasheetEntry(entry)
+	var detail modelcatalog.DatasheetEntryDetail
+	if err := json.Unmarshal(entry.Response.Body(), &detail); err != nil {
+		t.Fatalf("entry: %v %s", err, entry.Response.Body())
+	}
+	if !strings.Contains(string(detail.EffectiveParams), `"max_output_tokens":4096`) || !strings.Contains(string(detail.UpstreamParams), `"max_output_tokens":16384`) {
+		t.Fatalf("entry params: %s", entry.Response.Body())
+	}
+
+	// A misspelled patch field is rejected, not read as "no patches" (a reset).
+	typo := datasheetRequest("PUT", "/api/models/datasheet/overrides", `{"provider":"openai","model":"gpt-4o","mode":"chat","pricing_pach":{"context_length":1}}`)
+	h.saveDatasheetOverride(typo)
+	if typo.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("unknown field: %d, want 400: %s", typo.Response.StatusCode(), typo.Response.Body())
+	}
+	if got := *h.inMemoryStore.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 64000 {
+		t.Fatalf("context_length after rejected save = %d, want the override's 64000", got)
+	}
+
+	// Saving with no patches resets the target to upstream; an empty object
+	// with whitespace inside is still empty.
+	reset := datasheetRequest("PUT", "/api/models/datasheet/overrides", "{\"provider\":\"openai\",\"model\":\"gpt-4o\",\"mode\":\"chat\",\"pricing_patch\":{ \n }}")
+	h.saveDatasheetOverride(reset)
+	if reset.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("reset: %d %s", reset.Response.StatusCode(), reset.Response.Body())
+	}
+	if got := *h.inMemoryStore.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 128000 {
+		t.Fatalf("context_length after reset = %d, want upstream 128000", got)
+	}
+
+	missing := datasheetRequest("DELETE", "/api/models/datasheet/overrides/"+saved.Override.ID, "")
+	missing.SetUserValue("id", saved.Override.ID)
+	h.deleteDatasheetOverride(missing)
+	if missing.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("delete of a reset override: %d, want 404", missing.Response.StatusCode())
+	}
+
+	// A live override deleted by ID: 200 and the upstream value is restored.
+	again := datasheetRequest("PUT", "/api/models/datasheet/overrides", `{"provider":"openai","model":"gpt-4o","mode":"chat","pricing_patch":{"context_length":32000}}`)
+	h.saveDatasheetOverride(again)
+	if again.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("save before delete: %d %s", again.Response.StatusCode(), again.Response.Body())
+	}
+	var live struct {
+		Override configstoreTables.TableDatasheetOverride `json:"override"`
+	}
+	if err := json.Unmarshal(again.Response.Body(), &live); err != nil {
+		t.Fatal(err)
+	}
+	if got := *h.inMemoryStore.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 32000 {
+		t.Fatalf("context_length before delete = %d, want 32000", got)
+	}
+	del := datasheetRequest("DELETE", "/api/models/datasheet/overrides/"+live.Override.ID, "")
+	del.SetUserValue("id", live.Override.ID)
+	h.deleteDatasheetOverride(del)
+	if del.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("delete: %d %s", del.Response.StatusCode(), del.Response.Body())
+	}
+	if got := *h.inMemoryStore.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 128000 {
+		t.Fatalf("context_length after delete = %d, want upstream 128000", got)
+	}
+	repeat := datasheetRequest("DELETE", "/api/models/datasheet/overrides/"+live.Override.ID, "")
+	repeat.SetUserValue("id", live.Override.ID)
+	h.deleteDatasheetOverride(repeat)
+	if repeat.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("second delete of the same id: %d, want 404", repeat.Response.StatusCode())
+	}
+
+	// Without a model catalog or a config store, delete is unavailable.
+	for name, unavailable := range map[string]*ProviderHandler{
+		"no catalog": {inMemoryStore: &lib.Config{}, dbStore: h.dbStore},
+		"no store":   {inMemoryStore: h.inMemoryStore},
+	} {
+		req := datasheetRequest("DELETE", "/api/models/datasheet/overrides/x", "")
+		req.SetUserValue("id", "x")
+		unavailable.deleteDatasheetOverride(req)
+		if req.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
+			t.Fatalf("%s: delete %d, want 503", name, req.Response.StatusCode())
+		}
+	}
+}
+
+// A pricing patch for a row another override already prices (bedrock_mantle
+// shares bedrock's pricing rows) is a conflict the client can act on, not a
+// server error.
+func TestDatasheetOverrideHandlers_PricingClaimConflictIs409(t *testing.T) {
+	h := datasheetHandlerForTest(t)
+	first := datasheetRequest("PUT", "/api/models/datasheet/overrides", `{"provider":"bedrock","model":"m","mode":"chat","pricing_patch":{"input_cost_per_token":0.000005}}`)
+	h.saveDatasheetOverride(first)
+	if first.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("first save: %d: %s", first.Response.StatusCode(), first.Response.Body())
+	}
+	second := datasheetRequest("PUT", "/api/models/datasheet/overrides", `{"provider":"bedrock_mantle","model":"m","mode":"chat","pricing_patch":{"input_cost_per_token":0.000006}}`)
+	h.saveDatasheetOverride(second)
+	if second.Response.StatusCode() != fasthttp.StatusConflict {
+		t.Fatalf("colliding save: %d, want 409: %s", second.Response.StatusCode(), second.Response.Body())
+	}
+}
+
+func TestDatasheetOverrideHandlers_RejectInvalidBodies(t *testing.T) {
+	h := datasheetHandlerForTest(t)
+	for name, body := range map[string]string{
+		"unknown field":    `{"provider":"openai","model":"gpt-4o","mode":"chat","pricing_patch":{"nope":1}}`,
+		"negative":         `{"provider":"openai","model":"gpt-4o","mode":"chat","pricing_patch":{"input_cost_per_token":-1}}`,
+		"custom no mode":   `{"provider":"openai","model":"ft","is_custom":true}`,
+		"missing model":    `{"provider":"openai","pricing_patch":{"context_length":1}}`,
+		"malformed json":   `{"provider":`,
+		"patch not object": `{"provider":"openai","model":"gpt-4o","pricing_patch":[1]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := datasheetRequest("PUT", "/api/models/datasheet/overrides", body)
+			h.saveDatasheetOverride(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+				t.Fatalf("status %d, want 400: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+		})
+	}
+
+	missing := datasheetRequest("GET", "/api/models/datasheet/entry?provider=openai&model=nope&mode=chat", "")
+	h.getDatasheetEntry(missing)
+	if missing.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("entry for unknown model: %d, want 404", missing.Response.StatusCode())
 	}
 }

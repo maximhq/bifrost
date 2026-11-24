@@ -139,9 +139,10 @@ type MCPClientsQueryParams struct {
 
 // VirtualMCPsQueryParams holds pagination and search parameters for Virtual MCP list queries.
 type VirtualMCPsQueryParams struct {
-	Limit  int
-	Offset int
-	Search string // matches name (case-insensitive)
+	Limit       int
+	Offset      int
+	Search      string // matches name (case-insensitive)
+	MCPClientID string // only Virtual MCPs with a tool spec for this exact client_id
 }
 
 // MCPLibraryQueryParams holds pagination, filtering, search, and sort
@@ -326,6 +327,8 @@ type ConfigStore interface {
 	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
+	// UpdateMCPClientConfigHash writes only config_hash, and only while it still equals oldHash.
+	UpdateMCPClientConfigHash(ctx context.Context, clientID, oldHash, newHash string) (bool, error)
 	// UpdateMCPClientDiscovery writes only the discovery columns; safe from a background refresh.
 	UpdateMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
@@ -368,6 +371,24 @@ type ConfigStore interface {
 	// was persisted. Read and save share one transaction so a concurrent edit to a preserved
 	// section cannot be overwritten.
 	ResetComplexityAnalyzerConfig(ctx context.Context, defaults *ComplexityAnalyzerConfig) (*ComplexityAnalyzerConfig, error)
+
+	// Model routers CRUD.
+	GetModelRouters(ctx context.Context) ([]ModelRouter, error)
+	GetModelRouter(ctx context.Context, id string) (*ModelRouter, error)
+	CreateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error
+	UpdateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error
+	// EditModelRouter applies edit to the stored router under its row lock and
+	// saves what edit changed; see RDBConfigStore.EditModelRouter.
+	EditModelRouter(ctx context.Context, id string, edit func(*ModelRouter) (bool, error)) (*ModelRouter, error)
+	DeleteModelRouter(ctx context.Context, id string, tx ...*gorm.DB) error
+	ResetModelRouter(ctx context.Context, id string, defaults *ComplexityAnalyzerConfig) (*ModelRouter, error)
+	// SetModelRouterTargets replaces the model each tier of a saved router gets.
+	SetModelRouterTargets(ctx context.Context, routerID string, targets []tables.TableModelRouterTarget, tx ...*gorm.DB) error
+	// SetModelRouterRouting replaces which requests a saved router takes.
+	SetModelRouterRouting(ctx context.Context, routerID string, routing ModelRouterRouting, tx ...*gorm.DB) error
+	// SetModelRouterRoutings replaces several routers' routing in one
+	// transaction, checking priorities on the final state.
+	SetModelRouterRoutings(ctx context.Context, changes []ModelRouterRoutingChange, tx ...*gorm.DB) error
 
 	// Plugins CRUD
 	GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error)
@@ -462,6 +483,10 @@ type ConfigStore interface {
 	GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error)
 	GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error)
 	UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
+	// SetVirtualMCPConfigIssues records the parts of a Virtual MCP's config.json declaration that could
+	// not be applied, or clears them with nil. It writes nothing else, and UpdateVirtualMCP never
+	// writes this column.
+	SetVirtualMCPConfigIssues(ctx context.Context, id uint, issues *string) error
 	DeleteVirtualMCP(ctx context.Context, id uint) error
 	AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
 	DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
@@ -539,6 +564,9 @@ type ConfigStore interface {
 	DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Model config CRUD
+	// GetModelConfigs reads every model config with no row-visibility scope. It serves internal
+	// callers that must see all rows (the governance load, the name collision check); a listing
+	// for a caller goes through GetModelConfigsPaginated.
 	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
 	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, tx ...*gorm.DB) ([]tables.TableModelConfig, error)
 	GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
@@ -605,6 +633,12 @@ type ConfigStore interface {
 	CreatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error
 	UpdatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error
 	DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error
+
+	// Datasheet overrides: user edits re-applied on top of every datasheet sync
+	GetDatasheetOverrides(ctx context.Context) ([]tables.TableDatasheetOverride, error)
+	GetDatasheetOverrideByID(ctx context.Context, id string) (*tables.TableDatasheetOverride, error)
+	UpsertDatasheetOverride(ctx context.Context, override *tables.TableDatasheetOverride, tx ...*gorm.DB) error
+	DeleteDatasheetOverride(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Model parameters
 	GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error)
@@ -1092,6 +1126,16 @@ type ConfigStore interface {
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
+	// DeleteTerminalSidekiqJobs deletes up to limit jobs of kind that reached a
+	// terminal status before the cutoff and returns how many it removed.
+	DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error)
+
+	// Phrase-suggestion schedule state: the next run of a router's schedule,
+	// claimed by one node when due. On the interface rather than read off the
+	// concrete store, so a store that wraps it keeps the shared schedule.
+	GetComplexitySuggestionSchedule(ctx context.Context, routerID string) (*tables.TableComplexitySuggestionSchedule, error)
+	SetComplexitySuggestionSchedule(ctx context.Context, routerID, scheduleHash string, nextRunAt time.Time, readVersion *int64) (bool, error)
+	ClaimComplexitySuggestionRun(ctx context.Context, routerID string, version int64, dueAt, nextRunAt time.Time, runID string) (bool, error)
 
 	// Batch jobs - mutable coordination state for delayed batch accounting
 	UpsertProviderJob(ctx context.Context, job *tables.TableProviderJob) error
@@ -1197,11 +1241,22 @@ type ConfigStore interface {
 	// minted for while it is consented or already exchanged (code_issued), so the
 	// token endpoint can tell a replayed code from an unknown one.
 	GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// GetOAuth2AuthorizeRequestByDeviceCodeHash returns the device-grant request
+	// for a device_code hash in any status, so the token endpoint can answer
+	// authorization_pending, expired_token or issue tokens.
+	GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx context.Context, deviceCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// GetPendingOAuth2AuthorizeRequestByUserCodeHash returns the still-pending,
+	// unexpired device-grant request for a user_code hash.
+	GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx context.Context, userCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
 	// ConsentOAuth2AuthorizeRequest atomically transitions a still-pending request
 	// to consented (recording the code hash and resolved identity) — returns
 	// ErrNotFound when no longer pending, so concurrent double-consent can't
 	// overwrite an already-minted code.
 	ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
+	// DenyOAuth2AuthorizeRequest atomically transitions a still-pending request to
+	// revoked when the person on the consent page refuses it - returns ErrNotFound
+	// when no longer pending.
+	DenyOAuth2AuthorizeRequest(ctx context.Context, id string) error
 	SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error
 
 	// OAuth2 refresh tokens
@@ -1216,15 +1271,15 @@ type ConfigStore interface {
 	// new one — if either fails the old token stays active and the client can retry.
 	RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error
 	// RevokeOAuth2RefreshTokensByFamilyID revokes all active tokens in a family
-	// when a stolen-token reuse is detected (RFC 9700 §2.2.2).
-	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error
+	// when a stolen-token reuse is detected (RFC 9700 §2.2.2), and returns how many it revoked.
+	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) (int64, error)
 	// RevokeOAuth2RefreshTokensByMode revokes all active tokens for a given mode.
 	RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error
 	// RevokeOAuth2GrantsBySubject revokes, in one transaction, every grant bound to
 	// one identity (bf_mode + bf_sub): its consented but not yet exchanged
 	// authorization codes and its active refresh tokens. Used when a virtual key
-	// rotates; pass tx to commit it together with the key update.
-	RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error
+	// rotates; pass tx to commit it together with the key update. Returns the number of refresh tokens revoked.
+	RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) (int64, error)
 	// SweepOAuth2RefreshTokens deletes revoked tokens older than the given duration.
 	SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error)
 	// SweepOrphanedOAuth2Clients deletes registered clients that back no refresh

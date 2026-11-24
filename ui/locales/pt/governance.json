@@ -50,7 +50,8 @@
 			"budgetLimits": "Limites de orçamento",
 			"updateAction": "Atualizar cliente",
 			"createAction": "Criar cliente",
-			"calendarAlignHelp": "Ativar o alinhamento ao calendário redefine a utilização do orçamento para <bold0>$0.00</bold0> e os contadores de limite de taxa de tokens/pedidos para <bold1>0</bold1> para este cliente, e depois ajusta cada data de reinício ao início do respetivo período atual (ex.: início do dia, da semana, do mês ou do ano). A reposição da utilização não pode ser anulada, mas o alinhamento ao calendário pode ser desativado mais tarde. Isto entra em vigor quando guardar."
+			"calendarAlignHelp": "Ativar o alinhamento ao calendário redefine a utilização do orçamento para <bold0>$0.00</bold0> e os contadores de limite de taxa de tokens/pedidos para <bold1>0</bold1> para este cliente, e depois ajusta cada data de reinício ao início do respetivo período atual (ex.: início do dia, da semana, do mês ou do ano). A reposição da utilização não pode ser anulada, mas o alinhamento ao calendário pode ser desativado mais tarde. Isto entra em vigor quando guardar.",
+			"limitsCheckFailed": "Não foi possível verificar o que rege os gastos deste cliente, por isso o orçamento e o limite de taxa ainda não podem ser exibidos."
 		},
 		"detail": {
 			"title": "Detalhes do cliente",
@@ -409,6 +410,24 @@
 		"unlockTitle": "Desbloquear projetos para acesso e despesa com âmbito",
 		"unlockDescription": "Esta funcionalidade faz parte da licença Enterprise do Bifrost. Um projeto é algo a que um pedido adere: concede acesso em conjunto com o que o autor da chamada já detém, e decide em que livro contabilístico recai o consumo."
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "Veja os gastos com IA de todos os fornecedores num só lugar",
+			"unlockDescription": "Esta funcionalidade faz parte da licença Enterprise do Bifrost. O FinOps lê os custos faturados das suas contas de fornecedor e mostra que parte desse gasto passou pelo Bifrost."
+		},
+		"connections": {
+			"unlockTitle": "Ligar contas de faturação dos fornecedores",
+			"unlockDescription": "Esta funcionalidade faz parte da licença Enterprise do Bifrost. Ligue a faturação da OpenAI, Anthropic, AWS Bedrock, Vertex AI e Azure OpenAI com acesso só de leitura."
+		},
+		"explorer": {
+			"unlockTitle": "Discriminar os gastos com IA por modelo e conta",
+			"unlockDescription": "Esta funcionalidade faz parte da licença Enterprise do Bifrost. Compare o gasto faturado com o que o Bifrost registou, modelo a modelo."
+		},
+		"forecast": {
+			"unlockTitle": "Prever os gastos com IA e detetar anomalias",
+			"unlockDescription": "Esta funcionalidade faz parte da licença Enterprise do Bifrost. Preveja o mês face aos seus orçamentos e receba alertas quando o gasto disparar."
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "Desbloquear classificações de utilizadores para melhor visibilidade"
 	},
@@ -475,7 +494,12 @@
 		"maximumSpend": "Despesa máxima (USD)",
 		"noBudgetLimits": "Não há limites de orçamento configurados.",
 		"removeBudgetAria": "Remover orçamento {{number}}",
-		"duplicateResetPeriod": "Período de reposição duplicado; cada linha de orçamento tem de usar um intervalo diferente."
+		"duplicateResetPeriod": "Período de reposição duplicado; cada linha de orçamento tem de usar um intervalo diferente.",
+		"contentLogging": "Registo de conteúdo",
+		"contentLoggingInherit": "Herdar",
+		"contentLoggingOff": "Desligado para esta equipa",
+		"contentLoggingOn": "Ligado para esta equipa",
+		"contentLoggingHelp": "Se o conteúdo do pedido e da resposta é guardado nos registos do tráfego desta equipa. A equipa tem prioridade sobre as suas chaves virtuais e chaves de fornecedor, por isso uma chave não pode voltar a ligar o conteúdo que a equipa desligou. «Desligado» também retira o conteúdo das exportações dos conectores. O cabeçalho por pedido continua a aplicar-se quando as substituições por pedido são permitidas."
 	},
 	"filters": {
 		"filters": "Filtros",

@@ -50,6 +50,11 @@ const (
 
 var terminalLogStatuses = []string{"success", "error", "cancelled"}
 
+// maxRankingPairFilter is the most (model, provider) pairs a previous-period
+// ranking query filters on term by term; beyond it the query reads every
+// pair, well inside SQLite's 1,000-deep expression limit.
+const maxRankingPairFilter = 200
+
 // applyRankingLimit caps a ranking query at the caller-requested number of rows,
 // falling back to defaultMaxRankingsLimit. The query is left unbounded when the
 // caller explicitly asked for every ranked entity (RankingLimit <= 0), which is
@@ -439,6 +444,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.ComplexityMechanisms) > 0 {
 		baseQuery = baseQuery.Where("complexity_mechanism IN ?", filters.ComplexityMechanisms)
 	}
+	if len(filters.ModelRouterIDs) > 0 {
+		baseQuery = baseQuery.Where("model_router_id IN ?", filters.ModelRouterIDs)
+	}
 	if len(filters.AgentNames) > 0 {
 		baseQuery = s.applyAgentContextFilter(baseQuery, filters.AgentNames, filters.StartTime, filters.EndTime)
 	}
@@ -456,6 +464,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// a self-referencing row already lists as a root (see applyRootsOnlyFilter),
 		// so without this it would also appear inside its own expansion.
 		baseQuery = baseQuery.Where("parent_request_id = ? AND id <> parent_request_id", filters.ParentRequestID)
+		if filters.FallbackHopsOnly {
+			baseQuery = baseQuery.Where("fallback_index > 0")
+		}
 	} else if filters.RootsOnly && filters.RequestID == "" {
 		// An explicit ID lookup targets exactly one row; collapsing it as a
 		// non-root would hide the very row that was pasted.
@@ -1304,6 +1315,8 @@ func logsOrderClause(sortBy, order string) string {
 		return "total_tokens " + direction + ", id " + direction
 	case "cost":
 		return "cost " + direction + " NULLS LAST, id " + direction
+	case "fallback_index":
+		return "fallback_index " + direction + ", id " + direction
 	default:
 		return "timestamp " + direction + ", id " + direction
 	}
@@ -1731,6 +1744,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
 		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
+		"model_router_id", "model_router_name",
 		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
@@ -1742,7 +1756,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
 		// Only guardrail blocks, whose errors are bounded, are listed (see below).
-		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
+		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream", "stop_reason",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", MaxContentSummaryBytes),
 		"metadata", "cache_debug",
 		"batch_debug",
@@ -3226,8 +3240,11 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 
 		// Only fetch previous-period data for (model, provider) pairs that
 		// appear in the current ranking so trend computation is accurate even
-		// when the previous period has more groups than the limit.
-		if len(currentResults) > 0 {
+		// when the previous period has more groups than the limit. Each pair is
+		// one OR term, and SQLite rejects an expression deeper than 1,000, so
+		// past maxRankingPairFilter pairs the filter is dropped: previous rows
+		// are matched to current ones by pair below, so extra rows are ignored.
+		if len(currentResults) > 0 && len(currentResults) <= maxRankingPairFilter {
 			pairConditions := make([]string, len(currentResults))
 			pairArgs := make([]interface{}, 0, len(currentResults)*2)
 			for i, r := range currentResults {
@@ -5309,9 +5326,12 @@ func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, c
 		return 0, nil
 	}
 	var stmt string
-	if s.db.Dialector.Name() == "mysql" {
+	switch s.db.Dialector.Name() {
+	case "mysql":
 		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s < ? ORDER BY %s LIMIT ?", table, column, column)
-	} else {
+	case "postgres":
+		return s.deleteExpiredBatchPostgres(ctx, table, key, column, cutoff, batchSize)
+	default:
 		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, key, key, table, column, column)
 	}
 	result := s.db.WithContext(ctx).Exec(stmt, cutoff, batchSize)
@@ -5319,6 +5339,73 @@ func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, c
 		return 0, result.Error
 	}
 	return result.RowsAffected, nil
+}
+
+// retentionAdvisoryLockKeys gives each retention table its own lock, so replicas can drain different tables at once.
+// 1000040-1000049 is reserved for retention: enterprise holds 1000031 and 1000032, so keep this block separate.
+var retentionAdvisoryLockKeys = map[string]int64{
+	"logs":                   1000040,
+	"mcp_tool_logs":          1000041,
+	"relay_logs":             1000042,
+	"warp_topic_assignments": 1000043,
+	"warp_topic_unmatched":   1000044,
+}
+
+// retentionAdvisoryLockKeyOther covers any retention table missing from retentionAdvisoryLockKeys.
+const retentionAdvisoryLockKeyOther int64 = 1000049
+
+// deleteExpiredBatchPostgres deletes one batch under the table's xact advisory lock (PgBouncer-safe), or returns ErrRetentionBusy.
+func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key, column string, cutoff time.Time, batchSize int) (int64, error) {
+	lockKey, ok := retentionAdvisoryLockKeys[table]
+	if !ok {
+		lockKey = retentionAdvisoryLockKeyOther
+	}
+	// ARRAY(...) runs the locking subquery once, as an InitPlan. As "key IN (subquery)" the planner picks a nested-loop
+	// semi join that rescans it, and SKIP LOCKED then hands each rescan the next unlocked rows: one statement deleted
+	// 9999 rows for a LIMIT of 5000, and drainExpired read the oversized count as ClickHouse's whole-range delete and
+	// stopped with expired rows left.
+	stmt := fmt.Sprintf("DELETE FROM %s WHERE %s = ANY(ARRAY(SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ? FOR UPDATE SKIP LOCKED))", table, key, key, table, column, column)
+	var deleted int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var acquired bool
+		if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", lockKey).Row().Scan(&acquired); err != nil {
+			return err
+		}
+		if !acquired {
+			return ErrRetentionBusy
+		}
+		if err := raiseRetentionStatementTimeout(tx); err != nil {
+			return err
+		}
+		result := tx.Exec(stmt, cutoff, batchSize)
+		if result.Error != nil {
+			return result.Error
+		}
+		deleted = result.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+// retentionStatementTimeout is the statement_timeout floor for one retention batch: wide rows carry megabytes of TOAST each.
+const retentionStatementTimeout = "10min"
+
+// raiseRetentionStatementTimeout lifts a shorter statement_timeout for the rest of tx and leaves 0 (no limit) or a longer one alone.
+func raiseRetentionStatementTimeout(tx *gorm.DB) error {
+	return tx.Exec(`SELECT set_config('statement_timeout', ?, true)
+		WHERE current_setting('statement_timeout')::interval > interval '0'
+		AND current_setting('statement_timeout')::interval < ?::interval`, retentionStatementTimeout, retentionStatementTimeout).Error
+}
+
+// RetentionInterval is hourly on Postgres, where the advisory lock makes idle replicas' ticks one cheap probe.
+func (s *RDBLogStore) RetentionInterval() time.Duration {
+	if s.db.Dialector.Name() == "postgres" {
+		return postgresCleanupInterval
+	}
+	return cleanupInterval
 }
 
 // matViewShutdownWait bounds how long Close waits for cancelled matview
@@ -5400,6 +5487,9 @@ func (s *RDBLogStore) DeleteLog(ctx context.Context, id string) error {
 	})
 }
 
+// deleteLogsChunkSize bounds one DELETE in DeleteLogs so a large id list of wide rows stays inside statement_timeout.
+const deleteLogsChunkSize = 100
+
 // DeleteLogs deletes multiple log entries from the database by their IDs, and
 // with them what Warp's topic tables hold about them, in one transaction.
 func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
@@ -5407,8 +5497,10 @@ func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 		return nil
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
-			return err
+		for chunk := range slices.Chunk(ids, deleteLogsChunkSize) {
+			if err := tx.Where("id IN ?", chunk).Delete(&Log{}).Error; err != nil {
+				return err
+			}
 		}
 		return deleteWarpTopicRowsForLogs(tx, ids)
 	})
@@ -5423,14 +5515,19 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	if len(filters.UserIDs) > 0 {
 		baseQuery = baseQuery.Where("user_id IN ?", filters.UserIDs)
 	}
+	// A call settled under several teams, customers or business units carries them in the JSON-array
+	// columns, often with the scalar left empty, so it matches on any of them, as on logs (applyFilters).
 	if len(filters.TeamIDs) > 0 {
-		baseQuery = baseQuery.Where("team_id IN ?", filters.TeamIDs)
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "team_id", "team_ids", filters.TeamIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.CustomerIDs) > 0 {
-		baseQuery = baseQuery.Where("customer_id IN ?", filters.CustomerIDs)
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "customer_id", "customer_ids", filters.CustomerIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
-		baseQuery = baseQuery.Where("business_unit_id IN ?", filters.BusinessUnitIDs)
+		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
+		baseQuery = baseQuery.Where(sql, args...)
 	}
 	if len(filters.ProjectIDs) > 0 {
 		baseQuery = baseQuery.Where("project_id IN ?", filters.ProjectIDs)
@@ -5462,6 +5559,9 @@ func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSear
 	}
 	if filters.AgentCorrelationID != "" {
 		baseQuery = baseQuery.Where("agent_correlation_id = ?", filters.AgentCorrelationID)
+	}
+	if filters.RoundTripID != "" {
+		baseQuery = baseQuery.Where("round_trip_id = ?", filters.RoundTripID)
 	}
 	if len(filters.UserAgents) > 0 {
 		baseQuery = baseQuery.Where("user_agent IN ?", filters.UserAgents)
@@ -5652,7 +5752,7 @@ func (s *RDBLogStore) ListAgentLogHistory(ctx context.Context, filter AgentLogHi
 		orderClause = "latency " + direction + " NULLS LAST, id " + direction
 	}
 	inputPreview := fmt.Sprintf("substr(request_body, 1, %d) AS input", maxA2APayloadPreviewRunes)
-	if err := query.Select("id", "timestamp", "record_kind", "operation", "status", "agent_name", "user_id", "user_name", "virtual_key_id", "virtual_key_name", "team_id", "team_name", "team_ids", "team_names", "customer_id", "customer_name", "customer_ids", "customer_names", "business_unit_id", "business_unit_name", "business_unit_ids", "business_unit_names", "project_id", "project_name", "budget_ids", "rate_limit_ids", "request_id", "trace_id", "task_id", "context_id", "message_id", "request_message_id", "response_message_id", "artifact_id", "push_config_id", "delivery_id", "attempt_id", "event_sequence", "event_type", "task_state", "downstream_transport", "upstream_transport", "latency", "upstream_latency", "overhead_latency", "overhead_breakdown", "content_type", inputPreview).Order(orderClause).Offset(pagination.Offset).Limit(pagination.Limit).Scan(&rows).Error; err != nil {
+	if err := query.Select("id", "timestamp", "record_kind", "operation", "status", "agent_name", "user_id", "user_name", "virtual_key_id", "virtual_key_name", "team_id", "team_name", "team_ids", "team_names", "customer_id", "customer_name", "customer_ids", "customer_names", "business_unit_id", "business_unit_name", "business_unit_ids", "business_unit_names", "project_id", "project_name", "budget_ids", "rate_limit_ids", "request_id", "trace_id", "task_id", "context_id", "message_id", "request_message_id", "response_message_id", "artifact_id", "push_config_id", "caller_correlation_id", "delivery_id", "attempt_id", "event_sequence", "event_type", "task_state", "downstream_transport", "upstream_transport", "latency", "upstream_latency", "overhead_latency", "overhead_breakdown", "content_type", inputPreview).Order(orderClause).Offset(pagination.Offset).Limit(pagination.Limit).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	for i := range rows {
@@ -5856,6 +5956,7 @@ func (s *RDBLogStore) applyAgentHistoryFilters(query *gorm.DB, filter AgentLogHi
 		"request_id": filter.RequestID, "trace_id": filter.TraceID,
 		"task_id": filter.TaskID, "context_id": filter.ContextID, "push_config_id": filter.PushConfigID,
 		"delivery_id": filter.DeliveryID, "attempt_id": filter.AttemptID,
+		"caller_correlation_id": filter.CallerCorrelationID,
 	} {
 		if value != "" {
 			query = query.Where(column+" = ?", value)
@@ -6387,23 +6488,32 @@ func (s *RDBLogStore) GetMCPToolLogStats(ctx context.Context, filters MCPToolLog
 		var result struct {
 			CompletedCount sql.NullInt64   `gorm:"column:completed_count"`
 			SuccessCount   sql.NullInt64   `gorm:"column:success_count"`
+			ErrorCount     sql.NullInt64   `gorm:"column:error_count"`
+			CancelledCount sql.NullInt64   `gorm:"column:cancelled_count"`
 			AvgLatency     sql.NullFloat64 `gorm:"column:avg_latency"`
 			TotalCost      sql.NullFloat64 `gorm:"column:total_cost"`
 		}
 
+		// A cancelled call is a finished call, as on the LLM and Relay logs stats: it counts against
+		// the success rate and toward the average latency and the cost.
 		statsQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
 		statsQuery = s.applyMCPFilters(statsQuery, filters)
-		statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
+		statsQuery = statsQuery.Where("status IN ?", terminalLogStatuses)
 
 		if err := statsQuery.Select(`
 			COUNT(*) as completed_count,
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count,
+			SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_count,
 			AVG(latency) as avg_latency,
 			SUM(cost) as total_cost
 		`).Scan(&result).Error; err != nil {
 			return nil, err
 		}
 
+		stats.SuccessCount = result.SuccessCount.Int64
+		stats.ErrorCount = result.ErrorCount.Int64
+		stats.CancelledCount = result.CancelledCount.Int64
 		completedCount := result.CompletedCount.Int64
 		if completedCount > 0 {
 			stats.SuccessRate = float64(result.SuccessCount.Int64) / float64(completedCount) * 100
@@ -6536,6 +6646,52 @@ func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int,
 	return logs, nil
 }
 
+// GetDistinctMCPKeyPairs lists one MCP tool log dimension's id/name pairs for the filter sidebar,
+// built like the Relay Logs options (GetRelayFilterData): teams, customers and business units fan out
+// over their JSON-array columns, each id is listed once under one of its names, an id with no name is
+// still listed, and the dimension ceiling bounds the list. Rows older than the filter-data window,
+// which every other MCP filter dimension reads, are left out.
+func (s *RDBLogStore) GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
+	if _, ok := allowedKeyPairColumns[idCol]; !ok {
+		return nil, fmt.Errorf("invalid id column: %s", idCol)
+	}
+	if _, ok := allowedKeyPairColumns[nameCol]; !ok {
+		return nil, fmt.Errorf("invalid name column: %s", nameCol)
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
+	queryID, queryName := idCol, nameCol
+	q := s.ScopedDB(ctx).Model(&MCPToolLog{})
+	var src dimensionReadSource
+	if from, ok := mcpDimensionFanoutFrom(s.db.Dialector.Name(), idCol); ok {
+		q = s.ScopedDB(ctx).Table("?", gorm.Expr(from))
+		q.Statement.Table = "logs"
+		queryID, queryName = "dim_id", "dim_name"
+		src.FannedOut = true
+	}
+	q = q.Select(queryID+" AS id, MAX("+queryName+") AS name").
+		Where(queryID+" IS NOT NULL AND "+queryID+" <> '' AND timestamp >= ?", cutoff)
+	q = applyDimensionCeiling(ctx, q, src, idCol)
+	if query != "" {
+		// Backslash is the default LIKE escape on Postgres, MySQL and ClickHouse, and ClickHouse rejects an
+		// ESCAPE clause; only SQLite needs it declared, as in applyRelayLogFilters' search.
+		switch s.db.Dialector.Name() {
+		case "postgres":
+			q = q.Where(queryName+" ILIKE ?", "%"+escapeLike(query)+"%")
+		case "clickhouse":
+			q = q.Where("lowerUTF8("+queryName+") LIKE ?", "%"+strings.ToLower(escapeLike(query))+"%")
+		case "sqlite":
+			q = q.Where("LOWER("+queryName+") LIKE ? ESCAPE '\\'", "%"+strings.ToLower(escapeLike(query))+"%")
+		default:
+			q = q.Where("LOWER("+queryName+") LIKE ?", "%"+strings.ToLower(escapeLike(query))+"%")
+		}
+	}
+	results := []KeyPairResult{}
+	if err := q.Group(queryID).Order("name").Limit(limit).Scan(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get distinct MCP key pairs (%s, %s): %w", idCol, nameCol, err)
+	}
+	return results, nil
+}
+
 // GetMCPHistogram returns time-bucketed MCP tool call volume for the given filters.
 func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
@@ -6546,20 +6702,22 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 
 	baseQuery := s.ScopedDB(ctx).Model(&MCPToolLog{})
 	baseQuery = s.applyMCPFilters(baseQuery, filters)
-	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("status IN ?", terminalLogStatuses)
 
 	var results []struct {
 		BucketTimestamp int64 `gorm:"column:bucket_timestamp"`
 		Count           int64 `gorm:"column:count"`
 		Success         int64 `gorm:"column:success"`
 		Error           int64 `gorm:"column:error"`
+		Cancelled       int64 `gorm:"column:cancelled"`
 	}
 
 	selectClause := fmt.Sprintf(`
 			%s as bucket_timestamp,
 			COUNT(*) as count,
 			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error,
+			SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled
 		`, unixBucketExpr(dialect, bucketSizeSeconds))
 
 	if err := baseQuery.
@@ -6571,16 +6729,18 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 	}
 
 	resultMap := make(map[int64]struct {
-		Count   int64
-		Success int64
-		Error   int64
+		Count     int64
+		Success   int64
+		Error     int64
+		Cancelled int64
 	})
 	for _, r := range results {
 		resultMap[r.BucketTimestamp] = struct {
-			Count   int64
-			Success int64
-			Error   int64
-		}{Count: r.Count, Success: r.Success, Error: r.Error}
+			Count     int64
+			Success   int64
+			Error     int64
+			Cancelled int64
+		}{Count: r.Count, Success: r.Success, Error: r.Error, Cancelled: r.Cancelled}
 	}
 
 	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
@@ -6593,6 +6753,7 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 				Count:     r.Count,
 				Success:   r.Success,
 				Error:     r.Error,
+				Cancelled: r.Cancelled,
 			}
 		}
 		return &MCPHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
@@ -6606,6 +6767,7 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 				Count:     data.Count,
 				Success:   data.Success,
 				Error:     data.Error,
+				Cancelled: data.Cancelled,
 			}
 		} else {
 			buckets[i] = MCPHistogramBucket{Timestamp: time.Unix(ts, 0).UTC()}
@@ -6613,6 +6775,42 @@ func (s *RDBLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLogSea
 	}
 
 	return &MCPHistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+}
+
+// GetMCPLatencyHistogram returns per-bucket average and p90/p95/p99 latency of finished MCP tool calls,
+// the shape GetLatencyHistogram and GetRelayLatencyHistogram return. MCP tool calls record no Bifrost
+// overhead, so the overhead percentiles are always zero.
+func (s *RDBLogStore) GetMCPLatencyHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+	dialect := s.db.Dialector.Name()
+	// The dialect queries shared with the LLM and Relay histograms read overhead_latency, which
+	// mcp_tool_logs does not have, so they read a derived table that supplies it as a typed NULL.
+	nullOverhead := "NULL"
+	switch dialect {
+	case "postgres":
+		nullOverhead = "CAST(NULL AS DOUBLE PRECISION)"
+	case "clickhouse":
+		nullOverhead = "CAST(NULL AS Nullable(Float64))"
+	}
+	timed := s.applyMCPFilters(s.ScopedDB(ctx).Model(&MCPToolLog{}), filters).
+		Where("status IN ?", terminalLogStatuses).
+		Where("latency IS NOT NULL").
+		Select("timestamp, latency, " + nullOverhead + " AS overhead_latency")
+	query := s.db.WithContext(ctx).Table("(?) AS mcp_latency", timed)
+	// The dialect queries read only the window from the LLM filters, to lay out empty buckets.
+	window := SearchFilters{StartTime: filters.StartTime, EndTime: filters.EndTime}
+	switch dialect {
+	case "sqlite":
+		return s.getLatencyHistogramSQLite(ctx, query, window, bucketSizeSeconds)
+	case "mysql":
+		return s.getLatencyHistogramMySQL(ctx, query, window, bucketSizeSeconds)
+	case "clickhouse":
+		return s.getLatencyHistogramClickHouse(ctx, query, window, bucketSizeSeconds)
+	default:
+		return s.getLatencyHistogramPercentileCont(ctx, query, window, bucketSizeSeconds)
+	}
 }
 
 // GetMCPCostHistogram returns time-bucketed MCP cost data for the given filters.

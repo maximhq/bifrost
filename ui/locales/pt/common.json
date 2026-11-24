@@ -77,7 +77,8 @@
 		"modelLimits": "limites de modelos",
 		"agent": "agente",
 		"relay": "relay",
-		"relays": "relays"
+		"relays": "relays",
+		"modelRouters": "roteadores"
 	},
 	"aboutField": "Sobre {{field}}",
 	"thisField": "este campo",
@@ -121,7 +122,8 @@
 		"searching": "A pesquisar…",
 		"loadingMore": "A carregar mais…",
 		"useModel": "Usar <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqueados"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqueados",
+		"templateUnknownGroup": "Referencia o grupo de captura {{group}}, que o padrão não define"
 	},
 	"providerSelect": {
 		"select": "Selecionar fornecedor",
@@ -189,8 +191,7 @@
 		"toggle": "Alternar barra lateral"
 	},
 	"sheet": {
-		"collapse": "Recolher",
-		"expand": "Expandir"
+		"resizeHandle": "Redimensionar painel"
 	},
 	"tabs": {
 		"showMore_one": "Mostrar mais {{count}} separador",
@@ -261,7 +262,8 @@
 	"budgetDisplay": {
 		"usageAria": "Utilização do orçamento",
 		"override": "sobreposição",
-		"baseTooltip": "Base {{base}} + {{override}} de sobreposição"
+		"baseTooltip": "Base {{base}} + {{override}} de sobreposição",
+		"sharedTag": "compartilhado"
 	},
 	"rateLimit": {
 		"tokens": "tokens",
@@ -300,6 +302,11 @@
 	},
 	"configSyncAlert": {
 		"message": "Esta configuração é sincronizada a partir de <code0>config.json</code0>. Quaisquer atualizações futuras ao config.json substituirão as alterações feitas na IU. Se estiver a usar o config.json para inicializar a configuração, pode ignorar este alerta."
+	},
+	"configIssuesAlert": {
+		"title": "Parte da declaração do config.json não foi aplicada",
+		"badge": "Problemas de configuração",
+		"hint": "O restante da declaração está aplicado. Cada item acima desaparece sozinho quando o que ele nomeia passa a existir, por exemplo ao registrar o cliente MCP ausente."
 	},
 	"breadcrumb": {
 		"label": "caminho de navegação",
@@ -344,6 +351,10 @@
 		"removeAria": "Remover {{label}}"
 	},
 	"validation": {
+		"modeIsRequired": "O modo é obrigatório",
+		"valueMustBeAPositiveWholeNumber": "Deve ser um número inteiro positivo",
+		"mustBeAJsonObject": "Deve ser um objeto JSON",
+		"providerCannotBePatched": "provider não pode ser alterado; ele identifica a entrada",
 		"customProviderNameIsRequired": "O nome do fornecedor personalizado é obrigatório",
 		"endpointIsRequired": "O endpoint é obrigatório",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "O ID do cliente, o segredo do cliente e o ID do tenant são todos obrigatórios para a autenticação Entra ID",
@@ -424,6 +435,8 @@
 		"bufferSizeMustBeLessThanOrEqualTo1000": "O tamanho do buffer tem de ser inferior ou igual a 1000",
 		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "O URL do proxy é obrigatório ao usar um proxy HTTP ou SOCKS5",
 		"mustBeAValidUrlEGHttpProxyExample": "Tem de ser um URL válido (ex.: http://proxy.example.com:8080)",
+		"socks5ProxyUrlMustStartWithSocks5Scheme": "Um URL de proxy SOCKS5 tem de começar por socks5:// ou socks5h://",
+		"httpProxyUrlMustStartWithHttpScheme": "Um URL de proxy HTTP tem de começar por http:// ou https://",
 		"setARoleAnIndexOrBothAPointWith": "Defina uma função, um índice, ou ambos - um ponto sem nenhum deles não corresponde a nada",
 		"use164LettersDigitsOr": "Use 1-64 letras, dígitos, _ ou -",
 		"pickAnMcpServer": "Escolha um servidor MCP",
@@ -501,10 +514,14 @@
 		"maxNumber": "Tem de ser, no máximo, {{maximum}}",
 		"maxChars": "Tem de ter, no máximo, {{maximum}} carateres",
 		"validUrl": "Tem de ser um URL válido",
+		"publicUrlNoUserinfoQueryOrFragment": "Não deve conter informações de usuário, uma consulta ou um fragmento",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "Deve ser uma URL http(s) ou um caminho relativo ao diretório do aplicativo",
+		"openapiUrlMustStayInAppDir": "Deve ser um caminho relativo ao diretório do aplicativo que permaneça dentro dele",
 		"validEmail": "Tem de ser um e-mail válido",
 		"grpcHostPortFormat": "Tem de estar no formato <host>:<port> para gRPC (ex.: {{example}})",
 		"invalidInput": "Entrada inválida",
 		"vertexEndpointId": "Insira um ID de endpoint do Vertex ou cole uma URL de endpoint compatível",
+		"basetenDeploymentUrl": "A URL da implantação deve ser uma URL https absoluta sem credenciais, consulta ou fragmento",
 		"mcp": {
 			"privateKeyRequired": "É necessária uma chave privada para private_key_jwt",
 			"secretRequiredForMethod": "É necessário um segredo do cliente para escolher como ele é enviado",
@@ -574,7 +591,8 @@
 		"baseUrlIsRequiredForThisProvider": "O URL base é obrigatório para este fornecedor",
 		"baseUrlMustStartWithHttpOrHttps": "O URL base tem de começar por http:// ou https://",
 		"atLeastOneApiKeyIsRequired": "É necessária pelo menos uma chave de API",
-		"apiKeyValueCannotBeEmpty": "O valor da chave de API não pode estar vazio"
+		"apiKeyValueCannotBeEmpty": "O valor da chave de API não pode estar vazio",
+		"deploymentPatternInvalid": "Um padrão de implantação é inválido ou o ID do modelo usa um grupo de captura que o padrão não define"
 	},
 	"permissionDenied": {
 		"create": "Não tem permissão para criar {{entity}}.",

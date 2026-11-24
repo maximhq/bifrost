@@ -691,7 +691,7 @@ func RunCrossProviderScenarioTest(t *testing.T, client *bifrost.Bifrost, ctx *sc
 		// Add response to history
 		if useResponsesAPI && response.ResponsesResponse != nil {
 			// Convert Responses API output back to ChatMessages for history
-			assistantMessages := schemas.ToChatMessages(response.ResponsesResponse.Output)
+			assistantMessages := schemas.ToChatMessages(response.ResponsesResponse.Output, nil)
 			conversationHistory = append(conversationHistory, assistantMessages...)
 			responseContent = GetResponsesContent(response.ResponsesResponse)
 		} else {
@@ -872,8 +872,8 @@ type ConsistencyResult struct {
 // =============================================================================
 
 func executeStepWithProvider(t *testing.T, client *bifrost.Bifrost, ctx *schemas.BifrostContext,
-	provider ProviderConfig, history []schemas.ChatMessage, step ScenarioStep, useResponsesAPI bool) (*schemas.BifrostResponse, *schemas.BifrostError) {
-
+	provider ProviderConfig, history []schemas.ChatMessage, step ScenarioStep, useResponsesAPI bool,
+) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Prepare request parameters
 	var tools []schemas.ChatTool
 	if step.RequiredModality == ModalityTool {
@@ -989,8 +989,8 @@ func evaluateScenarioSuccess(results []EvaluationResult, criteria ScenarioSucces
 }
 
 func printScenarioSummary(t *testing.T, scenario CrossProviderScenario, results []EvaluationResult,
-	usage map[schemas.ModelProvider]int, apiType string) {
-
+	usage map[schemas.ModelProvider]int, apiType string,
+) {
 	t.Logf("\n%s", strings.Repeat("=", 80))
 	t.Logf("SCENARIO SUMMARY: %s (%s)", scenario.Name, apiType)
 	t.Logf("%s", strings.Repeat("=", 80))

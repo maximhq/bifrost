@@ -181,6 +181,13 @@ func TestTableMCPClient_AwaitsAdminVerification(t *testing.T) {
 		{name: "oauth with a stash", row: TableMCPClient{AuthType: "oauth", ConnectionType: "http", PendingOAuthConfig: &schemas.OAuth2Config{}}, want: true},
 		{name: "oauth with no stash, recorded pending", row: TableMCPClient{AuthType: "oauth", ConnectionType: "http", PendingVerification: true}},
 		{name: "per_user_oauth with a stash, not recorded", row: TableMCPClient{AuthType: "per_user_oauth", ConnectionType: "http", PendingOAuthConfig: &schemas.OAuth2Config{}}, want: true},
+		// Its registration is done, but it holds no admin discovery. Turning
+		// per_user_discovery off leaves that and records it; a row that only
+		// lacks the tools, as one from before the record can, reads as it
+		// always has.
+		{name: "per_user_oauth with no stash and no tools, recorded pending", row: TableMCPClient{AuthType: "per_user_oauth", ConnectionType: "http", PendingVerification: true}, want: true},
+		{name: "per_user_oauth with no stash and no tools, not recorded", row: TableMCPClient{AuthType: "per_user_oauth", ConnectionType: "http"}},
+		{name: "per_user_oauth with no stash and tools, recorded pending", row: TableMCPClient{AuthType: "per_user_oauth", ConnectionType: "http", DiscoveredTools: map[string]schemas.ChatTool{}, PendingVerification: true}},
 		{name: "per_user_headers with no tools", row: TableMCPClient{AuthType: "per_user_headers", ConnectionType: "http"}, want: true},
 		{name: "per_user_headers with tools, recorded pending", row: TableMCPClient{AuthType: "per_user_headers", ConnectionType: "http", DiscoveredTools: map[string]schemas.ChatTool{}, PendingVerification: true}},
 		{name: "per_user_headers over openapi", row: TableMCPClient{AuthType: "per_user_headers", ConnectionType: "openapi"}},

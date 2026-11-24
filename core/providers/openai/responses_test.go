@@ -500,6 +500,147 @@ func TestToOpenAIResponsesRequest_ReasoningContentBlocksDropped(t *testing.T) {
 	})
 }
 
+// TestToOpenAIResponsesRequest_VLLMKeepsReplayedReasoningContent pins that a replayed
+// Anthropic thinking block (summary [] + one reasoning_text block) reaches vLLM's
+// Responses endpoint with its content intact, whatever the model name. vLLM reads a
+// reasoning item's content back into the prompt; dropping it hid the model's own
+// earlier reasoning from it on the next turn.
+func TestToOpenAIResponsesRequest_VLLMKeepsReplayedReasoningContent(t *testing.T) {
+	thinking := "I privately choose the code word PAMPLEMOUSSE-47."
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.VLLM,
+		Model:    "deepseek-v4.1-flash",
+		Input: []schemas.ResponsesMessage{{
+			Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			Role:               schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text:      schemas.Ptr(thinking),
+					Signature: schemas.Ptr("sig-123"),
+				}},
+			},
+		}},
+	}
+
+	result := ToOpenAIResponsesRequest(nil, bifrostReq)
+	require.NotNil(t, result)
+	require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1, "the reasoning item must be replayed to vLLM")
+	c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+	require.NotNil(t, c)
+	require.Len(t, c.ContentBlocks, 1)
+	require.Equal(t, thinking, *c.ContentBlocks[0].Text)
+	require.Nil(t, c.ContentBlocks[0].Signature, "the Anthropic signature must not reach the Responses wire")
+
+	// The OpenAI-hosted path for the same name still drops the reasoning-only item.
+	bifrostReq.Provider = schemas.OpenAI
+	result = ToOpenAIResponsesRequest(nil, bifrostReq)
+	require.NotNil(t, result)
+	require.Empty(t, result.Input.OpenAIResponsesRequestInputArray)
+}
+
+// TestToOpenAIResponsesRequest_SummaryRewrittenAsContentKeepsSummaryArray pins that a
+// summary-only reasoning item (history from an OpenAI model) rewritten as content blocks
+// for vLLM or gpt-oss still carries summary: []. vLLM validates against OpenAI's
+// ResponseReasoningItem, where summary is required; without it the item matches no input
+// variant and the request fails with "203 validation errors".
+func TestToOpenAIResponsesRequest_SummaryRewrittenAsContentKeepsSummaryArray(t *testing.T) {
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{{schemas.VLLM, "glm-4.7-flash"}, {schemas.VLLM, "gpt-oss-20b"}, {schemas.OpenAI, "gpt-oss-120b"}} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input: []schemas.ResponsesMessage{{
+					ID:   schemas.Ptr("rs_x"),
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{
+						{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "I choose the code word ZUCCHINI-9."},
+					}},
+				}},
+			})
+			require.NotNil(t, result)
+			wire, err := sonic.Marshal(result)
+			require.NoError(t, err)
+			var payload struct {
+				Input []struct {
+					Summary *[]json.RawMessage `json:"summary"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+			require.Len(t, payload.Input, 1, "wire: %s", wire)
+			item := payload.Input[0]
+			require.Len(t, item.Content, 1, "summary not rewritten as content: %s", wire)
+			require.Equal(t, "I choose the code word ZUCCHINI-9.", item.Content[0].Text)
+			require.NotNil(t, item.Summary, "summary missing from the rewritten item: %s", wire)
+			require.Empty(t, *item.Summary)
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_VLLMJoinsReasoningBlocks pins that vLLM receives a reasoning
+// item's text as one content block. vLLM's general reader keeps only content[0] (or
+// summary[0]), so a second thinking block or summary part never reached the model. Every
+// part is kept, in order, joined with "\n" as vLLM's own harmony reader does. Other hosts
+// read every block and keep receiving them separately.
+func TestToOpenAIResponsesRequest_VLLMJoinsReasoningBlocks(t *testing.T) {
+	blocks := func() *schemas.ResponsesMessageContent {
+		return &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+			{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("The code word begins with PAMPLE."), Signature: schemas.Ptr("sig-1")},
+			{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("It ends with MOUSSE-47.")},
+		}}
+	}
+	summaries := []schemas.ResponsesReasoningSummary{
+		{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "The code word begins with PAMPLE."},
+		{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "It ends with MOUSSE-47."},
+	}
+	const joined = "The code word begins with PAMPLE.\nIt ends with MOUSSE-47."
+	for _, tc := range []struct {
+		name      string
+		provider  schemas.ModelProvider
+		model     string
+		input     schemas.ResponsesMessage
+		wantTexts []string
+	}{
+		{"vllm content blocks", schemas.VLLM, "qwen3.8-27b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}, Content: blocks()},
+			[]string{joined}},
+		{"vllm summaries rewritten as content", schemas.VLLM, "qwen3.8-27b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: summaries}},
+			[]string{joined}},
+		{"other gpt-oss host keeps separate blocks", schemas.BedrockMantle, "openai.gpt-oss-120b",
+			schemas.ResponsesMessage{ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}, Content: blocks()},
+			[]string{"The code word begins with PAMPLE.", "It ends with MOUSSE-47."}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.input.ID = schemas.Ptr("msg_rs_1")
+			tc.input.Type = schemas.Ptr(schemas.ResponsesMessageTypeReasoning)
+			original := tc.input.Content
+			result := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: []schemas.ResponsesMessage{tc.input}})
+			require.NotNil(t, result)
+			require.Len(t, result.Input.OpenAIResponsesRequestInputArray, 1)
+			c := result.Input.OpenAIResponsesRequestInputArray[0].Content
+			require.NotNil(t, c)
+			var texts []string
+			for _, b := range c.ContentBlocks {
+				require.Equal(t, schemas.ResponsesOutputMessageContentTypeReasoning, b.Type)
+				require.Nil(t, b.Signature, "signatures must not reach the Responses wire")
+				texts = append(texts, *b.Text)
+			}
+			require.Equal(t, tc.wantTexts, texts)
+			if original != nil {
+				require.Len(t, original.ContentBlocks, 2, "the caller's input was mutated")
+			}
+		})
+	}
+}
+
 func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
 	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
@@ -2541,6 +2682,43 @@ func TestToOpenAIResponsesRequest_PerplexityWebSearchMapsAllowedDomainsToSearchD
 		}
 	})
 
+	// Perplexity's web_search user_location documents only country, region, city,
+	// latitude and longitude (docs.perplexity.ai/docs/agent-api/tools/web-search),
+	// so OpenAI's type ("approximate") and timezone must not reach its wire.
+	t.Run("drops OpenAI-only user_location type and timezone", func(t *testing.T) {
+		bifrostReq := buildRequest(nil)
+		webSearch := bifrostReq.Params.Tools[0].ResponsesToolWebSearch
+		webSearch.UserLocation = &schemas.ResponsesToolWebSearchUserLocation{
+			Type:      schemas.Ptr("approximate"),
+			Timezone:  schemas.Ptr("America/Los_Angeles"),
+			Country:   schemas.Ptr("US"),
+			Region:    schemas.Ptr("California"),
+			City:      schemas.Ptr("San Francisco"),
+			Latitude:  schemas.Ptr(37.77),
+			Longitude: schemas.Ptr(-122.42),
+		}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		data, err := json.Marshal(result.Tools[0])
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		body := string(data)
+		for _, dropped := range []string{`"type":"approximate"`, "timezone"} {
+			if strings.Contains(body, dropped) {
+				t.Fatalf("expected %s to be absent from the wire payload, got %s", dropped, body)
+			}
+		}
+		for _, kept := range []string{`"country":"US"`, `"region":"California"`, `"city":"San Francisco"`, `"latitude":37.77`, `"longitude":-122.42`} {
+			if !strings.Contains(body, kept) {
+				t.Fatalf("expected %s on the wire payload, got %s", kept, body)
+			}
+		}
+		if webSearch.UserLocation.Type == nil || webSearch.UserLocation.Timezone == nil {
+			t.Fatal("caller's user_location was mutated")
+		}
+	})
+
 	t.Run("keeps Perplexity-only web_search fields off the OpenAI wire", func(t *testing.T) {
 		bifrostReq := buildRequest(nil)
 		bifrostReq.Provider = schemas.OpenAI
@@ -2881,6 +3059,43 @@ func TestToOpenAIResponsesRequest_StripsThoughtSignatureFromCallID(t *testing.T)
 	}
 	if *req.Input[1].ResponsesToolMessage.CallID != embeddedID {
 		t.Error("original function_call_output call_id was mutated")
+	}
+}
+
+// TestToOpenAIResponsesRequest_DropsForeignCustomToolCallItemID checks a custom_tool_call id must begin with "ctc".
+func TestToOpenAIResponsesRequest_DropsForeignCustomToolCallItemID(t *testing.T) {
+	for _, tc := range []struct {
+		itemID string
+		keep   bool
+	}{{"fc_x", false}, {"ctc_x", true}} {
+		t.Run(tc.itemID, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-5-mini",
+				Input: []schemas.ResponsesMessage{{
+					ID:   schemas.Ptr(tc.itemID),
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:                  schemas.Ptr("call_1"),
+						Name:                    schemas.Ptr("code_exec"),
+						ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "print(1)"},
+					},
+				}},
+			}
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			converted := ToOpenAIResponsesRequest(ctx, req)
+			got := converted.Input.OpenAIResponsesRequestInputArray[0]
+			if tc.keep != (got.ID != nil && *got.ID == tc.itemID) || (!tc.keep && got.ID != nil) {
+				t.Errorf("id = %v, keep = %v", got.ID, tc.keep)
+			}
+			if got.ResponsesToolMessage == nil || got.ResponsesToolMessage.CallID == nil || *got.ResponsesToolMessage.CallID != "call_1" {
+				t.Error("call_id changed")
+			}
+			if req.Input[0].ID == nil || *req.Input[0].ID != tc.itemID {
+				t.Error("original id was mutated")
+			}
+		})
 	}
 }
 
@@ -3580,6 +3795,53 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 	}
 }
 
+// Mantle requires an id on a replayed reasoning item and accepts any value, including the
+// msg_ ids it mints itself, so the non-rs_ strip must not reach it. OpenAI keeps the strip.
+func TestToOpenAIResponsesRequest_ReasoningIDOnMantle(t *testing.T) {
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		wantID   bool
+	}{
+		{schemas.BedrockMantle, true},
+		{schemas.Bedrock, true},
+		{schemas.OpenAI, false},
+		{schemas.Azure, false},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "openai.gpt-oss-120b",
+				Input: []schemas.ResponsesMessage{{
+					Type: &reasoningType,
+					ID:   schemas.Ptr("msg_b742cb8249a3aff3"),
+					Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("run ls")},
+					}},
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+				}},
+			}
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, req))
+			if err != nil {
+				t.Fatalf("marshal wire request: %v", err)
+			}
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 1 {
+				t.Fatalf("unmarshal wire request: %v (%s)", err, wire)
+			}
+			id, has := payload.Input[0]["id"]
+			if tc.wantID && string(id) != `"msg_b742cb8249a3aff3"` {
+				t.Errorf("id = %s, want the replayed msg_ id kept", id)
+			}
+			if !tc.wantID && has {
+				t.Errorf("id = %s, want it stripped", id)
+			}
+		})
+	}
+}
+
 // TestToOpenAIResponsesRequest_DefaultsImageDetail verifies input_image blocks
 // missing the detail field get "auto" on the wire (OpenAI's schema requires it
 // and strict validators like vLLM reject requests without it), explicit values
@@ -4120,7 +4382,7 @@ func TestToOpenAIResponsesRequest_AlwaysReasoningModels(t *testing.T) {
 	})
 
 	t.Run("strips_sampling_fields_for_gpt6", func(t *testing.T) {
-		include := []string{"message.output_text.logprobs", "reasoning.encrypted_content"}
+		include := []string{schemas.ResponsesIncludeOutputTextLogProbs, "reasoning.encrypted_content"}
 		params := &schemas.ResponsesParameters{
 			Temperature: schemas.Ptr(0.2),
 			TopP:        schemas.Ptr(0.9),
@@ -4134,7 +4396,7 @@ func TestToOpenAIResponsesRequest_AlwaysReasoningModels(t *testing.T) {
 			require.Nil(t, req.TopLogProbs, provider)
 			require.Equal(t, []string{"reasoning.encrypted_content"}, req.Include, provider)
 		}
-		require.Equal(t, []string{"message.output_text.logprobs", "reasoning.encrypted_content"}, params.Include,
+		require.Equal(t, []string{schemas.ResponsesIncludeOutputTextLogProbs, "reasoning.encrypted_content"}, params.Include,
 			"caller's include must not be mutated")
 	})
 
@@ -4150,6 +4412,68 @@ func TestToOpenAIResponsesRequest_AlwaysReasoningModels(t *testing.T) {
 
 		req = convert(schemas.OpenAI, "gpt-5.5", &schemas.ResponsesParameters{Temperature: schemas.Ptr(0.2)})
 		require.Nil(t, req.Temperature, "gpt-5.5 defaults to medium")
+	})
+
+	t.Run("mantle_follows_effort_conditions", func(t *testing.T) {
+		const model = "openai.gpt-6-luna"
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+			DefaultReasoningEffort:   schemas.Ptr(schemas.ReasoningEffortMedium),
+			SupportsReasoningDisable: new(true),
+			ConditionallyUnsupportedFields: map[string]string{
+				schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
+				schemas.FieldTopP:        schemas.ConditionWhenEffortNone,
+				schemas.FieldLogprobs:    schemas.ConditionWhenEffortNone,
+				schemas.FieldTopLogprobs: schemas.ConditionWhenEffortNone,
+			},
+		})
+		params := func(effort string) *schemas.ResponsesParameters {
+			p := &schemas.ResponsesParameters{
+				Temperature: schemas.Ptr(0.5),
+				TopLogProbs: schemas.Ptr(2),
+				Include:     []string{schemas.ResponsesIncludeOutputTextLogProbs},
+			}
+			if effort != "" {
+				p.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr(effort)}
+			}
+			return p
+		}
+		// The Bedrock provider serves the same models from Mantle without renaming the provider.
+		for _, provider := range []schemas.ModelProvider{schemas.BedrockMantle, schemas.Bedrock} {
+			for _, effort := range []string{"low", ""} {
+				req := convert(provider, model, params(effort))
+				require.Nil(t, req.Temperature, "%s effort %q", provider, effort)
+				require.Nil(t, req.TopLogProbs, "%s effort %q", provider, effort)
+				require.Empty(t, req.Include, "%s effort %q", provider, effort)
+			}
+			req := convert(provider, model, params("none"))
+			require.NotNil(t, req.Temperature, provider)
+			require.NotNil(t, req.TopLogProbs, provider)
+			require.Equal(t, []string{schemas.ResponsesIncludeOutputTextLogProbs}, req.Include, provider)
+		}
+	})
+
+	t.Run("mantle_non_openai_keeps_sampling", func(t *testing.T) {
+		for _, provider := range []schemas.ModelProvider{schemas.BedrockMantle, schemas.Bedrock} {
+			for _, model := range []string{"qwen.qwen3-32b", "google.gemma-4-31b", "moonshotai.kimi-k2-thinking"} {
+				req := convert(provider, model, &schemas.ResponsesParameters{
+					Temperature: schemas.Ptr(0.2),
+					TopP:        schemas.Ptr(0.9),
+					Reasoning:   &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("low")},
+				})
+				require.NotNil(t, req.Temperature, "%s %s", provider, model)
+				require.NotNil(t, req.TopP, "%s %s", provider, model)
+			}
+		}
+	})
+
+	t.Run("mantle_gpt_oss_keeps_temperature", func(t *testing.T) {
+		for _, provider := range []schemas.ModelProvider{schemas.BedrockMantle, schemas.Bedrock} {
+			req := convert(provider, "openai.gpt-oss-120b", &schemas.ResponsesParameters{
+				Temperature: schemas.Ptr(0.2),
+				Reasoning:   &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("low")},
+			})
+			require.NotNil(t, req.Temperature, provider)
+		}
 	})
 
 	t.Run("third_party_gpt_oss_keeps_temperature", func(t *testing.T) {
@@ -5660,4 +5984,136 @@ func TestToOpenAIResponsesRequest_DisableStoreContextKey(t *testing.T) {
 		require.True(t, *out.Store)
 		require.Equal(t, true, out.ExtraParams["store"])
 	})
+}
+
+// BenchmarkToOpenAIResponsesRequestReasoningReplay measures the replayed-reasoning id handling
+// on the OpenAI path (strips) and the Mantle path (keeps).
+func BenchmarkToOpenAIResponsesRequestReasoningReplay(b *testing.B) {
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.BedrockMantle} {
+		b.Run(string(provider), func(b *testing.B) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    "openai.gpt-oss-120b",
+				Input: []schemas.ResponsesMessage{{
+					Type:               &reasoningType,
+					ID:                 schemas.Ptr("msg_b742cb8249a3aff3"),
+					ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+				}},
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, req)
+			}
+		})
+	}
+}
+
+// Codex replays assistant message items carrying summary:null and encrypted_content.
+// Those fields decode into the embedded ResponsesReasoning, which used to route the
+// item through reasoning handling: content was stripped (OpenAI: "Missing required
+// parameter: 'input[N].content'") and summary was re-emitted (OpenAI rejects it on a
+// message), or, for non-reasoning models, the whole assistant turn was dropped.
+// OpenAI never mints encrypted_content on a message item and rejects any it receives
+// ("Encrypted content could not be decrypted or parsed"), even its own reasoning token;
+// forwarding it cost a failed call whose fail-soft retry also strips the genuine reasoning
+// items. So the message drops it for every model while separate reasoning items keep theirs.
+func TestToOpenAIResponsesRequest_MessageItemWithEncryptedContent(t *testing.T) {
+	const reasoning = `{"type":"reasoning","id":"rs_keep","summary":[],"encrypted_content":"gAAAA-reasoning"}`
+	const assistant = `{"type":"message","role":"assistant","status":"completed","phase":"final_answer","content":[{"type":"output_text","text":"ok","annotations":[]}],"summary":null,"encrypted_content":"gAAAA"}`
+	tests := []struct {
+		name          string
+		model         string
+		withReasoning bool
+	}{
+		{name: "reasoning model drops encrypted_content from the message only", model: "gpt-5-mini", withReasoning: true},
+		{name: "non-reasoning model drops encrypted_content", model: "gpt-4o"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			history := assistant
+			if tt.withReasoning {
+				history = reasoning + "," + assistant
+			}
+			body := `{"model":"` + tt.model + `","input":[{"role":"user","content":"hi"},` + history + `,{"role":"user","content":"hi again"}]}`
+			var request OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(body), &request))
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, bifrostRequest))
+			require.NoError(t, err)
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+
+			var item map[string]json.RawMessage
+			var reasoningItems []map[string]json.RawMessage
+			for _, in := range payload.Input {
+				switch string(in["type"]) {
+				case `"message"`:
+					if string(in["role"]) == `"assistant"` {
+						item = in
+					}
+				case `"reasoning"`:
+					reasoningItems = append(reasoningItems, in)
+				}
+			}
+			require.NotNil(t, item, "assistant turn must not be dropped: %s", wire)
+			require.JSONEq(t, `[{"type":"output_text","text":"ok","annotations":[]}]`, string(item["content"]), "content must survive: %s", wire)
+			require.NotContains(t, item, "summary", "OpenAI rejects summary on a message item: %s", wire)
+			require.JSONEq(t, `"final_answer"`, string(item["phase"]))
+			require.NotContains(t, item, "encrypted_content", "OpenAI rejects encrypted_content on a message item: %s", wire)
+			if tt.withReasoning {
+				require.Len(t, reasoningItems, 1, "the reasoning item must still be replayed: %s", wire)
+				require.JSONEq(t, `"gAAAA-reasoning"`, string(reasoningItems[0]["encrypted_content"]), "a separate reasoning item keeps its token: %s", wire)
+			}
+		})
+	}
+}
+
+// Codex replays function_call items carrying encrypted_content, which decodes into the
+// embedded ResponsesReasoning; the request then went out with summary:null and OpenAI
+// rejected it with "Unknown parameter: 'input[N].summary'".
+func TestToOpenAIResponsesRequest_FunctionCallItemWithEncryptedContent(t *testing.T) {
+	const output = `{"type":"function_call_output","call_id":"call_1","output":"done"}`
+	tests := []struct {
+		name          string
+		call          string
+		wantEncrypted string
+	}{
+		{name: "codex replay with encrypted_content and summary null", call: `{"type":"function_call","id":"fc_keep","status":"completed","call_id":"call_1","name":"spawn_agent","namespace":"collaboration","arguments":"{\"task_name\":\"reader\"}","summary":null,"encrypted_content":"gAAAA-call"}`, wantEncrypted: `"gAAAA-call"`},
+		{name: "empty summary array without encrypted_content", call: `{"type":"function_call","id":"fc_keep","status":"completed","call_id":"call_1","name":"spawn_agent","arguments":"{\"task_name\":\"reader\"}","summary":[]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"model":"gpt-5-mini","input":[{"role":"user","content":"hi"},` + tt.call + `,` + output + `]}`
+			var request OpenAIResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(body), &request))
+			bifrostRequest := request.ToBifrostResponsesRequest(nil)
+			bifrostRequest.Provider = schemas.OpenAI
+
+			wire, err := sonic.Marshal(ToOpenAIResponsesRequest(nil, bifrostRequest))
+			require.NoError(t, err)
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+
+			var item map[string]json.RawMessage
+			for _, in := range payload.Input {
+				if string(in["type"]) == `"function_call"` {
+					item = in
+				}
+			}
+			require.NotNil(t, item, "function_call must not be dropped: %s", wire)
+			require.NotContains(t, item, "summary", "OpenAI rejects summary on a function_call item: %s", wire)
+			if tt.wantEncrypted != "" {
+				require.JSONEq(t, tt.wantEncrypted, string(item["encrypted_content"]), "encrypted_content must survive: %s", wire)
+			}
+			require.JSONEq(t, `"call_1"`, string(item["call_id"]))
+			require.JSONEq(t, `"{\"task_name\":\"reader\"}"`, string(item["arguments"]))
+		})
+	}
 }

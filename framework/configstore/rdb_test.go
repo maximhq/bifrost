@@ -3,7 +3,9 @@ package configstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -38,6 +40,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableRoutingRule{},
 		&tables.TableRoutingTarget{},
 		&tables.TablePricingOverride{},
+		&tables.TableDatasheetOverride{},
 		&tables.TableVirtualKey{},
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyProviderConfigKey{},
@@ -46,6 +49,8 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableTeam{},
 		&tables.TableClientConfig{},
 		&tables.TableGovernanceConfig{},
+		&tables.TableModelRouter{},
+		&tables.TableModelRouterTarget{},
 		&tables.TablePlugin{},
 		&tables.TableMCPClient{},
 		&tables.TableMCPLibrary{},
@@ -895,6 +900,20 @@ func TestProviderKeyCRUD(t *testing.T) {
 	require.NotNil(t, storedKey)
 	assert.Equal(t, "sk-test-key-v2", storedKey.Value.Val)
 	assert.Equal(t, 2.0, storedKey.Weight)
+
+	// Content logging is tri-state and every state must survive create, read and update, including
+	// clearing a decision back to inherit.
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		key.DisableContentLogging = decision
+		require.NoError(t, store.UpdateProviderKey(ctx, "openai", key.ID, key))
+		storedKey, err = store.GetProviderKey(ctx, "openai", key.ID)
+		require.NoError(t, err)
+		assert.Equal(t, decision, storedKey.DisableContentLogging)
+		keys, err = store.GetProviderKeys(ctx, "openai")
+		require.NoError(t, err)
+		require.Len(t, keys, 1)
+		assert.Equal(t, decision, keys[0].DisableContentLogging, "the list path converts keys separately")
+	}
 
 	err = store.DeleteProviderKey(ctx, "openai", key.ID)
 	require.NoError(t, err)
@@ -2120,6 +2139,35 @@ func TestDeleteVirtualKey(t *testing.T) {
 	assert.Error(t, err, "Should not find deleted virtual key")
 }
 
+// Warp's settings name a virtual key its model calls present for a caller with no
+// identity of their own. Like every other reference to a key, it must not outlive
+// the key: left behind, every such caller's Warp turn was refused with "Warp's
+// virtual key no longer exists" until an administrator noticed and chose another.
+// Deleting the key clears it, and leaves a setting naming a different key alone.
+func TestDeleteVirtualKey_ClearsWarpVirtualKey(t *testing.T) {
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableWarpConfig{}))
+	ctx := context.Background()
+
+	for _, id := range []string{"vk-warp", "vk-other"} {
+		require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+			ID: id, Name: id, Value: *schemas.NewSecretVar(id + "-value"), IsActive: schemas.Ptr(true),
+		}))
+	}
+	require.NoError(t, store.UpsertWarpConfig(ctx, &tables.TableWarpConfig{Enabled: true, Provider: "openai", Model: "gpt-4o", VirtualKeyID: "vk-warp"}))
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, "vk-other"))
+	config, err := store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "vk-warp", config.VirtualKeyID, "deleting another key leaves Warp's alone")
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, "vk-warp"))
+	config, err = store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, config.VirtualKeyID, "Warp must not keep naming a deleted key")
+	assert.Equal(t, "gpt-4o", config.Model, "only the reference is cleared")
+}
+
 func TestDeleteVirtualKey_RevokesInboundVKGrants(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2152,6 +2200,56 @@ func TestDeleteVirtualKey_RevokesInboundVKGrants(t *testing.T) {
 	var got tables.TableOAuth2RefreshToken
 	require.NoError(t, store.DB().WithContext(ctx).First(&got, "id = ?", "rt-vk-grant").Error)
 	assert.NotNil(t, got.RevokedAt, "vk-mode grant should be revoked when its VK is deleted")
+}
+
+func TestDeleteVirtualKey_LogsGrantRevocationOnlyOnceCommitted(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ml := newMockLogger()
+	store.logger = ml
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-log",
+		Name:     "Log VK",
+		Value:    *schemas.NewSecretVar("vk-log-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableOAuth2RefreshToken{
+		ID: "rt-vk-log", TokenHash: "hash-vk-log", FamilyID: "fam-vk-log", ClientID: "client-1",
+		BfMode: string(schemas.MCPAuthModeVK), BfSub: vk.ID, Scope: "mcp", Resource: "https://example.test/mcp", CreatedAt: time.Now(),
+	}).Error)
+	revocationLogs := func() int {
+		ml.mu.Lock()
+		defer ml.mu.Unlock()
+		n := 0
+		for _, msg := range ml.debugMessages {
+			if strings.Contains(msg, "reason=virtual_key_deleted") {
+				n++
+			}
+		}
+		return n
+	}
+	tokenRevoked := func() bool {
+		var got tables.TableOAuth2RefreshToken
+		require.NoError(t, store.DB().WithContext(ctx).First(&got, "id = ?", "rt-vk-log").Error)
+		return got.RevokedAt != nil
+	}
+
+	// Inside a caller's transaction that rolls back: nothing is revoked and nothing is logged.
+	rollback := errors.New("caller rolls back")
+	err := store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID, tx))
+		return rollback
+	})
+	require.ErrorIs(t, err, rollback)
+	assert.False(t, tokenRevoked(), "the rolled-back delete must leave the grant active")
+	assert.Zero(t, revocationLogs(), "a rolled-back revocation must not be logged")
+
+	// On its own transaction the revocation commits and is logged once.
+	require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID))
+	assert.True(t, tokenRevoked())
+	assert.Equal(t, 1, revocationLogs())
 }
 
 func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {
@@ -2798,6 +2896,94 @@ func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip(t 
 	assert.NotEqual(t, creationHash, deletionHash)
 }
 
+// TestUpdateClientConfig_MCPClientMetadataURLRoundTrip pins that the hosted Client ID Metadata Document URL
+// persists with its env reference, is hashed only when set, and is masked when it comes from env.
+func TestUpdateClientConfig_MCPClientMetadataURLRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	t.Setenv("BIFROST_TEST_CIMD_URL", "https://public.example.com/bifrost/client.json")
+
+	unset := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	hosted := unset
+	hosted.MCPClientMetadataURL = schemas.NewSecretVar("env.BIFROST_TEST_CIMD_URL")
+	require.NoError(t, store.UpdateClientConfig(ctx, &hosted))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.MCPClientMetadataURL)
+	assert.True(t, result.MCPClientMetadataURL.IsFromEnv(), "the env reference is stored, not its value")
+	assert.Equal(t, "https://public.example.com/bifrost/client.json", result.MCPClientMetadataURL.GetValue())
+	assert.NotEqual(t, "https://public.example.com/bifrost/client.json", result.Redacted().MCPClientMetadataURL.GetValue(), "an env-backed URL is masked")
+
+	unsetHash, err := unset.GenerateClientConfigHash()
+	require.NoError(t, err)
+	emptyHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true, MCPClientMetadataURL: schemas.NewSecretVar("")}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	hostedHash, err := hosted.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, unsetHash, emptyHash, "configs written before the field existed keep their hash")
+	assert.NotEqual(t, unsetHash, hostedHash)
+}
+
+func TestUpdateClientConfig_MCPOpenAPIMaxSpecMBRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, result.MCPOpenAPIMaxSpecMB, "unset reads back as 0, the built-in limit")
+
+	sized := base
+	sized.MCPOpenAPIMaxSpecMB = 64
+	require.NoError(t, store.UpdateClientConfig(ctx, &sized))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 64, result.MCPOpenAPIMaxSpecMB)
+
+	// Only a set value is hashed, so configs written before the field existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	sizedHash, err := sized.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, sizedHash)
+	unsetHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
+}
+
+func TestUpdateClientConfig_BifrostURLAndBifrostMCPRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, result.BifrostURL.GetValue())
+	assert.Nil(t, result.BifrostMCPAllowWrites, "unset reads back nil: writes on")
+
+	set := base
+	set.BifrostURL = schemas.NewSecretVar("https://gateway.example.com")
+	set.BifrostMCPAllowWrites = new(false)
+	require.NoError(t, store.UpdateClientConfig(ctx, &set))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "https://gateway.example.com", result.BifrostURL.GetValue())
+	require.NotNil(t, result.BifrostMCPAllowWrites)
+	assert.False(t, *result.BifrostMCPAllowWrites, "false is stored, not replaced by a default")
+
+	// Only set values are hashed, so configs written before the fields existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	setHash, err := set.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, setHash)
+	unsetHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
+}
+
 func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2859,6 +3045,79 @@ func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
 	result, err = store.GetClientConfig(ctx)
 	require.NoError(t, err)
 	assert.Nil(t, result.MCPCodeModeLimits, "clearing the limits must persist")
+}
+
+func TestUpdateClientConfig_UsageEstimationTokenizersRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:             new(true),
+		InitialPoolSize:           100,
+		LogRetentionDays:          30,
+		MaxRequestBodySizeMB:      50,
+		UsageEstimationTokenizers: []string{"anthropic", "llama3"},
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3"}, result.UsageEstimationTokenizers)
+}
+
+// The upgrade path: a database whose config_client predates usage_estimation_tokenizers_json
+// already holds a row. The migration must add the column without touching that row, the row
+// must still read (with no tokenizer families), and running the step again must be a no-op.
+func TestMigrationAddUsageEstimationTokenizersJSONColumn_ExistingRow(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	db := store.DB()
+	const column = "usage_estimation_tokenizers_json"
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      137,
+		LogRetentionDays:     45,
+		MaxRequestBodySizeMB: 50,
+	}))
+	// Return the table to its shape before this migration.
+	require.NoError(t, db.Exec("ALTER TABLE config_client DROP COLUMN "+column).Error)
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, column), "precondition: the old table has no tokenizer column")
+
+	require.NoError(t, migrationAddUsageEstimationTokenizersJSONColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, column))
+
+	existing, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, existing, "the pre-migration row is still readable")
+	assert.Equal(t, 137, existing.InitialPoolSize, "the row's other settings survive the migration")
+	assert.Equal(t, 45, existing.LogRetentionDays)
+	assert.Empty(t, existing.UsageEstimationTokenizers, "an upgraded row estimates with the base encodings")
+
+	existing.UsageEstimationTokenizers = []string{"anthropic", "llama3"}
+	require.NoError(t, store.UpdateClientConfig(ctx, existing))
+	saved, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3"}, saved.UsageEstimationTokenizers, "the new column stores a list")
+
+	require.NoError(t, migrationAddUsageEstimationTokenizersJSONColumn(ctx, db, testMigrationLogger), "a second run is a no-op")
+	again, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3"}, again.UsageEstimationTokenizers, "a second run leaves the stored list")
+}
+
+func TestGenerateClientConfigHash_UsageEstimationTokenizers(t *testing.T) {
+	hash := func(families []string) string {
+		h, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, UsageEstimationTokenizers: families}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	baseHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, hash(nil), "unset tokenizers must not change existing hashes")
+	assert.NotEqual(t, baseHash, hash([]string{"anthropic"}))
+	assert.NotEqual(t, hash([]string{"anthropic"}), hash([]string{"llama3"}))
+	assert.Equal(t, hash([]string{"anthropic", "llama3"}), hash([]string{"llama3", "anthropic"}), "order must not change the hash")
 }
 
 func TestGenerateClientConfigHash_MCPCodeModeLimits(t *testing.T) {
@@ -3006,6 +3265,85 @@ func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
 	urlHash, err := withURL.GenerateClientConfigHash()
 	require.NoError(t, err)
 	assert.NotEqual(t, baseHash, urlHash)
+}
+
+func TestGenerateClientConfigHash_ClaudeCodeGateway(t *testing.T) {
+	withGateway := func(cc *tables.ClaudeCodeGatewayConfig) *ClientConfig {
+		return &ClientConfig{
+			InitialPoolSize:    100,
+			LogRetentionDays:   30,
+			MCPServerAuthMode:  tables.MCPServerAuthModeBoth,
+			OAuth2ServerConfig: &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar("https://bifrost.test"), Gateways: &tables.ClientGatewaysConfig{ClaudeCode: cc}},
+		}
+	}
+	hashOf := func(cc *tables.ClaudeCodeGatewayConfig) string {
+		h, err := withGateway(cc).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+
+	unset := hashOf(nil)
+	enabled := hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true})
+	assert.NotEqual(t, unset, enabled, "turning the gateway on is a config change")
+	assert.NotEqual(t, enabled, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: false}))
+
+	policyA := hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"A": "1", "B": "2"}}})
+	assert.NotEqual(t, enabled, policyA, "managed settings are part of the config")
+	assert.Equal(t, policyA, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"B": "2", "A": "1"}}}),
+		"the hash does not depend on map ordering")
+	assert.NotEqual(t, policyA, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"A": "1"}}}))
+
+	withTelemetry := func(endpoint, header string) *tables.ClaudeCodeGatewayConfig {
+		return &tables.ClaudeCodeGatewayConfig{Enabled: true, Telemetry: &tables.ClientGatewayTelemetryConfig{
+			Enabled: true,
+			Destinations: []tables.ClientGatewayTelemetryDestination{{
+				Endpoint: schemas.NewSecretVar(endpoint),
+				Headers:  map[string]*schemas.SecretVar{"authorization": schemas.NewSecretVar(header)},
+			}},
+		}}
+	}
+	t.Setenv("BIFROST_TEST_HASH_OTEL_TOKEN", "first")
+	telemetry := hashOf(withTelemetry("https://otel.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN"))
+	assert.NotEqual(t, enabled, telemetry, "telemetry is part of the config")
+	assert.NotEqual(t, telemetry, hashOf(withTelemetry("https://other.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN")), "a changed endpoint is a config change")
+	t.Setenv("BIFROST_TEST_HASH_OTEL_TOKEN", "rotated")
+	assert.Equal(t, telemetry, hashOf(withTelemetry("https://otel.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN")),
+		"a header is hashed by its reference, so rotating the secret behind it is not a config change")
+}
+
+func TestUpdateClientConfig_ClaudeCodeGatewayRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	cfg := &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      100,
+		LogRetentionDays:     30,
+		MaxRequestBodySizeMB: 50,
+		MCPServerAuthMode:    tables.MCPServerAuthModeBoth,
+		OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+			IssuerURL: schemas.NewSecretVar("https://bifrost.test"),
+			Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{
+				Enabled:         true,
+				ManagedSettings: map[string]any{"permissions": map[string]any{"deny": []any{"WebFetch"}}},
+			}},
+		},
+	}
+	require.NoError(t, store.UpdateClientConfig(ctx, cfg))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.OAuth2ServerConfig)
+	assert.True(t, result.OAuth2ServerConfig.IsClaudeCodeGatewayEnabled())
+	assert.Equal(t, map[string]any{"permissions": map[string]any{"deny": []any{"WebFetch"}}}, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+
+	// An empty policy is a policy: {} must come back as {}, not as "no policy".
+	cfg.OAuth2ServerConfig.Gateways.ClaudeCode.ManagedSettings = map[string]any{}
+	require.NoError(t, store.UpdateClientConfig(ctx, cfg))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.OAuth2ServerConfig.ClaudeCodeGateway())
+	assert.NotNil(t, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+	assert.Empty(t, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
 }
 
 func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {
@@ -3228,6 +3566,72 @@ func TestCreateCustomer(t *testing.T) {
 	assert.Equal(t, "Test Customer", result.Name)
 }
 
+// TestUpdateCustomerLeavesChildRowsAlone checks that saving a customer read earlier does not pull a
+// team that has since moved to another customer back onto it.
+func TestUpdateCustomerLeavesChildRowsAlone(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"cust-a", "cust-b"} {
+		require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: id, Name: id}))
+	}
+	a := "cust-a"
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "team-1", CustomerID: &a}))
+
+	customer, err := store.GetCustomer(ctx, "cust-a")
+	require.NoError(t, err)
+	require.Len(t, customer.Teams, 1)
+
+	team, err := store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	b := "cust-b"
+	team.CustomerID = &b
+	require.NoError(t, store.UpdateTeam(ctx, team))
+
+	customer.Name = "cust-a renamed"
+	require.NoError(t, store.UpdateCustomer(ctx, customer))
+
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.CustomerID)
+	assert.Equal(t, "cust-b", *team.CustomerID)
+
+	renamed, err := store.GetCustomer(ctx, "cust-a")
+	require.NoError(t, err)
+	assert.Equal(t, "cust-a renamed", renamed.Name)
+}
+
+// TestUpdateTeamChangesAndClearsCustomer checks that a team read with its customer preloaded can be
+// moved to another customer and detached, as the team update handler does.
+func TestUpdateTeamChangesAndClearsCustomer(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"cust-a", "cust-b"} {
+		require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: id, Name: id}))
+	}
+	a := "cust-a"
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "team-1", CustomerID: &a}))
+
+	team, err := store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.Customer, "GetTeam preloads the customer")
+	b := "cust-b"
+	team.CustomerID = &b
+	require.NoError(t, store.UpdateTeam(ctx, team))
+
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.CustomerID)
+	assert.Equal(t, "cust-b", *team.CustomerID)
+
+	team.CustomerID = nil
+	require.NoError(t, store.UpdateTeam(ctx, team))
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	assert.Nil(t, team.CustomerID)
+}
+
 func TestCreateTeam(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -3255,6 +3659,17 @@ func TestCreateTeam(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Test Team", result.Name)
 	assert.Equal(t, "customer-for-team", *result.CustomerID)
+	assert.Nil(t, result.DisableContentLogging, "a team created without a decision inherits")
+
+	// Content logging is tri-state and every state must survive an update, including clearing a
+	// decision back to NULL: an update that skipped nil would leave a team stuck on its old choice.
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		team.DisableContentLogging = decision
+		require.NoError(t, store.UpdateTeam(ctx, team))
+		result, err = store.GetTeam(ctx, "team-test")
+		require.NoError(t, err)
+		assert.Equal(t, decision, result.DisableContentLogging)
+	}
 }
 
 // =============================================================================
@@ -5360,6 +5775,48 @@ func TestUpsertModelPricesBatch_VideoTokenColumnSurvivesResync(t *testing.T) {
 	assert.Equal(t, rate, *found.OutputCostPerVideoToken)
 }
 
+func TestUpsertModelPricesBatch_CacheCreationAbove12hrColumnsSurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+
+	row := tables.TableModelPricing{Model: "gpt-5.6-sol", Provider: "openai", Mode: "chat"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.CacheCreationInputTokenCostAbove12hr = schemas.Ptr(0.00001)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokens = schemas.Ptr(0.00002)
+	row.CacheCreationInputTokenCostAbove12hrPriority = schemas.Ptr(0.00002)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority = schemas.Ptr(0.00004)
+	row.CacheCreationInputTokenCostAbove12hrFlex = schemas.Ptr(0.000005)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex = schemas.Ptr(0.00001)
+	row.CacheCreationInputTokenCostAbove12hrUltrafast = schemas.Ptr(0.00015)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast = schemas.Ptr(0.0003)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "gpt-5.6-sol" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	for name, v := range map[string]*float64{
+		"cache_creation_input_token_cost_above_12hr":                      found.CacheCreationInputTokenCostAbove12hr,
+		"cache_creation_input_token_cost_above_12hr_above_272k_tokens":    found.CacheCreationInputTokenCostAbove12hrAbove272kTokens,
+		"cache_creation_input_token_cost_above_12hr_priority":             found.CacheCreationInputTokenCostAbove12hrPriority,
+		"cache_creation_input_token_cost_above_12hr_above_272k_priority":  found.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority,
+		"cache_creation_input_token_cost_above_12hr_flex":                 found.CacheCreationInputTokenCostAbove12hrFlex,
+		"cache_creation_input_token_cost_above_12hr_above_272k_flex":      found.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex,
+		"cache_creation_input_token_cost_above_12hr_ultrafast":            found.CacheCreationInputTokenCostAbove12hrUltrafast,
+		"cache_creation_input_token_cost_above_12hr_above_272k_ultrafast": found.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast,
+	} {
+		assert.NotNil(t, v, "%s missing from pricingSyncUpdateColumns", name)
+	}
+}
+
 // TestRDBConfigStore_CreatedAtSurvivesConfigSync is the general form of
 // TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate. GORM's Save selects every
 // column, so any entity rebuilt from config.json — which carries no created_at —
@@ -5893,6 +6350,17 @@ func TestGenerateClientConfigHash_SkillsExternalClientURL(t *testing.T) {
 	require.Equal(t, "env.BIFROST_SKILLS_URL_TEST", redacted.SkillsExternalClientURL.GetRawRef())
 }
 
+// TestValidateOpenAPIURL accepts the default (empty), an http(s) URL, or a path
+// that stays inside the app directory, and refuses everything else.
+func TestValidateOpenAPIURL(t *testing.T) {
+	for _, value := range []string{"", "  ", "https://raw.githubusercontent.com/maximhq/bifrost/refs/heads/dev/docs/openapi/openapi.json", "http://mirror.internal:8080/openapi.json", "openapi.json", "specs/openapi.yaml", "./specs/../openapi.json"} {
+		require.NoError(t, ValidateOpenAPIURL(value), value)
+	}
+	for _, value := range []string{"/etc/bifrost/openapi.json", "../openapi.json", "specs/../../openapi.json", "ftp://example.com/spec", "file:///etc/passwd", "https://", strings.Repeat("a", MaxOpenAPIURLLength+1)} {
+		require.Error(t, ValidateOpenAPIURL(value), value)
+	}
+}
+
 // TestValidatePublicBaseURL permits public base paths and rejects credential-bearing components without echoing input.
 func TestValidatePublicBaseURL(t *testing.T) {
 	for _, value := range []string{"", "https://skills.example/path", "http://localhost:8080", "https://example.com/path%23section", "http://[::1]:8080"} {
@@ -5902,6 +6370,24 @@ func TestValidatePublicBaseURL(t *testing.T) {
 		err := ValidatePublicBaseURL(value)
 		require.Error(t, err, value)
 		require.NotContains(t, err.Error(), value)
+	}
+}
+
+// The public URL settings accept exactly what their varchar columns store: a URL
+// of MaxPublicURLLength characters is accepted, one longer is refused before it
+// reaches UpdateClientConfig, and every column holding one is that wide.
+func TestValidatePublicBaseURLLengthMatchesColumns(t *testing.T) {
+	prefix := "https://example.com/"
+	require.NoError(t, ValidatePublicBaseURL(prefix+strings.Repeat("a", MaxPublicURLLength-len(prefix))))
+	err := ValidatePublicBaseURL(prefix + strings.Repeat("a", MaxPublicURLLength-len(prefix)+1))
+	require.ErrorContains(t, err, "at most 512 characters")
+
+	columns := map[string]string{"BifrostURL": "", "MCPExternalClientURL": "", "SkillsExternalClientURL": "", "A2AExternalClientURL": ""}
+	typ := reflect.TypeOf(tables.TableClientConfig{})
+	for name := range columns {
+		field, ok := typ.FieldByName(name)
+		require.True(t, ok, name)
+		require.Contains(t, field.Tag.Get("gorm"), fmt.Sprintf("varchar(%d)", MaxPublicURLLength), "%s's column width must match the limit validation applies", name)
 	}
 }
 
@@ -6734,9 +7220,21 @@ func TestMCPClientPendingVerification_ReadFromTheOldSignalsWithoutTheFlag(t *tes
 		require.NoError(t, store.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", id).Updates(columns).Error)
 	}
 
+	// Completing the sign-in stores the tools it discovered and clears the stash.
 	create("oauth_done_elsewhere", schemas.MCPAuthTypePerUserOauth, false)
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, "oauth_done_elsewhere", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}))
 	setColumns("oauth_done_elsewhere", map[string]any{"pending_oauth_config_json": nil})
-	assert.False(t, pending("oauth_done_elsewhere"), "the stash cleared without the record: verified")
+	assert.False(t, pending("oauth_done_elsewhere"), "the stash cleared and tools stored without the record: verified")
+
+	// Registered but holding no admin discovery, as turning per_user_discovery off leaves it.
+	create("oauth_turned_off", schemas.MCPAuthTypePerUserOauth, false)
+	setColumns("oauth_turned_off", map[string]any{"pending_oauth_config_json": nil, "pending_verification": true})
+	assert.True(t, pending("oauth_turned_off"), "no stash and no tools, recorded: pending")
+
+	// The same without the record, as a row from before it can be: read as it always was.
+	create("oauth_without_tools", schemas.MCPAuthTypePerUserOauth, false)
+	setColumns("oauth_without_tools", map[string]any{"pending_oauth_config_json": nil, "pending_verification": false})
+	assert.False(t, pending("oauth_without_tools"), "no stash and no tools, not recorded: verified")
 
 	create("oauth_created_elsewhere", schemas.MCPAuthTypePerUserOauth, false)
 	setColumns("oauth_created_elsewhere", map[string]any{"pending_verification": false})
@@ -6789,12 +7287,21 @@ func TestUpdateMCPClientConfig_TurningPerUserDiscoveryOnOrOff(t *testing.T) {
 			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"}, wantPending: true,
 		},
 		{
+			// One from before the record, with no tool list: verified, as it always read.
+			name: "on, a per_user_oauth client with no tools and no record", authType: schemas.MCPAuthTypePerUserOauth, from: false, to: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			name: "on, a per_user_oauth client turned off and not verified since", authType: schemas.MCPAuthTypePerUserOauth, from: false, to: true, record: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"}, wantPending: true,
+		},
+		{
 			name: "off, a per_user_headers client goes back to its admin step", authType: schemas.MCPAuthTypePerUserHeaders, from: true, to: false,
 			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"}, wantPending: true,
 		},
 		{
-			name: "off, a per_user_oauth client stays verified", authType: schemas.MCPAuthTypePerUserOauth, from: true, to: false,
-			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"},
+			name: "off, a per_user_oauth client goes back to its admin step", authType: schemas.MCPAuthTypePerUserOauth, from: true, to: false,
+			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"}, wantPending: true,
 		},
 		{
 			name: "kept, an ordinary edit", authType: schemas.MCPAuthTypePerUserHeaders, from: false, to: false, tools: true,
@@ -6912,4 +7419,217 @@ func TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset(t *testing.T) {
 	row.PerUserDiscovery = schemas.Ptr(false)
 	require.NoError(t, store.UpdateMCPClientConfig(ctx, "pud-client", row))
 	assert.Equal(t, schemas.Ptr(false), stored(), "an update can turn the flag off")
+}
+
+// TestUpdateMCPClientConfigHash pins that the hash upgrade writes config_hash alone, and only from the
+// expected old value, so a concurrent edit or an earlier upgrade by another node is never overwritten.
+func TestUpdateMCPClientConfigHash(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "hash-client",
+		Name:             "hash_client",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ToolsToExecute:   []string{"*"},
+		ConfigHash:       "legacy",
+	}))
+	// Another node edits the client after this node read it.
+	edited, err := store.GetMCPClientByID(ctx, "hash-client")
+	require.NoError(t, err)
+	edited.ToolsToExecute = []string{"echo"}
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "hash-client", edited))
+
+	moved, err := store.UpdateMCPClientConfigHash(ctx, "hash-client", "stale", "current")
+	require.NoError(t, err)
+	assert.False(t, moved, "a hash that is no longer the expected old value is left alone")
+
+	moved, err = store.UpdateMCPClientConfigHash(ctx, "hash-client", "legacy", "current")
+	require.NoError(t, err)
+	assert.True(t, moved)
+	row, err := store.GetMCPClientByID(ctx, "hash-client")
+	require.NoError(t, err)
+	assert.Equal(t, "current", row.ConfigHash)
+	assert.Equal(t, []string{"echo"}, []string(row.ToolsToExecute), "the concurrent edit survives the hash upgrade")
+}
+
+// TestMCPClientServerTypeOnSlugRoundTrip pins that the slug override is stored as given, including
+// clearing it back to inherit, unlike the keep-when-unset flags above.
+func TestMCPClientServerTypeOnSlugRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "scm-client",
+		Name:             "scm_client",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		IsCodeModeClient: true,
+		ServerTypeOnSlug: schemas.MCPServerTypeOnSlugDisabled,
+	}))
+	stored := func() schemas.MCPServerTypeOnSlug {
+		row, err := store.GetMCPClientByID(ctx, "scm-client")
+		require.NoError(t, err)
+		return row.ServerTypeOnSlug
+	}
+	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, stored(), "created with the override")
+
+	config, err := store.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	var loaded *schemas.MCPClientConfig
+	for _, client := range config.ClientConfigs {
+		if client.ID == "scm-client" {
+			loaded = client
+		}
+	}
+	require.NotNil(t, loaded)
+	assert.Equal(t, schemas.MCPServerTypeOnSlugDisabled, loaded.ServerTypeOnSlug, "the loaded client config carries the override")
+
+	row, err := store.GetMCPClientByID(ctx, "scm-client")
+	require.NoError(t, err)
+	row.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugEnabled
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "scm-client", row))
+	assert.Equal(t, schemas.MCPServerTypeOnSlugEnabled, stored(), "an update can change the override")
+
+	row.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugInherit
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "scm-client", row))
+	assert.Equal(t, schemas.MCPServerTypeOnSlugInherit, stored(), "an update can clear the override back to inherit")
+}
+
+// Saving by target updates the existing row in place: same ID and created_at,
+// new patches. Delete reports a missing row as ErrNotFound.
+func TestDatasheetOverride_UpsertByTargetAndDelete(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+
+	first := &tables.TableDatasheetOverride{
+		ID: "first", Provider: "openai", Model: "gpt-4o", Mode: "chat",
+		PricingPatch: json.RawMessage(`{"context_length":64000}`),
+	}
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, first))
+	other := &tables.TableDatasheetOverride{
+		ID: "other", Provider: "openai", Model: "gpt-4o", Mode: "responses",
+		ParamsPatch: json.RawMessage(`{"supports_mcp":true}`),
+	}
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, other))
+
+	again := &tables.TableDatasheetOverride{
+		ID: "ignored-new-id", Provider: "openai", Model: "gpt-4o", Mode: "chat",
+		PricingPatch: json.RawMessage(`{"context_length":32000}`),
+		Baseline:     json.RawMessage(`{"pricing":{"context_length":128000}}`),
+	}
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, again))
+	assert.Equal(t, "first", again.ID, "a save for an existing target keeps that row's ID")
+
+	rows, err := store.GetDatasheetOverrides(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	got, err := store.GetDatasheetOverrideByID(ctx, "first")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"context_length":32000}`, string(got.PricingPatch))
+	assert.JSONEq(t, `{"pricing":{"context_length":128000}}`, string(got.Baseline))
+	assert.Nil(t, got.ParamsPatch)
+	assert.Equal(t, first.CreatedAt.Unix(), got.CreatedAt.Unix())
+
+	require.NoError(t, store.DeleteDatasheetOverride(ctx, "first"))
+	require.ErrorIs(t, store.DeleteDatasheetOverride(ctx, "first"), ErrNotFound)
+	_, err = store.GetDatasheetOverrideByID(ctx, "first")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// Two overrides whose pricing patches target the same folded pricing row
+// cannot both be stored, whichever node writes them; overrides without a claim
+// never conflict, and re-saving the claim holder is not a conflict.
+func TestDatasheetOverride_PricingClaimIsUnique(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	claim := "m|bedrock|chat"
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "bedrock", Provider: "bedrock", Model: "m", Mode: "chat", PricingClaim: &claim,
+		PricingPatch: json.RawMessage(`{"input_cost_per_token":5}`),
+	}))
+	err := store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "mantle", Provider: "bedrock_mantle", Model: "m", Mode: "chat", PricingClaim: &claim,
+		PricingPatch: json.RawMessage(`{"input_cost_per_token":6}`),
+	})
+	require.ErrorIs(t, err, ErrDatasheetPricingClaimTaken)
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "mantle-params", Provider: "bedrock_mantle", Model: "m", Mode: "chat",
+		ParamsPatch: json.RawMessage(`{"max_output_tokens":200}`),
+	}), "an override without a pricing claim does not conflict")
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "bedrock", Provider: "bedrock", Model: "m", Mode: "chat", PricingClaim: &claim,
+		PricingPatch: json.RawMessage(`{"input_cost_per_token":7}`),
+	}), "re-saving the claim holder is not a conflict")
+
+	rows, err := store.GetDatasheetOverrides(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	for _, r := range rows {
+		if r.ID == "bedrock" {
+			require.NotNil(t, r.PricingClaim)
+			assert.Equal(t, claim, *r.PricingClaim)
+		} else {
+			assert.Nil(t, r.PricingClaim)
+		}
+	}
+}
+
+// A context cancelled between the insert and the ID readback must not leave
+// the row saved behind an error: the caller would skip its cache refresh and
+// peer notification for a write that did land.
+func TestDatasheetOverride_UpsertCancelledAfterInsertSavesNothing(t *testing.T) {
+	// File-backed: a cancelled tx can discard its connection, and a fresh
+	// :memory: connection would be an empty database.
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/datasheet.db"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableDatasheetOverride{}))
+	store := &RDBConfigStore{}
+	store.db.Store(db)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, store.DB().Callback().Create().After("gorm:create").Register("test:cancel_after_datasheet_insert", func(db *gorm.DB) {
+		if db.Statement.Table == (tables.TableDatasheetOverride{}).TableName() {
+			cancel()
+		}
+	}))
+
+	err = store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "cancelled", Provider: "openai", Model: "gpt-4o", Mode: "chat",
+		PricingPatch: json.RawMessage(`{"context_length":64000}`),
+	})
+	require.Error(t, err, "the readback runs on a cancelled context")
+
+	rows, err := store.GetDatasheetOverrides(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, rows, "an upsert that returns an error must not have committed the row")
+}
+
+// TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite pins that a budget a business unit
+// holds stays the unit's when a write names no owner, as an edit of the budget's limits alone does.
+// Saving that row as given would null the owner, and the unit would silently stop being capped. A
+// write that names an owner is an ownership change and wins.
+func TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	buID := "bu-1"
+	require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 100, ResetDuration: "1M", BusinessUnitID: &buID}))
+
+	// The file's edit: a new limit, no owner named.
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 200, ResetDuration: "1M"}))
+	edited, err := store.GetBudget(ctx, "bud-bu")
+	require.NoError(t, err)
+	assert.Equal(t, 200.0, edited.MaxLimit)
+	require.NotNil(t, edited.BusinessUnitID, "an ownerless write must not detach the budget from its business unit")
+	assert.Equal(t, buID, *edited.BusinessUnitID)
+
+	// Another unit named outright takes it.
+	other := "bu-2"
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 200, ResetDuration: "1M", BusinessUnitID: &other}))
+	moved, err := store.GetBudget(ctx, "bud-bu")
+	require.NoError(t, err)
+	require.NotNil(t, moved.BusinessUnitID)
+	assert.Equal(t, other, *moved.BusinessUnitID)
 }

@@ -539,7 +539,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*AnthropicTextRequest, error) {
 			return ToAnthropicTextCompletionRequest(request), nil
 		})
 	if err != nil {
@@ -694,6 +694,9 @@ func HandleAnthropicChatCompletionRequest(
 	if convTracer != nil {
 		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
 	}
+	if bifrostResponse.Usage != nil {
+		recordAnthropicContainerSession(&bifrostResponse.Usage.ToolUsage, jsonBody, response.Container)
+	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -779,7 +782,147 @@ func normalizeCachedUsage(usage *schemas.BifrostLLMUsage) {
 	usage.TotalTokens += cached
 }
 
-func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, billedUsage *schemas.BifrostLLMUsage, usageToProcess *AnthropicUsage) {
+// anthropicPromptCountersAll marks every prompt-side usage counter as reported.
+const anthropicPromptCountersAll = anthropicPromptCounterInputTokens |
+	anthropicPromptCounterCacheCreationInputTokens |
+	anthropicPromptCounterCacheReadInputTokens |
+	anthropicPromptCounterCacheCreation
+
+// reportedAnthropicStreamPromptCounters returns which prompt-side counters a
+// stream event's usage object actually carried, so the accumulators can treat
+// each usage object as a snapshot that overwrites only what it reports -- the
+// rule the official SDK accumulators apply.
+//
+// Upstreams disagree on how the prompt side is split across the two usage
+// frames, and both shapes must bill the same prompt:
+//   - Anthropic (and Vertex, Bedrock): message_start carries input_tokens as the
+//     uncached part plus the cache counters; message_delta usually carries only
+//     output_tokens. Keeping message_start's values is correct.
+//   - Some Anthropic-compatible upstreams (kimi-code among them): message_start
+//     carries the whole prompt as input_tokens with zero cache counters, and
+//     message_delta re-reports input_tokens as the uncached part plus the cache
+//     counters. message_delta's values must replace message_start's; keeping the
+//     larger input_tokens and then folding the cache counters on top double
+//     counts every cached token.
+//
+// Both reduce to "overwrite what the frame reports", but an omitted key and a
+// reported zero decode to the same int, so presence is read from the raw event.
+// Nested message.usage (message_start) is the stream's first snapshot, so every
+// counter counts as reported there.
+func reportedAnthropicStreamPromptCounters(topLevel bool, usage *AnthropicUsage, event []byte) anthropicPromptCounterBit {
+	if !topLevel || usage == nil {
+		return anthropicPromptCountersAll
+	}
+	return anthropicPromptCountersAll &^ absentAnthropicPromptCounters(event)
+}
+
+// anthropicPromptCounts holds the prompt-side token counters of one stream.
+type anthropicPromptCounts struct {
+	input, cacheRead, cacheWrite, cacheWrite5m, cacheWrite1h int
+}
+
+func (c *anthropicPromptCounts) add(u *AnthropicUsage) {
+	c.input += u.InputTokens
+	c.cacheRead += u.CacheReadInputTokens
+	c.cacheWrite += anthropicCacheCreationTotal(u)
+	c.cacheWrite5m += u.CacheCreation.Ephemeral5mInputTokens
+	c.cacheWrite1h += u.CacheCreation.Ephemeral1hInputTokens
+}
+
+func (c anthropicPromptCounts) hasCache() bool {
+	return c.cacheRead != 0 || c.cacheWrite != 0 || c.cacheWrite5m != 0 || c.cacheWrite1h != 0
+}
+
+// anthropicStreamPromptUsage tracks one stream's prompt-side usage across its
+// usage frames. Top-level counters mirror the reply pass and follow
+// reportedAnthropicStreamPromptCounters: a frame overwrites only the counters it
+// carried. Compaction passes are billed on top of them (billableAnthropicUsage)
+// and are kept apart, because usage.iterations is cumulative: the latest frame
+// that lists iterations replaces the compaction share, so a pass repeated on a
+// later frame is billed once, and a frame that omits a top-level counter keeps
+// the retained count plus the compaction share.
+type anthropicStreamPromptUsage struct {
+	topLevel, compaction anthropicPromptCounts
+}
+
+// observe merges one frame's raw (pre-billable) usage and returns the billable
+// prompt counters of the stream so far. topLevel is false for message_start's
+// nested message.usage, the stream's first snapshot.
+func (s *anthropicStreamPromptUsage) observe(topLevel bool, usage *AnthropicUsage, event []byte) anthropicPromptCounts {
+	reported := reportedAnthropicStreamPromptCounters(topLevel, usage, event)
+	if reported&anthropicPromptCounterInputTokens != 0 {
+		s.topLevel.input = usage.InputTokens
+	}
+	if reported&anthropicPromptCounterCacheReadInputTokens != 0 {
+		s.topLevel.cacheRead = usage.CacheReadInputTokens
+	}
+	// The 5m/1h split is a breakdown of the write total, so a frame carrying
+	// either one sets the total, and the split stands in for an absent total
+	// (anthropicCacheCreationTotal), as on every other route.
+	if reported&(anthropicPromptCounterCacheCreationInputTokens|anthropicPromptCounterCacheCreation) != 0 {
+		s.topLevel.cacheWrite = anthropicCacheCreationTotal(usage)
+	}
+	if reported&anthropicPromptCounterCacheCreation != 0 {
+		s.topLevel.cacheWrite5m = usage.CacheCreation.Ephemeral5mInputTokens
+		s.topLevel.cacheWrite1h = usage.CacheCreation.Ephemeral1hInputTokens
+	}
+	if len(usage.Iterations) > 0 {
+		s.compaction = anthropicPromptCounts{}
+		for i := range usage.Iterations {
+			if it := &usage.Iterations[i]; it.Type != nil && *it.Type == AnthropicUsageIterationTypeCompaction {
+				s.compaction.add(it)
+			}
+		}
+	}
+	return anthropicPromptCounts{
+		input:        s.topLevel.input + s.compaction.input,
+		cacheRead:    s.topLevel.cacheRead + s.compaction.cacheRead,
+		cacheWrite:   s.topLevel.cacheWrite + s.compaction.cacheWrite,
+		cacheWrite5m: s.topLevel.cacheWrite5m + s.compaction.cacheWrite5m,
+		cacheWrite1h: s.topLevel.cacheWrite1h + s.compaction.cacheWrite1h,
+	}
+}
+
+// setAnthropicCacheCounters writes the stream's cache counters onto an
+// accumulator's details. A cache-free stream keeps nil details, as before, and
+// the 5m/1h split is nil when both parts are zero.
+func setAnthropicCacheCounters(read, write *int, split **schemas.ChatCachedWriteTokenDetails, prompt anthropicPromptCounts) {
+	*read, *write = prompt.cacheRead, prompt.cacheWrite
+	if prompt.cacheWrite5m == 0 && prompt.cacheWrite1h == 0 {
+		*split = nil
+		return
+	}
+	*split = &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: prompt.cacheWrite5m, CachedWriteTokens1h: prompt.cacheWrite1h}
+}
+
+// accumulateAnthropicStreamUsage merges one stream event's token counters into
+// a chat-shaped accumulator. prompt is the stream's prompt-side usage so far
+// (see anthropicStreamPromptUsage); the output count is cumulative, so it is
+// max-merged. PromptTokens holds the uncached input until normalizeCachedUsage
+// folds the cache counters in at stream end.
+func accumulateAnthropicStreamUsage(usage *schemas.BifrostLLMUsage, usageToProcess *AnthropicUsage, prompt anthropicPromptCounts) {
+	if usage == nil || usageToProcess == nil {
+		return
+	}
+	usage.PromptTokens = prompt.input
+	if usageToProcess.OutputTokens > usage.CompletionTokens {
+		usage.CompletionTokens = usageToProcess.OutputTokens
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	if usage.PromptTokensDetails == nil {
+		if !prompt.hasCache() {
+			return
+		}
+		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+	}
+	details := usage.PromptTokensDetails
+	setAnthropicCacheCounters(&details.CachedReadTokens, &details.CachedWriteTokens, &details.CachedWriteTokenDetails, prompt)
+}
+
+// accumulateAnthropicResponsesUsage merges one stream event's usage into the
+// Responses accumulator and mirrors it onto billedUsage. prompt is the stream's
+// prompt-side usage so far (see anthropicStreamPromptUsage).
+func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, billedUsage *schemas.BifrostLLMUsage, usageToProcess *AnthropicUsage, prompt anthropicPromptCounts) {
 	if usage == nil || usageToProcess == nil {
 		return
 	}
@@ -851,75 +994,20 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 			}
 		}
 	}
-	if usageToProcess.InputTokens > usage.InputTokens {
-		usage.InputTokens = usageToProcess.InputTokens
-		if billedUsage != nil {
-			billedUsage.PromptTokens = usageToProcess.InputTokens
-		}
-	}
+	// The output count is cumulative, so it is max-merged. InputTokens holds the
+	// uncached input until the terminal chunk folds the cache counters in.
+	usage.InputTokens = prompt.input
 	if usageToProcess.OutputTokens > usage.OutputTokens {
 		usage.OutputTokens = usageToProcess.OutputTokens
-		if billedUsage != nil {
-			billedUsage.CompletionTokens = usageToProcess.OutputTokens
-		}
 	}
-	calculatedTotal := usage.InputTokens + usage.OutputTokens
-	if calculatedTotal > usage.TotalTokens {
-		usage.TotalTokens = calculatedTotal
-		if billedUsage != nil {
-			billedUsage.TotalTokens = calculatedTotal
-		}
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	if usage.InputTokensDetails == nil && prompt.hasCache() {
+		usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 	}
-	// Handle cached tokens if present
-	if usageToProcess.CacheReadInputTokens > 0 {
-		if usage.InputTokensDetails == nil {
-			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
-		}
-		if billedUsage != nil && billedUsage.PromptTokensDetails == nil {
-			billedUsage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
-		}
-		if usageToProcess.CacheReadInputTokens > usage.InputTokensDetails.CachedReadTokens {
-			usage.InputTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
-			if billedUsage != nil {
-				billedUsage.PromptTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
-			}
-		}
+	if details := usage.InputTokensDetails; details != nil {
+		setAnthropicCacheCounters(&details.CachedReadTokens, &details.CachedWriteTokens, &details.CachedWriteTokenDetails, prompt)
 	}
-	// Handle cached tokens if present
-	if usageToProcess.CacheCreationInputTokens > 0 {
-		if usage.InputTokensDetails == nil {
-			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
-		}
-		if billedUsage != nil && billedUsage.PromptTokensDetails == nil {
-			billedUsage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
-		}
-		if usageToProcess.CacheCreationInputTokens > usage.InputTokensDetails.CachedWriteTokens {
-			usage.InputTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
-			if billedUsage != nil {
-				billedUsage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
-			}
-		}
-		if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
-			if usage.InputTokensDetails.CachedWriteTokenDetails == nil {
-				usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
-			}
-			if billedUsage != nil && billedUsage.PromptTokensDetails.CachedWriteTokenDetails == nil {
-				billedUsage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
-			}
-			if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m {
-				usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
-				if billedUsage != nil {
-					billedUsage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
-				}
-			}
-			if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
-				usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
-				if billedUsage != nil {
-					billedUsage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
-				}
-			}
-		}
-	}
+	accumulateAnthropicStreamUsage(billedUsage, usageToProcess, prompt)
 }
 
 // HandleAnthropicChatCompletionStreaming handles streaming for Anthropic-compatible APIs.
@@ -1064,6 +1152,7 @@ func HandleAnthropicChatCompletionStreaming(
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 
 		if resp.BodyStream() == nil {
@@ -1101,6 +1190,7 @@ func HandleAnthropicChatCompletionStreaming(
 		var finishReason *string
 
 		usage := &schemas.BifrostLLMUsage{}
+		var promptUsage anthropicStreamPromptUsage
 		// Served billing modifiers (top-level response fields, not usage) captured
 		// across events and set on the final chunk: served tier, fast mode and data
 		// residency. Anthropic reports service_tier on the message_start usage, which
@@ -1117,6 +1207,9 @@ func HandleAnthropicChatCompletionStreaming(
 		// can bill for tokens already processed Mutated in place below;
 		// the deferred HandleStreamCancellation/Timeout reads it from context.
 		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+		// The message_start output count stays provisional until a message_delta
+		// reports usage, which a cancelled stream's estimate needs to know.
+		ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, true)
 
 		// Fold cached tokens into prompt/total exactly once at stream end. The EOF
 		// path calls normalizeUsage() after the loop; on a mid-stream cancel/timeout
@@ -1163,6 +1256,9 @@ func HandleAnthropicChatCompletionStreaming(
 					return
 				}
 				if readErr != io.EOF {
+					// A read error (an idle timeout among them) leaves ctx live, so the
+					// deferred normalization would run after the error post-hook.
+					normalizeUsage()
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading %s stream: %v", providerName, readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
@@ -1186,11 +1282,16 @@ func HandleAnthropicChatCompletionStreaming(
 			if event.Type == AnthropicStreamEventTypeMessageStart && event.Message != nil && event.Message.ID != "" {
 				messageID = event.Message.ID
 			}
+			if event.Delta != nil && event.Delta.Container != nil {
+				recordAnthropicContainerSession(&usage.ToolUsage, jsonBody, event.Delta.Container)
+			}
 			// Check for usage in both top-level event.Usage and nested event.Message.Usage
 			// message_start events have usage nested in message.usage, while message_delta has it at top level
 			var usageToProcess *AnthropicUsage
 			if event.Usage != nil {
 				usageToProcess = event.Usage
+				// Top-level usage (message_delta) makes the output count authoritative.
+				ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, false)
 			} else if event.Message != nil && event.Message.Usage != nil {
 				usageToProcess = event.Message.Usage
 			}
@@ -1199,6 +1300,9 @@ func HandleAnthropicChatCompletionStreaming(
 					servedFallbackModel = served
 					usage.ServerSideFallbackModel = served
 				}
+				// Merge the prompt side from the raw frame, before the billable fold
+				// drops the iterations it reads.
+				prompt := promptUsage.observe(event.Usage != nil, usageToProcess, eventDataBytes)
 				usageToProcess = billableAnthropicUsage(usageToProcess)
 				// Web search request count → billed as search queries (server tool use).
 				if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebSearchRequests > 0 {
@@ -1243,48 +1347,12 @@ func HandleAnthropicChatCompletionStreaming(
 					servedInferenceGeo = usageToProcess.InferenceGeo
 					usage.InferenceGeo = usageToProcess.InferenceGeo
 				}
-				// Collect usage information and send at the end of the stream
-				// Here in some cases usage comes before final message
-				// So we need to check if the response.Usage is nil and then if usage != nil
-				// then add up all tokens
-				if usageToProcess.InputTokens > usage.PromptTokens {
-					usage.PromptTokens = usageToProcess.InputTokens
-				}
-				if usageToProcess.OutputTokens > usage.CompletionTokens {
-					usage.CompletionTokens = usageToProcess.OutputTokens
-				}
-				calculatedTotal := usage.PromptTokens + usage.CompletionTokens
-				if calculatedTotal > usage.TotalTokens {
-					usage.TotalTokens = calculatedTotal
-				}
-				// Handle cached tokens if present
-				if usageToProcess.CacheReadInputTokens > 0 {
-					if usage.PromptTokensDetails == nil {
-						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
-					}
-					if usageToProcess.CacheReadInputTokens > usage.PromptTokensDetails.CachedReadTokens {
-						usage.PromptTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
-					}
-				}
-				if usageToProcess.CacheCreationInputTokens > 0 {
-					if usage.PromptTokensDetails == nil {
-						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
-					}
-					if usageToProcess.CacheCreationInputTokens > usage.PromptTokensDetails.CachedWriteTokens {
-						usage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
-					}
-					if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
-						if usage.PromptTokensDetails.CachedWriteTokenDetails == nil {
-							usage.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
-						}
-						if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m {
-							usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = usageToProcess.CacheCreation.Ephemeral5mInputTokens
-						}
-						if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h {
-							usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = usageToProcess.CacheCreation.Ephemeral1hInputTokens
-						}
-					}
-				}
+				// Collect usage information and send at the end of the stream. Each
+				// usage object is a snapshot: prompt-side counters are overwritten only
+				// when this frame reported them, so an output-only message_delta keeps
+				// message_start's prompt figures and one that re-reports the prompt
+				// split replaces them (see anthropicStreamPromptUsage).
+				accumulateAnthropicStreamUsage(usage, usageToProcess, prompt)
 			}
 			if event.Message != nil {
 				modelName = event.Message.Model
@@ -1546,6 +1614,9 @@ func HandleAnthropicResponsesRequest(
 	if convTracer != nil {
 		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
 	}
+	if bifrostResponse.Usage != nil {
+		recordAnthropicContainerSession(&bifrostResponse.Usage.ToolUsage, jsonBody, response.Container)
+	}
 
 	if config.Provider == schemas.Bedrock {
 		action, trace := bedrockInvokeGuardrailOutcome(responseBody)
@@ -1763,6 +1834,7 @@ func HandleAnthropicResponsesStream(
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer)
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// If body stream is nil, return an error
 		if resp.BodyStream() == nil {
@@ -1803,10 +1875,14 @@ func HandleAnthropicResponsesStream(
 		// Track minimal state needed for response format
 		usage := &schemas.ResponsesResponseUsage{}
 		billedUsage := &schemas.BifrostLLMUsage{}
+		var promptUsage anthropicStreamPromptUsage
 		// Register the accumulating usage handle so a mid-stream cancel/timeout
 		// can bill for Anthropic Responses usage already reported by message_start
 		// or message_delta events before the stream was interrupted.
 		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, billedUsage)
+		// The message_start output count stays provisional until a message_delta
+		// reports usage, which a cancelled stream's estimate needs to know.
+		ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, true)
 
 		usageNormalized := false
 		normalizeBilledUsage := func() {
@@ -1858,6 +1934,9 @@ func HandleAnthropicResponsesStream(
 					return
 				}
 				if readErr != io.EOF {
+					// A read error (an idle timeout among them) leaves ctx live, so the
+					// deferred normalization would run after the error post-hook.
+					normalizeBilledUsage()
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading %s stream: %v", providerName, readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
@@ -1898,6 +1977,12 @@ func HandleAnthropicResponsesStream(
 			if event.Type == AnthropicStreamEventTypeMessageDelta {
 				recordAnthropicStreamDeltaPromptUsage(ctx, chunkIndex, eventDataBytes)
 			}
+			if event.Delta != nil && event.Delta.Container != nil {
+				recordAnthropicContainerSession(&usage.ToolUsage, jsonBody, event.Delta.Container)
+				if billedUsage != nil {
+					recordAnthropicContainerSession(&billedUsage.ToolUsage, jsonBody, event.Delta.Container)
+				}
+			}
 			// Note: response.created and response.in_progress are now emitted by ToBifrostResponsesStream
 			// from the message_start event, so we don't need to call them manually here
 
@@ -1906,6 +1991,8 @@ func HandleAnthropicResponsesStream(
 			var usageToProcess *AnthropicUsage
 			if event.Usage != nil {
 				usageToProcess = event.Usage
+				// Top-level usage (message_delta) makes the output count authoritative.
+				ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, false)
 			} else if event.Message != nil && event.Message.Usage != nil {
 				usageToProcess = event.Message.Usage
 			}
@@ -1914,7 +2001,8 @@ func HandleAnthropicResponsesStream(
 				// Collect usage information and send at the end of the stream.
 				// Also mirror it into billedUsage so cancellation/timeout paths can
 				// charge for provider-reported usage before the final chunk arrives.
-				accumulateAnthropicResponsesUsage(usage, billedUsage, usageToProcess)
+				prompt := promptUsage.observe(event.Usage != nil, usageToProcess, eventDataBytes)
+				accumulateAnthropicResponsesUsage(usage, billedUsage, usageToProcess, prompt)
 				// Mirror served tier onto billedUsage so a mid-stream cancel/timeout can
 				// still apply the served-tier multiplier (billed usage is otherwise bare).
 				// service_tier has no home on BifrostLLMUsage, so it is latched for the
@@ -3555,7 +3643,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 	}
 	var messagesUsage *AnthropicPassthroughStreamUsage
 	if strings.HasSuffix(strippedPath, "/messages") {
-		messagesUsage = &AnthropicPassthroughStreamUsage{}
+		messagesUsage = &AnthropicPassthroughStreamUsage{RequestBody: req.Body}
 	}
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream,

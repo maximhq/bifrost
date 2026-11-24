@@ -26536,8 +26536,378 @@
       ]
     },
     {
-      "name": "Alias name not whitelisted is blocked",
-      "description": "The VK whitelists the resolved model id, but the request uses the alias name; the alias isn't in allowed_models, so governance refuses it with 403 model_blocked.",
+      "name": "Alias of an allowed model resolves",
+      "description": "The VK whitelists only the resolved model id and the request uses the alias name; every enabled key maps the alias to that allowed model, so governance accepts it (#8528).",
+      "item": [
+        {
+          "id": "rt-alias-of-allowed-model-01-add-provider",
+          "name": "01. add provider [alias-of-allowed-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete vk [alias-of-allowed-model]\";",
+                  "pm.test(\"01. add provider [alias-of-allowed-model]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-alias-of-allowed-model-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false}}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-of-allowed-model-02-add-key",
+          "name": "02. add key k1 [alias-of-allowed-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete vk [alias-of-allowed-model]\";",
+                  "pm.test(\"02. add key k1 [alias-of-allowed-model]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-alias-of-allowed-model-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-alias-of-allowed-model-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"k1-{{run_id}}\",\"name\":\"catwiring-rt-alias-of-allowed-model-k1-{{run_id}}\",\"models\":[\"catwiring-alias-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-alias-{{run_id}}\":\"gpt-4o-mini\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-of-allowed-model-03-create-vk",
+          "name": "03. create vk [alias-of-allowed-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete vk [alias-of-allowed-model]\";",
+                  "var ok = pm.response.code === 200 || pm.response.code === 201;",
+                  "pm.test(\"03. create vk [alias-of-allowed-model]\", function () {",
+                  "  pm.expect([200, 201], 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (ok) {",
+                  "  var vk = (pm.response.json() || {}).virtual_key || {};",
+                  "  pm.collectionVariables.set('vkval_alias-of-allowed-model', vk.value || '');",
+                  "  pm.collectionVariables.set('vkid_alias-of-allowed-model', vk.id || '');",
+                  "  var pcIds = {};",
+                  "  (vk.provider_configs || []).forEach(function (pc) { pcIds[pc.provider] = pc.id; });",
+                  "  pm.collectionVariables.set('vkpc_alias-of-allowed-model', JSON.stringify(pcIds));",
+                  "} else { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"catwiring-rtvk-alias-of-allowed-model-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-alias-of-allowed-model-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o-mini\"],\"blacklisted_models\":[],\"weight\":1}]}"
+            }
+          }
+        },
+        {
+          "id": "rt-alias-of-allowed-model-04-await-catalog",
+          "name": "04. wait for the catalog to list the provider's models [alias-of-allowed-model]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete vk [alias-of-allowed-model]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-alias-of-allowed-model-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-alias-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"04. wait for the catalog to list the provider's models [alias-of-allowed-model]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"04. wait for the catalog to list the provider's models [alias-of-allowed-model]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-alias-of-allowed-model-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-alias-of-allowed-model-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-alias-of-allowed-model-05-route",
+          "name": "05. alias of allowed model routes, resolves to model id [alias-of-allowed-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete vk [alias-of-allowed-model]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
+                  "  var ri = (body.extra_fields || {}).routing_info || {};",
+                  "  var providerName = 'catwiring-rt-alias-of-allowed-model-' + pm.variables.get('run_id');",
+                  "  if (ri.provider !== providerName) { throw new Error('routing_info.provider=' + ri.provider + ' expected ' + providerName); }",
+                  "  if (!ri.resolved_key_alias || ri.resolved_key_alias.model_id !== \"gpt-4o-mini\") { throw new Error('resolved_key_alias=' + JSON.stringify(ri.resolved_key_alias)); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"05. alias of allowed model routes, resolves to model id [alias-of-allowed-model]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkval_alias-of-allowed-model}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-alias-of-allowed-model-{{run_id}}/catwiring-alias-{{run_id}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok.\"}],\"max_tokens\":5}"
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-alias-of-allowed-model-cleanup-vk",
+              "name": "cleanup: delete vk [alias-of-allowed-model]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete vk [alias-of-allowed-model]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/governance/virtual-keys/{{vkid_alias-of-allowed-model}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "governance",
+                    "virtual-keys",
+                    "{{vkid_alias-of-allowed-model}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-alias-of-allowed-model-cleanup-provider-self",
+              "name": "cleanup: delete provider [alias-of-allowed-model]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [alias-of-allowed-model]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-alias-of-allowed-model-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-alias-of-allowed-model-{{run_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Alias of an unlisted model is blocked",
+      "description": "The VK whitelists a different model than the alias resolves to; neither the alias name nor its target is in allowed_models, so governance refuses it with 403 model_blocked.",
       "item": [
         {
           "id": "rt-alias-vs-whitelist-01-add-provider",
@@ -26674,7 +27044,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"catwiring-rtvk-alias-vs-whitelist-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-alias-vs-whitelist-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o-mini\"],\"blacklisted_models\":[],\"weight\":1}]}"
+              "raw": "{\"name\":\"catwiring-rtvk-alias-vs-whitelist-{{run_id}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"catwiring-rt-alias-vs-whitelist-{{run_id}}\",\"key_ids\":[\"*\"],\"allowed_models\":[\"gpt-4o\"],\"blacklisted_models\":[],\"weight\":1}]}"
             }
           }
         },
@@ -26760,7 +27130,7 @@
         },
         {
           "id": "rt-alias-vs-whitelist-05-route",
-          "name": "05. unlisted alias refused (403 model_blocked) [alias-vs-whitelist]",
+          "name": "05. alias of unlisted model refused (403 model_blocked) [alias-vs-whitelist]",
           "event": [
             {
               "listen": "test",
@@ -26778,7 +27148,7 @@
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
-                  "pm.test(\"05. unlisted alias refused (403 model_blocked) [alias-vs-whitelist]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "pm.test(\"05. alias of unlisted model refused (403 model_blocked) [alias-vs-whitelist]\", function () { if (!ok) { throw new Error(errMsg); } });",
                   "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
                 ]
               }

@@ -101,6 +101,8 @@ const (
 	SortByLatency   SortBy = "latency"
 	SortByTokens    SortBy = "tokens"
 	SortByCost      SortBy = "cost"
+	// SortByFallbackIndex orders a chain's hops; the request trace uses it.
+	SortByFallbackIndex SortBy = "fallback_index"
 )
 
 type SortOrder string
@@ -122,12 +124,14 @@ type SearchFilters struct {
 	ToolCallNames        []string   `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
 	Objects              []string   `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID      string     `json:"parent_request_id,omitempty"`
+	FallbackHopsOnly     bool       `json:"-"`                        // With ParentRequestID: only the fallback hops under it (fallback_index > 0), not session units or async cost rows that share the parent.
 	RequestID            string     `json:"request_id,omitempty"`     // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
 	RootsOnly            bool       `json:"roots_only,omitempty"`     // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
 	GroupSessions        bool       `json:"group_sessions,omitempty"` // Collapse every row sharing a session_id into that session's earliest chain-root row. Layered on top of RootsOnly; see SessionGroupingActive for when it applies.
 	SelectedKeyIDs       []string   `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs        []string   `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs       []string   `json:"routing_rule_ids,omitempty"`
+	ModelRouterIDs       []string   `json:"model_router_ids,omitempty"`
 	ComplexityTiers      []string   `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
 	ComplexityMechanisms []string   `json:"complexity_mechanisms,omitempty"` // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
 	AgentNames           []string   `json:"agent_names,omitempty"`           // Registered Agents whose context IDs correlate the matching LLM logs
@@ -247,7 +251,7 @@ func (f SearchFilters) EffectiveRankingLimit(defaultLimit int) int {
 type PaginationOptions struct {
 	Limit          int    `json:"limit"`
 	Offset         int    `json:"offset"`
-	SortBy         string `json:"sort_by"`     // "timestamp", "latency", "tokens", "cost"
+	SortBy         string `json:"sort_by"`     // "timestamp", "latency", "tokens", "cost", "fallback_index"
 	Order          string `json:"order"`       // "asc", "desc"
 	TotalCount     int64  `json:"total_count"` // Total number of items matching the query
 	SelectedOffset *int64 `json:"selected_offset,omitempty"`
@@ -375,8 +379,10 @@ type Log struct {
 	ToolCallNamesStr        *string   `gorm:"type:text;column:tool_call_names" json:"-"`                                          // Comma-separated distinct function names the response called. Not a payload field, so it stays on the row in hybrid mode and is filterable. Names are recorded regardless of content logging; arguments live in tool_calls and follow content policy.
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_ts,priority:1" json:"routing_rule_id"` // (routing_rule_id, timestamp) composite; replaces idx_logs_routing_rule_id
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
-	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity. Partial index, matching its performanceIndexes entry
-	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"). NULL means no routing rule referenced complexity_tier, so classification never ran. Partial index, matching its performanceIndexes entry
+	ModelRouterID           *string   `gorm:"type:varchar(64);index:idx_logs_model_router_id,where:model_router_id IS NOT NULL" json:"model_router_id,omitempty"`
+	ModelRouterName         *string   `gorm:"type:varchar(255)" json:"model_router_name,omitempty"`
+	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier,where:complexity_tier IS NOT NULL" json:"complexity_tier,omitempty"`                                                               // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule or model router demanded complexity. Partial index, matching its performanceIndexes entry
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism,where:complexity_mechanism IS NOT NULL" json:"complexity_mechanism,omitempty"`                                                // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"). NULL means no routing rule or model router asked for a tier, so classification never ran. Partial index, matching its performanceIndexes entry
 	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                                                                                                        // Raw complexity score behind the tier; unindexed (detail-view only)
 	SessionID               *string   `gorm:"type:varchar(255);index:idx_logs_session_id,where:session_id IS NOT NULL;index:idx_logs_session_id_timestamp,priority:1,where:session_id IS NOT NULL" json:"session_id,omitempty"` // Raw opaque session identity resolved at ingress for key stickiness and log correlation
 	AgentCorrelationID      *string   `gorm:"type:varchar(255);index:idx_logs_agent_correlation_id,where:agent_correlation_id IS NOT NULL" json:"agent_correlation_id,omitempty"`                                               // Caller-supplied correlation identity from x-bf-agent-correlation-id
@@ -1224,7 +1230,10 @@ func (l *Log) DeserializeFields() error {
 			l.usageRebuiltFromColumns = false
 			// Logs stores web search count in num_search_queries (legacy behaviour), we map it to tool_usage so that repricing bills it.
 			if u := l.TokenUsageParsed; u != nil && u.CompletionTokensDetails != nil && u.CompletionTokensDetails.NumSearchQueries != nil && *u.CompletionTokensDetails.NumSearchQueries > 0 {
-				u.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}}
+				if u.ToolUsage == nil {
+					u.ToolUsage = &schemas.ToolUsage{}
+				}
+				u.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}
 			}
 		}
 	}
@@ -1605,10 +1614,12 @@ type AgentLogHistoryFilter struct {
 	PushConfigID   string
 	DeliveryID     string
 	AttemptID      string
-	RecordKind     []string
-	EventType      []string
-	TaskState      []string
-	Status         []string
+	// CallerCorrelationID matches operations a caller delegated under its own A2A task (x-bf-agent-correlation-id).
+	CallerCorrelationID string
+	RecordKind          []string
+	EventType           []string
+	TaskState           []string
+	Status              []string
 	// Search is a free-text match across DB-resident metadata columns only
 	// (agent name, operation, task/context/request/trace id and the serialized
 	// error). Protocol payloads are deliberately excluded: under the hybrid
@@ -1620,7 +1631,7 @@ type AgentLogHistoryFilter struct {
 // Explicit identifier searches keep every matching operation visible.
 func (f AgentLogHistoryFilter) SessionGroupingActive() bool {
 	return f.GroupSessions && f.ContextID == "" && f.TaskID == "" && f.RequestID == "" &&
-		f.TraceID == "" && f.PushConfigID == "" && f.DeliveryID == "" && f.AttemptID == ""
+		f.TraceID == "" && f.PushConfigID == "" && f.DeliveryID == "" && f.AttemptID == "" && f.CallerCorrelationID == ""
 }
 
 // AgentLogStats aggregates an A2A history search. A2A has no pricing model, so
@@ -1720,6 +1731,7 @@ type AgentLogSummary struct {
 	ResponseMessageID       *string          `json:"response_message_id,omitempty"`
 	ArtifactID              *string          `json:"artifact_id,omitempty"`
 	PushConfigID            *string          `json:"push_config_id,omitempty"`
+	CallerCorrelationID     *string          `json:"caller_correlation_id,omitempty"`
 	DeliveryID              *string          `json:"delivery_id,omitempty"`
 	AttemptID               *string          `json:"attempt_id,omitempty"`
 	EventSequence           *int64           `json:"event_sequence,omitempty"`
@@ -1770,7 +1782,8 @@ func NewAgentLogDetail(entry *AgentLog) AgentLogDetail {
 		RequestID: entry.RequestID, TraceID: entry.TraceID, TaskID: entry.TaskID, ContextID: entry.ContextID,
 		MessageID: entry.MessageID, RequestMessageID: entry.RequestMessageID, ResponseMessageID: entry.ResponseMessageID,
 		ArtifactID: entry.ArtifactID, PushConfigID: entry.PushConfigID, DeliveryID: entry.DeliveryID, AttemptID: entry.AttemptID,
-		EventSequence: entry.EventSequence, EventType: entry.EventType, TaskState: entry.TaskState,
+		CallerCorrelationID: entry.CallerCorrelationID,
+		EventSequence:       entry.EventSequence, EventType: entry.EventType, TaskState: entry.TaskState,
 		DownstreamTransport: entry.DownstreamTransport, UpstreamTransport: entry.UpstreamTransport,
 		Latency: entry.Latency, UpstreamLatency: entry.UpstreamLatency, OverheadLatency: entry.OverheadLatency,
 		OverheadBreakdown: entry.OverheadBreakdownParsed,
@@ -1837,11 +1850,15 @@ type AgentLog struct {
 	ResponseMessageID *string `gorm:"type:varchar(255);index:idx_agent_logs_response_message_id" json:"response_message_id,omitempty"`
 	ArtifactID        *string `gorm:"type:varchar(255);index:idx_agent_logs_artifact_id" json:"artifact_id,omitempty"`
 	PushConfigID      *string `gorm:"type:varchar(255);index:idx_agent_logs_push_config_id" json:"push_config_id,omitempty"`
-	DeliveryID        *string `gorm:"type:varchar(255);index:idx_agent_logs_delivery_id" json:"delivery_id,omitempty"`
-	AttemptID         *string `gorm:"type:varchar(255);index:idx_agent_logs_attempt_id" json:"attempt_id,omitempty"`
-	EventSequence     *int64  `json:"event_sequence,omitempty"`
-	EventType         *string `gorm:"type:varchar(64);index:idx_agent_logs_event_type" json:"event_type,omitempty"`
-	TaskState         *string `gorm:"type:varchar(64);index:idx_agent_logs_task_state" json:"task_state,omitempty"`
+	// CallerCorrelationID is the caller's x-bf-agent-correlation-id: the A2A task of the agent that delegated
+	// this operation. It links a subagent's operation to its caller the way agent_correlation_id links LLM
+	// and MCP logs to the agent task that issued them.
+	CallerCorrelationID *string `gorm:"type:varchar(255);index:idx_agent_logs_caller_correlation_id,where:caller_correlation_id IS NOT NULL" json:"caller_correlation_id,omitempty"`
+	DeliveryID          *string `gorm:"type:varchar(255);index:idx_agent_logs_delivery_id" json:"delivery_id,omitempty"`
+	AttemptID           *string `gorm:"type:varchar(255);index:idx_agent_logs_attempt_id" json:"attempt_id,omitempty"`
+	EventSequence       *int64  `json:"event_sequence,omitempty"`
+	EventType           *string `gorm:"type:varchar(64);index:idx_agent_logs_event_type" json:"event_type,omitempty"`
+	TaskState           *string `gorm:"type:varchar(64);index:idx_agent_logs_task_state" json:"task_state,omitempty"`
 
 	DownstreamTransport *string  `gorm:"type:varchar(32)" json:"downstream_transport,omitempty"`
 	UpstreamTransport   *string  `gorm:"type:varchar(32)" json:"upstream_transport,omitempty"`
@@ -1996,6 +2013,7 @@ type MCPToolLog struct {
 	LLMRequestID       *string   `gorm:"type:varchar(255);column:llm_request_id;index:idx_mcp_logs_llm_request_id" json:"llm_request_id,omitempty"` // Links to the LLM request that triggered this tool call
 	SessionID          *string   `gorm:"type:varchar(255);index:idx_mcp_logs_session_id,where:session_id IS NOT NULL" json:"session_id,omitempty"`
 	AgentCorrelationID *string   `gorm:"type:varchar(255);index:idx_mcp_logs_agent_correlation_id,where:agent_correlation_id IS NOT NULL" json:"agent_correlation_id,omitempty"`
+	RoundTripID        *string   `gorm:"type:varchar(64);index:idx_mcp_logs_round_trip_id,where:round_trip_id IS NOT NULL" json:"round_trip_id,omitempty"` // Shared by every round of one gateway tool call that asked its caller for input
 	Timestamp          time.Time `gorm:"index;index:idx_mcp_logs_vk_ts,priority:2;index:idx_mcp_logs_user_ts,priority:2;index:idx_mcp_logs_team_ts,priority:2;not null" json:"timestamp"`
 	ToolName           string    `gorm:"type:varchar(255);index:idx_mcp_logs_tool_name;not null" json:"tool_name"`
 	ServerLabel        string    `gorm:"type:varchar(255);index:idx_mcp_logs_server_label" json:"server_label,omitempty"` // MCP server that provided the tool
@@ -2299,12 +2317,16 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 			}
 		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 			var result schemas.BifrostChatResponse
-			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+			data := []byte(j.Response)
+			if err := sonic.Unmarshal(data, &result); err == nil {
+				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
 				resp.Result = &result
 			}
 		case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 			var result schemas.BifrostTextCompletionResponse
-			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+			data := []byte(j.Response)
+			if err := sonic.Unmarshal(data, &result); err == nil {
+				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
 				resp.Result = &result
 			}
 		case schemas.EmbeddingRequest:
@@ -2469,6 +2491,7 @@ type MCPToolLogSearchFilters struct {
 	AgentNames         []string   `json:"agent_names,omitempty"`
 	SessionID          string     `json:"session_id,omitempty"`
 	AgentCorrelationID string     `json:"agent_correlation_id,omitempty"`
+	RoundTripID        string     `json:"round_trip_id,omitempty"`
 	Apps               []string   `json:"apps,omitempty"`        // Backend-detected client apps
 	UserAgents         []string   `json:"user_agents,omitempty"` // Raw User-Agent strings; kept for compatibility/debug filtering
 	StartTime          *time.Time `json:"start_time,omitempty"`
@@ -2488,9 +2511,12 @@ type MCPToolLogSearchResult struct {
 // MCPToolLogStats represents statistics for MCP tool log searches
 type MCPToolLogStats struct {
 	TotalExecutions int64   `json:"total_executions"`
-	SuccessRate     float64 `json:"success_rate"`
-	AverageLatency  float64 `json:"average_latency"`
-	TotalCost       float64 `json:"total_cost"` // Total cost in dollars
+	SuccessCount    int64   `json:"success_count"`
+	ErrorCount      int64   `json:"error_count"`
+	CancelledCount  int64   `json:"cancelled_count"`
+	SuccessRate     float64 `json:"success_rate"`    // percentage of finished calls that succeeded, cancelled ones counted, as on the LLM logs stats
+	AverageLatency  float64 `json:"average_latency"` // milliseconds, over finished calls
+	TotalCost       float64 `json:"total_cost"`      // Total cost in dollars
 }
 
 // BuildContentSummary creates a searchable text summary
@@ -2951,6 +2977,7 @@ type MCPHistogramBucket struct {
 	Count     int64     `json:"count"`
 	Success   int64     `json:"success"`
 	Error     int64     `json:"error"`
+	Cancelled int64     `json:"cancelled"` // calls the caller hung up on, as in the LLM logs histogram
 }
 
 // MCPHistogramResult represents the MCP tool call volume histogram query result
@@ -3084,6 +3111,7 @@ const (
 	RankingDimensionAlias               RankingDimension = "alias"
 	RankingDimensionComplexityTier      RankingDimension = "complexity_tier"
 	RankingDimensionComplexityMechanism RankingDimension = "complexity_mechanism"
+	RankingDimensionModelRouter         RankingDimension = "model_router"
 	// Stored as a comma-separated list on the row, so one request can count
 	// under several values (see commalistdimensions.go).
 	RankingDimensionRoutingEngine RankingDimension = "routing_engine"
@@ -3103,6 +3131,10 @@ var ValidRankingDimensions = map[RankingDimension]bool{
 	RankingDimensionVirtualKey:   true,
 	RankingDimensionApp:          true,
 	RankingDimensionUserAgent:    true,
+	// The Model Routers page counts each router's requests with it.
+	RankingDimensionModelRouter: true,
+	// A router's page splits its requests by tier, filtered to that router.
+	RankingDimensionComplexityTier: true,
 }
 
 type dimensionColumnDef struct {
@@ -3127,6 +3159,7 @@ var dimensionColumns = map[RankingDimension]dimensionColumnDef{
 	// Not carried by mv_logs_hourly, so always read from the raw table.
 	RankingDimensionComplexityTier:      {IDCol: "complexity_tier", NameCol: "complexity_tier", RawOnly: true},
 	RankingDimensionComplexityMechanism: {IDCol: "complexity_mechanism", NameCol: "complexity_mechanism", RawOnly: true},
+	RankingDimensionModelRouter:         {IDCol: "model_router_id", NameCol: "model_router_name", RawOnly: true},
 }
 
 // DimensionColumnDef returns the column pair for a supported ranking dimension.
@@ -3272,6 +3305,14 @@ func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
 	}
 	stored := *u
 	stored.ToolUsage = nil
+	// These have no legacy column, so they stay on tool_usage for repricing. OpenAI sends zero image counts on every response.
+	if len(u.ToolUsage.ContainerSessions) > 0 || u.ToolUsage.ImageGen.HasTokens() {
+		stored.ToolUsage = &schemas.ToolUsage{ContainerSessions: u.ToolUsage.ContainerSessions}
+		if u.ToolUsage.ImageGen.HasTokens() {
+			stored.ToolUsage.ImageGen = u.ToolUsage.ImageGen
+			stored.ToolUsage.ImageGenModel = u.ToolUsage.ImageGenModel
+		}
+	}
 	if ws := u.ToolUsage.WebSearch; ws != nil && ws.NumRequests > 0 {
 		details := schemas.ChatCompletionTokensDetails{}
 		if u.CompletionTokensDetails != nil {

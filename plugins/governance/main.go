@@ -44,8 +44,8 @@ const (
 // team and customer update handlers, and the config reconcile that applies governance.budgets from
 // config.json. In the OSS build nothing is registered, so nothing is refused.
 const (
-	// The kinds of entity that can hold budgets and a rate limit of their own. A team or customer may
-	// hold several budgets; a business unit holds at most one.
+	// The kinds of entity that can hold budgets and a rate limit of their own. Each may hold several
+	// budgets, one per reset window, and one rate limit.
 	LegacyLimitHolderTeam         = "team"
 	LegacyLimitHolderCustomer     = "customer"
 	LegacyLimitHolderBusinessUnit = "business_unit"
@@ -90,6 +90,13 @@ type Config struct {
 	ObjectOwnershipEnforced func() bool `json:"-"`
 }
 
+// InMemoryStore is the deployment's live configuration as governance reads it.
+//
+// A provider configuration it hands out is published, not lent: its Keys slice, and each key's
+// Aliases map, are never written after they are returned. A change publishes a new Keys slice (and a
+// new map for any key whose aliases change). The key-alias rules depend on this: the alias-name index
+// (modelcatalog.MayBeKeyAlias) is reused while the slice and its maps are the same, and only detects
+// in-place edits that change a map's length.
 type InMemoryStore interface {
 	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
 	GetConfiguredProviderNames() []string
@@ -765,7 +772,26 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// A settling error is held rather than refused on the spot: the ordering below puts identity
 	// refusals first, and a caller whose credential is dead must be told that before anything about
 	// how the request would have been funded.
-	limits, limitsErr := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
+	//
+	// A model that runs as written (a literal batch item, a direct key, skip key selection) was admitted
+	// by the literal access, so its limits are gathered from that access too: the alias-aware one
+	// drops a permit whose blacklist names an alias target, and that permit's limits with it.
+	limits, limitsErr := func() (schemas.Limits, error) {
+		if evaluationRequest.LiteralModel {
+			prev, _ := ctx.Value(literalLimitsContextKey).(bool)
+			ctx.SetValue(literalLimitsContextKey, true)
+			defer ctx.SetValue(literalLimitsContextKey, prev)
+		}
+		g := ctx.Grant()
+		if g == nil {
+			return nil, nil
+		}
+		access := g.Access()
+		if access != nil && runsAsWritten(ctx) {
+			access = literalAccessFor(access, p.modelCatalog, p.inMemoryStore)
+		}
+		return resolveLimitsWith(ctx, p.store, access, evaluationRequest.Provider, evaluationRequest.Model)
+	}()
 
 	// The order of everything below is load bearing:
 	//
@@ -804,6 +830,9 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 			Error: &schemas.ErrorField{
 				Message: message,
 			},
+			// Declared, like every other refusal here: left to ClassifyErrorType, a bare 401 reads
+			// as the provider rejecting Bifrost's key.
+			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypePolicyAccessDenied},
 		}
 	}
 	p.cfgMutex.RUnlock()
@@ -1044,31 +1073,104 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 	if access := g.Access(); access != nil {
 		return access, nil
 	}
-	bases, scoping, mode := p.store.ResolvePermits(ctx)
+	bases, levelMode, scoping, mode := p.store.ResolvePermits(ctx)
+	// The store stamps the caller's content-logging layers while it resolves permits, so they are
+	// final now whatever it answered; the logging plugin stops holding content back for them.
+	schemas.MarkCallerContentLoggingResolved(ctx)
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
 	}
-	access := grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+	access := p.newAccess(ctx, bases, levelMode, scoping, mode)
 	g.SetAccess(access)
 	return access, nil
+}
+
+// newAccess folds the permits into an access whose model checks resolve key aliases the way key
+// selection will for this request: through the model catalog, over the keys that can serve it.
+func (p *GovernancePlugin) newAccess(ctx *schemas.BifrostContext, bases []schemas.Permit, levelMode grant.CompositionMode, scoping schemas.Permit, mode grant.CompositionMode) *grant.Access {
+	return grant.NewAccess(bases, levelMode, scoping, mode, nil).
+		WithKeyScopedMatcher(p.modelMatcher(ctx)).
+		WithAliasTargets(p.aliasTargets(ctx))
 }
 
 // modelMatcher is how an access resolves a model name against a provider's allowed-models list:
 // through the model catalog, with the provider's own configuration, so cross-provider naming and
 // provider-prefixed entries resolve exactly as they do everywhere else. Without a catalog, names
-// are matched as written.
-func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
+// are matched as written. A name that only a key alias makes allowed is judged over the keys that
+// can serve this request (see allowedThroughKeys).
+func (p *GovernancePlugin) modelMatcher(ctx *schemas.BifrostContext) grant.KeyScopedModelMatcher {
 	if p.modelCatalog == nil {
 		return nil
 	}
-	return func(provider, model string, allowed []string) bool {
+	return func(provider, model string, allowed, keyIDs []string) bool {
 		var providerConfig *configstore.ProviderConfig
 		if p.inMemoryStore != nil {
 			if config, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider)); ok {
 				providerConfig = &config
 			}
 		}
-		return p.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
+		return allowedThroughKeys(contextOf(ctx), p.modelCatalog, schemas.ModelProvider(provider), model, providerConfig, allowed, keyIDs)
+	}
+}
+
+// contextOf is ctx as a context.Context, nil when ctx is. The access closures hold the concrete
+// pointer, a word smaller than the interface, since they are built for every request.
+func contextOf(ctx *schemas.BifrostContext) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	return ctx
+}
+
+// allowedThroughKeys is IsModelAllowedForProvider with the key-alias rule held to the keys key
+// selection can pick for this request: only keys the permit's key restriction allows, and the pinned
+// key when the request pins one. providerConfig must be the caller's own copy.
+//
+// The pin is consulted only when the unpinned keys refuse the alias. Narrowing a set of keys that
+// all map the name to an allowed model can only turn the answer into a refusal where the pin names
+// no key that can serve the name, and core refuses that request at key selection anyway; so the
+// common alias request reads nothing from the context. A request that runs as written (a direct key,
+// skip key selection) never has an alias resolved, but is admitted on the literal access (see
+// literalAccessFor), so this access only widens what such a request may be told it reaches.
+func allowedThroughKeys(ctx context.Context, catalog *modelcatalog.ModelCatalog, provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowed, keyIDs []string) bool {
+	if providerConfig == nil || !modelcatalog.HasKeyAliases(providerConfig.Keys) {
+		return catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed))
+	}
+	keys := providerConfig.Keys
+	providerConfig.Keys = nil // the direct match only; the alias rule runs below over the servable keys
+	if catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed)) {
+		return true
+	}
+	if !modelcatalog.MayBeKeyAlias(provider, model, keys) {
+		return false
+	}
+	if catalog.KeyAliasesResolveToAllowed(provider, model, keys, schemas.WhiteList(keyIDs), schemas.WhiteList(allowed)) {
+		return true
+	}
+	pinned, ok := pinnedKeys(ctx, keys)
+	if !ok || len(pinned) == len(keys) || runsAsWritten(ctx) {
+		return false
+	}
+	return catalog.KeyAliasesResolveToAllowed(provider, model, pinned, schemas.WhiteList(keyIDs), schemas.WhiteList(allowed))
+}
+
+// aliasTargets is how an access learns which models a requested name can become through the
+// provider's key aliases, resolved only at key selection: over the pinned key when the request pins
+// one, and over the keys the permit allows. A request that runs as written becomes nothing else.
+func (p *GovernancePlugin) aliasTargets(ctx *schemas.BifrostContext) grant.AliasTargets {
+	return func(provider, model string, keyIDs []string, visit func(target string)) {
+		if p.inMemoryStore == nil {
+			return
+		}
+		cfg, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider))
+		if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) || !modelcatalog.MayBeKeyAlias(schemas.ModelProvider(provider), model, cfg.Keys) || runsAsWritten(contextOf(ctx)) {
+			return
+		}
+		keys, ok := pinnedKeys(contextOf(ctx), cfg.Keys)
+		if !ok {
+			return
+		}
+		modelcatalog.KeyAliasTargets(model, keys, schemas.WhiteList(keyIDs), visit)
 	}
 }
 
@@ -1097,7 +1199,18 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider 
 	if g == nil {
 		return nil, nil
 	}
-	budgets, rateLimits, err := store.GatherLimits(ctx, g.Access(), provider, model)
+	return resolveLimitsWith(ctx, store, g.Access(), provider, model)
+}
+
+// resolveLimitsWith is resolveLimits over a given access rather than the grant's own, for a request
+// whose model check used a different one (see literalAccessFor). The grant is still where the
+// settled limits are recorded.
+func resolveLimitsWith(ctx *schemas.BifrostContext, store GovernanceStore, access schemas.Access, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
+	g := ctx.Grant()
+	if g == nil {
+		return nil, nil
+	}
+	budgets, rateLimits, err := store.GatherLimits(ctx, access, provider, model)
 	if err != nil {
 		return nil, err
 	}
@@ -1250,9 +1363,11 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	// pass, last, leaves the access as it would be without the extra passes. Nothing
 	// reached from here charges usage, so the passes cannot double-count it.
 	if req.RequestType == schemas.BatchCreateRequest && req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
+		itemModels := BatchItemModels(req)
 		for _, batchModel := range BatchCreateModels(req, model) {
 			batchEvaluationRequest := *evaluationRequest
 			batchEvaluationRequest.Model = batchModel
+			batchEvaluationRequest.LiteralModel = slices.Contains(itemModels, batchModel)
 			_, bifrostError := p.Evaluate(ctx, &batchEvaluationRequest)
 			if bifrostError != nil {
 				return req, &schemas.LLMPluginShortCircuit{
@@ -1537,6 +1652,35 @@ func isOpaqueBatchInput(req *schemas.BifrostRequest) bool {
 	return batch.InputFileID != "" || (batch.InputBlob != nil && strings.TrimSpace(*batch.InputBlob) != "")
 }
 
+// BatchItemModels returns the distinct models the inline items of a batch create name. They reach
+// the provider as written, unlike the request's own model, so governance holds them to the literal
+// name.
+func BatchItemModels(req *schemas.BifrostRequest) []string {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil {
+		return nil
+	}
+	var models []string
+	for _, item := range req.BatchCreateRequest.Requests {
+		forEachItemModel(item, func(m string) {
+			if !slices.Contains(models, m) {
+				models = append(models, m)
+			}
+		})
+	}
+	return models
+}
+
+// forEachItemModel calls fn with every non-empty string "model" an inline batch item names, Body
+// first and then Params. Providers disagree on which map they send (Anthropic sends Params and
+// falls back to Body), so every model an item could run is visited rather than the first found.
+func forEachItemModel(item schemas.BatchRequestItem, fn func(model string)) {
+	for _, body := range [2]map[string]any{item.Body, item.Params} {
+		if m, ok := body["model"].(string); ok && m != "" {
+			fn(m)
+		}
+	}
+}
+
 // BatchCreateModels returns every distinct model an inline batch create will run,
 // starting with the request's own model.
 func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
@@ -1557,13 +1701,7 @@ func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
 	}
 	add(model)
 	for _, item := range req.BatchCreateRequest.Requests {
-		// Body is the OpenAI shape, Params the Anthropic one; an item carries one.
-		for _, body := range []map[string]any{item.Body, item.Params} {
-			if m, ok := body["model"].(string); ok {
-				add(m)
-				break
-			}
-		}
+		forEachItemModel(item, add)
 	}
 	if len(models) == 0 {
 		// No item named a model: fall back to the model-less evaluation so the
@@ -1630,6 +1768,10 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
 		result.ListModelsResponse.Data = p.filterModelsForAccess(access, result.ListModelsResponse.Data)
 	}
+	if requestType == schemas.PassthroughRequest && result != nil && result.PassthroughResponse != nil &&
+		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
+		p.filterPassthroughModelList(ctx, access, string(provider), result.PassthroughResponse)
+	}
 
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
@@ -1663,6 +1805,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		if limits := ctx.Grant().Limits(); limits != nil {
 			accountedBudgets, accountedRateLimits = limits.Budgets(), limits.RateLimits()
 		}
+		accountedBudgets, accountedRateLimits = p.limitsForKeyThatRan(ctx, provider, requestedModel, accountedBudgets, accountedRateLimits)
 		if skipHolderUsage {
 			// The holder's usage is not being counted, so nothing it funds is billed or recorded. What
 			// the deployment and the user fund still is: those are owed whatever granted the request,
@@ -1975,11 +2118,12 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 		var scoping schemas.Permit
 		var mode grant.CompositionMode
 		if access != nil {
+			// Only the granting permits decide agents (see grant.Access), so they're all this needs.
 			bases = append(access.Bases(), defaultPermit)
 			scoping = access.Scoping()
 			mode = grant.CompositionMode(access.Mode())
 		}
-		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+		access = p.newAccess(ctx, bases, "", scoping, mode)
 	}
 	if refusal := unusablePermit(access); refusal != nil {
 		return deny(refusal.Decision, refusal.Reason)
@@ -2005,6 +2149,13 @@ func (p *GovernancePlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schema
 	return resp, bifrostErr, nil
 }
 
+// teamContentLoggingStamper is a store that can stamp a team's content-logging decision from its
+// live team map. The connect path uses it when the store offers it; GovernanceStore does not
+// require it, so a store without teams stamps no team layer.
+type teamContentLoggingStamper interface {
+	StampTeamContentLogging(ctx *schemas.BifrostContext, teamID string)
+}
+
 // PreMCPConnectionHook resolves the caller's identity onto the BifrostContext
 // before the connect-plugin gate releases control to the credential-store
 // resolver. This is the only point in the MCP connect lifecycle where we can
@@ -2023,7 +2174,10 @@ func (p *GovernancePlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schema
 // error format. An unknown VK here simply leaves the row ID empty, and the
 // resolver will surface the "requires an identity" error itself.
 func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error) {
-	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	// Only the key that authenticated the request: when the transport settled another identity (an
+	// MCP user token, a session), a key the context also carries did not, and stamping it would apply
+	// its decisions, its team's above all, to a request it never vouched for.
+	virtualKeyValue := PresentedVirtualKey(ctx)
 	if virtualKeyValue == "" {
 		return req, nil, nil
 	}
@@ -2042,6 +2196,9 @@ func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req
 	// project's, on the context and on the root span.
 	if _, resolved := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); !resolved {
 		stampVirtualKeyContentLogging(ctx, vk)
+	}
+	if stamper, ok := p.store.(teamContentLoggingStamper); ok && vk.TeamID != nil {
+		stamper.StampTeamContentLogging(ctx, *vk.TeamID)
 	}
 	stampVirtualKeyMetadata(ctx, vk)
 	if vk.Team != nil {
@@ -2086,6 +2243,21 @@ func (p *GovernancePlugin) Cleanup() error {
 	return cleanupErr
 }
 
+// responseSucceeded reports whether result counts as a successful request. A passthrough call
+// relays the upstream's error status as a response rather than an error, so it is judged by that
+// status: a call the provider refused does not count against request limits, the same as a refused
+// inference request. Only the request count reads this; tokens and cost a refused call reported
+// are still charged.
+func responseSucceeded(result *schemas.BifrostResponse) bool {
+	if result == nil {
+		return false
+	}
+	if pt := result.PassthroughResponse; pt != nil && pt.StatusCode >= 400 {
+		return false
+	}
+	return true
+}
+
 // postHookWorker is a worker function that processes the response and updates usage tracking
 // It is used to avoid blocking the main thread when updating usage tracking
 // Handles both cases: with virtual key and without virtual key (empty string)
@@ -2104,8 +2276,7 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
 func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
-	// Determine if request was successful
-	success := (result != nil)
+	success := responseSucceeded(result)
 	billedReason := "success"
 
 	// Streaming detection
@@ -2269,6 +2440,8 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 	}
 
 	var errs []error
+	// Every model here is one a result row actually ran, as written, so no alias target is charged.
+	ctx = context.WithValue(ctx, literalLimitsContextKey, true)
 	for _, modelUsage := range usage.ModelUsage {
 		budgetIDs, rateLimitIDs := p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, usage.Provider, modelUsage.Model)
 		if modelUsage.Cost > 0 {
@@ -2302,6 +2475,66 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 		}
 	}
 	return errs
+}
+
+// limitsForKeyThatRan narrows the limits settled for an alias to the target of the key that ran.
+//
+// The check runs before key selection, so it answers to the limits of every model the eligible keys
+// map the alias to. Only one of them ran, so charging the rest would spend limits of models that
+// never ran. When the settled limits carried alias targets for this (provider, model) and core
+// reports the key that ran (see keyThatRan), the limits are gathered again with that key's targets alone, and the
+// settled list is kept only where the two agree: nothing is charged that was not checked. Without
+// alias targets, or without a reported key, the settled list is returned as is. A request naming no
+// alias pays one context read.
+func (p *GovernancePlugin) limitsForKeyThatRan(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgets, rateLimits []schemas.Limit) ([]schemas.Limit, []schemas.Limit) {
+	settled, _ := ctx.Value(aliasLimitTargetsContext).(settledAliasTargets)
+	if len(settled.targets) == 0 || settled.provider != provider || settled.model != model {
+		return budgets, rateLimits
+	}
+	// The usual case: every eligible key maps the alias to one model, and the key that ran did.
+	if ra := schemas.GetResolvedAlias(ctx); len(settled.targets) == 1 && ra != nil && ra.Config != nil && ra.Config.ModelID == settled.targets[0] {
+		return budgets, rateLimits
+	}
+	keyID := keyThatRan(ctx)
+	g := ctx.Grant()
+	if keyID == "" || g == nil {
+		return budgets, rateLimits
+	}
+	ctx.SetValue(chargedKeyContext, keyID)
+	ranBudgets, ranRateLimits, err := p.store.GatherLimits(ctx, g.Access(), provider, model)
+	ctx.ClearValue(chargedKeyContext)
+	if err != nil {
+		return budgets, rateLimits
+	}
+	return limitsAlsoIn(budgets, ranBudgets), limitsAlsoIn(rateLimits, ranRateLimits)
+}
+
+// keyThatRan is the key of the attempt being charged: the selected key, or, once core has cleared it
+// after a final error (which can still carry billed usage), the key the attempt trail's last record
+// names. Empty when neither says.
+func keyThatRan(ctx *schemas.BifrostContext) string {
+	if keyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); keyID != "" {
+		return keyID
+	}
+	if trail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); len(trail) > 0 {
+		return trail[len(trail)-1].KeyID
+	}
+	return ""
+}
+
+// limitsAlsoIn is the limits of settled whose IDs ran also names, in settled's order.
+func limitsAlsoIn(settled, ran []schemas.Limit) []schemas.Limit {
+	keep := make(map[string]bool, len(ran))
+	for _, limit := range ran {
+		keep[limit.ID] = true
+	}
+	out := make([]schemas.Limit, 0, len(settled))
+	for _, limit := range settled {
+		if keep[limit.ID] {
+			out = append(out, limit)
+		}
+	}
+	return out
 }
 
 // GenerateVirtualKey is a helper function

@@ -731,5 +731,102 @@ test("Azure live session rows run only in the azure partition", () => {
   assert.deepEqual(runFilter(["--provider", "azure"], { source }), ["azure-live-native", "azure-live-openai-route", "azure-sdk-live", "azure-sdk-bare-ua-live", "azure-chat-openai-route"]);
 });
 
+// A Baseten model sent through the Anthropic Messages ingress names "anthropic" only in its route,
+// and a Hugging Face row routed to Baseten-hosted models ("huggingface/baseten/...") names
+// "baseten" only in its model id. Each upstream call goes to the model's own provider, so the
+// anthropic partition must not claim the first and the baseten partition must not claim the second.
+test("Baseten partition excludes Hugging Face rows and the anthropic partition excludes Baseten rows", () => {
+  const post = (name, url, model) => ({
+    name,
+    request: { method: "POST", url, body: { mode: "raw", raw: JSON.stringify({ model, max_tokens: 16, messages: [] }) } },
+  });
+  const source = join(WORK, "source-baseten.json");
+  writeFileSync(
+    source,
+    JSON.stringify({
+      info: { name: "providers" },
+      item: [
+        {
+          name: "routes folder",
+          item: [
+            post("baseten-anthropic-route", "http://localhost:8080/anthropic/v1/messages", "baseten/zai-org/GLM-5.3"),
+            post("anthropic-native", "http://localhost:8080/anthropic/v1/messages", "claude-opus-4-7"),
+            post("baseten-chat", "http://localhost:8080/v1/chat/completions", "baseten/zai-org/GLM-5.3"),
+            post("huggingface-baseten-chat", "http://localhost:8080/v1/chat/completions", "huggingface/baseten/zai-org/GLM-5.3"),
+            // Prose in a prompt is not the row's identity: this row calls Baseten.
+            {
+              name: "baseten-chat-prompt-names-other-hub",
+              request: {
+                method: "POST",
+                url: "http://localhost:8080/v1/chat/completions",
+                body: { mode: "raw", raw: JSON.stringify({ model: "baseten/zai-org/GLM-5.3", messages: [{ role: "user", content: "Is this model on huggingface?" }] }) },
+              },
+            },
+          ],
+        },
+        {
+          name: "61. Hugging Face Baseten model discovery",
+          item: [{ name: "list-models", request: { method: "GET", url: "http://localhost:8080/v1/models?provider=huggingface" } }],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(runFilter(["--provider", "anthropic"], { source }), ["anthropic-native"]);
+  assert.deepEqual(runFilter(["--provider", "baseten"], { source }), ["baseten-anthropic-route", "baseten-chat", "baseten-chat-prompt-names-other-hub"]);
+  assert.deepEqual(runFilter(["--provider", "huggingface"], { source }), ["huggingface-baseten-chat", "list-models"]);
+});
+
+// Soniox's OpenAI drop-in rows travel /openai/v1/audio/..., so the openai keywords claim them even
+// though the upstream call goes to Soniox. An openai-only sweep would then call Soniox without its
+// key, and a sweep with the key would run those rows (and bill them) twice.
+test("Soniox rows run only in the soniox partition", () => {
+  const speech = (name, url, model) => ({
+    name,
+    request: { method: "POST", url, body: { mode: "raw", raw: JSON.stringify({ model, input: "hello", voice: "Maya" }) } },
+  });
+  const source = join(WORK, "source-soniox.json");
+  writeFileSync(
+    source,
+    JSON.stringify({
+      info: { name: "providers" },
+      item: [
+        {
+          name: "Soniox provider folder",
+          item: [
+            speech("soniox-speech-native", "http://localhost:8080/v1/audio/speech", "soniox/tts-rt-v2"),
+            speech("soniox-speech-openai-route", "http://localhost:8080/openai/v1/audio/speech", "soniox/tts-rt-v2"),
+            {
+              name: "soniox-transcription-openai-route",
+              request: {
+                method: "POST",
+                url: "http://localhost:8080/openai/v1/audio/transcriptions",
+                body: { mode: "formdata", formdata: [{ key: "model", value: "soniox/stt-async-v6", type: "text" }] },
+              },
+            },
+            { name: "soniox-models", request: { method: "GET", url: "http://localhost:8080/v1/models?provider=soniox" } },
+          ],
+        },
+        {
+          name: "OpenAI folder",
+          item: [
+            speech("openai-speech-openai-route", "http://localhost:8080/openai/v1/audio/speech", "tts-1"),
+            // Prose in a prompt is not the row's identity: this row calls OpenAI.
+            {
+              name: "openai-speech-prompt-names-another-vendor",
+              request: {
+                method: "POST",
+                url: "http://localhost:8080/openai/v1/audio/speech",
+                body: { mode: "raw", raw: JSON.stringify({ model: "tts-1", input: "Say soniox", voice: "alloy" }) },
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(runFilter(["--provider", "openai"], { source }), ["openai-speech-openai-route", "openai-speech-prompt-names-another-vendor"]);
+  assert.deepEqual(runFilter(["--provider", "soniox"], { source }), ["soniox-speech-native", "soniox-speech-openai-route", "soniox-transcription-openai-route", "soniox-models"]);
+});
+
 rmSync(WORK, { recursive: true, force: true });
 console.log(`\n${passed} passed`);

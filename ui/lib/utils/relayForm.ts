@@ -1,4 +1,5 @@
 import i18n from "@/lib/i18n";
+import { withBasePath } from "@/lib/utils/basePath";
 import type { Relay, RelayJobConfig, RelayRouteConfig, RelaySecret, RelayUsageConfig } from "@/lib/types/relays";
 import {
 	type RelayFormValues,
@@ -361,6 +362,11 @@ export function cleanJob(job: Omit<RelayJobConfig, "usage"> & { usage?: RelayUsa
 		...(job.timeout_seconds ? { timeout_seconds: job.timeout_seconds } : {}),
 		...(usage ? { usage } : {}),
 	};
+}
+
+/** The path callers reach a relay at, for display and copying. The server sends it root-relative, so the server.base_path prefix goes on here. */
+export function relayGatewayPath(relay: Pick<Relay, "name" | "url">): string {
+	return withBasePath(relay.url || `/relay/${relay.name}`);
 }
 
 /** A one-line summary of what a call costs under a mapping, for the route table and pricing tab. */

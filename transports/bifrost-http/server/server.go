@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +37,7 @@ import (
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/framework/webhooks"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -151,6 +155,12 @@ type ServerCallbacks interface {
 	GetComplexityLLMStatus(ctx context.Context) (complexity.LLMStatusInfo, error)
 	ListComplexityGenerations(ctx context.Context) ([]complexity.GenerationInfo, error)
 	DeleteComplexityGeneration(ctx context.Context, namespace string) error
+	ReloadModelRouter(ctx context.Context, id string) error
+	ReloadModelRouterTargets(ctx context.Context, id string) error
+	ReloadModelRouterRouting(ctx context.Context, id string) error
+	RemoveModelRouter(ctx context.Context, id string) error
+	GetModelRouterStatus(ctx context.Context, id string) (complexity.SemanticStatusInfo, complexity.LLMStatusInfo, error)
+	RetryModelRouterWarmup(ctx context.Context, id string) (complexity.SemanticStatusInfo, bool, error)
 	// Prompt repository related callbacks
 	ReloadPromptCache(ctx context.Context) error
 	// Webhook related callbacks
@@ -280,16 +290,25 @@ type BifrostHTTPServer struct {
 	// from it.
 	ShellRewriter handlers.ShellRewriter
 
+	// unsubscribeCaptureDeletes releases the log-delete subscription that
+	// drops complexity request capture's vectors with their logs.
+	unsubscribeCaptureDeletes func()
+
 	WebSocketHandler     *handlers.WebSocketHandler
 	NotificationService  *handlers.NotificationService
 	RSSFeedsHandler      *handlers.RSSFeedsHandler
 	WarpHandler          *handlers.WarpHandler
 	MCPServerHandler     *handlers.MCPServerHandler
+	BifrostMCP           *handlers.BifrostMCP          // the gateway's API as MCP tools on /v1/mcp; its server loads after boot
+	BifrostMCPToolAccess handlers.BifrostMCPToolAccess // set before StartBifrostMCP to shape tools/list per caller
+	bifrostMCPExec       *handlers.BifrostMCPExecutor
+	defaultOpenAPIURL    string // the build's default spec, used while the framework config's openapi_url is unset
 	AgentGatewayHandler  *handlers.AgentGatewayHandler
 	devPprofHandler      *handlers.DevPprofHandler
 	skillsServingHandler *handlers.SkillsServingHandler
 	IntegrationHandler   *handlers.IntegrationHandler
 	wsLiveHandler        *handlers.WSLiveHandler
+	wsSpeechHandler      *handlers.WSSpeechSessionHandler
 	webrtcLiveHandler    *handlers.WebRTCLiveHandler
 
 	AuthMiddleware       *handlers.AuthMiddleware
@@ -300,6 +319,8 @@ type BifrostHTTPServer struct {
 	TempTokens           *temptoken.Service
 	TempTokenSweepWorker *temptoken.SweepWorker
 	OAuth2SweepWorker    *oauth2SweepWorker
+	ClientGateways       *handlers.ClientGatewayHandler // set in RegisterInferenceRoutes
+	InferenceAuthStart   int                            // index in the inference chain where auth starts; the gateway bearer check is inserted there
 	// OAuth2IdentityResolver scopes a user-mode /mcp request to the user's own
 	// tools. Optional; wired at server init when user-mode identity resolution
 	// is available, otherwise left nil (user-mode requests fall back to the
@@ -1086,10 +1107,19 @@ func (s *BifrostHTTPServer) ModelConfigIndexKey(model string, provider *string) 
 	return governance.CanonicalModelConfigName(model, provider)
 }
 
+// modelConfigReloadReadTimeout bounds the store read a model config reload makes on the server's
+// own context, since it no longer inherits the caller's deadline.
+const modelConfigReloadReadTimeout = 30 * time.Second
+
 // ReloadModelConfig reloads a model config from the database into in-memory store
 // If usage was modified (e.g., reset due to config change), syncs it back to DB
 func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error) {
-	preloadedMC, err := s.Config.ConfigStore.GetModelConfigByID(ctx, id)
+	// The reload loads the row it was told to load, whoever triggered it, so it reads on the
+	// server's own context: the caller's row-visibility scope must not stop a config the caller
+	// just wrote (for a target it cannot see) from reaching memory and peers.
+	readCtx, cancel := context.WithTimeout(s.backgroundCtx(), modelConfigReloadReadTimeout)
+	defer cancel()
+	preloadedMC, err := s.Config.ConfigStore.GetModelConfigByID(readCtx, id)
 	if err != nil {
 		logger.Error("failed to load model config: %v", err)
 		return nil, err
@@ -1676,6 +1706,11 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	if s.LogsCleaner != nil {
 		s.LogsCleaner.UpdateRetentionDays(config.LogRetentionDays)
 	}
+	s.reloadBifrostMCP(ctx)
+	// Cluster peers reload here too, so every node's /mcp follows the cap.
+	if s.MCPServerHandler != nil {
+		s.MCPServerHandler.UpdateServerMaxProtocolVersion(config.MCPServerMaxProtocolVersion)
+	}
 	// This path also serves cluster peers, so one node's allowlist edit
 	// reaches every node's OAuth client.
 	if err := lib.ApplyMCPOAuthPrivateAllowlist(config.MCPOAuthPrivateAllowlist); err != nil {
@@ -1710,6 +1745,10 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 			RelayPlugins:       s.Config.GetLoadedRelayPlugins(),
 			MCPConfig:          mcpConfig,
 			Logger:             logger,
+
+			// Read from this reload's snapshot: ClientConfig is rewritten under Mu
+			// by a concurrent config save.
+			UsageEstimationTokenizers: config.UsageEstimationTokenizers,
 		})
 		if err := s.Client.UpdateToolManagerConfig(
 			s.Config.ClientConfig.MCPAgentDepth,
@@ -1831,7 +1870,13 @@ func (s *BifrostHTTPServer) reloadObservabilityPlugins() {
 
 // ReloadPricingManager reloads the pricing manager
 func (s *BifrostHTTPServer) UpdateSyncConfig(ctx context.Context) error {
-	if s.Config == nil || s.Config.ModelCatalog == nil {
+	if s.Config == nil {
+		return fmt.Errorf("config not found")
+	}
+	// openapi_url lives in the framework config, so a save that changed it
+	// rebuilds /v1/mcp here; the rebuild is a no-op when nothing it reads changed.
+	s.reloadBifrostMCP(ctx)
+	if s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
 	// Snapshot the pricing pointer and release the read lock before restarting
@@ -2632,6 +2677,9 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if routingDecisionPlugin, ok := plugin.(routing.DecisionExecutorSetter); ok {
 		routingDecisionPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
 	}
+	if routingPlugin, ok := plugin.(*routing.RoutingPlugin); ok {
+		s.wireRoutingSuggestions(routingPlugin)
+	}
 	if err := s.SyncLoadedPlugin(ctx, name, plugin, placement, order); err != nil {
 		return err
 	}
@@ -2649,6 +2697,96 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 		s.WarpHandler.Service().SetLogReader(handlers.NewWarpLogReader(loggerPlugin.GetPluginLogManager()))
 	}
 	return nil
+}
+
+// logRetentionSetter is a plugin that bounds what it keeps by the logs'
+// retention; the routing plugin's request capture is one.
+type logRetentionSetter interface {
+	SetLogRetention(days func() int)
+}
+
+// applyRoutingLogRetention tells a plugin that keeps per-log data how long
+// logs live, so captured request vectors never outlive their logs. It runs at
+// bootstrap and on every reload, since a reload builds a fresh plugin. The
+// retention is read at each sweep rather than once: LogsCleaner is built
+// later in Bootstrap, may be absent (0 means logs are kept forever), and its
+// retention can change at runtime.
+func (s *BifrostHTTPServer) applyRoutingLogRetention(plugin any) {
+	setter, ok := plugin.(logRetentionSetter)
+	if !ok {
+		return
+	}
+	setter.SetLogRetention(func() int {
+		if s.LogsCleaner == nil {
+			return 0
+		}
+		return s.LogsCleaner.RetentionDays()
+	})
+}
+
+// captureDropTimeout bounds dropping complexity request capture's vectors
+// once the routing plugin is gone.
+const captureDropTimeout = 30 * time.Second
+
+// subscribeCaptureDeletes makes deleted logs take their complexity captured
+// vectors with them, as Warp's do. The previous subscription is released
+// first, like Warp's, so a second registration cannot leak the first.
+func (s *BifrostHTTPServer) subscribeCaptureDeletes(loggerPlugin *logging.LoggerPlugin) {
+	if s.unsubscribeCaptureDeletes != nil {
+		s.unsubscribeCaptureDeletes()
+		s.unsubscribeCaptureDeletes = nil
+	}
+	if loggerPlugin != nil {
+		s.unsubscribeCaptureDeletes = loggerPlugin.SubscribeLogDeleteCallback(s.forgetCapturedLogs)
+	}
+}
+
+// forgetCapturedLogs is the log-delete subscription for complexity request
+// capture: a deleted log takes its captured vector with it. The routing plugin
+// is looked up per delete rather than held, because a reload replaces the
+// instance and the subscription must follow it. With no routing plugin there
+// is nothing to forget: its captures were dropped when it went (see
+// dropCapturedRequests).
+func (s *BifrostHTTPServer) forgetCapturedLogs(ctx context.Context, ids []string) {
+	if routingPlugin, err := s.getRoutingPlugin(); err == nil {
+		routingPlugin.ForgetComplexityCapturedRequests(ctx, ids)
+	}
+}
+
+// dropCapturedRequests deletes every complexity capture namespace in the
+// configured vector store. Captured vectors exist only to feed the routing
+// plugin's phrase suggestions, and only that plugin forgets them with their
+// logs and ages them out, so once it is removed or disabled they would be
+// kept with no owner. Dropping them is the cleanup; a routing plugin added
+// back later starts capturing afresh. A drop that fails is logged and retried
+// at the next start without a routing plugin.
+func (s *BifrostHTTPServer) dropCapturedRequests(ctx context.Context) {
+	if s.Config == nil || s.Config.VectorStore == nil {
+		return
+	}
+	store := s.Config.VectorStore
+	dropCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), captureDropTimeout)
+	defer cancel()
+	namespaces, err := store.ListNamespaces(dropCtx, complexity.CaptureNamespacePrefix+"_")
+	if err != nil {
+		logger.Warn("failed to list complexity capture namespaces to drop after the routing plugin went: %v", err)
+		return
+	}
+	for _, ns := range namespaces {
+		if err := store.DeleteNamespace(dropCtx, ns); err != nil && !errors.Is(err, vectorstore.ErrNotFound) {
+			logger.Warn("failed to drop complexity capture namespace %s after the routing plugin went: %v", ns, err)
+		}
+	}
+}
+
+// dropCapturesOfDisabledRouting runs at startup when no routing plugin
+// loaded. Only a plugin disabled by config (governance off) gives up its
+// captures from an earlier run; one that failed to start keeps them for its
+// next start.
+func (s *BifrostHTTPServer) dropCapturesOfDisabledRouting(ctx context.Context) {
+	if status, ok := s.Config.GetPluginStatusByName(routing.PluginName); ok && status.Status == schemas.PluginStatusDisabled {
+		s.dropCapturedRequests(ctx)
+	}
 }
 
 // RemovePlugin removes a plugin from the server.
@@ -2676,6 +2814,13 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	// 2. Update Bifrost client
 	if err := s.Client.RemovePlugin(name, InferPluginTypes(plugin)); err != nil {
 		logger.Warn("failed to reload bifrost config after plugin removal: %v", err)
+	}
+
+	// 2a. Routing's captured request vectors have no owner without it. After
+	// the client removal, whose Cleanup has drained the capture writer, so no
+	// queued write recreates a namespace once it is dropped.
+	if name == routing.PluginName {
+		s.dropCapturedRequests(ctx)
 	}
 
 	// 3. Reload observability plugins if necessary
@@ -2842,6 +2987,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	wsResponsesHandler := handlers.NewWSResponsesHandler(s.Client, s.Config, s.wsPool)
 	wsRealtimeHandler := handlers.NewWSRealtimeHandler(s.Client, s.Config, s.wsPool)
 	s.wsLiveHandler = handlers.NewWSLiveHandler(s.Client, s.Config, s.wsPool)
+	s.wsSpeechHandler = handlers.NewWSSpeechSessionHandler(s.Client, s.Config, s.wsPool)
 	s.webrtcLiveHandler = handlers.NewWebRTCLiveHandler(s.Client, s.Config)
 	webrtcRealtimeHandler := handlers.NewWebRTCRealtimeHandler(s.Client, s.Config)
 	realtimeClientSecretsHandler := handlers.NewRealtimeClientSecretsHandler(s.Client, s.Config)
@@ -2862,6 +3008,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
 	s.IntegrationHandler.RegisterRoutes(s.Router, middlewares...)
 	s.wsLiveHandler.RegisterRoutes(s.Router, middlewares...)
+	s.wsSpeechHandler.RegisterRoutes(s.Router, middlewares...)
 	s.webrtcLiveHandler.RegisterRoutes(s.Router, middlewares...)
 	handlers.NewLiveControlHandler(s.Client, s.Config).RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
@@ -2907,6 +3054,15 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 			}
 		}
 	}
+	// One client gateway handler serves every client gateway (Claude Code, ...),
+	// so the sign-in limiters, poll tracker and verified-token cache are shared,
+	// and every bearer check uses the governance virtual-key cache. The sign-in,
+	// settings and telemetry routes are public by protocol or bearer-authenticated
+	// by the handler itself, so they take no middleware.
+	clientGateways := handlers.NewClientGatewayHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver, vkCache)
+	clientGateways.RegisterRoutes(s.Router)
+	clientGateways.RegisterInferenceRoutes(s.Router, s.Client, s, s.InferenceAuthStart, middlewares...)
+	s.ClientGateways = clientGateways
 	return nil
 }
 
@@ -3044,10 +3200,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		VirtualKeyAssignees:  s.VirtualKeyAssigneeResolver,
 		UserGovernance:       s.WarpUserGovernanceReader,
 		CallerRestriction:    s.WarpCallerRestrictionResolver,
+		VirtualKeys:          s.virtualKeyCache,
 	})
 	if loggingHandler != nil {
 		loggingHandler.SetTopicLister(s.WarpHandler.Service())
 	}
+	s.subscribeCaptureDeletes(loggerPlugin)
 	// Read at each sweep rather than once: the cleaner is built in Bootstrap,
 	// after this, and its retention can change at runtime.
 	s.WarpHandler.Service().SetLogRetention(func() int {
@@ -3059,6 +3217,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// config.json's warp section saves through the service, so it is validated and provisions its
 	// vector namespace exactly like a save from the settings page.
 	s.Config.ApplyWarpFileConfig(s.Ctx, s.WarpHandler.Service())
+	if s.BifrostMCP != nil {
+		s.WarpHandler.Service().SetManagementTools(handlers.NewWarpManagementTools(s.BifrostMCP))
+	}
+	if loggingHandler != nil {
+		loggingHandler.SetLogSearch(s.WarpHandler)
+	}
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -3196,6 +3360,8 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WarpHandler != nil {
 		s.WarpHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+	s.registerUserLimitsRoutes(middlewares...)
+	handlers.NewCallerHandler(s.WarpCallerRestrictionResolver).RegisterRoutes(s.Router, middlewares...)
 	if s.Config.ConfigStore != nil && s.SidekiqRunner != nil {
 		handlers.NewSidekiqHandler(s.Config.ConfigStore, s.SidekiqRunner).RegisterRoutes(s.Router, middlewares...)
 	}
@@ -3210,7 +3376,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		if err != nil || plugin == nil {
 			return nil, nil
 		}
-		return plugin.GetMetricsGatherer().Gather()
+		gatherers := prometheus.Gatherers{plugin.GetMetricsGatherer()}
+		if s.ClientGateways != nil {
+			gatherers = append(gatherers, s.ClientGateways.MetricsGatherer())
+		}
+		return gatherers.Gather()
 	})
 	metricsAdapter := fasthttpadaptor.NewFastHTTPHandler(promhttp.HandlerFor(metricsGatherer, promhttp.HandlerOpts{}))
 	metricsHandler := func(ctx *fasthttp.RequestCtx) {
@@ -3227,6 +3397,16 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		handlers.SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+string(ctx.Path()))
 	}
 	return nil
+}
+
+// registerUserLimitsRoutes registers the per-user limits routes behind
+// middlewares. Per-user limits exist only where the deployment supplies a reader
+// for them (Enterprise access profiles), so without one the routes are absent.
+func (s *BifrostHTTPServer) registerUserLimitsRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
+	if s.WarpUserGovernanceReader == nil {
+		return
+	}
+	handlers.NewUserLimitsHandler(s.WarpUserGovernanceReader).RegisterRoutes(s.Router, middlewares...)
 }
 
 // ObserveWarmupRoutingEmbedding forwards semantic-routing warmup embedding
@@ -3606,7 +3786,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// package does that, core only knows the hook. Registered on the config
 	// passed to Init and again on the client below, so a manager created
 	// lazily (no mcp block in config.json) gets it too.
-	openAPIFactory := openapimcp.Factory(openapimcp.WithConfigDir(s.Config.ConfigDir()))
+	openAPIFactory := openapimcp.Factory(openapimcp.WithConfigDir(s.Config.ConfigDir()), openapimcp.WithMaxSpecBytes(s.Config.MCPOpenAPIMaxSpecBytes))
 	tableMCPConfig := s.Config.MCPConfig
 	var mcpConfig *schemas.MCPConfig
 	if tableMCPConfig != nil {
@@ -3647,6 +3827,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 		MCPSharedDiscoveryStore:  sharedDiscoveryStore,
 		MCPPerUserDiscoveryStore: perUserDiscoveryStore,
+
+		UsageEstimationTokenizers: s.Config.ClientConfig.UsageEstimationTokenizers,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)
@@ -3736,10 +3918,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 				s.TempTokenSweepWorker.Stop()
 				s.TempTokenSweepWorker = nil
 			}
-			if s.OAuth2SweepWorker != nil {
-				s.OAuth2SweepWorker.stop()
-				s.OAuth2SweepWorker = nil
-			}
+			s.stopOAuth2Background()
 			return fmt.Errorf("failed to initialize auth middleware: %v", err)
 		}
 		if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
@@ -3767,11 +3946,18 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		routingPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
 		routingPlugin.SetResponsesRequestExecutor(s.Client.ResponsesRequest)
 		routingPlugin.SetDecisionRequestExecutor(s.Client.DecisionRequest)
+	} else {
+		go s.dropCapturesOfDisabledRouting(s.Ctx) // off the boot path
 	}
 
 	// Initialize Sidekiq runner for background jobs
 	if s.Config != nil && s.Config.ConfigStore != nil {
 		s.SidekiqRunner = sidekiq.New(s.Config.ConfigStore, logger, 4, "")
+		s.registerComplexitySuggestionsJob(s.SidekiqRunner)
+	}
+	// After the runner exists, so phrase suggestion runs are queued on it.
+	if routingPlugin, err := s.getRoutingPlugin(); err == nil {
+		s.wireRoutingSuggestions(routingPlugin)
 	}
 
 	// Initialize the Agent Gateway once before either management or protocol
@@ -3786,14 +3972,16 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
 		}
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.stop()
-			s.OAuth2SweepWorker = nil
-		}
+		s.stopOAuth2Background()
 		return err
 	}
 
 	// Register routes
+	// /v1/mcp takes the /api chain. Copied now: apiMiddlewares and
+	// inferenceMiddlewares grow from the same commonMiddlewares array, so an append
+	// to the inference chain below can overwrite an /api entry that fit in its
+	// spare capacity (AuthBypassedMiddleware, without a config store).
+	bifrostMCPMiddlewares := slices.Clone(apiMiddlewares)
 	err = s.RegisterAPIRoutes(s.Ctx, s, apiMiddlewares...)
 	if err != nil {
 		s.CloseAgentGateway()
@@ -3805,16 +3993,14 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
 		}
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.stop()
-			s.OAuth2SweepWorker = nil
-		}
+		s.stopOAuth2Background()
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
 	// Registering inference routes
 	// The pre-auth plugin phase runs immediately before the auth middlewares so a plugin can
 	// supply or translate the credentials they read (see schemas.HTTPTransportPreAuthHook).
 	// Skipped entirely when no transport plugin is loaded.
+	authStart := len(inferenceMiddlewares) // the gateway bearer check runs here: after tracing and metrics, before auth
 	inferenceMiddlewares = append(inferenceMiddlewares, handlers.TransportPreAuthInterceptorMiddleware(s.Config))
 	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil && s.AuthMiddleware != nil {
 		inferenceMiddlewares = append(inferenceMiddlewares, s.AuthMiddleware.InferenceMiddleware())
@@ -3840,7 +4026,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Order: Tracing.pre → Recovery → PreAuthInterceptor → auth → TransportInterceptor.pre → handler →
 	//        TransportInterceptor.post → Recovery.defer → Tracing.defer
 	inferenceMiddlewares = append(inferenceMiddlewares, handlers.TransportInterceptorMiddleware(s.Config))
-	inferenceMiddlewares = append(handlers.InferenceOuterMiddlewares(s.TracingMiddleware, s.CORSMiddleware), inferenceMiddlewares...)
+	outerMiddlewares := handlers.InferenceOuterMiddlewares(s.TracingMiddleware, s.CORSMiddleware)
+	s.InferenceAuthStart = len(outerMiddlewares) + authStart
+	inferenceMiddlewares = append(outerMiddlewares, inferenceMiddlewares...)
 
 	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)
 	if err != nil {
@@ -3853,10 +4041,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			s.TempTokenSweepWorker.Stop()
 			s.TempTokenSweepWorker = nil
 		}
-		if s.OAuth2SweepWorker != nil {
-			s.OAuth2SweepWorker.stop()
-			s.OAuth2SweepWorker = nil
-		}
+		s.stopOAuth2Background()
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
 	// Registered before ConnectConfiguredMCPClients so even the very first
@@ -3897,19 +4082,92 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	maxRequestBodySizeMB := s.Config.ClientConfig.MaxRequestBodySizeMB
 	lib.ApplyBodyBufferPoolLimit(s.Config.ServerConfig, maxRequestBodySizeMB*1024*1024)
 	// Create fasthttp server instance
-	s.Server = &fasthttp.Server{
-		Handler:            handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler),
-		MaxRequestBodySize: maxRequestBodySizeMB * 1024 * 1024,
-		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
-		// Explain an oversized body (413 naming the configured limit) instead of fasthttp's generic 400.
-		ErrorHandler: lib.RequestErrorHandler(maxRequestBodySizeMB, logger.Warn),
-	}
+	s.Server = newFastHTTPServer(handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler), maxRequestBodySizeMB, s.Config.ServerConfig.ReadBufferSize, logger.Warn)
+	s.StartBifrostMCP(s.Ctx, handlers.DefaultOpenAPIURL, s.Server.Handler, s.Server.MaxRequestBodySize, s.Server.ReadBufferSize, bifrostMCPMiddlewares...)
 	startSkillsOrphanCleanupWorker(s.Ctx, s.Config, nil)
 	// Keep the live model catalog current after boot. Without this, a model an
 	// upstream starts serving mid-uptime stays invisible until a restart or a
 	// key edit, since nothing else re-fetches list-models.
 	s.RestartLiveModelRefresher(s.Ctx)
 	return nil
+}
+
+// StartBifrostMCP serves Bifrost's HTTP API as MCP tools on /v1/mcp. Tool calls
+// are served in process through rootHandler, the handler s.Server runs, so each
+// call takes the same middleware chain as a request from the network; the build
+// passes its own because enterprise wraps the router differently. middlewares is
+// the gateway's /api auth chain, so /v1/mcp takes the same credentials /api does.
+// defaultSpecURL is the build's spec (handlers.DefaultOpenAPIURL, or another a
+// build passes), read while the framework config's openapi_url is unset; only
+// operations s.Router routes are served, so a plugin's routes and an enterprise
+// build's operations appear only where they are registered. The spec loads in the
+// background, and /v1/mcp answers 503 until it has. Call it once, after every route
+// is registered and before the server starts.
+func (s *BifrostHTTPServer) StartBifrostMCP(ctx context.Context, defaultSpecURL string, rootHandler fasthttp.RequestHandler, maxRequestBodySize, readBufferSize int, middlewares ...schemas.BifrostHTTPMiddleware) {
+	specFactory := s.HTTPClientFactory
+	if specFactory == nil {
+		specFactory = s.Config.HTTPClientFactory
+	}
+	if specFactory == nil {
+		specFactory = network.DefaultHTTPClientFactory()
+	}
+	var specClient *http.Client
+	if specFactory != nil {
+		specClient = specFactory.GetHTTPClient(network.ClientPurposeAPI)
+	} else {
+		specClient = &http.Client{}
+	}
+	s.defaultOpenAPIURL = defaultSpecURL
+	s.bifrostMCPExec = handlers.NewBifrostMCPExecutor(rootHandler, maxRequestBodySize, readBufferSize)
+	s.BifrostMCP = handlers.NewBifrostMCP(s.bifrostMCPOptions(handlers.BifrostMCPOptions{
+		AppDir:     s.Config.ConfigDir(), // the directory Bootstrap loaded from, which -app-dir only overrides
+		Served:     handlers.BifrostMCPServedRoutes(s.Router.List()),
+		SpecClient: specClient,
+		ExecClient: s.bifrostMCPExec.Client,
+		ToolAccess: s.BifrostMCPToolAccess,
+	}))
+	handlers.NewBifrostMCPHandler(s.BifrostMCP).RegisterRoutes(s.Router, middlewares...)
+	// Warp's routes are registered before the Bifrost MCP exists, so its tools
+	// are bound here; a Warp handler built later binds them itself.
+	if s.WarpHandler != nil {
+		s.WarpHandler.Service().SetManagementTools(handlers.NewWarpManagementTools(s.BifrostMCP))
+	}
+	s.BifrostMCP.Start(ctx)
+}
+
+// bifrostMCPOptions fills the settings-driven Bifrost MCP options into base from the
+// current config: the spec (the framework config's openapi_url, else the build's default),
+// whether /api writes are served, and the base tool calls address: bifrost_url's
+// origin, and calls arrive as if through it. Without bifrost_url there is no
+// base and the Bifrost MCP does not load (ErrBifrostMCPNoBifrostURL): the
+// caller's Host header is never used in its place.
+func (s *BifrostHTTPServer) bifrostMCPOptions(base handlers.BifrostMCPOptions) handlers.BifrostMCPOptions {
+	base.SpecURL = s.Config.GetOpenAPIURL(s.defaultOpenAPIURL)
+	base.AllowWrites = s.Config.GetBifrostMCPAllowWrites()
+	base.BaseURL, base.BaseIsEdge = "", false
+	if public := s.Config.GetBifrostURL(); public != "" {
+		if parsed, err := url.Parse(public); err == nil && parsed.Host != "" {
+			base.BaseURL, base.BaseIsEdge = parsed.Scheme+"://"+parsed.Host, true
+		}
+	}
+	return base
+}
+
+// reloadBifrostMCP rebuilds the Bifrost MCP when a config save changed its spec,
+// writes switch or Bifrost URL. A failed rebuild keeps the server it had and is
+// logged; the saved config stands, and the next save or restart tries again.
+func (s *BifrostHTTPServer) reloadBifrostMCP(ctx context.Context) {
+	if s.BifrostMCP == nil {
+		return
+	}
+	current := s.BifrostMCP.Options()
+	next := s.bifrostMCPOptions(current)
+	if next.SpecURL == current.SpecURL && next.AllowWrites == current.AllowWrites && next.BaseURL == current.BaseURL && next.BaseIsEdge == current.BaseIsEdge {
+		return
+	}
+	if err := s.BifrostMCP.Reload(ctx, next); err != nil {
+		logger.Warn("[Bifrost MCP] settings changed but the rebuild failed (a change that serves less unloads the previous server; any other keeps it): %v", err)
+	}
 }
 
 func (s *BifrostHTTPServer) CloseAgentGateway() {
@@ -3958,6 +4216,9 @@ func (s *BifrostHTTPServer) Start() error {
 		if s.wsLiveHandler != nil {
 			s.wsLiveHandler.Close()
 		}
+		if s.wsSpeechHandler != nil {
+			s.wsSpeechHandler.Close()
+		}
 		if s.webrtcLiveHandler != nil {
 			s.webrtcLiveHandler.Close()
 		}
@@ -3969,6 +4230,11 @@ func (s *BifrostHTTPServer) Start() error {
 			logger.Error("error during graceful shutdown: %v", err)
 		} else {
 			logger.Info("server gracefully shutdown")
+		}
+		// After the server: an in-flight /v1/mcp call finishes its /api hop first.
+		// Bounded by the shutdown timeout, so a stuck /api handler cannot hold it.
+		if err := s.bifrostMCPExec.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("error closing the Bifrost MCP executor: %v", err)
 		}
 		// Cancelling main context
 		if s.cancel != nil {
@@ -4015,11 +4281,8 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping temp-token sweep worker...")
 				s.TempTokenSweepWorker.Stop()
 			}
-			if s.OAuth2SweepWorker != nil {
-				logger.Info("stopping oauth2 sweep worker...")
-				s.OAuth2SweepWorker.stop()
-				s.OAuth2SweepWorker = nil
-			}
+			logger.Info("stopping oauth2 sweep worker and client gateways...")
+			s.stopOAuth2Background()
 			if s.GovernanceHandler != nil {
 				s.GovernanceHandler.StopExpiryCleanupScheduler()
 			}
@@ -4076,6 +4339,9 @@ func (s *BifrostHTTPServer) cleanupAfterServeError() {
 	if s.wsLiveHandler != nil {
 		s.wsLiveHandler.Close()
 	}
+	if s.wsSpeechHandler != nil {
+		s.wsSpeechHandler.Close()
+	}
 	if s.webrtcLiveHandler != nil {
 		s.webrtcLiveHandler.Close()
 	}
@@ -4084,5 +4350,49 @@ func (s *BifrostHTTPServer) cleanupAfterServeError() {
 	}
 	if s.skillsServingHandler != nil {
 		s.skillsServingHandler.Close()
+	}
+	s.stopClientGateways()
+}
+
+// stopOAuth2Background stops the OAuth2 sweep worker, when one runs, and the client
+// gateways. The gateways are stopped on their own: they exist without a config store,
+// where no sweep worker is started.
+func (s *BifrostHTTPServer) stopOAuth2Background() {
+	if s.OAuth2SweepWorker != nil {
+		s.OAuth2SweepWorker.stop()
+		s.OAuth2SweepWorker = nil
+	}
+	s.stopClientGateways()
+}
+
+// stopClientGateways drains queued client gateway telemetry, for at most five
+// seconds, on every shutdown path, including a failed Serve.
+func (s *BifrostHTTPServer) stopClientGateways() {
+	if s.ClientGateways == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.ClientGateways.Close(ctx)
+}
+
+// newFastHTTPServer builds the gateway's fasthttp server around root, which must be wrapped by
+// handlers.ServerRootHandler (it holds handlers.RequestBodyMiddleware).
+//
+// Request bodies are streamed (StreamRequestBody) and multipart forms are not parsed while the
+// request is read (DisablePreParseMultipartForm). fasthttp's parse at read time buffers the first
+// 16 MB of every uploaded file before spilling it to disk, ~64 MB allocated per upload whatever
+// its size; parsed later from the stream, the file spills after 8 KB. RequestBodyMiddleware reads
+// every non-multipart body into memory as before and enforces MaxRequestBodySize, which a
+// streaming server no longer does itself.
+func newFastHTTPServer(root fasthttp.RequestHandler, maxRequestBodySizeMB, readBufferSize int, warn func(format string, args ...any)) *fasthttp.Server {
+	return &fasthttp.Server{
+		Handler:                      root,
+		MaxRequestBodySize:           maxRequestBodySizeMB * 1024 * 1024,
+		ReadBufferSize:               readBufferSize,
+		StreamRequestBody:            true,
+		DisablePreParseMultipartForm: true,
+		// Explain an oversized body (413 naming the configured limit) instead of fasthttp's generic 400.
+		ErrorHandler: lib.RequestErrorHandler(maxRequestBodySizeMB, warn),
 	}
 }

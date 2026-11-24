@@ -13,6 +13,7 @@ import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, MCPCodeModeLimits } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
+import { getEndpointUrl } from "@/lib/utils/port";
 import { isSecretVarSet } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
@@ -28,6 +29,16 @@ const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
 
 const stringListEquals = (a?: string[], b?: string[]) => (a ?? []).join("\n") === (b ?? []).join("\n");
+
+// Mirrors the server's bound on client_config.mcp_openapi_max_spec_mb.
+const MAX_OPENAPI_SPEC_MB = 256;
+
+// The whole input must be an integer in 0..MAX_OPENAPI_SPEC_MB; parseInt would accept "1.5" or "1e2" as 1.
+const parseOpenAPIMaxSpecMB = (value: string): number | null => {
+	if (!value.trim()) return null;
+	const num = Number(value);
+	return Number.isInteger(num) && num >= 0 && num <= MAX_OPENAPI_SPEC_MB ? num : null;
+};
 
 export default function MCPView() {
 	const { t } = useTranslation("config");
@@ -55,6 +66,7 @@ export default function MCPView() {
 		mcp_tool_sync_interval: string;
 		mcp_max_instructions_per_client: string;
 		mcp_max_instructions_total: string;
+		mcp_openapi_max_spec_mb: string;
 		oauth2_auth_code_ttl: string;
 		oauth2_access_token_ttl: string;
 	}>({
@@ -64,6 +76,7 @@ export default function MCPView() {
 		mcp_tool_sync_interval: "10",
 		mcp_max_instructions_per_client: "0",
 		mcp_max_instructions_total: "0",
+		mcp_openapi_max_spec_mb: "0",
 		oauth2_auth_code_ttl: "300",
 		oauth2_access_token_ttl: "600",
 	});
@@ -78,6 +91,7 @@ export default function MCPView() {
 				mcp_tool_sync_interval: config?.mcp_tool_sync_interval?.toString() || "10",
 				mcp_max_instructions_per_client: (config?.mcp_max_instructions_per_client ?? 0).toString(),
 				mcp_max_instructions_total: (config?.mcp_max_instructions_total ?? 0).toString(),
+				mcp_openapi_max_spec_mb: (config?.mcp_openapi_max_spec_mb ?? 0).toString(),
 				// Coerce a stored 0 (which the backend treats as "use default") to the
 				// displayed default so the inputs never show a confusing 0.
 				oauth2_auth_code_ttl: (config?.oauth2_server_config?.auth_code_ttl || 300).toString(),
@@ -89,19 +103,23 @@ export default function MCPView() {
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
 		const clientURLChanged = !secretVarEquals(localConfig.mcp_external_client_url, config.mcp_external_client_url);
+		const clientMetadataURLChanged = !secretVarEquals(localConfig.mcp_client_metadata_url, config.mcp_client_metadata_url);
 		return (
 			localConfig.mcp_agent_depth !== config.mcp_agent_depth ||
 			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
 			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server") ||
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
 			(localConfig.mcp_max_protocol_version || "auto") !== (config.mcp_max_protocol_version || "auto") ||
+			(localConfig.mcp_server_max_protocol_version || "auto") !== (config.mcp_server_max_protocol_version || "auto") ||
 			localConfig.mcp_max_instructions_per_client !== (config.mcp_max_instructions_per_client ?? 0) ||
 			localConfig.mcp_max_instructions_total !== (config.mcp_max_instructions_total ?? 0) ||
+			localConfig.mcp_openapi_max_spec_mb !== (config.mcp_openapi_max_spec_mb ?? 0) ||
 			!codeModeLimitsEqual(localConfig.mcp_code_mode_limits, config.mcp_code_mode_limits) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
 			!stringListEquals(localConfig.mcp_oauth_private_allowlist, config.mcp_oauth_private_allowlist) ||
 			clientURLChanged ||
+			clientMetadataURLChanged ||
 			(localConfig.mcp_server_auth_mode ?? "headers") !== (config.mcp_server_auth_mode ?? "headers") ||
 			(localConfig.oauth2_server_config?.auth_code_ttl ?? 300) !== (config.oauth2_server_config?.auth_code_ttl ?? 300) ||
 			(localConfig.oauth2_server_config?.access_token_ttl ?? 600) !== (config.oauth2_server_config?.access_token_ttl ?? 600) ||
@@ -163,6 +181,14 @@ export default function MCPView() {
 		}
 	}, []);
 
+	const handleOpenAPIMaxSpecChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, mcp_openapi_max_spec_mb: value }));
+		const numValue = parseOpenAPIMaxSpecMB(value);
+		if (numValue !== null) {
+			setLocalConfig((prev) => ({ ...prev, mcp_openapi_max_spec_mb: numValue }));
+		}
+	}, []);
+
 	const handleCodeModeLimitsChange = useCallback((limits: MCPCodeModeLimits) => {
 		setLocalConfig((prev) => ({ ...prev, mcp_code_mode_limits: limits }));
 	}, []);
@@ -187,6 +213,10 @@ export default function MCPView() {
 
 	const handleClientURLChange = useCallback((value: SecretVar) => {
 		setLocalConfig((prev) => ({ ...prev, mcp_external_client_url: value }));
+	}, []);
+
+	const handleClientMetadataURLChange = useCallback((value: SecretVar) => {
+		setLocalConfig((prev) => ({ ...prev, mcp_client_metadata_url: value }));
 	}, []);
 
 	const handleAuthModeChange = useCallback((value: string) => {
@@ -258,6 +288,7 @@ export default function MCPView() {
 			const syncInterval = Number.parseInt(localValues.mcp_tool_sync_interval);
 			const perClientCap = Number.parseInt(localValues.mcp_max_instructions_per_client);
 			const totalCap = Number.parseInt(localValues.mcp_max_instructions_total);
+			const openAPIMaxSpecMB = parseOpenAPIMaxSpecMB(localValues.mcp_openapi_max_spec_mb);
 
 			if (isNaN(syncInterval) || syncInterval < 0) {
 				toast.error(t("mcpSettings.toastSyncIntervalInvalid"));
@@ -271,6 +302,11 @@ export default function MCPView() {
 
 			if (isNaN(totalCap) || totalCap < 0) {
 				toast.error(t("mcpSettings.toastMaxInstructionsTotalInvalid"));
+				return;
+			}
+
+			if (openAPIMaxSpecMB === null) {
+				toast.error(t("mcpSettings.toastOpenAPIMaxSpecInvalid", { max: MAX_OPENAPI_SPEC_MB }));
 				return;
 			}
 
@@ -352,7 +388,7 @@ export default function MCPView() {
 						id="mcp-agent-depth"
 						data-testid="mcp-agent-depth-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_agent_depth}
 						onChange={(e) => handleAgentDepthChange(e.target.value)}
 						min="1"
@@ -371,7 +407,7 @@ export default function MCPView() {
 						id="mcp-tool-execution-timeout"
 						data-testid="mcp-tool-timeout-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_tool_execution_timeout}
 						onChange={(e) => handleToolExecutionTimeoutChange(e.target.value)}
 						min="1"
@@ -390,7 +426,7 @@ export default function MCPView() {
 						id="mcp-tool-sync-interval"
 						data-testid="mcp-tool-sync-interval-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_tool_sync_interval}
 						onChange={(e) => handleToolSyncIntervalChange(e.target.value)}
 						min="0"
@@ -499,7 +535,7 @@ export default function MCPView() {
 						id="mcp-max-instructions-per-client"
 						data-testid="mcp-max-instructions-per-client-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_max_instructions_per_client}
 						onChange={(e) => handleMaxInstructionsPerClientChange(e.target.value)}
 						min="0"
@@ -520,7 +556,7 @@ export default function MCPView() {
 						id="mcp-max-instructions-total"
 						data-testid="mcp-max-instructions-total-input"
 						type="number"
-						className="w-24"
+						className="w-24 shrink-0"
 						value={localValues.mcp_max_instructions_total}
 						onChange={(e) => handleMaxInstructionsTotalChange(e.target.value)}
 						min="0"
@@ -528,62 +564,93 @@ export default function MCPView() {
 					/>
 				</div>
 
-				{/* Code Mode Binding Level */}
-				<div className="space-y-4 rounded-sm border p-4">
+				{/* OpenAPI Spec Size Limit */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
-						<label htmlFor="mcp-binding-level" className="text-sm font-medium">
-							{t("mcpSettings.codeModeBinding")}
+						<label htmlFor="mcp-openapi-max-spec-mb" className="text-sm font-medium">
+							{t("mcpSettings.maxOpenAPISpecSize")}
 						</label>
-						<p className="text-muted-foreground text-sm">{t("mcpSettings.bindingHelp")}</p>
+						<p className="text-muted-foreground text-sm">{t("mcpSettings.maxOpenAPISpecSizeHelp")}</p>
 					</div>
-					<Select value={localValues.mcp_code_mode_binding_level} onValueChange={handleCodeModeBindingLevelChange}>
-						<SelectTrigger id="mcp-binding-level" data-testid="mcp-binding-level" className="w-56">
-							<SelectValue placeholder={t("mcpSettings.selectBindingLevel")} />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="server">{t("mcpSettings.serverLevel")}</SelectItem>
-							<SelectItem value="tool">{t("mcpSettings.toolLevel")}</SelectItem>
-						</SelectContent>
-					</Select>
-
-					{/* Visual Example */}
-					<div className="mt-6 space-y-2">
-						<p className="text-foreground text-xs font-semibold tracking-wide uppercase">{t("mcpSettings.vFSStructure")}</p>
-
-						{localValues.mcp_code_mode_binding_level === "server" ? (
-							<div className="bg-muted border-border rounded-sm border p-4">
-								<div className="text-foreground space-y-1 font-mono text-xs">
-									<div>servers/</div>
-									<div className="pl-3">├─ calculator.py</div>
-									<div className="pl-3">├─ youtube.py</div>
-									<div className="pl-3">└─ weather.py</div>
-								</div>
-								<p className="text-muted-foreground mt-3 text-xs">{t("mcpSettings.allToolsPerServerInASinglePyFile")}</p>
-							</div>
-						) : (
-							<div className="bg-muted border-border rounded-sm border p-4">
-								<div className="text-foreground space-y-1 font-mono text-xs">
-									<div>servers/</div>
-									<div className="pl-3">├─ calculator/</div>
-									<div className="pl-6">├─ add.py</div>
-									<div className="pl-6">└─ subtract.py</div>
-									<div className="pl-3">├─ youtube/</div>
-									<div className="pl-6">├─ GET_CHANNELS.py</div>
-									<div className="pl-6">└─ SEARCH_VIDEOS.py</div>
-									<div className="pl-3">└─ weather/</div>
-									<div className="pl-6">└─ get_forecast.py</div>
-								</div>
-								<p className="text-muted-foreground mt-3 text-xs">{t("mcpSettings.individualPyFileForEachTool")}</p>
-							</div>
-						)}
-					</div>
+					<Input
+						id="mcp-openapi-max-spec-mb"
+						data-testid="mcp-openapi-max-spec-mb-input"
+						type="number"
+						className="w-24 shrink-0"
+						value={localValues.mcp_openapi_max_spec_mb}
+						onChange={(e) => handleOpenAPIMaxSpecChange(e.target.value)}
+						min="0"
+						max={MAX_OPENAPI_SPEC_MB}
+						disabled={!hasSettingsUpdateAccess}
+					/>
 				</div>
 
-				<CodeModeLimitsSection
-					value={localConfig.mcp_code_mode_limits}
-					onChange={handleCodeModeLimitsChange}
-					disabled={!hasSettingsUpdateAccess}
-				/>
+				{/* Code Mode Settings — binding level and execution limits, collapsed like Advanced Settings. */}
+				<Accordion type="single" collapsible className="rounded-sm border px-4">
+					<AccordionItem value="code-mode-settings" className="border-b-0">
+						<AccordionTrigger data-testid="mcp-settings-code-mode-trigger">
+							<span className="text-sm font-medium">{t("mcpSettings.codeModeSettings")}</span>
+						</AccordionTrigger>
+						<AccordionContent className="space-y-6 pt-2">
+							<div className="space-y-4">
+								<div className="space-y-0.5">
+									<label htmlFor="mcp-binding-level" className="text-sm font-medium">
+										{t("mcpSettings.codeModeBinding")}
+									</label>
+									<p className="text-muted-foreground text-sm">{t("mcpSettings.bindingHelp")}</p>
+								</div>
+								<Select value={localValues.mcp_code_mode_binding_level} onValueChange={handleCodeModeBindingLevelChange}>
+									<SelectTrigger id="mcp-binding-level" data-testid="mcp-binding-level" className="w-56">
+										<SelectValue placeholder={t("mcpSettings.selectBindingLevel")} />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value="server">{t("mcpSettings.serverLevel")}</SelectItem>
+										<SelectItem value="tool">{t("mcpSettings.toolLevel")}</SelectItem>
+									</SelectContent>
+								</Select>
+
+								{/* Visual Example */}
+								<div className="mt-6 space-y-2">
+									<p className="text-foreground text-xs font-semibold tracking-wide uppercase">{t("mcpSettings.vFSStructure")}</p>
+
+									{localValues.mcp_code_mode_binding_level === "server" ? (
+										<div className="bg-muted border-border rounded-sm border p-4">
+											<div className="text-foreground space-y-1 font-mono text-xs">
+												<div>servers/</div>
+												<div className="pl-3">├─ calculator.py</div>
+												<div className="pl-3">├─ youtube.py</div>
+												<div className="pl-3">└─ weather.py</div>
+											</div>
+											<p className="text-muted-foreground mt-3 text-xs">{t("mcpSettings.allToolsPerServerInASinglePyFile")}</p>
+										</div>
+									) : (
+										<div className="bg-muted border-border rounded-sm border p-4">
+											<div className="text-foreground space-y-1 font-mono text-xs">
+												<div>servers/</div>
+												<div className="pl-3">├─ calculator/</div>
+												<div className="pl-6">├─ add.py</div>
+												<div className="pl-6">└─ subtract.py</div>
+												<div className="pl-3">├─ youtube/</div>
+												<div className="pl-6">├─ GET_CHANNELS.py</div>
+												<div className="pl-6">└─ SEARCH_VIDEOS.py</div>
+												<div className="pl-3">└─ weather/</div>
+												<div className="pl-6">└─ get_forecast.py</div>
+											</div>
+											<p className="text-muted-foreground mt-3 text-xs">{t("mcpSettings.individualPyFileForEachTool")}</p>
+										</div>
+									)}
+								</div>
+							</div>
+
+							<CodeModeLimitsSection
+								value={localConfig.mcp_code_mode_limits}
+								onChange={handleCodeModeLimitsChange}
+								disabled={!hasSettingsUpdateAccess}
+							/>
+						</AccordionContent>
+					</AccordionItem>
+				</Accordion>
+
 				{/* Advanced Settings — collapsed by default so people don't accidentally
 				    edit the redirect_uri, which would break already-authorized MCP clients. */}
 				<Accordion type="single" collapsible className="rounded-sm border px-4">
@@ -630,6 +697,60 @@ export default function MCPView() {
 									</p>
 								</AlertDescription>
 							</Alert>
+							<div className="mt-4 space-y-2 border-t pt-4">
+								<label htmlFor="client-metadata-url" className="text-sm font-medium">
+									{t("mcpSettings.clientMetadataUrl")}
+								</label>
+								<p className="text-muted-foreground text-sm">
+									<Trans
+										t={t}
+										i18nKey="mcpSettings.clientMetadataUrlHelp"
+										components={{
+											code0: <code className="text-xs" />,
+											a1: (
+												<a
+													href={getEndpointUrl("/api/oauth/client-metadata.json")}
+													target="_blank"
+													rel="noopener noreferrer"
+													className="underline"
+													data-testid="mcp-client-metadata-document-link"
+												/>
+											),
+										}}
+									/>
+								</p>
+								<SecretVarInput
+									id="client-metadata-url"
+									data-testid="mcp-client-metadata-url-input"
+									placeholder={t("mcpSettings.clientMetadataUrlPlaceholder")}
+									value={localConfig.mcp_client_metadata_url}
+									onChange={handleClientMetadataURLChange}
+									disabled={!hasSettingsUpdateAccess}
+								/>
+							</div>
+							{/* Protocol version Bifrost's own /mcp serves */}
+							<div className="mt-4 space-y-2 border-t pt-4">
+								<label htmlFor="mcp-server-max-protocol-version" className="text-sm font-medium">
+									{t("mcpSettings.serverMaxProtocolVersion")}
+								</label>
+								<p className="text-muted-foreground text-sm">{t("mcpSettings.serverMaxProtocolVersionHelp")}</p>
+								<Select
+									value={localConfig.mcp_server_max_protocol_version || "auto"}
+									onValueChange={(value) => setLocalConfig((prev) => ({ ...prev, mcp_server_max_protocol_version: value }))}
+									disabled={!hasSettingsUpdateAccess}
+								>
+									<SelectTrigger id="mcp-server-max-protocol-version" data-testid="mcp-server-max-protocol-version-select" className="w-40">
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										{MCP_MAX_PROTOCOL_VERSION_OPTIONS.map((option) => (
+											<SelectItem key={option.value} value={option.value} data-testid={`mcp-server-max-protocol-version-${option.value}`}>
+												{mcpMaxProtocolVersionLabel(option.value)}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							</div>
 							{/* MCP Server Auth Mode */}
 							<div className="mt-4 space-y-2 border-t pt-4">
 								<label htmlFor="mcp-server-auth-mode" className="text-sm font-medium">

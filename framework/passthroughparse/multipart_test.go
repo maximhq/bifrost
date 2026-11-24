@@ -3,6 +3,8 @@ package passthroughparse
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"mime"
 	"mime/multipart"
 	"net/textproto"
 	"strings"
@@ -226,4 +228,129 @@ func TestSummarizeMultipartFlagsACutField(t *testing.T) {
 	require.True(t, decoded.Truncated)
 	require.Len(t, decoded.Fields["prompt"], maxMultipartFieldBytes)
 	require.Equal(t, "whisper-1", decoded.Fields["model"])
+}
+
+// TestSummarizeMultipartFormMatchesBodySummary asserts a streamed upload, summarized from its
+// parsed form, logs the same summary as the same upload summarized from its bytes.
+func TestSummarizeMultipartFormMatchesBodySummary(t *testing.T) {
+	audio := bytes.Repeat([]byte{0x00, 0xff, 0x10}, 1000)
+	contentType, body := multipartBody(t, [][2]string{
+		{"language", "en"}, {"model", "whisper-1"},
+		{"timestamp_granularities[]", "word"}, {"timestamp_granularities[]", "segment"},
+	}, map[string][]byte{"file": audio})
+	fromBody, ok := SummarizeMultipart(contentType, body)
+	require.True(t, ok)
+
+	_, params, err := mime.ParseMediaType(contentType)
+	require.NoError(t, err)
+	form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(1024)
+	require.NoError(t, err)
+	defer form.RemoveAll()
+	fromForm, ok := SummarizeMultipartForm(form, nil)
+	require.True(t, ok)
+	require.JSONEq(t, string(fromBody), string(fromForm))
+	require.False(t, bytes.Contains(fromForm, audio[:30]), "file bytes must never be kept")
+
+	_, ok = SummarizeMultipartForm(nil, nil)
+	require.False(t, ok)
+}
+
+// TestSummarizeMultipartFormKeepsBinaryValuesOut asserts a part without a filename whose content is
+// not text (Go's form reader files every such part under Value, whatever its Content-Type) is
+// recorded like a file, by field and size, never as text in the log summary, matching what the
+// byte-based summary does for a non-textual part.
+func TestSummarizeMultipartFormKeepsBinaryValuesOut(t *testing.T) {
+	binary := "\x00\x01\x02PNG\xff\xfe"
+	form := &multipart.Form{Value: map[string][]string{"prompt": {"a red fox"}, "mask": {binary}}}
+	summary, ok := SummarizeMultipartForm(form, nil)
+	require.True(t, ok)
+	var decoded MultipartSummary
+	require.NoError(t, sonic.Unmarshal(summary, &decoded))
+	require.Equal(t, "a red fox", decoded.Fields["prompt"])
+	require.NotContains(t, decoded.Fields, "mask", "binary value logged as text: %s", summary)
+	require.Equal(t, []MultipartFile{{Field: "mask", Bytes: int64(len(binary))}}, decoded.Files)
+	require.False(t, bytes.Contains(summary, []byte("PNG")), "binary bytes reached the summary: %s", summary)
+}
+
+// TestReadMultipartFormKeepsValueTypes asserts a streamed upload is summarized by the same rule as
+// its bytes: a part without a filename whose Content-Type is not textual is recorded like a file,
+// even when its content is printable text, which the form alone cannot tell apart from a field.
+// ReadForm drops that Content-Type, so ReadMultipartForm and MultipartValueTypes report it.
+func TestReadMultipartFormKeepsValueTypes(t *testing.T) {
+	secret := "SECRET-FILE-CONTENTS printable bytes of a file sent without a filename"
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	require.NoError(t, w.WriteField("model", "whisper-1"))
+	part := func(header textproto.MIMEHeader, data string) {
+		p, err := w.CreatePart(header)
+		require.NoError(t, err)
+		_, err = p.Write([]byte(data))
+		require.NoError(t, err)
+	}
+	part(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="prompt"`}, "Content-Type": {"text/plain; charset=utf-8"}}, "a red fox")
+	part(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="mask"`}, "Content-Type": {"application/octet-stream"}}, secret)
+	part(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="file"; filename="a.wav"`}, "Content-Type": {"audio/wav"}}, "RIFF-audio")
+	require.NoError(t, w.Close())
+	body := buf.Bytes()
+
+	form, types, err := ReadMultipartForm(bytes.NewReader(body), w.Boundary(), 1024)
+	require.NoError(t, err)
+	defer form.RemoveAll()
+	summary, ok := SummarizeMultipartForm(form, types)
+	require.True(t, ok)
+	require.False(t, bytes.Contains(summary, []byte("SECRET-FILE-CONTENTS")), "file content sent without a filename reached the log summary: %s", summary)
+	fromBody, ok := SummarizeMultipart(w.FormDataContentType(), body)
+	require.True(t, ok)
+	require.JSONEq(t, string(fromBody), string(summary), "a streamed upload must log what the same upload logs from its bytes")
+
+	want := map[string][]string{"model": {""}, "prompt": {"text/plain; charset=utf-8"}, "mask": {"application/octet-stream"}}
+	require.Equal(t, want, types)
+	require.Equal(t, want, MultipartValueTypes(bytes.NewReader(body), w.Boundary()))
+	require.Equal(t, []string{secret}, form.Value["mask"], "the value itself is still parsed for forwarding")
+	f, err := form.File["file"][0].Open()
+	require.NoError(t, err)
+	defer f.Close()
+	got, err := io.ReadAll(f)
+	require.NoError(t, err)
+	require.Equal(t, "RIFF-audio", string(got))
+
+	// A malformed body returns ReadForm's error, and the header scan never holds it up.
+	truncated := body[:len(body)/2]
+	_, _, err = ReadMultipartForm(bytes.NewReader(truncated), w.Boundary(), 1024)
+	require.Error(t, err)
+	_, _, err = ReadMultipartForm(strings.NewReader("not multipart"), w.Boundary(), 1024)
+	require.Error(t, err)
+}
+
+// BenchmarkReadMultipartForm compares ReadMultipartForm with the plain ReadForm the transport ran
+// before for a passthrough upload (a few fields and a 1 MB file spilled to a temp file, with
+// fasthttp's 8 KB in-memory limit): the difference is the cost of reading the value types.
+func BenchmarkReadMultipartForm(b *testing.B) {
+	contentType, body := multipartBody(b, [][2]string{{"model", "whisper-1"}, {"language", "en"}, {"response_format", "json"}},
+		map[string][]byte{"file": bytes.Repeat([]byte{0x00, 0xff, 0x10, 0x42}, 1<<18)})
+	_, params, err := mime.ParseMediaType(contentType)
+	require.NoError(b, err)
+	boundary := params["boundary"]
+	b.Run("ReadForm", func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(len(body)))
+		for b.Loop() {
+			form, err := multipart.NewReader(bytes.NewReader(body), boundary).ReadForm(8 << 10)
+			if err != nil {
+				b.Fatal(err)
+			}
+			form.RemoveAll()
+		}
+	})
+	b.Run("ReadMultipartForm", func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(len(body)))
+		for b.Loop() {
+			form, _, err := ReadMultipartForm(bytes.NewReader(body), boundary, 8<<10)
+			if err != nil {
+				b.Fatal(err)
+			}
+			form.RemoveAll()
+		}
+	})
 }

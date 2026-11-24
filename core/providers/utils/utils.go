@@ -18,6 +18,8 @@ import (
 	"net/textproto"
 	"net/url"
 	"regexp"
+	"runtime"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -285,6 +287,41 @@ func GetJSONSubtree(data []byte, path string) []byte {
 	out := make([]byte, len(raw))
 	copy(out, raw)
 	return out
+}
+
+// MergeJSONObjects lays patch over base the way OpenAI applies a session.update: a key the patch leaves
+// out keeps its value, an object is merged key by key, and anything else, an array or a null included,
+// replaces the value, since a null can be a setting. An empty patch returns base and an empty base
+// returns patch, both as they came; a merge returns its keys sorted. The error is the decoder's, for the
+// caller to name the document it was reading.
+func MergeJSONObjects(base, patch []byte) ([]byte, error) {
+	if len(patch) == 0 {
+		return base, nil
+	}
+	if len(base) == 0 {
+		return patch, nil
+	}
+	var merged, overlay map[string]json.RawMessage
+	if err := schemas.Unmarshal(base, &merged); err != nil {
+		return nil, err
+	}
+	if err := schemas.Unmarshal(patch, &overlay); err != nil {
+		return nil, err
+	}
+	if merged == nil {
+		merged = make(map[string]json.RawMessage, len(overlay))
+	}
+	for key, value := range overlay {
+		if previous, ok := merged[key]; ok && gjson.ParseBytes(previous).IsObject() && gjson.ParseBytes(value).IsObject() {
+			nested, err := MergeJSONObjects(previous, value)
+			if err != nil {
+				return nil, err
+			}
+			value = nested
+		}
+		merged[key] = value
+	}
+	return MarshalSorted(merged)
 }
 
 // UnmarshalOrdered decodes JSON bytes into a *schemas.OrderedMap, preserving the key order
@@ -596,6 +633,158 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 		return client
 	}
 
+	return configureDialer(client, allowPrivateNetwork, func(ctx context.Context, network, host string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, network, host)
+	}, (*net.Dialer).Dial)
+}
+
+// Reasons a DialBlockedError carries.
+const (
+	DialBlockedUnspecified = "unspecified"
+	DialBlockedLinkLocal   = "link-local"
+	DialBlockedPrivate     = "private"
+)
+
+// DialBlockedError reports a resolved address the provider network policy refused to dial.
+// Its message names the fix, and NewBifrostUpstreamConnectionError surfaces it to the client.
+type DialBlockedError struct {
+	IP     net.IP
+	Reason string // DialBlockedUnspecified, DialBlockedLinkLocal or DialBlockedPrivate
+}
+
+func (e *DialBlockedError) Error() string {
+	switch e.Reason {
+	case DialBlockedPrivate:
+		return fmt.Sprintf("connection to private IP %s is not allowed: set network_config.allow_private_network to true on this provider to reach private endpoints (VPC/PrivateLink endpoints, private DNS, internal gateways)", e.IP)
+	case DialBlockedLinkLocal:
+		return fmt.Sprintf("connection to link-local IP %s is not allowed: link-local and cloud metadata addresses are always blocked", e.IP)
+	default:
+		return fmt.Sprintf("connection to unspecified IP %s is not allowed", e.IP)
+	}
+}
+
+// checkDialIP applies the provider network policy to one resolved address. Unspecified
+// (0.0.0.0, ::) and link-local (169.254.x.x, fe80::, which includes cloud metadata) addresses
+// are always refused; loopback is always allowed; RFC 1918 and other private addresses are
+// refused unless the operator set allow_private_network.
+func checkDialIP(ip net.IP, allowPrivateNetwork bool) error {
+	if ip.IsUnspecified() {
+		return &DialBlockedError{IP: ip, Reason: DialBlockedUnspecified}
+	}
+	if network.IsLinkLocal(ip) {
+		return &DialBlockedError{IP: ip, Reason: DialBlockedLinkLocal}
+	}
+	if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
+		return &DialBlockedError{IP: ip, Reason: DialBlockedPrivate}
+	}
+	return nil
+}
+
+// ConfigureNetHTTPDialer applies ConfigureDialer's address policy to a net/http transport, for
+// providers whose inference client is net/http (Bedrock's HTTP/2 runtime client). Call it after
+// transport.Proxy is set and before network.DialHTTPSProxyWithHopTLS, which dials https proxies
+// through the DialContext installed here.
+//
+// A direct connection resolves the host once, refuses it if any resolved address fails
+// checkDialIP, and dials the checked IP literal, so a second DNS answer cannot swap in another
+// address (DNS rebinding). IPv4 addresses are tried before IPv6 ones because dialing literals
+// gives up net.Dialer's dual-stack racing. TLS still verifies and sends SNI for the request's
+// hostname. A connection to a proxy picked by transport.Proxy is dialed as is, matching
+// ConfigureDialer, which skips its checks when a proxy dialer is configured: the proxy is
+// operator configuration, and it is the proxy that connects to the target.
+func ConfigureNetHTTPDialer(transport *http.Transport, allowPrivateNetwork bool) {
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	configureNetHTTPDialer(transport, allowPrivateNetwork, net.DefaultResolver.LookupIP, dialer.DialContext)
+}
+
+// configureNetHTTPDialer is ConfigureNetHTTPDialer with injectable DNS resolution and dialing.
+func configureNetHTTPDialer(
+	transport *http.Transport,
+	allowPrivateNetwork bool,
+	lookupIP func(ctx context.Context, network, host string) ([]net.IP, error),
+	dial func(ctx context.Context, network, addr string) (net.Conn, error),
+) {
+	// Proxy host:port values transport.Proxy has returned. Bounded by the configured proxy and
+	// the environment proxies, so it stays a handful of entries for the transport's lifetime.
+	var proxyAddrs sync.Map
+	if proxy := transport.Proxy; proxy != nil {
+		transport.Proxy = func(req *http.Request) (*url.URL, error) {
+			proxyURL, err := proxy(req)
+			if err == nil && proxyURL != nil {
+				addr := netHTTPProxyAddr(proxyURL)
+				if _, seen := proxyAddrs.Load(addr); !seen {
+					proxyAddrs.Store(addr, struct{}{})
+				}
+			}
+			return proxyURL, err
+		}
+	}
+	transport.DialContext = func(ctx context.Context, netw, addr string) (net.Conn, error) {
+		if _, isProxy := proxyAddrs.Load(addr); isProxy {
+			return dial(ctx, netw, addr)
+		}
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := lookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no usable address resolved for %s", host)
+		}
+		for _, ip := range ips {
+			if blockErr := checkDialIP(ip, allowPrivateNetwork); blockErr != nil {
+				return nil, blockErr
+			}
+		}
+		ordered := make([]net.IP, 0, len(ips))
+		for _, ip := range ips {
+			if ip.To4() != nil {
+				ordered = append(ordered, ip)
+			}
+		}
+		for _, ip := range ips {
+			if ip.To4() == nil {
+				ordered = append(ordered, ip)
+			}
+		}
+		var lastErr error
+		for _, ip := range ordered {
+			conn, dialErr := dial(ctx, netw, net.JoinHostPort(ip.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		return nil, lastErr
+	}
+}
+
+// netHTTPProxyAddr is the host:port net/http dials for proxyURL, with the scheme's default port.
+func netHTTPProxyAddr(proxyURL *url.URL) string {
+	if proxyURL.Port() != "" {
+		return proxyURL.Host
+	}
+	port := "80"
+	switch proxyURL.Scheme {
+	case "https":
+		port = "443"
+	case "socks5", "socks5h":
+		port = "1080"
+	}
+	return net.JoinHostPort(proxyURL.Hostname(), port)
+}
+
+// configureDialer allows tests to control DNS resolution and TCP dialing without
+// changing global network state. The dial callback receives the configured dialer.
+func configureDialer(
+	client *fasthttp.Client,
+	allowPrivateNetwork bool,
+	lookupIP func(context.Context, string, string) ([]net.IP, error),
+	dial func(*net.Dialer, string, string) (net.Conn, error),
+) *fasthttp.Client {
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
 
@@ -653,7 +842,7 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 				resolveCtx, cancel = context.WithTimeout(resolveCtx, client.ReadTimeout)
 				defer cancel()
 			}
-			ips, resolveErr := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
+			ips, resolveErr := lookupIP(resolveCtx, "ip", host)
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
@@ -663,18 +852,10 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			}
 			var lastErr error
 			for _, ip := range ips {
-				// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
-				if ip.IsUnspecified() {
-					return nil, fmt.Errorf("connection to unspecified IP %s is not allowed", ip)
+				if blockErr := checkDialIP(ip, allowPrivateNetwork); blockErr != nil {
+					return nil, blockErr
 				}
-				if network.IsLinkLocal(ip) {
-					return nil, fmt.Errorf("connection to link-local IP %s is not allowed", ip)
-				}
-				// RFC 1918 blocked unless operator explicitly opted in; loopback always allowed
-				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
-					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
-				}
-				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
+				conn, err = dial(dialer, "tcp", net.JoinHostPort(ip.String(), port))
 				if err == nil {
 					break
 				}
@@ -1858,8 +2039,6 @@ type RequestBodyWithExtraParams interface {
 	GetExtraParams() map[string]interface{}
 }
 
-type RequestBodyConverter func() (RequestBodyWithExtraParams, error)
-
 // IsLargePayloadPassthroughEnabled returns true when large payload mode has already
 // prepared an upstream body reader in context.
 func IsLargePayloadPassthroughEnabled(ctx context.Context) bool {
@@ -2611,69 +2790,115 @@ func StartScopedPhaseSpan(ctx *schemas.BifrostContext, name string) (schemas.Tra
 	return t, h, func() { ctx.SetValue(schemas.BifrostContextKeySpanID, prev) }
 }
 
-// CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
-func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter) ([]byte, *schemas.BifrostError) {
+// CheckContextAndGetRequestBody returns the raw request body when the context asks for it,
+// and otherwise converts the request with requestConverter and marshals the result.
+//
+// The converter returns its concrete body pointer (P), not the RequestBodyWithExtraParams
+// interface. Converters return nil for a request they cannot build, and a nil pointer
+// returned as the interface is a non-nil interface value: it would pass a nil check and
+// then panic in MarshalJSON on the nil receiver. Keeping the pointer type makes the nil
+// check a plain pointer comparison, enforced at every call site by the compiler. Every
+// pointer type shares one GC shape, so this is a single instantiation, and passing the
+// pointer on as an interface does not allocate.
+func CheckContextAndGetRequestBody[B any, P interface {
+	*B
+	RequestBodyWithExtraParams
+}](ctx context.Context, request RequestBodyGetter, requestConverter func() (P, error)) ([]byte, *schemas.BifrostError) {
 	if IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, nil
 	}
-
-	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
-	if !ok {
-		// The converting path splits into two non-overlapping overhead phases so their
-		// costs are attributed separately (and never double-counted): "convertor" for
-		// the Bifrost->provider format conversion, then "request-marshal" for the JSON
-		// encode. The raw-body passthrough branch does neither.
-		ct, chdl := startPhaseSpan(ctx, "convertor")
-		convertedBody, err := requestConverter()
-		if err != nil {
-			if ct != nil {
-				ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
-			}
-			// Caller-fault refusals carry their own 400; everything else is a conversion
-			// bug on our side and keeps the 500 default.
-			if badRequest, ok := AsBifrostBadRequestError(err); ok {
-				return nil, badRequest
-			}
-			return nil, NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
-		}
-		if ct != nil {
-			ct.EndSpan(chdl, schemas.SpanStatusOk, "")
-		}
-		if convertedBody == nil {
-			return nil, NewBifrostOperationError("request body is not provided", nil)
-		}
-
-		mt, mhdl := startPhaseSpan(ctx, "request-marshal")
-		// Indenting is removed to reduce data on wire
-		jsonBody, err := MarshalProviderRequest(convertedBody)
-		if err != nil {
-			if mt != nil {
-				mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
-			}
-			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		// Merge ExtraParams into the JSON if passthrough is enabled
-		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-			extraParams := convertedBody.GetExtraParams()
-			if len(extraParams) > 0 {
-				// Use order-preserving merge to avoid destroying key ordering in
-				// tool schemas and other order-sensitive JSON structures.
-				jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
-				if err != nil {
-					if mt != nil {
-						mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
-					}
-					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		}
-		if mt != nil {
-			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
-		}
-		return jsonBody, nil
-	} else {
+	if rawBody, ok := CheckAndGetRawRequestBody(ctx, request); ok {
 		return rawBody, nil
 	}
+	// The converting path splits into two non-overlapping overhead phases so their costs are
+	// attributed separately (and never double-counted): "convertor" for the Bifrost->provider
+	// format conversion, then "request-marshal" for the JSON encode. The raw-body passthrough
+	// branch does neither.
+	ct, chdl := startPhaseSpan(ctx, "convertor")
+	convertedBody, err := requestConverter()
+	if bifrostErr := endConvertorPhase(ct, chdl, err); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if convertedBody == nil {
+		return nil, NewBifrostOperationError("request body is not provided", nil)
+	}
+	return marshalConvertedRequestBody(ctx, convertedBody)
+}
+
+// CheckContextAndGetRequestBodyFromInterface is CheckContextAndGetRequestBody for a
+// converter that can return more than one concrete body type, such as the custom request
+// converters the OpenAI-compatible handlers accept, so its result can only be the
+// interface. Its nil check sees an untyped nil only: a converter used here must return a
+// literal nil, never a nil concrete pointer, when it has no body. Prefer the generic
+// CheckContextAndGetRequestBody wherever the converter has a single concrete type.
+func CheckContextAndGetRequestBodyFromInterface(ctx context.Context, request RequestBodyGetter, requestConverter func() (RequestBodyWithExtraParams, error)) ([]byte, *schemas.BifrostError) {
+	if IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, nil
+	}
+	if rawBody, ok := CheckAndGetRawRequestBody(ctx, request); ok {
+		return rawBody, nil
+	}
+	ct, chdl := startPhaseSpan(ctx, "convertor")
+	convertedBody, err := requestConverter()
+	if bifrostErr := endConvertorPhase(ct, chdl, err); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if convertedBody == nil {
+		return nil, NewBifrostOperationError("request body is not provided", nil)
+	}
+	return marshalConvertedRequestBody(ctx, convertedBody)
+}
+
+// endConvertorPhase closes the "convertor" phase span and maps a converter error to the
+// client error: caller-fault refusals carry their own 400, everything else is a
+// conversion bug on our side and keeps the 500 default.
+func endConvertorPhase(ct schemas.Tracer, chdl schemas.SpanHandle, err error) *schemas.BifrostError {
+	if err != nil {
+		if ct != nil {
+			ct.EndSpan(chdl, schemas.SpanStatusError, err.Error())
+		}
+		if badRequest, ok := AsBifrostBadRequestError(err); ok {
+			return badRequest
+		}
+		return NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
+	}
+	if ct != nil {
+		ct.EndSpan(chdl, schemas.SpanStatusOk, "")
+	}
+	return nil
+}
+
+// marshalConvertedRequestBody encodes a converted, non-nil body under the
+// "request-marshal" phase and merges its extra params when passthrough is enabled.
+func marshalConvertedRequestBody(ctx context.Context, convertedBody RequestBodyWithExtraParams) ([]byte, *schemas.BifrostError) {
+	mt, mhdl := startPhaseSpan(ctx, "request-marshal")
+	// Indenting is removed to reduce data on wire
+	jsonBody, err := MarshalProviderRequest(convertedBody)
+	if err != nil {
+		if mt != nil {
+			mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+		}
+		return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+	// Merge ExtraParams into the JSON if passthrough is enabled
+	if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		extraParams := convertedBody.GetExtraParams()
+		if len(extraParams) > 0 {
+			// Use order-preserving merge to avoid destroying key ordering in
+			// tool schemas and other order-sensitive JSON structures.
+			jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
+			if err != nil {
+				if mt != nil {
+					mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
+				}
+				return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+			}
+		}
+	}
+	if mt != nil {
+		mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
+	}
+	return jsonBody, nil
 }
 
 // SetExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.
@@ -3411,6 +3636,12 @@ func IsInvalidRequestError(err error) bool {
 // client-side bad-request errors. Mirrors NewBifrostTimeoutError; IsBifrostError
 // is false because the upstream provider is the cause.
 func NewBifrostUpstreamConnectionError(message string, err error) *schemas.BifrostError {
+	// A dial the network policy refused is a configuration problem the operator can fix, so
+	// its message (which names the setting) replaces the generic one.
+	var blocked *DialBlockedError
+	if errors.As(err, &blocked) {
+		message = blocked.Error()
+	}
 	statusCode := 502
 	errorType := schemas.ProviderConnectionFailed
 	return &schemas.BifrostError{
@@ -3743,6 +3974,7 @@ func ProcessAndSendResponse(
 		// Even if skipping, complete the deferred span if this is the final chunk
 		if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 			if final, ok := isFinalChunk.(bool); ok && final {
+				markStreamTerminalHandled(ctx)
 				completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 			}
 		}
@@ -3761,6 +3993,7 @@ func ProcessAndSendResponse(
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 		if final, ok := isFinalChunk.(bool); ok && final {
+			markStreamTerminalHandled(ctx)
 			completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 		}
 	}
@@ -3786,6 +4019,7 @@ func ProcessAndSendBifrostError(
 		// Even if skipping, complete the deferred span if this is the final chunk
 		if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 			if final, ok := isFinalChunk.(bool); ok && final {
+				markStreamTerminalHandled(ctx)
 				completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 			}
 		}
@@ -3799,9 +4033,97 @@ func ProcessAndSendBifrostError(
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 		if final, ok := isFinalChunk.(bool); ok && final {
+			markStreamTerminalHandled(ctx)
 			completeDeferredSpan(ctx, processedResponse, processedError, postHookSpanFinalizer)
 		}
 	}
+}
+
+// ErrStreamPanicMessage is the client-facing message of the terminal error chunk a
+// provider stream emits after RecoverStreamPanic catches a panic on its goroutine.
+const ErrStreamPanicMessage = "internal error while streaming the provider response"
+
+// streamTerminalHandledKey marks, on a provider stream's context, that its final chunk
+// went through a send helper: delivered to the client, or deliberately dropped by a
+// plugin's stream-control skip. StreamEndIndicator cannot carry this: providers set it
+// before the final chunk is traced and post-hooked, so a panic there would otherwise
+// look like a stream that already ended.
+type streamTerminalHandledKey struct{}
+
+// markStreamTerminalHandled records that the client's final chunk was handled. While a
+// provider-injected tool loop has another turn pending, this stream's final chunk is not
+// the client's (the loop sets the flag before handing the chunk back as a skip), so the
+// marker is left unset for the turn that really ends the client stream.
+func markStreamTerminalHandled(ctx *schemas.BifrostContext) {
+	if pending, _ := ctx.Value(schemas.BifrostContextKeyStreamTurnPending).(bool); pending {
+		return
+	}
+	ctx.SetValue(streamTerminalHandledKey{}, true)
+}
+
+func streamTerminalHandled(ctx *schemas.BifrostContext) bool {
+	handled, _ := ctx.Value(streamTerminalHandledKey{}).(bool)
+	return handled
+}
+
+// PanicSummary describes a recovered panic value without echoing arbitrary content.
+// Runtime errors keep their message (runtime-generated, no request data); any other
+// value is reduced to its type, since a panic value can wrap request content or secrets.
+func PanicSummary(r any) string {
+	if rerr, ok := r.(runtime.Error); ok {
+		return rerr.Error()
+	}
+	return fmt.Sprintf("%T", r)
+}
+
+// RecoverStreamPanic is deferred by every provider streaming goroutine, directly after
+// the defer that closes responseChan, so it runs first while the channel is still open.
+// Nothing above that goroutine can catch a panic in it (a chunk converter, a decoder, or
+// the post-hook runner), so without this a single bad chunk ends the whole process.
+//
+// It logs the panic and, unless the stream is already cancelled or its final chunk was
+// already handled by a send helper (see streamTerminalHandledKey), sends one terminal 500 error chunk through the post-hooks, the same path
+// HandleStreamCancellation uses, so logging and billing record the failure and the client
+// sees an error instead of a silently truncated stream. A second panic while sending is
+// logged and dropped; the close defer that runs next still ends the stream.
+func RecoverStreamPanic(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if logger == nil {
+		logger = getLogger()
+	}
+	logger.Error("recovered from panic in provider stream goroutine: %s\n%s", PanicSummary(r), debug.Stack())
+	// A cancelled or timed-out stream gets its terminal chunk from the cancellation defer.
+	if ctx == nil || ctx.Err() != nil || postHookRunner == nil {
+		return
+	}
+	if streamTerminalHandled(ctx) {
+		return // the final chunk already went out
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	defer func() {
+		if r2 := recover(); r2 != nil {
+			logger.Error("recovered from panic while sending the stream panic error: %s", PanicSummary(r2))
+		}
+	}()
+	panicErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     schemas.Ptr(500),
+		Error: &schemas.ErrorField{
+			Message: ErrStreamPanicMessage,
+			Type:    schemas.Ptr("server_error"),
+		},
+	}
+	attachBilledUsageFromContext(ctx, panicErr)
+	ProcessAndSendBifrostError(ctx, postHookRunner, panicErr, responseChan, logger, postHookSpanFinalizer)
 }
 
 // EnsureStreamFinalizerCalled invokes the post-hook span finalizer registered
@@ -4308,6 +4630,11 @@ func ProcessAndSendError(
 	var carrier BifrostErrorCarrier
 	if errors.As(err, &carrier) {
 		if typed := carrier.BifrostError(); typed != nil {
+			// A classified reader error (a Bedrock InvokeModel exception frame) bills
+			// the reported usage too; usage it already carries is kept.
+			if typed.ExtraFields.BilledUsage == nil {
+				attachBilledUsageFromContext(ctx, typed)
+			}
 			ProcessAndSendBifrostError(ctx, postHookRunner, typed, responseChan, logger, postHookSpanFinalizer)
 			return
 		}
@@ -4320,6 +4647,9 @@ func ProcessAndSendError(
 			Error:   err,
 		},
 	}
+	// A read error (an idle timeout, a dropped connection) ends the stream like a
+	// cancel does, so it bills the usage the provider already reported.
+	attachBilledUsageFromContext(ctx, bifrostError)
 	processedResponse, processedError := postHookRunner(ctx, nil, bifrostError)
 
 	if HandleStreamControlSkip(processedError) {
@@ -4339,6 +4669,9 @@ func ProcessAndSendError(
 	}
 
 	GateSendChunk(ctx, streamResponse, responseChan)
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		markStreamTerminalHandled(ctx)
+	}
 }
 
 // SendStreamTruncatedError surfaces an upstream stream that ended without a

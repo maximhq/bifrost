@@ -317,21 +317,34 @@ func TestHandleAuthorize_ClientIDMetadataDocument(t *testing.T) {
 	h.handleAuthorize(ctx)
 	require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), "a document preferring another auth method but supporting none still authorizes: %s", ctx.Response.Body())
 	assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
+
+	// Capped below 2025-11-25, /mcp offers no metadata documents, so a new sign-in with one is refused unfetched.
+	h.store.ClientConfig.MCPServerMaxProtocolVersion = schemas.MCPProtocolVersion20250618
+	clientID = host.document("/capped.json", nil, nil)
+	fetches := host.fetches.Load()
+	ctx = getCtx("/oauth2/authorize?" + query("http://127.0.0.1:3000/callback"))
+	h.handleAuthorize(ctx)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.Contains(t, string(ctx.Response.Body()), "invalid_client")
+	assert.Equal(t, fetches, host.fetches.Load(), "the document is not fetched")
 }
 
 // TestHandleToken_RefreshAsAMetadataDocumentClient pins that a client identified by a Client ID
-// Metadata Document refreshes by the grant types its document lists, as a registered client does by
-// the ones it registered. Such a client is never in the store, so a store-only lookup refused every
-// one of its refreshes.
+// Metadata Document refreshes the grant it was issued whatever grant types its document lists, and
+// without its document being fetched again: a refresh needs only the refresh token and the client_id
+// it was issued to, so a document that has since gone away does not end the grant.
 func TestHandleToken_RefreshAsAMetadataDocumentClient(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		grantTypes any
-		wantStatus int
+		gone       bool
+		capped     bool
 	}{
-		{name: "document lists refresh_token", grantTypes: []string{"authorization_code", "refresh_token"}, wantStatus: fasthttp.StatusOK},
-		{name: "document also lists a grant this server does not offer", grantTypes: []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"}, wantStatus: fasthttp.StatusOK},
-		{name: "document omits grant_types", grantTypes: nil, wantStatus: fasthttp.StatusBadRequest},
+		{name: "document lists refresh_token", grantTypes: []string{"authorization_code", "refresh_token"}},
+		{name: "document also lists a grant this server does not offer", grantTypes: []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"}},
+		{name: "document omits grant_types", grantTypes: nil},
+		{name: "document is no longer served", grantTypes: []string{"authorization_code", "refresh_token"}, gone: true},
+		{name: "mcp is capped below metadata documents", grantTypes: []string{"authorization_code", "refresh_token"}, capped: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, store, _ := newIssuanceHandler(t)
@@ -347,14 +360,19 @@ func TestHandleToken_RefreshAsAMetadataDocumentClient(t *testing.T) {
 				BfMode: "vk", BfSub: "vk-1", Scope: "mcp", Resource: testMCPResource, CreatedAt: time.Now(),
 			}))
 
+			if tc.gone {
+				delete(host.docs, "/client.json")
+			}
+			if tc.capped {
+				h.store.ClientConfig.MCPServerMaxProtocolVersion = schemas.MCPProtocolVersion20250618
+			}
+
 			ctx := formPostCtx(url.Values{
 				"grant_type": {"refresh_token"}, "refresh_token": {"refresh-vk-1"}, "client_id": {clientID},
 			}.Encode())
 			h.handleToken(ctx)
-			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
-			if tc.wantStatus == fasthttp.StatusBadRequest {
-				assert.Contains(t, string(ctx.Response.Body()), "client is not registered for the refresh_token grant")
-			}
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Zero(t, host.fetches.Load(), "a refresh does not fetch the client's document")
 		})
 	}
 }

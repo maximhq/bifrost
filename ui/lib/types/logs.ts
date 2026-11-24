@@ -458,6 +458,7 @@ export interface ToolCall {
 	type?: string;
 	id?: string;
 	function: FunctionCall;
+	custom?: { name?: string; input?: string };
 }
 
 // Model parameters types
@@ -614,6 +615,11 @@ export interface GuardrailJudgeCall {
 	prompt_tokens?: number;
 	completion_tokens?: number;
 	total_tokens?: number;
+	// External guardrail service calls report vendor usage units instead of
+	// tokens, plus their USD cost at the vendor's list price. The cost is
+	// display-only: it is never part of the request cost or budgets.
+	usage_units?: Record<string, number>;
+	estimated_cost?: number;
 }
 
 // GuardrailMatch is one rule match recorded in guardrail_debug: a detect-only
@@ -802,6 +808,8 @@ export interface LogEntry {
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
 	routing_rule_name?: string;
+	model_router_id?: string; // The model router that took the request after the routing rules
+	model_router_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
 	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
@@ -914,6 +922,7 @@ export interface LogFilters {
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
 	routing_rule_ids?: string[];
+	model_router_ids?: string[]; // Requests a model router took
 	routing_engine_used?: string[]; // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
@@ -1498,6 +1507,7 @@ export interface MCPToolLogEntry {
 	id: string;
 	llm_request_id?: string; // Links to the LLM request that triggered this tool call
 	session_id?: string;
+	round_trip_id?: string; // Shared by every round of one gateway tool call that asked its caller for input
 	timestamp: string; // ISO string format
 	tool_name: string;
 	server_label?: string; // MCP server that provided the tool
@@ -1509,8 +1519,8 @@ export interface MCPToolLogEntry {
 	error_details?: BifrostError;
 	latency?: number; // Execution time in milliseconds
 	cost?: number; // Cost in dollars (per execution cost)
-	status: string; // "processing", "success", or "error"
-	metadata?: Record<string, string>;
+	status: string; // "processing", "success", "error", or "input_required" (the server asked the caller for input)
+	metadata?: Record<string, unknown>;
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	redaction_mapping?: RedactionMapping; // Present on detail responses only when the caller has Logs:Reveal
 	created_at: string; // ISO string format
@@ -1537,6 +1547,7 @@ export interface MCPToolLogFilters {
 	agent_names?: string[];
 	session_id?: string;
 	agent_correlation_id?: string;
+	round_trip_id?: string;
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
 	period?: string; // "1h","6h","24h","7d","30d","today","this_week","this_month"; resolved server-side, takes precedence over start_time/end_time
@@ -1550,9 +1561,19 @@ export interface MCPToolLogFilters {
 // MCP Tool Log Statistics
 export interface MCPToolLogStats {
 	total_executions: number;
+	success_count: number;
+	error_count: number;
+	cancelled_count: number;
+	/** Over finished calls, cancelled ones counted, as the LLM logs stats measure it. */
 	success_rate: number;
 	average_latency: number;
 	total_cost: number; // Total cost in dollars
+}
+
+/** GET /api/mcp-logs/stats with compare_to_previous=true: the window's stats plus the preceding window's. */
+export interface MCPToolLogStatsResponse extends MCPToolLogStats {
+	previous?: MCPToolLogStats;
+	has_previous_period?: boolean;
 }
 
 // MCP Tool Log Search Response
@@ -1563,12 +1584,23 @@ export interface MCPToolLogsResponse {
 }
 
 // MCP Tool Log Filter Data Response
+// An id and its display name, as an MCP log filter dimension offers it.
+export interface MCPToolLogFilterEntity {
+	id: string;
+	name: string;
+}
+
 export interface MCPToolLogFilterData {
 	tool_names: string[];
 	server_labels: string[];
 	apps: string[];
 	user_agents: string[];
 	virtual_keys: VirtualKey[];
+	users: MCPToolLogFilterEntity[];
+	teams: MCPToolLogFilterEntity[];
+	customers: MCPToolLogFilterEntity[];
+	business_units: MCPToolLogFilterEntity[];
+	projects: MCPToolLogFilterEntity[];
 }
 
 // WebSocket message types for MCP tool logs
@@ -1660,7 +1692,17 @@ export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
 }
 
-export type RankingDimension = "team" | "customer" | "business_unit" | "project" | "user" | "app" | "user_agent" | "virtual_key";
+export type RankingDimension =
+	| "team"
+	| "customer"
+	| "business_unit"
+	| "project"
+	| "user"
+	| "app"
+	| "user_agent"
+	| "virtual_key"
+	| "model_router"
+	| "complexity_tier";
 
 export interface DimensionRankingTrend {
 	has_previous_period: boolean;

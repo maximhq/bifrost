@@ -751,7 +751,7 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 |-------|----------|-----------------|-------|
 | `client_id` | Yes | Yes | Noma client credential ID |
 | `client_secret` | Yes | Yes | Noma client credential secret |
-| `application_id` | Yes | **Plain only** | Noma application whose Runtime Protection profile decides each action |
+| `application_id` | No | **Plain only** | Noma application whose Runtime Protection profile decides each action. When empty, each request reports to an application named after its virtual key |
 | `base_url` | No | Yes | Noma API root or broker URL. Defaults to `https://api.noma.security` |
 | `redaction_strategy` | No | **Plain only** | `replace` (default), `mask`, or `hash` for masked values |
 | `redaction_mode` | No | **Plain only** | `runtime` (default), `logs_only`, or `runtime_reversible` |
@@ -780,6 +780,8 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | Field | Required | env.\* supported | Notes |
 |-------|----------|-----------------|-------|
 | `ignored_secret_keywords` | No | **Plain only** | String array of substrings used to suppress known false-positive secret matches |
+| `disabled_rules` | No | **Plain only** | String array of rule IDs to turn off for this provider. See [Rule Overrides](/enterprise/guardrails/secrets-detection#rule-overrides) |
+| `rule_entropy` | No | **Plain only** | Map of rule ID to an entropy threshold from `0` to `6` that replaces the rule's default; `0` turns off the entropy check |
 | `action` | No | **Plain only** | `detect_only` \| `block` \| `redact` (default: `block`) |
 | `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
 | `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
@@ -909,7 +911,9 @@ Target-specific variables are isolated. For example, `model` is unavailable to M
 | `evaluation_mode` | No | `bundled` (default) sends all selected turns in one guardrail call; `per_turn` evaluates each turn in isolation and uses more provider calls |
 | `stream_replay_event_interval_ms` | No | Delay in milliseconds between buffered events after block-capable streaming output guardrails allow the response. `0` sends buffered events immediately; maximum `1000` |
 | `output_mode` | No | `enforce` (default) acts on output matches; `monitor` delivers the response untouched and only logs what the output guardrails would do. Requires `apply_to` `output` or `both`. See [Monitor Mode](/enterprise/guardrails#monitor-mode) |
-| `provider_config_ids` | No | `id` values of providers to invoke when this rule matches. Multiple providers run in parallel |
+| `input_timing` | No | `pre_call` (default) finishes the input check before the request is sent; `parallel` runs it alongside the LLM call and enforces only blocks. `parallel` requires an LLM rule with `apply_to` `input` or `both` |
+| `provider_config_ids` | No | `id` values of providers to invoke when this rule matches, in execution order. See [Profile Execution Order](/enterprise/guardrails#profile-execution-order) |
+| `profile_execution_mode` | No | `independent` (default) gives every provider the original payload; `chained` gives each provider the payload as earlier ones redacted or transformed it. See [Chained Profile Execution](/enterprise/guardrails#chained-profile-execution) |
 
 `send_all_conversation_turns`, `max_turns_to_send`, `evaluation_mode`, `stream_replay_event_interval_ms`, and `output_mode` configure LLM conversation and streaming behavior. They do not change MCP tool execution behavior.
 

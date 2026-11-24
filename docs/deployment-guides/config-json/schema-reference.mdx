@@ -35,6 +35,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `vector_store` | object | Vector database for semantic cache - Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
 | `plugins` | array | Opt-in plugins: `semantic_cache`, `otel`, `maxim`, `datadog`, custom | [Plugins](/deployment-guides/config-json/plugins) |
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
+| `datasheet_overrides` | array | Edits to the synced model datasheet (limits, capabilities, base prices) and custom models, re-applied after every sync | [Datasheet Editor](/providers/datasheet-editor) |
 | `mcp` | object | MCP server and tool configuration | [MCP](#mcp) |
 | `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
 | `server` | object | HTTP server settings read at startup: header buffer size, URL path prefix, body buffer pooling, plugin download allowlist, Agent Gateway gRPC | [Server](#server) |
@@ -109,10 +110,14 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `mcp_tool_execution_timeout` | integer or string | `30` | Per-tool execution timeout in seconds (integer = seconds, string = Go duration like "30s", "2m") |
 | `mcp_tool_sync_interval` | integer | `10` | Tool sync interval in minutes (`0` = default of 10 minutes) |
 | `mcp_disable_auto_tool_inject` | boolean | `false` | Disable automatic MCP tool injection |
+| `mcp_openapi_max_spec_mb` | integer | `0` | Size limit in MiB on an OpenAPI MCP server's spec (`0` = default of 32, maximum 256). A pasted or uploaded spec is sent inside a JSON request body, so it is also capped by `max_request_body_size_mb`: to accept a larger one, set that above the spec size with headroom for JSON escaping, and restart the server, since the body limit is read at startup. A request that sends only `spec_url` is not subject to that cap, since the server fetches the document itself; the dashboard, however, saves a URL import as the inline document its preview fetched, so a URL import larger than `max_request_body_size_mb` fails there |
+| `bifrost_url` | string or secret reference | - | The gateway's public base URL (scheme, host and base path) as clients reach it through your proxy. Required for the [Bifrost MCP server](/features/bifrost-mcp-server) at `/v1/mcp`: its tool calls arrive as if through it, so the URLs their routes build use it. Unset disables it; the `Host` the client sent is never used instead |
+| `bifrost_mcp_allow_writes` | boolean | `true` | Whether `/v1/mcp` serves the non-GET `/api` operations as tools. Routes outside `/api` (inference, batch, files) are served either way, and every call is authorized by the caller's own credential |
 | `async_job_result_ttl` | integer | `3600` | TTL for async job results in seconds |
 | `disable_db_pings_in_health` | boolean | `false` | Exclude DB connectivity from `/health` |
 | `routing_chain_max_depth` | integer | `10` | Max routing rule chain evaluation depth |
 | `mcp_external_client_url` | string \| EnvVar | - | Public base URL used as `redirect_uri` against upstream MCP OAuth providers; supports `"env.MY_VAR"` |
+| `mcp_client_metadata_url` | string \| EnvVar | - | Full HTTPS URL where you host Bifrost's client metadata document for upstream MCP servers that cannot reach Bifrost; when unset, Bifrost serves it itself. Supports `"env.MY_VAR"` |
 | `a2a_private_allowlist` | array of strings | `[]` | Private hosts, IPs, or CIDRs permitted for Agent Gateway card, OAuth, and runtime connections; link-local and metadata addresses stay blocked |
 | `a2a_external_client_url` | string or secret reference | - | Public base URL required for Agent Gateway protocol operations; management remains available when unset |
 | `skills_external_client_url` | string or secret reference | - | Public base URL required for skills marketplace registration and serving; skill management and downloads remain available when unset |
@@ -163,7 +168,7 @@ Origin approval applies even without configured runtime credentials. It does not
 
 Keyed by provider name. Each entry contains a `keys` array and optional `network_config`, `concurrency_and_buffer_size`, `proxy_config`.
 
-Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`, `minimax`, `byteplus`.
+Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`, `minimax`, `byteplus`, `baseten`, `kimchi`, `soniox`.
 
 Full documentation: [Provider Setup](/deployment-guides/config-json/providers).
 
@@ -406,6 +411,7 @@ Controls model pricing catalog sync and background model discovery:
 | `pricing.pricing_url` | LiteLLM catalog | URL of a model pricing JSON file |
 | `pricing.pricing_sync_interval` | `86400` | Sync interval in seconds (minimum: `3600`) |
 | `pricing.live_models_sync_interval` | `3600` | How often each provider's model list is re-fetched, in seconds. `0` disables it (minimum when enabled: `60`) |
+| `pricing.openapi_url` | Unset | OpenAPI spec `/v1/mcp` builds its tools from: an http(s) URL, or a path relative to the app directory for air-gapped installs (absolute paths and paths leaving it are refused). Unset reads `https://getbifrost.ai/openapi-oss.json`. Saving a new value rebuilds `/v1/mcp` from it. If the new spec cannot be loaded, the previous tools stay in service and the new spec is tried again on a later settings save or on restart. A save that also turns off `client.bifrost_mcp_allow_writes` or clears `client.bifrost_url` never leaves the previous, broader tools in service: `/v1/mcp` either serves within the new settings or answers `503` and retries in the background |
 
 ### Background model discovery
 
@@ -469,6 +475,7 @@ Common fields on each `client_configs` entry:
 | `tools_to_auto_execute` | array | Subset of `tools_to_execute` that runs without user confirmation |
 | `headers` | object | Static admin headers (used by `headers` and as additions on `per_user_headers`) |
 | `is_code_mode_client` | boolean | Wrap tools as Python code-mode helpers instead of raw tool calls |
+| `server_type_on_slug` | string | Code Mode on this client's own `/mcp/<slug>` endpoint only: `"inherit"` (default) follows `is_code_mode_client`, `"enabled"` turns Code Mode on there, `"disabled"` serves the client's tools directly there. `/mcp`, Virtual MCP endpoints and LLM requests always follow `is_code_mode_client`. See [Code Mode on a server's own endpoint](/mcp/code-mode#code-mode-on-a-servers-own-endpoint). |
 | `needs_session_stickiness` | boolean | HTTP-only, and only meaningful for `oauth`/`headers`/`none` (per-user auth types are always per-call). `true` holds one persistent upstream connection reused for every tool call; `false`/omitted (default) dials fresh per tool call. Cannot be `false` for `connection_type` `"sse"`/`"stdio"` — both are always sticky. See [Session Stickiness](/mcp/connecting-to-servers#session-stickiness-http-only). |
 | `is_ping_available` | boolean | Default `true`. Whether the MCP server supports a lightweight ping for health checks; `false` falls back to a full `listTools` call instead. |
 | `require_public_target` | boolean | Server-managed, default `false`. Set to `true` when the client was registered over the management API without an admin credential check; every connection to the MCP server (initial, reconnect, per-call) must then resolve to a public address. Once stored as `true` it is never cleared by the API or by config.json reconciliation; declaring it `true` here is honored. |
@@ -594,7 +601,7 @@ HTTP server settings. Every field is deploy-time only: Bifrost reads them once a
 | `read_buffer_size` | integer | `65536` | Buffer size in bytes for reading HTTP request headers. Requests whose headers do not fit are rejected with `431`. |
 | `base_path` | string | unset (domain root) | URL path prefix Bifrost is served under behind a reverse proxy, for example `/bifrost` for `https://example.com/bifrost/`. Nested prefixes such as `/tools/llm-gw` work. The `-base-path` flag and the `BIFROST_BASE_PATH` environment variable take precedence. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix). |
 | `body_buffer_pool_limit_bytes` | integer | `4194304` (4 MiB) | Largest request-body buffer a keep-alive connection keeps for reuse. Larger buffers are released after each request; larger bodies are still accepted. `0` keeps every buffer. Also applies to outbound request buffers. |
-| `plugin_download_private_allowlist` | array of strings | unset | Hostnames, IP addresses or CIDR ranges that custom plugin (`.so`) downloads may reach even when they resolve to a private, loopback, link-local or CGNAT address. Blocked by default to prevent SSRF. Not settable through the plugin API. |
+| `plugin_download_private_allowlist` | array of strings | unset | Hostnames, IP addresses or CIDR ranges that custom plugin (`.so`) downloads may reach even when they resolve to a private, loopback, link-local or CGNAT address. Blocked by default to prevent SSRF. Not settable through the plugin API. Every plugin download, `.so` or `.wasm`, also needs its host listed in the `BIFROST_PLUGIN_URL_ALLOWLIST` environment variable: comma separated hosts, `.example.com` or `*.example.com` for subdomains, `*` for any host. It is empty by default, so no plugin is downloaded until you list its host. The list also applies to every redirect. |
 | `a2a_grpc_base_domain` | string | unset | Base domain for the Agent Gateway's shared gRPC listener. Needs a wildcard DNS record for `*.<base-domain>`. See [Enable gRPC](/features/agent-gateway/configuration#enable-grpc). |
 | `a2a_grpc_port` | integer | unset | Public port advertised for that gRPC listener. gRPC stays off while this or `a2a_grpc_base_domain` is unset. `BIFROST_A2A_GRPC_LISTEN_PORT` overrides the local bind port. |
 | `a2a_allow_private_push_callbacks` | boolean | `false` | Allows Agent push delivery to loopback and private network addresses. For development and test environments only. |
@@ -606,7 +613,7 @@ HTTP server settings. Every field is deploy-time only: Bifrost reads them once a
 - The first segment must not match a Bifrost route (such as `api`, `v1`, `openai` or `health`), a dashboard page root (`workspace`, `login`, `oauth`, `agent`, `pprof`) or a top-level dashboard file path (such as `assets` or `images`). Bifrost refuses to start otherwise.
 - Passing `-base-path /` (or `BIFROST_BASE_PATH=/`) forces the domain root even when `config.json` sets a prefix.
 - Requests are accepted with or without the prefix, so health checks and probes can stay on `/health`.
-- Public URLs you set explicitly, such as `client.mcp_external_client_url`, `client.a2a_external_client_url`, `client.skills_external_client_url` and `client.oauth2_server_config.issuer_url`, must include the prefix themselves.
+- Public URLs you set explicitly, such as `client.bifrost_url`, `client.mcp_external_client_url`, `client.a2a_external_client_url`, `client.skills_external_client_url` and `client.oauth2_server_config.issuer_url`, must include the prefix themselves.
 - OAuth discovery for an issuer with a prefix lives at the host root (`https://example.com/.well-known/oauth-authorization-server/bifrost`, per RFC 8414), so the proxy must also forward `/.well-known/` to Bifrost.
 
 ---

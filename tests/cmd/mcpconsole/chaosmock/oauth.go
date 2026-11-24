@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -74,6 +75,9 @@ type OAuthConfig struct {
 	// under an address nothing resolves can then be served by a local process.
 	// Empty fetches the document URL itself.
 	MetadataDocumentsVia string `json:"metadata_documents_via,omitempty"`
+	// MetadataDocumentsViaHosts overrides MetadataDocumentsVia per document host, so one host can be
+	// unreachable (a closed port) while another, a hosted copy, is served.
+	MetadataDocumentsViaHosts map[string]string `json:"metadata_documents_via_hosts,omitempty"`
 }
 
 // validate rejects a configuration the server would otherwise misread.
@@ -88,6 +92,12 @@ func (c *OAuthConfig) validate() error {
 		via, err := url.Parse(c.MetadataDocumentsVia)
 		if err != nil || (via.Scheme != "http" && via.Scheme != "https") || via.Host == "" {
 			return fmt.Errorf("oauth metadata_documents_via must be an http or https URL, got %q", c.MetadataDocumentsVia)
+		}
+	}
+	for host, base := range c.MetadataDocumentsViaHosts {
+		via, err := url.Parse(base)
+		if err != nil || (via.Scheme != "http" && via.Scheme != "https") || via.Host == "" {
+			return fmt.Errorf("oauth metadata_documents_via_hosts[%q] must be an http or https URL, got %q", host, base)
 		}
 	}
 	for _, client := range c.Clients {
@@ -254,10 +264,13 @@ func newOAuthState() *oauthState {
 	}
 }
 
-// addClient registers c, replacing a client with the same id.
+// addClient registers c, a client declared up front, replacing a client with the
+// same id. A declared client is never a dynamic one, whatever its dynamic field
+// says, so forget keeps it.
 func (o *oauthState) addClient(c OAuthClient) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	c.Dynamic = false
 	o.putClient(c)
 }
 
@@ -403,6 +416,34 @@ func (o *oauthState) revoke(identity, token string) int {
 	return n
 }
 
+// forget drops every dynamically registered client and ends its grants, the
+// way an authorization server that does not keep its registrations (one that
+// loses them on restart, or once their tokens expire) stops recognising them:
+// authorize answers an unknown client_id, refresh gets invalid_client, and
+// their access tokens fail at the protected resource. A client registered up
+// front is kept. Returns how many clients it dropped.
+func (o *oauthState) forget() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	n := 0
+	kept := make([]string, 0, len(o.order))
+	for _, id := range o.order {
+		if c := o.clients[id]; c != nil && c.Dynamic {
+			delete(o.clients, id)
+			n++
+			continue
+		}
+		kept = append(kept, id)
+	}
+	o.order = kept
+	for _, g := range o.grants {
+		if _, known := o.clients[g.clientID]; !known {
+			g.revoked = true
+		}
+	}
+	return n
+}
+
 // issueAccess mints an access token for g. Callers hold o.mu.
 func (o *oauthState) issueAccess(g *oauthGrant, ttl time.Duration) string {
 	token := "at_" + randomID()
@@ -459,7 +500,8 @@ func (o *oauthState) snapshot() *OAuthState {
 // the server publishes is built from it, so a client that dialled 127.0.0.1 is
 // sent back to 127.0.0.1 rather than to a name its network policy may refuse.
 func baseURL(r *http.Request) string {
-	if r.TLS != nil {
+	// X-Forwarded-Proto comes from the mock's own TLS-inspecting proxy, which relays decrypted https as http.
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
 		return "https://" + r.Host
 	}
 	return "http://" + r.Host
@@ -806,7 +848,7 @@ func (s *Server) resolveMetadataDocument(cfg *OAuthConfig, clientID string) {
 	if known {
 		return
 	}
-	client, err := fetchMetadataDocument(cfg.MetadataDocumentsVia, clientID)
+	client, err := fetchMetadataDocument(cfg.documentsVia(clientID), clientID)
 
 	s.oauth.mu.Lock()
 	defer s.oauth.mu.Unlock()
@@ -818,6 +860,16 @@ func (s *Server) resolveMetadataDocument(cfg *OAuthConfig, clientID string) {
 		s.oauth.putClient(client)
 	}
 	s.oauth.record(entry)
+}
+
+// documentsVia is the base a document is fetched through: its host's override, else MetadataDocumentsVia.
+func (c *OAuthConfig) documentsVia(clientID string) string {
+	if u, err := url.Parse(clientID); err == nil {
+		if via, ok := c.MetadataDocumentsViaHosts[u.Hostname()]; ok {
+			return via
+		}
+	}
+	return c.MetadataDocumentsVia
 }
 
 // fetchMetadataDocument fetches the document at clientID, through via when it

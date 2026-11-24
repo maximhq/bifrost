@@ -114,7 +114,8 @@ func withCallerCapabilities(ctx context.Context) context.Context {
 }
 
 // withInputResumption records the answers and requestState a 2026-07-28 caller sent when retrying a
-// tools/call that needed input, so core forwards them to the upstream that asked.
+// tools/call that needed input, so core forwards them to the upstream that asked. A requestState Bifrost
+// wrapped is split: the upstream gets its own state back and the round-trip id goes on ctx.
 func withInputResumption(ctx context.Context, params mcp.MultiRoundTripParams) context.Context {
 	if len(params.InputResponses) == 0 && params.RequestState == "" {
 		return ctx
@@ -123,7 +124,13 @@ func withInputResumption(ctx context.Context, params mcp.MultiRoundTripParams) c
 		return ctx
 	}
 	resume := params
-	return context.WithValue(ctx, schemas.BifrostContextKeyMCPInputResumption, &resume)
+	id, upstream := coremcp.UnwrapRoundTripState(params.RequestState)
+	resume.RequestState = upstream
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyMCPInputResumption, &resume)
+	if id != "" {
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, id)
+	}
+	return ctx
 }
 
 func (h *MCPServerHandler) getPrompt(ctx context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {

@@ -301,7 +301,7 @@ func TestApplyInjectedTools_CustomChoiceForReplacedToolPinsInjectedFunction(t *t
 	require.NotNil(t, set)
 
 	chat := applyInjectedToolsChat(&schemas.BifrostChatRequest{Params: &schemas.ChatParameters{
-		Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeCustom, Name: "apply_patch", Custom: &schemas.ChatToolCustom{}}},
+		Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeCustom, Custom: &schemas.ChatToolCustom{Name: "apply_patch"}}},
 		ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
 			Type: schemas.ChatToolChoiceTypeCustom, Custom: &schemas.ChatToolChoiceCustom{Name: "apply_patch"},
 		}},
@@ -627,10 +627,14 @@ func TestRunInjectedResponsesLoop_ExecutesInjectedCalls(t *testing.T) {
 	set := testInjectedSet(t)
 	var sent []*schemas.BifrostResponsesRequest
 	scripted := []*schemas.BifrostResponsesResponse{
-		{Output: []schemas.ResponsesMessage{responsesText("Searching."), responsesFunctionCall("c1", "web_search"), responsesFunctionCall("c2", "get_weather")},
-			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11}},
-		{Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
-			Usage: &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22}},
+		{
+			Output: []schemas.ResponsesMessage{responsesText("Searching."), responsesFunctionCall("c1", "web_search"), responsesFunctionCall("c2", "get_weather")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11},
+		},
+		{
+			Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22},
+		},
 	}
 	dispatch := func(req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		sent = append(sent, req)
@@ -664,10 +668,14 @@ func TestRunInjectedResponsesLoop_KeepsAdvisorIterations(t *testing.T) {
 		return []schemas.ResponsesResponseUsage{{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: input, OutputTokens: 1}}
 	}
 	scripted := []*schemas.BifrostResponsesResponse{
-		{Output: []schemas.ResponsesMessage{responsesFunctionCall("c1", "web_search")},
-			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: advisorPass(100)}},
-		{Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
-			Usage: &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22, Iterations: advisorPass(200)}},
+		{
+			Output: []schemas.ResponsesMessage{responsesFunctionCall("c1", "web_search")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: advisorPass(100)},
+		},
+		{
+			Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22, Iterations: advisorPass(200)},
+		},
 	}
 	dispatch := func(*schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		resp := scripted[0]
@@ -828,6 +836,60 @@ func TestRunInjectedLoops_ErrorBillsEarlierTurns(t *testing.T) {
 	require.NotNil(t, err)
 	require.NotNil(t, err.ExtraFields.BilledUsage, "responses: the completed first turn is billed")
 	assert.Equal(t, 7, err.ExtraFields.BilledUsage.PromptTokens)
+}
+
+// A turn cancelled mid-stream carries estimated usage. Adding the earlier turns must keep
+// its estimation marker, or logging takes the sum for provider-reported usage and keeps
+// the partial tokens and cost it captured before the cancel.
+func TestRunInjectedLoops_CancelledTurnKeepsEstimationWhenBillingEarlierTurns(t *testing.T) {
+	set := testInjectedSet(t)
+	cancelled := func() *schemas.BifrostError {
+		return &schemas.BifrostError{
+			Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled), Message: "request cancelled"},
+			ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: &schemas.BifrostLLMUsage{
+				PromptTokens: 20, CompletionTokens: 4, TotalTokens: 24,
+				Estimation: &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"},
+			}},
+		}
+	}
+	assertEstimated := func(t *testing.T, err *schemas.BifrostError, wantPrompt int) {
+		t.Helper()
+		require.NotNil(t, err)
+		billed := err.ExtraFields.BilledUsage
+		require.NotNil(t, billed)
+		assert.Equal(t, wantPrompt, billed.PromptTokens, "the earlier turn is added to the estimate")
+		assert.Equal(t, &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"}, billed.Estimation)
+	}
+
+	calls := 0
+	chatDispatch := func(*schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		calls++
+		if calls == 1 {
+			return chatTurnResponse("", "tool_calls", 10, chatToolCall("c1", "web_search")), nil
+		}
+		return nil, cancelled()
+	}
+	_, err := runInjectedChatLoop(&schemas.BifrostChatRequest{Model: "m"}, set, chatDispatch, searchResult)
+	assertEstimated(t, err, 30)
+
+	rcalls := 0
+	responsesDispatch := func(*schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		rcalls++
+		if rcalls == 1 {
+			return &schemas.BifrostResponsesResponse{
+				Output: []schemas.ResponsesMessage{responsesFunctionCall("c1", "web_search")},
+				Usage:  &schemas.ResponsesResponseUsage{InputTokens: 7, OutputTokens: 1, TotalTokens: 8},
+			}, nil
+		}
+		return nil, cancelled()
+	}
+	_, err = runInjectedResponsesLoop(&schemas.BifrostResponsesRequest{Model: "m"}, set, responsesDispatch, searchResult)
+	assertEstimated(t, err, 27)
+
+	// A first-turn cancel has no earlier turn to add: the estimate passes through untouched.
+	lone := cancelled()
+	billEarlierTurns(lone, nil)
+	assertEstimated(t, lone, 20)
 }
 
 // The last upstream reply's raw bytes stay on the assembled response: logging

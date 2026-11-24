@@ -522,38 +522,56 @@ func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
 	})
 	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist([]string{"127.0.0.1"}))
 	const documentURL = "https://bifrost.example.com/api/oauth/client-metadata.json"
+	const hostedURL = "https://public.example.com/bifrost/client.json"
 
+	const toggle = `,"oauth_config":{"use_client_metadata_document":true}`
 	for _, tc := range []struct {
 		authType   string
 		extra      string // extra request fields
+		hosted     string // mcp_client_metadata_url
+		local      bool   // Bifrost on http://localhost:8080 with no external URL, whose own document cannot be fetched
 		wantStatus int    // header types stop at the stub manager's connect
 		wantCIMD   bool
 	}{
 		{authType: "oauth", extra: `,"oauth_config":{}`, wantStatus: fasthttp.StatusOK, wantCIMD: true},
+		{authType: "oauth", extra: `,"oauth_config":{}`, hosted: hostedURL, wantStatus: fasthttp.StatusOK, wantCIMD: true},
+		// A hosted copy is what lets a local Bifrost use the toggle at all.
+		{authType: "oauth", extra: toggle, local: true, wantStatus: fasthttp.StatusBadRequest},
+		{authType: "oauth", extra: toggle, hosted: hostedURL, local: true, wantStatus: fasthttp.StatusOK, wantCIMD: true},
 		{authType: "per_user_oauth", extra: `,"oauth_config":{}`, wantStatus: fasthttp.StatusOK, wantCIMD: true},
 		{authType: "headers", extra: `,"headers":{"Authorization":"Bearer shared"}`, wantStatus: fasthttp.StatusInternalServerError},
 		{authType: "per_user_headers", extra: `,"per_user_header_keys":["Authorization"],"user_headers":{"Authorization":"Bearer sample"}`, wantStatus: fasthttp.StatusUnprocessableEntity},
 	} {
-		t.Run(tc.authType, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/hosted=%s/local=%v", tc.authType, tc.hosted, tc.local), func(t *testing.T) {
 			SetLogger(&mockLogger{})
 			server, oauthRequests := newLoopbackOAuthMCPServerWithCIMD(t, true)
 			store := newRealOAuth2Store(t)
 			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
-			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
-				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com"),
-			}}
+			base, host := "https://bifrost.example.com", "bifrost.example.com"
+			if tc.local {
+				base, host = "http://localhost:8080", "localhost:8080"
+			}
+			clientConfig := &configstore.ClientConfig{MCPClientMetadataURL: schemas.NewSecretVar(tc.hosted)}
+			if !tc.local {
+				clientConfig.MCPExternalClientURL = schemas.NewSecretVar(base)
+			}
+			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: clientConfig}
 			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
 
 			var req fasthttp.Request
 			req.Header.SetMethod(fasthttp.MethodPost)
 			req.Header.SetContentType("application/json")
-			req.Header.SetHost("bifrost.example.com")
+			req.Header.SetHost(host)
 			req.SetBodyString(`{"name":"cimd_` + tc.authType + `","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"` + tc.authType + `"` + tc.extra + `}`)
 			ctx := initCtx(&req)
 			h.addMCPClient(ctx)
 
 			body := string(ctx.Response.Body())
 			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), body)
+			if tc.local && !tc.wantCIMD {
+				assert.Contains(t, body, "public HTTPS address", "the toggle is refused without a fetchable document")
+				return
+			}
 			if !tc.wantCIMD {
 				assert.Contains(t, body, "manager must not be reached", "reaches the connection step")
 				assert.NotContains(t, body, "authorize_url")
@@ -566,7 +584,12 @@ func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
 			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
 			authorize, err := url.Parse(resp.AuthorizeURL)
 			require.NoError(t, err)
-			assert.Equal(t, documentURL, authorize.Query().Get("client_id"))
+			wantClientID := documentURL
+			if tc.hosted != "" {
+				wantClientID = tc.hosted
+			}
+			assert.Equal(t, wantClientID, authorize.Query().Get("client_id"))
+			assert.Equal(t, base+"/api/oauth/callback", authorize.Query().Get("redirect_uri"), "the callback stays on Bifrost's base")
 			assert.Equal(t, int32(1), oauthRequests.Load(), "metadata fetched once, no dynamic registration")
 		})
 	}
@@ -2764,17 +2787,172 @@ func TestAdminVerification_RecordsTheStepAndKeepsOnlyWhatTheClientUses(t *testin
 }
 
 // TestReauthorizeMCPClient_RefusesAClientStillPendingVerification: a client
-// still needing its first sign-in is sent to initiate-verification.
+// still needing its first sign-in (a config.json client with its bootstrap
+// stash) is sent to initiate-verification by both routes, and nothing is
+// registered.
 func TestReauthorizeMCPClient_RefusesAClientStillPendingVerification(t *testing.T) {
+	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth} {
+		for name, route := range map[string]func(*MCPHandler) func(*fasthttp.RequestCtx){
+			"reauthorize": func(h *MCPHandler) func(*fasthttp.RequestCtx) { return h.reauthorizeMCPClient },
+			"reregister":  func(h *MCPHandler) func(*fasthttp.RequestCtx) { return h.reregisterMCPClient },
+		} {
+			t.Run(string(authType)+"/"+name, func(t *testing.T) {
+				f := newReregisterFixture(t)
+				ctx := context.Background()
+				row, err := f.store.GetMCPClientByID(ctx, reregisterMCPClientID)
+				require.NoError(t, err)
+				require.NoError(t, f.store.DB().Model(row).Updates(map[string]any{"auth_type": string(authType), "pending_verification": true, "pending_oauth_config_json": `{}`}).Error)
+
+				status, _, raw := f.call(t, route(f.handler))
+				assert.Equal(t, fasthttp.StatusBadRequest, status, raw)
+				assert.Contains(t, raw, "use initiate-verification instead")
+				assert.Equal(t, 1, f.as.registrationCount(), "nothing is registered")
+			})
+		}
+	}
+}
+
+// turnPerUserDiscoveryOff makes the fixture's client what turning
+// per_user_discovery off leaves, through the store's own update as the client
+// edit route does it: a per_user_oauth client that keeps its registration, has
+// no admin discovery and no bootstrap stash, and is pending its admin step.
+func (f *reregisterFixture) turnPerUserDiscoveryOff(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	row, err := f.store.GetMCPClientByID(ctx, reregisterMCPClientID)
+	require.NoError(t, err)
+	require.NoError(t, f.store.DB().Model(row).Updates(map[string]any{"auth_type": string(schemas.MCPAuthTypePerUserOauth), "per_user_discovery": true}).Error)
+	row, err = f.store.GetMCPClientByID(ctx, reregisterMCPClientID)
+	require.NoError(t, err)
+	row.PerUserDiscovery = schemas.Ptr(false)
+	require.NoError(t, f.store.UpdateMCPClientConfig(ctx, reregisterMCPClientID, row))
+	stored, err := f.store.GetMCPClientConfigByID(ctx, reregisterMCPClientID)
+	require.NoError(t, err)
+	require.True(t, stored.PendingVerification, "fixture check: turning per_user_discovery off leaves it pending")
+	require.Nil(t, stored.PendingOAuthConfig, "fixture check: no bootstrap stash")
+}
+
+// requireAdminSignInOnTheRegistration checks a pending_oauth answer opens the
+// admin sign-in on the client's own OAuth config, with a status URL that
+// follows the flow: the config has read "authorized" since the client was
+// first verified, so its bare status would say so before anyone signed in.
+func requireAdminSignInOnTheRegistration(t *testing.T, f *reregisterFixture, body map[string]any, raw string) {
+	t.Helper()
+	assert.Equal(t, "pending_oauth", body["status"], raw)
+	assert.Equal(t, f.oauthConfigID, body["oauth_config_id"], raw)
+	flowID, _ := body["flow_id"].(string)
+	require.NotEmpty(t, flowID, raw)
+	assert.Contains(t, fmt.Sprint(body["status_url"]), "flow_id="+url.QueryEscape(flowID))
+	assert.NotEmpty(t, body["authorize_url"], raw)
+	after, err := f.store.GetMCPClientConfigByID(context.Background(), reregisterMCPClientID)
+	require.NoError(t, err)
+	require.NotNil(t, after.OauthConfigID)
+	assert.Equal(t, f.oauthConfigID, *after.OauthConfigID, "the client stays linked to its OAuth config")
+	assert.True(t, after.PendingVerification, "pending until the sign-in completes")
+}
+
+// TestReauthorizeMCPClient_SignsInOnTheRegistrationAfterPerUserDiscoveryOff:
+// turning per_user_discovery off leaves a per_user_oauth client pending, and
+// reauthorize, which is how its admin credential has always been refreshed,
+// still signs the admin in on the registration it has: nothing is registered,
+// so callers keep their sign-ins.
+func TestReauthorizeMCPClient_SignsInOnTheRegistrationAfterPerUserDiscoveryOff(t *testing.T) {
+	f := newReregisterFixture(t)
+	f.turnPerUserDiscoveryOff(t)
+
+	status, body, raw := f.call(t, f.handler.reauthorizeMCPClient)
+	require.Equal(t, fasthttp.StatusOK, status, raw)
+	requireAdminSignInOnTheRegistration(t, f, body, raw)
+	assert.Equal(t, 1, f.as.registrationCount(), "nothing is registered")
+	assert.Equal(t, f.registeredClientID, f.storedClientID(t))
+	requireSingleAuditChange(t, f.lastCtx, "mcp_client.reauthorization_started")
+}
+
+// TestReregisterMCPClient_RegistersANewClientAfterPerUserDiscoveryOff: the
+// same client whose provider no longer recognises its client_id can get a new
+// one while it is pending. The admin sign-in that follows runs on it.
+func TestReregisterMCPClient_RegistersANewClientAfterPerUserDiscoveryOff(t *testing.T) {
+	f := newReregisterFixture(t)
+	f.turnPerUserDiscoveryOff(t)
+
+	status, body, raw := f.call(t, f.handler.reregisterMCPClient)
+	require.Equal(t, fasthttp.StatusOK, status, raw)
+	requireAdminSignInOnTheRegistration(t, f, body, raw)
+	assert.Equal(t, 2, f.as.registrationCount(), "a new client is registered")
+	assert.Equal(t, f.registeredClientID, body["previous_client_id"], raw)
+	assert.NotEqual(t, f.registeredClientID, body["registered_client_id"], raw)
+	assert.Equal(t, body["registered_client_id"], f.storedClientID(t))
+	requireSingleAuditChange(t, f.lastCtx, "mcp_client.reregistered")
+}
+
+// TestInitiateMCPClientVerification_SignsInOnTheRegistrationTheClientKept: a
+// per_user_oauth client pending its admin step with no bootstrap stash, which is
+// what turning per_user_discovery off leaves, is verified by an admin sign-in on
+// the registration it already has. Nothing is registered and the client keeps
+// its OAuth config, so its callers keep their sign-ins, and the status URL
+// follows the flow, because the config has read "authorized" since the client
+// was first verified.
+func TestInitiateMCPClientVerification_SignsInOnTheRegistrationTheClientKept(t *testing.T) {
+	f := newReregisterFixture(t)
+	f.turnPerUserDiscoveryOff(t)
+
+	status, body, raw := f.call(t, f.handler.initiateMCPClientVerification)
+	require.Equal(t, fasthttp.StatusOK, status, raw)
+	requireAdminSignInOnTheRegistration(t, f, body, raw)
+	assert.Equal(t, 1, f.as.registrationCount(), "nothing is registered")
+	assert.Equal(t, f.registeredClientID, f.storedClientID(t))
+	requireSingleAuditChange(t, f.lastCtx, "mcp_client.verification_initiated")
+}
+
+// TestInitiateMCPClientVerification_LeavesAPerUserOauthClientWithNoRecordAlone:
+// a per_user_oauth client with no tools stored but no record of a pending admin
+// step, as one stored before that record existed can be, is not pending, and
+// initiate-verification refuses it as it always has.
+func TestInitiateMCPClientVerification_LeavesAPerUserOauthClientWithNoRecordAlone(t *testing.T) {
 	f := newReregisterFixture(t)
 	ctx := context.Background()
 	row, err := f.store.GetMCPClientByID(ctx, reregisterMCPClientID)
 	require.NoError(t, err)
-	require.NoError(t, f.store.DB().Model(row).Updates(map[string]any{"pending_verification": true, "pending_oauth_config_json": `{}`}).Error)
+	require.NoError(t, f.store.DB().Model(row).Updates(map[string]any{"auth_type": string(schemas.MCPAuthTypePerUserOauth), "pending_verification": false, "discovered_tools_json": ""}).Error)
+	stored, err := f.store.GetMCPClientConfigByID(ctx, reregisterMCPClientID)
+	require.NoError(t, err)
+	require.False(t, stored.PendingVerification, "no record, no stash: not pending")
 
-	status, _, raw := f.call(t, f.handler.reauthorizeMCPClient)
+	status, _, raw := f.call(t, f.handler.initiateMCPClientVerification)
 	assert.Equal(t, fasthttp.StatusBadRequest, status, raw)
-	assert.Contains(t, raw, "use initiate-verification instead")
+	assert.Contains(t, raw, "no pending OAuth bootstrap config")
+	assert.Equal(t, 1, f.as.registrationCount(), "nothing is registered")
+}
+
+// TestCompleteMCPClientOAuth_WaitsForTheAdminSignInOnAKeptRegistration: the
+// config of a client verifying on the registration it kept has read
+// "authorized" since the client was first verified, so a completion sent
+// before the admin has signed in gets past the status check. With no fresh
+// admin sign-in token there is nothing to verify with: it is refused as not
+// finished yet, and the client stays pending.
+func TestCompleteMCPClientOAuth_WaitsForTheAdminSignInOnAKeptRegistration(t *testing.T) {
+	f := newReregisterFixture(t)
+	ctx := context.Background()
+	f.turnPerUserDiscoveryOff(t)
+	oauthRow, err := f.store.GetOauthConfigByID(ctx, f.oauthConfigID)
+	require.NoError(t, err)
+	oauthRow.Status = "authorized"
+	require.NoError(t, f.store.UpdateOauthConfig(ctx, oauthRow))
+	f.handler.oauthHandler = NewOAuthHandler(f.handler.store.OAuthProvider, nil, f.handler.store, nil)
+	status, _, raw := f.call(t, f.handler.initiateMCPClientVerification)
+	require.Equal(t, fasthttp.StatusOK, status, raw)
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	rctx := initCtx(&req)
+	rctx.SetUserValue("id", f.oauthConfigID)
+	f.handler.completeMCPClientOAuth(rctx)
+
+	assert.Equal(t, fasthttp.StatusConflict, rctx.Response.StatusCode(), string(rctx.Response.Body()))
+	assert.Contains(t, string(rctx.Response.Body()), "the admin has not finished signing in")
+	stored, err := f.store.GetMCPClientConfigByID(ctx, reregisterMCPClientID)
+	require.NoError(t, err)
+	assert.True(t, stored.PendingVerification, "still pending its admin step")
 }
 
 // TestAddMCPClient_TokenExchangeWithoutTheAdminsTokenIsStoredPending: with no

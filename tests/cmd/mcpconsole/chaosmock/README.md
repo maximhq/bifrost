@@ -98,7 +98,8 @@ scenario that never sets versions keeps the handshakes and session counts it had
 `init_fail` and `bad_version` apply to `server/discover` as they do to `initialize`: the first
 fails the handshake, the second advertises that one version instead of the list. Requests the
 STDIO bridge forwards never take the sessionless path: stdio has no headers to check, and the
-bridge answers one message at a time, so it cannot hold a listen stream open.
+bridge answers one message at a time, so it cannot hold a `subscriptions/listen` stream open
+(it relays the session's GET stream instead, see below).
 
 ### The STDIO bridge
 
@@ -106,7 +107,10 @@ A STDIO server cannot share memory with the fleet, since the process under
 test spawns it. Rather than reimplement the state there, and end up with two
 tool sets and two sets of counters to keep in step, the child is deliberately
 thin: it reads newline-delimited JSON-RPC from stdin, forwards each message to
-the fleet over HTTP, and writes the reply to stdout. Every control verb keeps
+the fleet over HTTP, and writes the reply to stdout. Once the fleet issues a
+session, the child also holds that session's GET stream open and writes what
+the server pushes on it (`notify/tools-changed` among them) to stdout between
+replies, as a real STDIO server would. Every control verb keeps
 working unchanged, and what is actually under test on this transport
 (subprocess lifecycle, pipe framing, respawn after death) is exercised for
 real.
@@ -189,6 +193,7 @@ trigger one either.
 | `POST /control/<s>/routes/remove` | `{"path":"/x","method":"GET"}` | remove routes for a path (every method when none is given) |
 | `POST /control/<s>/oauth/expire` | `{"identity":"..."}` / `{}` | that identity's live access tokens (everyone's when empty) now fail at the server |
 | `POST /control/<s>/oauth/revoke` | `{"identity":"..."}` / `{"token":"..."}` / `{}` | end whole grants: access tokens fail, refresh tokens get `invalid_grant` |
+| `POST /control/<s>/oauth/forget` | | drop every dynamically registered client and end its grants: authorize answers an unknown client, refresh gets `invalid_client`, access tokens fail; clients registered up front stay |
 | `POST /control/<s>/oauth/fail` | `{"fail":{"endpoint","grant_type","status","error","count"}}` | the next `count` matching authorization server requests fail |
 | `POST /control/<s>/llm/script` | `{"scenario":"k","turns":[...],"then":{...}}` | replace a scenario's turns and repeat turn, clearing its logged requests |
 | `POST /control/<s>/llm/append` | `{"scenario":"k","turns":[...]}` | add turns, keeping the log |

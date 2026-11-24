@@ -588,6 +588,30 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_anthropic_workload_identity_column"}, run: migrationAddAnthropicWorkloadIdentityColumn},
 	{IDs: []string{"add_mcp_per_user_discoveries"}, run: migrationAddMCPPerUserDiscoveries},
 	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
+	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
+	{IDs: []string{"add_datasheet_overrides_table"}, run: migrationAddDatasheetOverridesTable},
+	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
+	{IDs: []string{"add_budget_business_unit_id_column"}, run: migrationAddBudgetBusinessUnitIDColumn},
+	{IDs: []string{"add_budget_business_unit_id_index"}, run: migrationAddBudgetBusinessUnitIDIndex},
+	{IDs: []string{"add_databricks_scopes_column"}, run: migrationAddDatabricksScopesColumn},
+	{IDs: []string{"add_model_routing_suggestion_schedules_table"}, run: migrationAddComplexitySuggestionSchedulesTable},
+	{IDs: []string{"add_model_routers_table"}, run: migrationAddModelRoutersTable},
+	{IDs: []string{"add_model_router_targets_and_routing"}, run: migrationAddModelRouterTargetsAndRouting},
+	{IDs: []string{"add_model_router_suggestions_tier_columns"}, run: migrationAddModelRouterSuggestionTierColumns},
+	{IDs: []string{"add_mcp_client_server_type_on_slug_column"}, run: migrationAddMCPClientServerTypeOnSlugColumn},
+	{IDs: []string{"add_mcp_client_metadata_url_columns"}, run: migrationAddMCPClientMetadataURLColumns},
+	{IDs: []string{"add_client_config_mcp_openapi_max_spec_mb_column"}, run: migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn},
+	{IDs: []string{"add_client_config_bifrost_url_and_bifrost_mcp_columns"}, run: migrationAddClientConfigBifrostURLAndBifrostMCPColumns},
+	{IDs: []string{"add_framework_config_openapi_url_column"}, run: migrationAddFrameworkConfigOpenAPIURLColumn},
+	{IDs: []string{"add_warp_management_writes_column"}, run: migrationAddWarpManagementWritesColumn},
+	{IDs: []string{"add_client_config_entity_access_profile_mode_column"}, run: migrationAddClientConfigEntityAccessProfileModeColumn},
+	{IDs: []string{"add_oauth2_authorize_requests_device_code_columns"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns},
+	{IDs: []string{"add_oauth2_authorize_requests_device_code_indexes"}, run: migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes},
+	{IDs: []string{"add_client_config_mcp_server_max_protocol_version_column"}, run: migrationAddClientConfigMCPServerMaxProtocolVersionColumn},
+	{IDs: []string{"add_virtual_mcp_config_issues_column"}, run: migrationAddVirtualMCPConfigIssuesColumn},
+	{IDs: []string{"add_disable_content_logging_columns"}, run: migrationAddDisableContentLoggingColumns},
+	{IDs: []string{"add_key_disable_content_logging_column"}, run: migrationAddKeyDisableContentLoggingColumn},
+	{IDs: []string{"add_warp_virtual_key_id_column"}, run: migrationAddWarpVirtualKeyIDColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -703,6 +727,28 @@ func migrationAddWarpAdditionalModelsColumn(ctx context.Context, db *gorm.DB, lo
 			// Reversible: the default model lives in its own columns, so dropping
 			// this costs the extra choices and leaves Warp answering.
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "additional_models")
+		},
+	})
+}
+
+// migrationAddWarpManagementWritesColumn adds the kinds of configuration change
+// Warp may offer through the Bifrost MCP. A row without it reads as reads only,
+// which is the default for a deployment that never chose otherwise.
+func migrationAddWarpManagementWritesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_management_writes_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "management_writes"); err != nil {
+				return fmt.Errorf("add management_writes column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column Warp offers reads only.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "management_writes")
 		},
 	})
 }
@@ -1209,6 +1255,27 @@ func rssFeedsTableMigration(ctx context.Context, migrationName string) *migrator
 			return fmt.Errorf("%s is non-rollbackable: dropping rss_feeds would permanently delete custom feeds, their logos and every builtin enabled choice; the table is additive and older binaries ignore it", migrationName)
 		},
 	}
+}
+
+// migrationAddDatasheetOverridesTable creates governance_datasheet_overrides,
+// the user edit layer the datasheet sync re-applies after every refresh.
+func migrationAddDatasheetOverridesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_datasheet_overrides_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			mgr := tx.WithContext(ctx).Migrator()
+			if mgr.HasTable(&tables.TableDatasheetOverride{}) {
+				return nil
+			}
+			return mgr.CreateTable(&tables.TableDatasheetOverride{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping governance_datasheet_overrides would permanently delete user datasheet edits; the table is additive and older binaries ignore it", migrationName)
+		},
+	})
 }
 
 // migrationAddRSSFeedsIconURLColumn adds the custom-logo column to rss_feeds
@@ -8471,6 +8538,15 @@ func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB, logger
 }
 
 // migrationAddOllamaSGLConfigColumns adds ollama_url and sgl_url columns to the key table
+// ollamaSGLBackfillKeyColumns are the config_keys columns the ollama/sgl URL backfill writes, all of
+// which exist when that step runs. Columns added by later steps are left out on purpose.
+// encryption_status must stay listed: BeforeSave encrypts the URL and marks the row, and a row
+// written without the mark would hold ciphertext flagged as plain text.
+var ollamaSGLBackfillKeyColumns = []string{
+	"name", "provider_id", "provider", "key_id", "value", "description", "models_json", "blacklisted_models_json",
+	"weight", "enabled", "ollama_url", "sgl_url", "config_hash", "encryption_status", "created_at", "updated_at",
+}
+
 func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_ollama_sgl_config_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -8533,7 +8609,9 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 					return fmt.Errorf("failed to generate hash for new key on provider %s: %w", p.Name, err)
 				}
 				newKey.ConfigHash = hash
-				if err := tx.Create(&newKey).Error; err != nil {
+				// Insert only the columns this step writes. A database that still needs this step lacks
+				// every config_keys column a later step adds, and a full-struct insert would name them all.
+				if err := tx.Select(ollamaSGLBackfillKeyColumns).Create(&newKey).Error; err != nil {
 					return fmt.Errorf("failed to create key for provider %s: %w", p.Name, err)
 				}
 				logger.Info("[Migration] Created key '%s' for provider '%s' from network_config.base_url", newKey.Name, p.Name)
@@ -12305,6 +12383,72 @@ func migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx context.Context,
 	return nil
 }
 
+// migrationAddClientConfigBifrostURLAndBifrostMCPColumns adds bifrost_url and
+// bifrost_mcp_allow_writes to config_client. Both are nullable or empty by default,
+// which reads as unset (no Bifrost URL, writes on), so existing rows need no
+// backfill and a rolled-back binary ignores the columns.
+func migrationAddClientConfigBifrostURLAndBifrostMCPColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_bifrost_url_and_bifrost_mcp_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{"bifrost_url", "bifrost_mcp_allow_writes"}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn adds mcp_openapi_max_spec_mb to
+// config_client. It defaults to 0, which reads as the built-in 32 MiB limit, so existing rows
+// need no backfill and a rolled-back binary ignores the column.
+func migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_mcp_openapi_max_spec_mb_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "mcp_openapi_max_spec_mb")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "mcp_openapi_max_spec_mb")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
 // migrationAddClientConfigExtraFieldsPlacementColumn adds extra_fields_placement to
 // config_client. It defaults to "body", so an upgrade keeps extra_fields in the JSON
 // body of inference responses, as it was before the setting existed.
@@ -13699,6 +13843,124 @@ func migrationBackfillDefaultComplexityExemplars(ctx context.Context, db *gorm.D
 	return nil
 }
 
+// migrationAddModelRoutersTable creates model_routers; nothing is copied into it.
+func migrationAddModelRoutersTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_routers_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableModelRouter{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping model_routers would delete every model router", migrationName)
+		},
+	})
+}
+
+// migrationAddModelRouterTargetsAndRouting creates the model routers'
+// per-tier targets and adds the routing columns, which decide the requests a
+// router takes, to model_routers. Routers start without targets and off: a
+// routing rule's complexity_tier condition is untouched, so nothing that
+// routes today changes.
+func migrationAddModelRouterTargetsAndRouting(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_router_targets_and_routing"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&tables.TableModelRouter{}, &tables.TableModelRouterTarget{})
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping model_router_targets would delete every router's models", migrationName)
+		},
+	})
+}
+
+// modelRouterSuggestionTierColumns hold a router's suggestions tier block: the
+// classifier that decides suggested tiers, its model, and the text it reads.
+var modelRouterSuggestionTierColumns = []string{
+	"SuggestionsTierClassifier", "SuggestionsTierProvider", "SuggestionsTierModel",
+	"SuggestionsTierPrompt", "SuggestionsTierInstructions", "SuggestionsTierCriteriaJSON",
+}
+
+// migrationAddModelRouterSuggestionTierColumns adds the suggestions tier
+// block's columns. A router without them reads as having no tier block, which
+// decides tiers with its phrase model, as before tiers were configurable.
+func migrationAddModelRouterSuggestionTierColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_router_suggestions_tier_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range modelRouterSuggestionTierColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
+					return fmt.Errorf("add %s column to model_routers: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range modelRouterSuggestionTierColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelRouter{}, column); err != nil {
+					return fmt.Errorf("drop %s column from model_routers: %w", column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientMetadataURLColumns adds the hosted Client ID Metadata Document URL setting and
+// the marker for oauth configs whose client_id is Bifrost's own document. Existing configs stay unmarked
+// and are recognised by the document's path under their callback base.
+func migrationAddMCPClientMetadataURLColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_metadata_url_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []struct {
+		model  any
+		column string
+	}{
+		{&tables.TableClientConfig{}, "mcp_client_metadata_url"},
+		{&tables.TableOauthConfig{}, "client_metadata_document"},
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, c := range columns {
+				if err := addColumnIfNotExists(tx, logger, c.model, c.column); err != nil {
+					return fmt.Errorf("failed to add %s column: %w", c.column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping it would discard the hosted document URL and which configs use Bifrost's document", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
 func appendMissingDefaultComplexityExemplars(config *ComplexityAnalyzerConfig, defaults ComplexityEditableKeywordConfig) int {
 	type tierPhrases struct {
 		values   *[]string
@@ -14937,6 +15199,86 @@ func migrationAddVirtualKeyDisableContentLoggingColumn(ctx context.Context, db *
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
+}
+
+// disableContentLoggingTables are the tables that carry a tri-state disable_content_logging
+// column: each is one layer of the content-logging decision.
+var disableContentLoggingTables = []any{
+	&tables.TableVirtualKey{},
+	&tables.TableTeam{},
+}
+
+// migrationAddDisableContentLoggingColumns adds disable_content_logging to every table that carries
+// a content-logging layer. The columns are nullable with no default because NULL is a meaning of
+// its own (inherit), so every existing row comes out of the migration inheriting exactly as it did
+// before.
+//
+// It runs after add_virtual_key_disable_content_logging_column, which shipped and stays as is: the
+// virtual key's column is then already there and addColumnIfNotExists skips it, so the step adds
+// only the layers that came after it.
+func migrationAddDisableContentLoggingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_disable_content_logging_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Each ALTER needs ACCESS EXCLUSIVE; bound the wait so a held lock fails this boot's attempt
+			// instead of queueing every query on the table behind it. The next boot retries.
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, table := range disableContentLoggingTables {
+				if err := addColumnIfNotExists(tx, logger, table, "disable_content_logging"); err != nil {
+					return fmt.Errorf("failed to add disable_content_logging column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackDisableContentLoggingColumns(ctx, tx, logger)
+		},
+	})
+}
+
+// rollbackDisableContentLoggingColumns refuses. Each column is the only home for its layer's
+// content-logging decision, and NULL reads as inherit: dropping them would not merely lose data,
+// it would silently start logging content for every row that had turned it off.
+func rollbackDisableContentLoggingColumns(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_disable_content_logging_columns is non-rollbackable: dropping disable_content_logging would permanently delete every content-logging decision and silently revert content-off rows to logging content; the columns are additive and older binaries safely ignore them")
+}
+
+// migrationAddKeyDisableContentLoggingColumn adds the provider key's disable_content_logging column.
+// It has an ID of its own rather than joining disableContentLoggingTables: a database that already
+// recorded add_disable_content_logging_columns skips that step's body, so a table added to it later
+// would never gain its column there. Nullable with no default, so every existing key inherits.
+func migrationAddKeyDisableContentLoggingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_key_disable_content_logging_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "disable_content_logging"); err != nil {
+				return fmt.Errorf("failed to add disable_content_logging column to config_keys: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackKeyDisableContentLoggingColumn(ctx, tx, logger)
+		},
+	})
+}
+
+// rollbackKeyDisableContentLoggingColumn refuses, for the reason rollbackDisableContentLoggingColumns
+// does: the column is the only home for a provider key's decision, and NULL reads as inherit.
+func rollbackKeyDisableContentLoggingColumn(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_key_disable_content_logging_column is non-rollbackable: dropping disable_content_logging would permanently delete every provider key's content-logging decision and silently revert content-off keys to logging content; the column is additive and older binaries safely ignore it")
 }
 
 // migrationAddTTFTTimeoutMsColumnToRoutingTargets adds the nullable ttft_timeout_ms
@@ -16739,6 +17081,28 @@ func mcpMaxProtocolVersionColumnsMigration(ctx context.Context, migrationName st
 	}
 }
 
+// migrationAddClientConfigMCPServerMaxProtocolVersionColumn adds the cap on the protocol version
+// Bifrost's own /mcp serves. Existing rows read "", which is uncapped, as before.
+func migrationAddClientConfigMCPServerMaxProtocolVersionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_mcp_server_max_protocol_version_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "mcp_server_max_protocol_version")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column /mcp serves every version, as before.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "mcp_server_max_protocol_version")
+		},
+	})
+}
+
 var mcpClientDiscoveredListColumns = []string{"discovered_resources_json", "discovered_resource_templates_json", "discovered_prompts_json"}
 
 // migrationAddMCPClientDiscoveredResourcesPromptsColumns adds the config_mcp_clients columns that
@@ -17059,4 +17423,435 @@ func migrationAddMCPClientPendingVerificationColumn(ctx context.Context, db *gor
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationAddCacheCreationAbove12hrPricingColumns adds OpenAI 12h cache-write rates by service tier and 272k tier.
+func migrationAddCacheCreationAbove12hrPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_cache_creation_above_12hr_pricing_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{
+		"cache_creation_input_token_cost_above_12hr",
+		"cache_creation_input_token_cost_above_12hr_above_272k_tokens",
+		"cache_creation_input_token_cost_above_12hr_priority",
+		"cache_creation_input_token_cost_above_12hr_above_272k_priority",
+		"cache_creation_input_token_cost_above_12hr_flex",
+		"cache_creation_input_token_cost_above_12hr_above_272k_flex",
+		"cache_creation_input_token_cost_above_12hr_ultrafast",
+		"cache_creation_input_token_cost_above_12hr_above_272k_ultrafast",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, field := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, field := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, field); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", field, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running cache creation above 12hr pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddUsageEstimationTokenizersJSONColumn adds the usage_estimation_tokenizers_json
+// column to config_client. Existing rows get an empty list, which keeps cancelled-stream
+// estimation on the base tiktoken encodings; a value in config.json's client section
+// reconciles in on boot.
+func migrationAddUsageEstimationTokenizersJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_usage_estimation_tokenizers_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "UsageEstimationTokenizersJSON"); err != nil {
+				return fmt.Errorf("failed to add usage_estimation_tokenizers_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "usage_estimation_tokenizers_json"); err != nil {
+				return fmt.Errorf("failed to drop usage_estimation_tokenizers_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddBudgetBusinessUnitIDColumn adds the business_unit_id owner column to
+// governance_budgets, so a business unit can hold one budget per reset window the
+// way a team or customer does (TableBudget.TeamID / CustomerID). Adding a nullable
+// column is a catalog change and does not rewrite the table. Its index is built by
+// the migration after this one, migrationAddBudgetBusinessUnitIDIndex.
+//
+// Index only, no foreign key: the config loader may write a budget naming a business
+// unit before any row for that unit exists, so no database constraint ties the two.
+func migrationAddBudgetBusinessUnitIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_business_unit_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "BusinessUnitID"); err != nil {
+				return fmt.Errorf("add business_unit_id column to governance_budgets: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableBudget{}, "BusinessUnitID"); err != nil {
+				return fmt.Errorf("drop business_unit_id column from governance_budgets: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddBudgetBusinessUnitIDIndex indexes governance_budgets.business_unit_id, which a
+// business unit's budget preload, its deletion and the config.json prune guard all filter on.
+// Upgraded databases get the column from addColumnIfNotExists, which does not build the tag
+// index. Built concurrently so the upgrade never blocks writes: budget usage is written to this
+// table on every dump.
+func migrationAddBudgetBusinessUnitIDIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_business_unit_id_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, budgetBusinessUnitIDIndexMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// budgetBusinessUnitIDIndexMigration builds the migration applied by
+// migrationAddBudgetBusinessUnitIDIndex, so tests exercise the same Migrate and Rollback
+// callbacks the upgrade runs.
+func budgetBusinessUnitIDIndexMigration(ctx context.Context, id string) *migrator.Migration {
+	const name = "idx_governance_budgets_business_unit_id"
+	return &migrator.Migration{
+		ID: id,
+		Migrate: func(tx *gorm.DB) error {
+			return ensureIndexConcurrently(tx.WithContext(ctx), "governance_budgets", name, "business_unit_id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropIndexConcurrently(tx.WithContext(ctx), "governance_budgets", name)
+		},
+	}
+}
+
+// migrationAddDatabricksScopesColumn adds the databricks_scopes column to config_keys. There is
+// nothing to backfill: a NULL column keeps the key on the all-apis default it already requested.
+func migrationAddDatabricksScopesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_databricks_scopes_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				// Bound the ACCESS EXCLUSIVE wait on config_keys, as add_oauth_key_config_columns
+				// does, so a long transaction fails this boot's migration instead of queueing
+				// every key read behind it. The next boot retries.
+				if err := tx.Exec("SET LOCAL lock_timeout = '5s'").Error; err != nil {
+					return fmt.Errorf("failed to bound the config_keys lock wait: %w", err)
+				}
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "databricks_scopes"); err != nil {
+				return fmt.Errorf("failed to add databricks_scopes column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "databricks_scopes"); err != nil {
+				return fmt.Errorf("failed to drop databricks_scopes column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddComplexitySuggestionSchedulesTable adds the per-router state of
+// phrase-suggestion schedules: when the next run is due, and the version
+// nodes claim a due run with. A router without a row gets one at its first
+// schedule check, so nothing is moved here.
+func migrationAddComplexitySuggestionSchedulesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_routing_suggestion_schedules_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Migrator().HasTable(&tables.TableComplexitySuggestionSchedule{}) {
+				return nil
+			}
+			return tx.Migrator().CreateTable(&tables.TableComplexitySuggestionSchedule{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableComplexitySuggestionSchedule{})
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientServerTypeOnSlugColumn adds the server_type_on_slug column to config_mcp_clients.
+// Existing rows take the empty default, which inherits is_code_mode_client: today's behavior.
+func migrationAddMCPClientServerTypeOnSlugColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_server_type_on_slug_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "ServerTypeOnSlug"); err != nil {
+				return fmt.Errorf("add server_type_on_slug column to config_mcp_clients: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "ServerTypeOnSlug"); err != nil {
+				return fmt.Errorf("drop server_type_on_slug column from config_mcp_clients: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddFrameworkConfigOpenAPIURLColumn adds openapi_url to framework_configs.
+// NULL reads as unset (the build's default spec), so existing rows need no backfill
+// and a rolled-back binary ignores the column.
+func migrationAddFrameworkConfigOpenAPIURLColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_framework_config_openapi_url_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableFrameworkConfig{}, "OpenAPIURL")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableFrameworkConfig{}, "OpenAPIURL")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigEntityAccessProfileModeColumn adds entity_access_profile_mode to
+// config_client. It defaults to "union", so an upgrade keeps team, business unit and customer
+// access profiles adding to a caller's access, as they did before the setting existed.
+func migrationAddClientConfigEntityAccessProfileModeColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_entity_access_profile_mode_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "entity_access_profile_mode")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "entity_access_profile_mode")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// oauth2AuthorizeRequestsDeviceCodeColumns are the device-grant columns and their tag index names.
+var oauth2AuthorizeRequestsDeviceCodeColumns = []struct{ column, index string }{
+	{"device_code_hash", "idx_oauth2_authorize_requests_device_code_hash"},
+	{"user_code_hash", "idx_oauth2_authorize_requests_user_code_hash"},
+}
+
+// migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns adds the nullable device-grant columns to
+// oauth2_authorize_requests, with a bounded lock wait. Indexes come from the next migration.
+func migrationAddOAuth2AuthorizeRequestsDeviceCodeColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth2_authorize_requests_device_code_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{oauth2AuthorizeRequestsDeviceCodeColumnsMigration(ctx, migrationName, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// oauth2AuthorizeRequestsDeviceCodeColumnsMigration is the column migration, shared with tests.
+func oauth2AuthorizeRequestsDeviceCodeColumnsMigration(ctx context.Context, id string, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: id,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, c.column); err != nil {
+					return fmt.Errorf("failed to add column %s: %w", c.column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Only short-lived sign-in state; nothing durable is lost.
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableOAuth2AuthorizeRequest{}, c.column); err != nil {
+					return fmt.Errorf("failed to drop column %s: %w", c.column, err)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes builds the device-grant unique indexes
+// concurrently (no transaction), so upgrades never block writes.
+func migrationAddOAuth2AuthorizeRequestsDeviceCodeIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth2_authorize_requests_device_code_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	if err := RunSingleMigration(ctx, &noTxOpts, db, logger, oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx, migrationName)); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// oauth2AuthorizeRequestsDeviceCodeIndexesMigration is the index migration, shared with tests.
+func oauth2AuthorizeRequestsDeviceCodeIndexesMigration(ctx context.Context, id string) *migrator.Migration {
+	const table = "oauth2_authorize_requests"
+	return &migrator.Migration{
+		ID: id,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				if err := ensureIndexConcurrently(tx, table, c.index, c.column, true); err != nil {
+					return fmt.Errorf("failed to create index on %s: %w", c.column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, c := range oauth2AuthorizeRequestsDeviceCodeColumns {
+				if err := dropIndexConcurrently(tx, table, c.index); err != nil {
+					return fmt.Errorf("failed to drop index on %s: %w", c.column, err)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// migrationAddVirtualMCPConfigIssuesColumn adds the column that records which parts of a Virtual
+// MCP's config.json declaration could not be applied, so the dashboard can show them.
+func migrationAddVirtualMCPConfigIssuesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_mcp_config_issues_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableVirtualMCP{}, "config_issues")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: the column is display-only and rewritten at every config.json load.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableVirtualMCP{}, "config_issues")
+		},
+	})
+}
+
+// migrationAddWarpVirtualKeyIDColumn adds the virtual key Warp's model calls
+// present for a caller with no user identity of their own.
+func migrationAddWarpVirtualKeyIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_virtual_key_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "virtual_key_id"); err != nil {
+				return fmt.Errorf("add virtual_key_id column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column such a caller's calls carry no credential, as before.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "virtual_key_id")
+		},
+	})
 }

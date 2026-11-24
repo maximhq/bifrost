@@ -18,10 +18,15 @@ func isPerplexityResponsesSupported(model string) bool {
 
 // perplexityAgentPresetModel is a Bifrost-only sentinel (not a real Perplexity
 // model): it tells withWireModelForAgentAPI to omit `model` from the wire and let
-// an ExtraParams `preset` (fast/low/medium/high/xhigh/wide-research) pick Perplexity's
-// own default model. Unlike a real model name, "preset" has no meaning as an actual
-// wire model, so both the bare and "perplexity/"-prefixed spellings are treated identically.
+// an ExtraParams `effort` (fast/low/medium/high/xhigh/ultra), or the earlier `preset`
+// spelling, pick Perplexity's own default model. Unlike a real model name, "preset" has
+// no meaning as an actual wire model, so both the bare and "perplexity/"-prefixed
+// spellings are treated identically.
 const perplexityAgentPresetModel = "preset"
+
+// perplexityAgentEffortParams are the ExtraParams keys that let the Agent API pick its
+// own model: `effort` (docs.perplexity.ai/docs/agent-api/effort) and its earlier name `preset`.
+var perplexityAgentEffortParams = [...]string{"effort", "preset"}
 
 // ToPerplexityResponsesRequest converts a BifrostResponsesRequest to PerplexityChatRequest
 func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *PerplexityChatRequest {
@@ -235,7 +240,7 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 
 	// Process ResponsesInput (which contains the Responses messages)
 	if bifrostReq.Input != nil {
-		perplexityReq.Messages = schemas.ToChatMessages(bifrostReq.Input)
+		perplexityReq.Messages = schemas.ToChatMessages(bifrostReq.Input, nil)
 	}
 
 	return perplexityReq

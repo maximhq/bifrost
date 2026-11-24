@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -794,6 +795,9 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 			copyRefusal := *original.ChatAssistantMessage.Refusal
 			copy.ChatAssistantMessage.Refusal = &copyRefusal
 		}
+		if len(original.ChatAssistantMessage.Context) > 0 {
+			copy.ChatAssistantMessage.Context = append(json.RawMessage(nil), original.ChatAssistantMessage.Context...)
+		}
 
 		// Deep copy Annotations
 		if original.ChatAssistantMessage.Annotations != nil {
@@ -848,6 +852,13 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 				if toolCall.Function.Name != nil {
 					copyName := *toolCall.Function.Name
 					copyToolCall.Function.Name = &copyName
+				}
+				if toolCall.Custom != nil {
+					copyCustom := *toolCall.Custom
+					if toolCall.Custom.Name != nil {
+						copyCustom.Name = Ptr(*toolCall.Custom.Name)
+					}
+					copyToolCall.Custom = &copyCustom
 				}
 				if len(toolCall.ExtraContent) > 0 {
 					copyToolCall.ExtraContent = append(json.RawMessage(nil), toolCall.ExtraContent...)
@@ -904,6 +915,7 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 
 	if original.File != nil {
 		copyFile := ChatInputFile{}
+		copyFile.FileContent = bytes.Clone(original.File.FileContent)
 		if original.File.FileData != nil {
 			copyFileData := *original.File.FileData
 			copyFile.FileData = &copyFileData
@@ -959,6 +971,10 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 		if original.PromptCacheBreakpoint.Mode != nil {
 			copyMode := *original.PromptCacheBreakpoint.Mode
 			copyPromptCacheBreakpoint.Mode = &copyMode
+		}
+		if original.PromptCacheBreakpoint.TTL != nil {
+			copyTTL := *original.PromptCacheBreakpoint.TTL
+			copyPromptCacheBreakpoint.TTL = &copyTTL
 		}
 		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
 	}
@@ -1047,7 +1063,10 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 
 	// Deep copy Custom if present
 	if original.Custom != nil {
-		copyTool.Custom = &ChatToolCustom{}
+		copyTool.Custom = &ChatToolCustom{Name: original.Custom.Name}
+		if original.Custom.Description != nil {
+			copyTool.Custom.Description = Ptr(*original.Custom.Description)
+		}
 
 		if original.Custom.Format != nil {
 			copyFormat := &ChatToolCustomFormat{
@@ -1981,6 +2000,85 @@ func deepCopyApplyPatchCall(original *ResponsesApplyPatchCall) *ResponsesApplyPa
 	return &copied
 }
 
+// DeepCopyResponsesOutputMessageContentTextAnnotation returns an annotation that shares no
+// pointer or slice with the original.
+func DeepCopyResponsesOutputMessageContentTextAnnotation(annotation ResponsesOutputMessageContentTextAnnotation) ResponsesOutputMessageContentTextAnnotation {
+	copyAnnotation := ResponsesOutputMessageContentTextAnnotation{
+		Type:          annotation.Type,
+		SourceContent: append([]string(nil), annotation.SourceContent...),
+	}
+	if annotation.Index != nil {
+		copyIndex := *annotation.Index
+		copyAnnotation.Index = &copyIndex
+	}
+	if annotation.FileID != nil {
+		copyFileID := *annotation.FileID
+		copyAnnotation.FileID = &copyFileID
+	}
+	if annotation.Text != nil {
+		copyText := *annotation.Text
+		copyAnnotation.Text = &copyText
+	}
+	if annotation.StartIndex != nil {
+		copyStartIndex := *annotation.StartIndex
+		copyAnnotation.StartIndex = &copyStartIndex
+	}
+	if annotation.EndIndex != nil {
+		copyEndIndex := *annotation.EndIndex
+		copyAnnotation.EndIndex = &copyEndIndex
+	}
+	if annotation.Filename != nil {
+		copyFilename := *annotation.Filename
+		copyAnnotation.Filename = &copyFilename
+	}
+	if annotation.Title != nil {
+		copyTitle := *annotation.Title
+		copyAnnotation.Title = &copyTitle
+	}
+	if annotation.URL != nil {
+		copyURL := *annotation.URL
+		copyAnnotation.URL = &copyURL
+	}
+	if annotation.ContainerID != nil {
+		copyContainerID := *annotation.ContainerID
+		copyAnnotation.ContainerID = &copyContainerID
+	}
+	// Deep copy Anthropic-specific annotation fields.
+	if annotation.StartCharIndex != nil {
+		copyStartCharIndex := *annotation.StartCharIndex
+		copyAnnotation.StartCharIndex = &copyStartCharIndex
+	}
+	if annotation.EndCharIndex != nil {
+		copyEndCharIndex := *annotation.EndCharIndex
+		copyAnnotation.EndCharIndex = &copyEndCharIndex
+	}
+	if annotation.StartPageNumber != nil {
+		copyStartPageNumber := *annotation.StartPageNumber
+		copyAnnotation.StartPageNumber = &copyStartPageNumber
+	}
+	if annotation.EndPageNumber != nil {
+		copyEndPageNumber := *annotation.EndPageNumber
+		copyAnnotation.EndPageNumber = &copyEndPageNumber
+	}
+	if annotation.StartBlockIndex != nil {
+		copyStartBlockIndex := *annotation.StartBlockIndex
+		copyAnnotation.StartBlockIndex = &copyStartBlockIndex
+	}
+	if annotation.EndBlockIndex != nil {
+		copyEndBlockIndex := *annotation.EndBlockIndex
+		copyAnnotation.EndBlockIndex = &copyEndBlockIndex
+	}
+	if annotation.Source != nil {
+		copySource := *annotation.Source
+		copyAnnotation.Source = &copySource
+	}
+	if annotation.EncryptedIndex != nil {
+		copyEncryptedIndex := *annotation.EncryptedIndex
+		copyAnnotation.EncryptedIndex = &copyEncryptedIndex
+	}
+	return copyAnnotation
+}
+
 // deepCopyResponsesMessageContentBlock creates a deep copy of a ResponsesMessageContentBlock
 func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock) ResponsesMessageContentBlock {
 	copy := ResponsesMessageContentBlock{
@@ -2015,6 +2113,10 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		if original.PromptCacheBreakpoint.Mode != nil {
 			copyMode := *original.PromptCacheBreakpoint.Mode
 			copyPromptCacheBreakpoint.Mode = &copyMode
+		}
+		if original.PromptCacheBreakpoint.TTL != nil {
+			copyTTL := *original.PromptCacheBreakpoint.TTL
+			copyPromptCacheBreakpoint.TTL = &copyTTL
 		}
 		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
 	}
@@ -2082,6 +2184,7 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 	// Deep copy ResponsesInputMessageContentBlockFile
 	if original.ResponsesInputMessageContentBlockFile != nil {
 		copyFile := &ResponsesInputMessageContentBlockFile{}
+		copyFile.FileContent = bytes.Clone(original.ResponsesInputMessageContentBlockFile.FileContent)
 		if original.ResponsesInputMessageContentBlockFile.FileData != nil {
 			copyFileData := *original.ResponsesInputMessageContentBlockFile.FileData
 			copyFile.FileData = &copyFileData
@@ -2119,79 +2222,7 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		if original.ResponsesOutputMessageContentText.Annotations != nil {
 			copyText.Annotations = make([]ResponsesOutputMessageContentTextAnnotation, len(original.ResponsesOutputMessageContentText.Annotations))
 			for i, annotation := range original.ResponsesOutputMessageContentText.Annotations {
-				copyAnnotation := ResponsesOutputMessageContentTextAnnotation{
-					Type: annotation.Type,
-				}
-				if annotation.Index != nil {
-					copyIndex := *annotation.Index
-					copyAnnotation.Index = &copyIndex
-				}
-				if annotation.FileID != nil {
-					copyFileID := *annotation.FileID
-					copyAnnotation.FileID = &copyFileID
-				}
-				if annotation.Text != nil {
-					copyText := *annotation.Text
-					copyAnnotation.Text = &copyText
-				}
-				if annotation.StartIndex != nil {
-					copyStartIndex := *annotation.StartIndex
-					copyAnnotation.StartIndex = &copyStartIndex
-				}
-				if annotation.EndIndex != nil {
-					copyEndIndex := *annotation.EndIndex
-					copyAnnotation.EndIndex = &copyEndIndex
-				}
-				if annotation.Filename != nil {
-					copyFilename := *annotation.Filename
-					copyAnnotation.Filename = &copyFilename
-				}
-				if annotation.Title != nil {
-					copyTitle := *annotation.Title
-					copyAnnotation.Title = &copyTitle
-				}
-				if annotation.URL != nil {
-					copyURL := *annotation.URL
-					copyAnnotation.URL = &copyURL
-				}
-				if annotation.ContainerID != nil {
-					copyContainerID := *annotation.ContainerID
-					copyAnnotation.ContainerID = &copyContainerID
-				}
-				// Deep copy Anthropic-specific annotation fields.
-				if annotation.StartCharIndex != nil {
-					copyStartCharIndex := *annotation.StartCharIndex
-					copyAnnotation.StartCharIndex = &copyStartCharIndex
-				}
-				if annotation.EndCharIndex != nil {
-					copyEndCharIndex := *annotation.EndCharIndex
-					copyAnnotation.EndCharIndex = &copyEndCharIndex
-				}
-				if annotation.StartPageNumber != nil {
-					copyStartPageNumber := *annotation.StartPageNumber
-					copyAnnotation.StartPageNumber = &copyStartPageNumber
-				}
-				if annotation.EndPageNumber != nil {
-					copyEndPageNumber := *annotation.EndPageNumber
-					copyAnnotation.EndPageNumber = &copyEndPageNumber
-				}
-				if annotation.StartBlockIndex != nil {
-					copyStartBlockIndex := *annotation.StartBlockIndex
-					copyAnnotation.StartBlockIndex = &copyStartBlockIndex
-				}
-				if annotation.EndBlockIndex != nil {
-					copyEndBlockIndex := *annotation.EndBlockIndex
-					copyAnnotation.EndBlockIndex = &copyEndBlockIndex
-				}
-				if annotation.Source != nil {
-					copySource := *annotation.Source
-					copyAnnotation.Source = &copySource
-				}
-				if annotation.EncryptedIndex != nil {
-					copyEncryptedIndex := *annotation.EncryptedIndex
-					copyAnnotation.EncryptedIndex = &copyEncryptedIndex
-				}
-				copyText.Annotations[i] = copyAnnotation
+				copyText.Annotations[i] = DeepCopyResponsesOutputMessageContentTextAnnotation(annotation)
 			}
 		}
 
@@ -2452,6 +2483,20 @@ func IsClefModel(model string) bool {
 // snapshots share the prefix.
 func IsPerplexityDeciderModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "pplx-decider")
+}
+
+// IsBasetenDecisionModel checks if the model is one of Baseten's decision models
+// ("decision-models/baseten-joey-2b-latest"), served on Model APIs' /v1/systemone
+// rather than chat. Baseten namespaces all of them under decision-models/.
+func IsBasetenDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "decision-models/")
+}
+
+// IsGeminiDecisionModel checks if the model is a Gemini Decision model
+// ("gemini-decision-1"), served on the Gemini API's /v1beta/decisions rather
+// than generateContent. The API's "models/" resource prefix is accepted.
+func IsGeminiDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "models/"), "gemini-decision-")
 }
 
 // ollamaDecisionModelPrefixes are the System One model families in Ollama's

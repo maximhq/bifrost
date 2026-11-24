@@ -7,8 +7,8 @@ import { useTranslation } from "react-i18next";
 
 import { preserveTimeFilters } from "@/components/navigation/navItem";
 import { useNavItems } from "@/components/navigation/navItems";
-import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { WarpIcon } from "@/components/ui/icons";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useWarp } from "@/lib/contexts/warpContext";
 import { cn } from "@/lib/utils";
@@ -256,7 +256,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
 						}
 					}}
 					className={cn(
-						"dark:bg-card fixed top-[min(20vh,160px)] left-1/2 z-50 w-[calc(100%-2rem)] max-w-[640px] -translate-x-1/2 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-[0_24px_64px_-12px_rgba(0,0,0,0.25)] outline-none dark:border-zinc-800",
+						"dark:bg-card fixed top-[min(20vh,160px)] left-1/2 z-50 w-[calc(100%-2rem)] max-w-[640px] -translate-x-1/2 overflow-hidden rounded-sm border border-gray-200 bg-white shadow-[0_24px_64px_-12px_rgba(0,0,0,0.25)] outline-none dark:border-zinc-800",
 						"data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-[0.98] data-[state=open]:zoom-in-[0.98] duration-100 ease-out",
 					)}
 				>
@@ -269,7 +269,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
 						onValueChange={setSelected}
 						onKeyDown={onKeyDown}
 					>
-						<div className="flex h-14 items-center gap-3 border-b border-gray-100 px-4 dark:border-zinc-800">
+						<div className="flex h-12 items-center gap-3 border-b border-gray-100 px-4 dark:border-zinc-800">
 							<Search className="text-muted-foreground size-4 shrink-0" />
 							{page && (
 								<span
@@ -351,7 +351,7 @@ function PaletteItem({ row, currentLabel, onSelect }: { row: PaletteRow; current
 			value={row.id}
 			onSelect={onSelect}
 			data-testid={`command-palette-item-${row.id}`}
-			className="group text-foreground/85 data-[selected=true]:text-foreground relative flex h-10 cursor-pointer items-center gap-3 rounded-lg px-2.5 text-sm transition-colors duration-75 select-none data-[selected=true]:bg-gray-100 dark:data-[selected=true]:bg-zinc-800/80"
+			className="group text-foreground/85 data-[selected=true]:text-foreground relative flex h-10 cursor-pointer items-center gap-3 rounded-sm px-2.5 text-sm transition-colors duration-75 select-none data-[selected=true]:bg-gray-100 dark:data-[selected=true]:bg-zinc-800/80"
 		>
 			{Icon ? (
 				<Icon className="text-muted-foreground group-data-[selected=true]:text-foreground size-4 shrink-0 transition-colors" />

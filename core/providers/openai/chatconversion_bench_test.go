@@ -14,6 +14,7 @@ package openai
 //	go test ./core/providers/openai/ -bench ChatRequest -benchmem
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -143,6 +144,54 @@ func BenchmarkToOpenAIChatRequest(b *testing.B) {
 	}
 }
 
+// Tool images are reused by the converter; only ordinary final serialization
+// should scale with their payload size. The placeholder runs go to Groq, whose
+// models have no image default, to measure the text-only path.
+func BenchmarkToOpenAIChatRequestToolImages(b *testing.B) {
+	for _, size := range []struct {
+		name  string
+		bytes int
+	}{{"64KiB", 64 << 10}, {"1MiB", 1 << 20}} {
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		hoisted := benchOpenAIChatRequest(b).ToBifrostChatRequest(ctx)
+		hoisted.Input[3].Content = &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("chart below")},
+			{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64," + strings.Repeat("A", size.bytes*4/3)}},
+		}}
+		placeholder := *hoisted
+		placeholder.Provider = schemas.Groq
+		for _, serialize := range []bool{false, true} {
+			for _, path := range []struct {
+				name string
+				req  *schemas.BifrostChatRequest
+			}{{"hoisted", hoisted}, {"placeholder", &placeholder}} {
+				benchToolImages(b, ctx, path.req, size.name+"/"+path.name, serialize)
+			}
+		}
+	}
+}
+
+func benchToolImages(b *testing.B, ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest, name string, serialize bool) {
+	name += "/convert"
+	if serialize {
+		name += "-and-serialize"
+	}
+	b.Run(name, func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			out := ToOpenAIChatRequest(ctx, req)
+			if out == nil {
+				b.Fatal("nil OpenAI request")
+			}
+			if serialize {
+				if _, err := schemas.MarshalSorted(out); err != nil {
+					b.Fatal(err)
+				}
+			}
+		}
+	})
+}
+
 // BenchmarkToOpenAIChatRequestGroq exercises a provider whose conversion runs
 // the compatibility filters (unsupported parameters dropped, assistant
 // reasoning renamed) rather than returning early like OpenAI itself.
@@ -151,6 +200,30 @@ func BenchmarkToOpenAIChatRequestGroq(b *testing.B) {
 	bifrostReq := benchOpenAIChatRequest(b).ToBifrostChatRequest(ctx)
 	bifrostReq.Provider = schemas.Groq
 	bifrostReq.Model = "llama-3.3-70b-versatile"
+	b.ReportAllocs()
+	for b.Loop() {
+		if out := ToOpenAIChatRequest(ctx, bifrostReq); out == nil {
+			b.Fatal("nil OpenAI request")
+		}
+	}
+}
+
+// BenchmarkToOpenAIChatRequestMistral exercises the Mistral compatibility pass
+// with a reasoning effort set and a datasheet effort ladder in place.
+func BenchmarkToOpenAIChatRequestMistral(b *testing.B) {
+	ladder := &schemas.ModelCapabilities{ReasoningEffortLevels: []string{"low", "high", "max"}}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == schemas.Mistral && m == "zai-glm-5-3" {
+			return ladder
+		}
+		return nil
+	})
+	b.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := benchOpenAIChatRequest(b).ToBifrostChatRequest(ctx)
+	bifrostReq.Provider = schemas.Mistral
+	bifrostReq.Model = "zai-glm-5-3"
+	bifrostReq.Params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr("max")}
 	b.ReportAllocs()
 	for b.Loop() {
 		if out := ToOpenAIChatRequest(ctx, bifrostReq); out == nil {

@@ -699,3 +699,49 @@ func TestCheckAuthorizationResponseIssuer(t *testing.T) {
 		})
 	}
 }
+
+// callerValueKey stands in for a request-scoped value on the caller's context,
+// such as a *fasthttp.RequestCtx user value.
+type callerValueKey struct{}
+
+// TestOAuthRequestsNeverReadCallerValuesWhileDialing pins that an outbound OAuth
+// request hands net/http a context without the caller's values. net/http dials
+// on a goroutine that can outlive the request and reads values from its context
+// as it dials; a handler passes its *fasthttp.RequestCtx, whose user values are
+// not safe for concurrent use, and keeps writing them once the call returns, so
+// a dial that could still read them raced the handler (go test -race).
+// Cancellation must still reach the request.
+func TestOAuthRequestsNeverReadCallerValuesWhileDialing(t *testing.T) {
+	if logger == nil {
+		logger = bifrost.NewNoOpLogger()
+		t.Cleanup(func() { logger = nil })
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	var dialed atomic.Int32
+	var leaked atomic.Value
+	prev := testDialContextOverride
+	testDialContextOverride = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialed.Add(1)
+		if v := ctx.Value(callerValueKey{}); v != nil {
+			leaked.Store(v)
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+	t.Cleanup(func() { testDialContextOverride = prev })
+
+	ctx := context.WithValue(withRequirePublicTarget(context.Background(), false), callerValueKey{}, "request-scoped")
+	_, _ = DiscoverOAuthMetadata(ctx, server.URL)
+	require.Positive(t, dialed.Load(), "the request must have dialed")
+	assert.Nil(t, leaked.Load(), "the dial must not read the caller's values")
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	before := dialed.Load()
+	_, err := DiscoverOAuthMetadata(cancelled, server.URL)
+	require.Error(t, err, "a cancelled caller must still stop the request")
+	assert.Equal(t, before, dialed.Load(), "a cancelled request must not dial")
+}

@@ -862,6 +862,140 @@ func TestHybrid_UpdateAgentLogUploadFailureKeepsUpdatedDatabaseFallback(t *testi
 	assert.Equal(t, secondUpdatedResponseBody, *dbOnly.ResponseBody)
 }
 
+// TestHybrid_UpdateAgentLogKeepsBodiesWhileFlagPending: the object is written
+// but its has_object flip has not landed (the ClickHouse batcher queues it).
+// A response-only update must carry the full request body over from the
+// object, not rebuild the object from the row's truncated preview.
+func TestHybrid_UpdateAgentLogKeepsBodiesWhileFlagPending(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
+	requestBody := strings.Repeat("r", maxA2APayloadPreviewRunes+100)
+	responseBody := `{"response":"original"}`
+	updatedResponseBody := `{"response":"updated"}`
+	entry := &AgentLog{
+		ID: "agent-flag-pending", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-agent-flag-pending",
+		RequestBody: &requestBody, ResponseBody: &responseBody,
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+	// Put done, flip still pending.
+	require.NoError(t, inner.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"has_object": false}))
+
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
+		"response_body": updatedResponseBody,
+	}))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+
+	row, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	stored, err := objStore.Get(ctx, *row.PayloadReference)
+	require.NoError(t, err)
+	fromObject := &AgentLog{}
+	require.NoError(t, MergeAgentLogPayloadFromJSON(fromObject, stored))
+	require.NotNil(t, fromObject.RequestBody)
+	assert.Equal(t, requestBody, *fromObject.RequestBody, "the full request body must survive a response-only update")
+	require.NotNil(t, fromObject.ResponseBody)
+	assert.Equal(t, updatedResponseBody, *fromObject.ResponseBody)
+}
+
+// TestHybrid_UpdateAgentLogIgnoresStaleObjectAfterFailedUpload: when a newer
+// update's upload failed, has_object is false and the stored object is older
+// than the row. A later update must keep the row's newer bodies, not restore
+// the stale ones from that object.
+func TestHybrid_UpdateAgentLogIgnoresStaleObjectAfterFailedUpload(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
+	staleRequest := `{"request":"stale"}`
+	newerRequest := `{"request":"newer"}`
+	updatedResponseBody := `{"response":"updated"}`
+	entry := &AgentLog{
+		ID: "agent-stale-object", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-agent-stale-object",
+		RequestBody: &staleRequest,
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+
+	objStore.PutErr = assert.AnError
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"request_body": newerRequest}))
+	waitForUploads(t, func() bool { return hybrid.DroppedUploads() == 1 })
+	objStore.PutErr = nil
+
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"response_body": updatedResponseBody}))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	assert.Equal(t, newerRequest, *found.RequestBody, "the stale object must not overwrite the newer request body")
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, updatedResponseBody, *found.ResponseBody)
+}
+
+// TestHybrid_UpdateAgentLogSamePreviewDoesNotRestoreOlderBody: two request
+// bodies that share their first maxA2APayloadPreviewRunes runes get the same
+// row preview. When the newer one's upload fails, a later response-only update
+// must not take the older body back from storage just because the previews
+// match.
+func TestHybrid_UpdateAgentLogSamePreviewDoesNotRestoreOlderBody(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
+	shared := strings.Repeat("p", maxA2APayloadPreviewRunes)
+	olderRequest := shared + "-older"
+	newerRequest := shared + "-newer"
+	updatedResponseBody := `{"response":"updated"}`
+	entry := &AgentLog{
+		ID: "agent-same-preview", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-agent-same-preview",
+		RequestBody: &olderRequest,
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+
+	objStore.PutErr = assert.AnError
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"request_body": newerRequest}))
+	waitForUploads(t, func() bool { return hybrid.DroppedUploads() == 1 })
+	objStore.PutErr = nil
+	row, err := inner.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, row.RequestBody)
+	olderPreview := truncateRunes(olderRequest, maxA2APayloadPreviewRunes)
+	require.Equal(t, olderPreview, *row.RequestBody, "the fixture needs both bodies to share one preview")
+
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"response_body": updatedResponseBody}))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	assert.NotEqual(t, olderRequest, *found.RequestBody, "the older body must not come back from storage")
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, updatedResponseBody, *found.ResponseBody)
+}
+
 func TestHybrid_AgentLogDuplicateDoesNotOverwritePayload(t *testing.T) {
 	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
@@ -1300,6 +1434,36 @@ func TestHybrid_ContentSummaryIsInputOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, dbLog.ContentSummary, "capital of France")
 	assert.NotContains(t, dbLog.ContentSummary, "Paris", "content_summary should not contain output text")
+}
+
+// An agent-loop request whose history has no user text keeps the latest tool
+// result as its list preview instead of an empty summary.
+func TestHybrid_ContentSummaryFallsBackToToolResult(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	system := "You are an agent."
+	toolResult := "25\nexit=0\ncurrent-context: my-own-context"
+	callID := "toolu_1"
+	entry := &Log{
+		ID:        "summary-tool-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "anthropic",
+		Model:     "claude-3",
+		Status:    "success",
+		Object:    "chat.completion",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &system}},
+			{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &toolResult}, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &callID}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+
+	dbLog, err := inner.FindByID(ctx, "summary-tool-1")
+	require.NoError(t, err)
+	assert.Equal(t, toolResult, dbLog.ContentSummary)
 }
 
 func TestHybrid_ResponsesInputHistoryPreservesLastUserMessage(t *testing.T) {
@@ -2834,4 +2998,20 @@ func TestHybrid_RelayLogUpdateClearsBody(t *testing.T) {
 	row, err := inner.FindRelayLog(ctx, partial.ID)
 	require.NoError(t, err)
 	assert.Nil(t, row.RequestBody, "the row's preview is cleared")
+}
+
+// retentionIntervalStore reports a fixed retention interval; any other LogStore call panics.
+type retentionIntervalStore struct {
+	LogStore
+	interval time.Duration
+}
+
+func (s *retentionIntervalStore) RetentionInterval() time.Duration { return s.interval }
+
+// The cleaner reads the interval through the hybrid store, so a dropped forward would move a
+// Postgres deployment's hourly retention back to whatever the hybrid store returned.
+func TestHybridLogStoreForwardsRetentionInterval(t *testing.T) {
+	want := 37 * time.Minute // matches neither the hourly nor the daily default
+	hybrid := &HybridLogStore{inner: &retentionIntervalStore{interval: want}}
+	assert.Equal(t, want, hybrid.RetentionInterval())
 }
