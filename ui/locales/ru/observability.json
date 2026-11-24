@@ -965,6 +965,7 @@
 			"jobLastStatus": "Последний статус задания",
 			"jobLastHttpStatus": "HTTP-статус последнего опроса",
 			"jobSettledAt": "Время расчёта",
+			"jobSettledBy": "Рассчитано проверкой статуса",
 			"jobLastError": "Почему завершено без цены",
 			"responseBodyPreview": "Тело ответа (предпросмотр)",
 			"filterByValue": "Показать вызовы ретрансляторов с этим значением",

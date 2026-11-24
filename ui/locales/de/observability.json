@@ -915,6 +915,7 @@
 			"jobLastStatus": "Letzter Job-Status",
 			"jobLastHttpStatus": "HTTP-Status der letzten Abfrage",
 			"jobSettledAt": "Abgerechnet am",
+			"jobSettledBy": "Abgerechnet durch Statusabfrage",
 			"jobLastError": "Warum ohne Preis beendet",
 			"responseBodyPreview": "Antwortinhalt (Vorschau)",
 			"filterByValue": "Relay-Aufrufe mit diesem Wert anzeigen",

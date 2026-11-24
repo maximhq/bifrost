@@ -28,7 +28,7 @@ import http from "node:http";
 //                        repeated token returns the same id. Textract.GetDocumentAnalysis {JobId}
 //                        walks the scenario: ok (IN_PROGRESS twice, then SUCCEEDED with 3 pages), failed,
 //                        throttle (one 400 ThrottlingException, then SUCCEEDED with 2 pages),
-//                        nousage (SUCCEEDED with no page count)
+//                        nousage (SUCCEEDED with no page count), instant (SUCCEEDED with 4 pages on the first check)
 //   POST /v1/rest/jobs   {"id": "<id>"} -> echoes that id as the job id, to try ids a relay must refuse
 //   GET  /__relay/jobs?id=<id>  {"id", "polls", "scenario", "data": []}
 //   GET  /__relay/escaped       {"hits": <n>}: requests whose raw path left /v1/rest/jobs/
@@ -52,6 +52,8 @@ const pollJob = (job) => {
 			return [200, { JobStatus: "FAILED", StatusMessage: "unsupported document" }];
 		case "nousage":
 			return [200, { JobStatus: "SUCCEEDED" }];
+		case "instant":
+			return [200, { JobStatus: "SUCCEEDED", DocumentMetadata: { Pages: 4 } }];
 		case "throttle":
 			if (job.polls === 1) return [400, { __type: "ThrottlingException", message: "Rate exceeded" }];
 			return [200, { JobStatus: "SUCCEEDED", DocumentMetadata: { Pages: 2 } }];

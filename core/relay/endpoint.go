@@ -36,7 +36,8 @@ type endpoint struct {
 	bodyOverrides      []bodyOverride            // endpoint-level forced body fields, for a request matching no route
 	awsKey             *schemas.BedrockKeyConfig // aws_sigv4 credential in the shape the signer reads
 	awsRegion          string
-	streamIdle         int // seconds
+	streamIdle         int  // seconds
+	hasJobs            bool // a route starts an async job, so replies are checked for status checks
 }
 
 // newEndpoint validates cfg and compiles it, refusing a job whose status checks would be charged.
@@ -90,6 +91,9 @@ func buildEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (e *end
 		e.streamIdle = cfg.Network.StreamIdleTimeoutInSeconds
 	}
 	jobErr = e.checkJobStatusRoutes()
+	for i := range e.routes {
+		e.hasJobs = e.hasJobs || e.routes[i].job != nil
+	}
 	if cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && cfg.Credential != nil && cfg.Credential.AWS != nil {
 		e.awsKey = bedrockKeyConfig(cfg.Credential.AWS)
 		e.awsRegion = cfg.Credential.AWS.Region.GetValue()

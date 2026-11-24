@@ -668,6 +668,11 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		}
 		resp.Usage.Job = job
 	}
+	if e.hasJobs && reply.status >= 200 && reply.status < 300 {
+		if id := e.statusCheckJobID(req); id != "" {
+			resp.JobStatusCheck = &schemas.RelayJobStatusCheck{JobID: id, ContentType: reply.contentType}
+		}
+	}
 	// A post-hook that clears the response without an error is refused like an empty recovery.
 	return recovered(runPost(resp, nil))
 }

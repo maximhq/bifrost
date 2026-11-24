@@ -96,3 +96,29 @@ func TestJobHandleCarriesIDReusePolicy(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, h.ReusedIDIsNewJob)
 }
+
+// A caller's status check is recognized by reversing the poll template, so its reply can settle the job.
+func TestStatusCheckJobIDReversesThePollTemplate(t *testing.T) {
+	req := func(method, path string, headers map[string]string, body string) *schemas.BifrostRelayRequest {
+		return &schemas.BifrostRelayRequest{Method: method, Path: path, Headers: headers, Body: []byte(body)}
+	}
+	rest := schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}/status"}
+	assert.Equal(t, "acme/2026/j1", matchStatusCheck(rest, req("GET", "/jobs/acme/2026/j1/status", nil, "")), "an id with slashes")
+	assert.Empty(t, matchStatusCheck(rest, req("POST", "/jobs/j1/status", nil, "")), "another method")
+	assert.Empty(t, matchStatusCheck(rest, req("GET", "/jobs//status", nil, "")), "no id")
+	assert.Empty(t, matchStatusCheck(rest, req("GET", "/jobs/../admin/status", nil, "")), "an id the relay would never follow")
+
+	textract := schemas.RelayJobPoll{Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"},
+		Body: `{"JobId":"{{job.id}}"}`, ContentType: "application/x-amz-json-1.1"}
+	target := map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis"}
+	assert.Equal(t, "j-1", matchStatusCheck(textract, req("POST", "/", target, `{"MaxResults":10,"JobId":"j-1"}`)), "the id is read from the body field, whatever else the caller sends")
+	assert.Empty(t, matchStatusCheck(textract, req("POST", "/", map[string]string{"x-amz-target": "Textract.StartDocumentAnalysis"}, `{"JobId":"j-1"}`)), "another operation")
+	assert.Empty(t, matchStatusCheck(textract, req("POST", "/", target, `{"JobId":7}`)), "an id that is not a string")
+
+	header := schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}", Headers: map[string]string{"X-Job": "id-{{job.id}}"}}
+	assert.Equal(t, "j1", matchStatusCheck(header, req("GET", "/jobs/j1", map[string]string{"x-job": "id-j1"}, "")))
+	assert.Empty(t, matchStatusCheck(header, req("GET", "/jobs/j1", map[string]string{"x-job": "id-j2"}, "")), "the path and a header must name the same job")
+
+	form := schemas.RelayJobPoll{Path: "/status", Body: "Action=Get&Id={{job.id}}", ContentType: "application/x-www-form-urlencoded"}
+	assert.Equal(t, "a/b", matchStatusCheck(form, req("POST", "/status", nil, "Id=a%2Fb&Action=Get")), "a form value, decoded")
+}

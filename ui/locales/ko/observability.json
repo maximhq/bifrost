@@ -910,6 +910,7 @@
 			"jobLastStatus": "마지막 작업 상태",
 			"jobLastHttpStatus": "마지막 폴링 HTTP 상태",
 			"jobSettledAt": "정산 시각",
+			"jobSettledBy": "정산한 상태 확인",
 			"jobLastError": "가격 없이 끝난 이유",
 			"responseBodyPreview": "응답 본문 (미리보기)",
 			"filterByValue": "이 값의 릴레이 호출 보기",

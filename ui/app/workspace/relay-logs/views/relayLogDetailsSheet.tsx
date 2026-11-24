@@ -652,6 +652,13 @@ export function RelayLogDetailSheet({
 															locale: dateFnsLocale(getLocale()),
 														})}
 													/>
+													{display.job_debug.settled_by_request_id && (
+														<LogEntryDetailsView
+															className="w-full"
+															label={t("relayLogs.detail.jobSettledBy")}
+															value={<code className="font-mono text-xs">{display.job_debug.settled_by_request_id}</code>}
+														/>
+													)}
 													{display.job_debug.last_error && (
 														<LogEntryDetailsView
 															className="w-full"

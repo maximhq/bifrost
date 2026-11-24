@@ -909,6 +909,7 @@
 			"jobLastStatus": "最後のジョブステータス",
 			"jobLastHttpStatus": "最後のポーリングの HTTP ステータス",
 			"jobSettledAt": "精算日時",
+			"jobSettledBy": "精算したステータス確認",
 			"jobLastError": "価格なしで終了した理由",
 			"responseBodyPreview": "レスポンス本文 (プレビュー)",
 			"filterByValue": "この値のリレー呼び出しを表示",

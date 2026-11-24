@@ -181,6 +181,8 @@ The start call is a row like any other, with its job id and the status `started`
 
 The job row also shows how the job was followed: how many times Bifrost tried a status check (a try skipped because another node held the job counts too), the last job status it read, the HTTP status of the check that ended it, and when it was settled. The replies to those checks are not stored.
 
+A caller's own status check can settle the job too: when its reply shows the job finished, Bifrost charges the job from that reply at once, as it does for a video retrieve, and the job row names that check. Bifrost's own polling stays the backstop, and a job is still charged once whichever check finds it finished first.
+
 <Note>
 Jobs are recorded by request logging. With logging off, the start call is still charged its fee, but no job is followed or charged.
 </Note>

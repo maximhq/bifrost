@@ -915,6 +915,7 @@
 			"jobLastStatus": "Ultimo stato del job",
 			"jobLastHttpStatus": "Stato HTTP dell'ultimo polling",
 			"jobSettledAt": "Regolato il",
+			"jobSettledBy": "Regolato dal controllo di stato",
 			"jobLastError": "Perché è terminato senza prezzo",
 			"responseBodyPreview": "Corpo della risposta (anteprima)",
 			"filterByValue": "Mostra le chiamate relay con questo valore",

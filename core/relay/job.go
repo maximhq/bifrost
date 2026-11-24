@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // JobSnapshot is everything the job accounting sweeper needs to follow and price one job an
@@ -265,6 +267,141 @@ func validRelayJobID(id string) bool {
 		}
 	}
 	return true
+}
+
+// statusCheckJobID reads the job id out of a caller's request when it is a status check for one
+// of the relay's jobs: the reverse of PollRequest, so the reply can settle the job. It returns ""
+// for any other request.
+func (e *endpoint) statusCheckJobID(req *schemas.BifrostRelayRequest) string {
+	for i := range e.routes {
+		if job := e.routes[i].job; job != nil {
+			if id := matchStatusCheck(job.Poll, req); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// matchStatusCheck matches a request against one poll template. Every place the template names
+// the job id must agree on it, and every literal part must match as PollRequest would send it.
+func matchStatusCheck(poll schemas.RelayJobPoll, req *schemas.BifrostRelayRequest) string {
+	method := strings.TrimSpace(poll.Method)
+	if method == "" {
+		method = "POST"
+	}
+	if !strings.EqualFold(method, req.Method) {
+		return ""
+	}
+	id := ""
+	agree := func(found string, ok bool) bool {
+		if !ok {
+			return false
+		}
+		if found != "" {
+			if id != "" && id != found {
+				return false
+			}
+			id = found
+		}
+		return true
+	}
+	pathTpl, _, _ := strings.Cut(poll.Path, "?")
+	if !agree(templateJobID(pathTpl, req.Path)) {
+		return ""
+	}
+	for name, value := range poll.Headers {
+		sent, ok := req.Headers[strings.ToLower(name)]
+		if !ok || !agree(templateJobID(value, sent)) {
+			return ""
+		}
+	}
+	if strings.Contains(poll.Body, schemas.JobIDPlaceholder) && !agree(bodyJobID(poll, req.Body)) {
+		return ""
+	}
+	if id == "" || !validRelayJobID(id) {
+		return ""
+	}
+	return id
+}
+
+// templateJobID returns what {{job.id}} stands for in value; with no placeholder the template must
+// equal value, and the id is "".
+func templateJobID(tpl, value string) (string, bool) {
+	before, after, found := strings.Cut(tpl, schemas.JobIDPlaceholder)
+	if !found {
+		return "", tpl == value
+	}
+	if len(value) <= len(before)+len(after) || !strings.HasPrefix(value, before) || !strings.HasSuffix(value, after) {
+		return "", false
+	}
+	id := value[len(before) : len(value)-len(after)]
+	// A template naming the id twice must repeat the same id; one naming it once is matched already.
+	if strings.Contains(after, schemas.JobIDPlaceholder) && strings.ReplaceAll(tpl, schemas.JobIDPlaceholder, id) != value {
+		return "", false
+	}
+	return id, true
+}
+
+// bodyJobID reads the job id from a JSON or form body at the field the template puts it in. Other
+// body types are not read, so the id must come from the path or a header.
+func bodyJobID(poll schemas.RelayJobPoll, body []byte) (string, bool) {
+	contentType := poll.ContentType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	switch {
+	case isJSONContentType(contentType):
+		field, tpl, ok := jsonTemplateField(gjson.Parse(poll.Body), "")
+		if !ok {
+			return "", true
+		}
+		sent := gjson.GetBytes(body, field)
+		if sent.Type != gjson.String {
+			return "", false
+		}
+		return templateJobID(tpl, sent.Str)
+	case bodyMediaType(contentType) == "application/x-www-form-urlencoded":
+		tplValues, err := url.ParseQuery(poll.Body)
+		if err != nil {
+			return "", true
+		}
+		sentValues, err := url.ParseQuery(string(body))
+		if err != nil {
+			return "", false
+		}
+		for name, values := range tplValues {
+			if len(values) == 1 && strings.Contains(values[0], schemas.JobIDPlaceholder) {
+				return templateJobID(values[0], sentValues.Get(name))
+			}
+		}
+	}
+	return "", true
+}
+
+// jsonTemplateField finds the string field of a JSON template that holds {{job.id}}, as a gjson
+// path. A key gjson would read as syntax is not followed.
+func jsonTemplateField(node gjson.Result, prefix string) (field, tpl string, ok bool) {
+	node.ForEach(func(key, value gjson.Result) bool {
+		k := key.String()
+		if node.IsArray() {
+			k = strconv.Itoa(int(key.Int()))
+		} else if strings.ContainsAny(k, ".*?|#@\\") {
+			return true
+		}
+		path := k
+		if prefix != "" {
+			path = prefix + "." + k
+		}
+		switch {
+		case value.Type == gjson.String && strings.Contains(value.Str, schemas.JobIDPlaceholder):
+			field, tpl, ok = path, value.Str, true
+		case value.IsObject() || value.IsArray():
+			field, tpl, ok = jsonTemplateField(value, path)
+		}
+		return !ok
+	})
+	return field, tpl, ok
 }
 
 // jobHandle reads the job id a start response names and returns the handle the logging plugin

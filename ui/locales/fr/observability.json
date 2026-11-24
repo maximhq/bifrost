@@ -915,6 +915,7 @@
 			"jobLastStatus": "Dernier statut de la tâche",
 			"jobLastHttpStatus": "Statut HTTP de la dernière interrogation",
 			"jobSettledAt": "Réglé le",
+			"jobSettledBy": "Réglé par la vérification d’état",
 			"jobLastError": "Pourquoi elle s’est terminée sans prix",
 			"responseBodyPreview": "Corps de la réponse (aperçu)",
 			"filterByValue": "Afficher les appels relay avec cette valeur",

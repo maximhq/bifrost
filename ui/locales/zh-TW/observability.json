@@ -910,6 +910,7 @@
 			"jobLastStatus": "最後的作業狀態",
 			"jobLastHttpStatus": "最後一次輪詢的 HTTP 狀態",
 			"jobSettledAt": "結算時間",
+			"jobSettledBy": "由狀態查詢結算",
 			"jobLastError": "未計價結束的原因",
 			"responseBodyPreview": "回應內文（預覽）",
 			"filterByValue": "顯示具有此值的轉送呼叫",

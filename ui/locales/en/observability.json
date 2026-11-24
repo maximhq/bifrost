@@ -915,6 +915,7 @@
 			"jobLastStatus": "Last job status",
 			"jobLastHttpStatus": "Last poll HTTP status",
 			"jobSettledAt": "Settled at",
+			"jobSettledBy": "Settled by status check",
 			"jobLastError": "Why it ended unpriced",
 			"responseBodyPreview": "Response Body (Preview)",
 			"filterByValue": "Show relay calls with this value",

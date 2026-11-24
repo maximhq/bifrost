@@ -6778,6 +6778,21 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	require.Len(t, store.jobs, 2, "a lookup error records nothing rather than risk a duplicate row")
 }
 
+// Past the last generation slot each start gets its own row, even when callers share an x-request-id.
+func TestRelayJobRowPastTheLastGenerationIsKeyedByItsCall(t *testing.T) {
+	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.batchStore = store
+	for gen := 1; gen <= jobaccounting.MaxRelayJobGenerations; gen++ {
+		id, scoped := jobaccounting.RelayJobRowID("textract", "j-1", gen)
+		store.jobs[id] = &cstables.TableProviderJob{ID: id, JobID: scoped, AccountingStatus: cstables.ProviderJobAccountingStatusAccounted}
+	}
+	reusing := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{}}`, ReusedIDIsNewJob: true}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "row-a", RequestID: "shared", RelayName: "textract"}, "", reusing)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "row-b", RequestID: "shared", RelayName: "textract"}, "", reusing)
+	require.Len(t, store.jobs, jobaccounting.MaxRelayJobGenerations+2)
+}
+
 func clientIPTestContext(requestID string) *schemas.BifrostContext {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)

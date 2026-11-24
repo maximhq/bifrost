@@ -810,6 +810,28 @@ func TestServeJobRouteHandsBackJob(t *testing.T) {
 	priced, ok := snap.Price(poll.ContentType, poll.Body)
 	require.True(t, ok)
 	assert.InDelta(t, 3*0.05, priced.Cost, 1e-12, "the route fee was charged on the start call, not again at settlement")
+	assert.Nil(t, res.Response.JobStatusCheck, "a start call is not a status check")
+
+	// A caller's own status check names its job, so the logging plugin can settle it from the reply.
+	cfg.Routes = append(cfg.Routes, schemas.RelayRouteConfig{Method: "GET", Path: "/jobs/**"})
+	m, _ = newTestManager(t, cfg)
+	res, bErr = m.Serve(testCtx(t), Request{Endpoint: "textract", Method: "GET", Path: "/jobs/j-1", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	require.NotNil(t, res.Response.JobStatusCheck)
+	assert.Equal(t, "j-1", res.Response.JobStatusCheck.JobID)
+	assert.Equal(t, "application/json", res.Response.JobStatusCheck.ContentType)
+	assert.Nil(t, res.Response.Usage, "the status check itself stays free")
+}
+
+// Status check matching runs on a 2xx reply of a relay with an async job; other relays skip it.
+func BenchmarkServeStatusCheckMatching(b *testing.B) {
+	job := &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"DONE"}, Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}}
+	e := &endpoint{routes: []compiledRoute{{job: job}}, hasJobs: true}
+	req := &schemas.BifrostRelayRequest{Method: "GET", Path: "/jobs/j-1"}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = e.statusCheckJobID(req)
+	}
 }
 
 // A job settles once, so the status checks a caller makes for it must not be charged too: a job

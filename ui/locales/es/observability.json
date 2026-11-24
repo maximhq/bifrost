@@ -915,6 +915,7 @@
 			"jobLastStatus": "Último estado del job",
 			"jobLastHttpStatus": "Estado HTTP del último sondeo",
 			"jobSettledAt": "Liquidado el",
+			"jobSettledBy": "Liquidado por la consulta de estado",
 			"jobLastError": "Por qué terminó sin precio",
 			"responseBodyPreview": "Cuerpo de la respuesta (vista previa)",
 			"filterByValue": "Mostrar las llamadas de relay con este valor",

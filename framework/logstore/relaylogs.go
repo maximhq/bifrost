@@ -120,11 +120,14 @@ type RelayLog struct {
 // RelayJobDebug is how a job row's job was polled, as video_debug is on an LLM row. Poll replies
 // themselves are never stored.
 type RelayJobDebug struct {
-	Polls          int       `json:"polls"`                      // status checks Bifrost sent
-	LastStatus     string    `json:"last_status,omitempty"`      // the job status last read from a reply
-	LastHTTPStatus int       `json:"last_http_status,omitempty"` // HTTP status of the poll that ended the job
-	LastError      string    `json:"last_error,omitempty"`       // why the job ended unpriced
-	SettledAt      time.Time `json:"settled_at"`
+	Polls          int    `json:"polls"`                      // status checks Bifrost sent
+	LastStatus     string `json:"last_status,omitempty"`      // the job status last read from a reply
+	LastHTTPStatus int    `json:"last_http_status,omitempty"` // HTTP status of the poll that ended the job
+	LastError      string `json:"last_error,omitempty"`       // why the job ended unpriced
+	// SettledByRequestID is the caller's status check that settled the job, as on video_debug; ""
+	// when Bifrost's own poll did.
+	SettledByRequestID string    `json:"settled_by_request_id,omitempty"`
+	SettledAt          time.Time `json:"settled_at"`
 }
 
 // Relay log kinds and statuses.

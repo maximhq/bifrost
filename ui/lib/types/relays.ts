@@ -241,6 +241,7 @@ export interface RelayJobDebug {
 	last_status?: string;
 	last_http_status?: number;
 	last_error?: string;
+	settled_by_request_id?: string;
 	settled_at: string;
 }
 

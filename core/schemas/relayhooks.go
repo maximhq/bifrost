@@ -40,6 +40,7 @@ type BifrostRelayResponse struct {
 	Latency         int64 // milliseconds the call spent in Bifrost, pre-hooks to the end of the reply (or the stream)
 	UpstreamLatency int64 // milliseconds blocked on the upstream socket, 0 when the upstream was never called
 	Usage           *RelayUsage
+	JobStatusCheck  *RelayJobStatusCheck // set when a 2xx reply answers a caller's status check for one of the relay's jobs
 }
 
 // RelayUsage is what one counted call costs and what the mapping read to get there. Cost is the
@@ -56,6 +57,13 @@ type RelayUsage struct {
 	TotalTokens    int      `json:"total_tokens,omitempty"`
 
 	Job *RelayJobHandle `json:"job,omitempty"` // set when the call started a job billed on completion
+}
+
+// RelayJobStatusCheck names the job a caller's own status check asked about, so the logging plugin
+// can settle the job from the reply, as a terminal video retrieve settles a video.
+type RelayJobStatusCheck struct {
+	JobID       string // upstream job id read from the request
+	ContentType string // the reply's content type, for reading its status and usage
 }
 
 // RelayJobHandle is a job a route started: the upstream id, the seconds until the first poll and

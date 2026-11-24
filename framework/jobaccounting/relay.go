@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +76,81 @@ func NewRelayJobSweeper(store SweepStore, poller RelayJobPoller, logs RelayJobLo
 	return newSweeper(store, relayLogsRecorder{logs: logs, reporter: reporter}, nil, settler, nil, nil, config)
 }
 
+// MaxRelayJobGenerations bounds how many times one upstream job id is reused after settlement
+// before a start is keyed by its own request instead (reused_id_is_new_job).
+const MaxRelayJobGenerations = 64
+
+// RelayJobRowID is the coordination row id of a relay job, and its scoped job id, for generation
+// gen of an upstream id: the first start takes generation 1, a reused id after settlement the next.
+func RelayJobRowID(relayName, upstreamID string, gen int) (id, scoped string) {
+	prefix := ""
+	if gen > 1 {
+		prefix = "g" + strconv.Itoa(gen)
+	}
+	scoped = schemas.RelayScopedJobID(prefix, upstreamID)
+	return cstables.ProviderJobID(cstables.ProviderJobKindRelay, relayName, scoped), scoped
+}
+
+// RelayStatusCheckPayload is a caller's status check reply, for AccountRelayJob.
+type RelayStatusCheckPayload struct {
+	StatusCode  int
+	ContentType string
+	Body        []byte
+	RequestID   string // the caller's Relay Logs row
+}
+
+// AccountRelayJob settles a relay job from a caller's status check that found it finished, as
+// AccountVideoJob settles a video from a terminal retrieve, rather than leaving the sweeper to poll
+// it again. It never creates a job row: an id Bifrost did not see started is not billed to anyone.
+// It does not force the claim, and an already-settled job takes the engine's mirror path.
+func AccountRelayJob(ctx context.Context, stateStore JobStore, logs RelayJobLogStore, reporter RelayUsageReporter, req JobRequest) (*Outcome, error) {
+	if stateStore == nil || logs == nil {
+		return nil, fmt.Errorf("relay accounting stores are nil")
+	}
+	load, _ := req.Payload.(RelayStatusCheckPayload)
+	if req.Provider == "" || req.ProviderJobID == "" || load.StatusCode < 200 || load.StatusCode >= 300 {
+		return nil, nil
+	}
+	job := openRelayJob(ctx, stateStore, string(req.Provider), req.ProviderJobID)
+	if job == nil {
+		return nil, nil
+	}
+	snap, err := relaySnapshot(job)
+	if err != nil {
+		return nil, nil
+	}
+	status := snap.Status(load.Body)
+	done, succeeded := snap.Outcome(status)
+	if !done {
+		// Still running: nothing to settle, and the sweeper is already scheduled.
+		return nil, nil
+	}
+	job.ProviderStatus = status
+	job.NextCheckAt = nil
+	req.Job = job
+	req.ProviderJobID = job.JobID
+	req.Payload = &relayVerdict{snap: snap, status: status, succeeded: succeeded, contentType: load.ContentType, body: load.Body,
+		httpStatus: load.StatusCode, settledBy: load.RequestID}
+	settler := &RelaySettler{store: stateStore, logs: logs, hasReporter: reporter != nil}
+	return accountJob(ctx, stateStore, relayLogsRecorder{logs: logs, reporter: reporter}, nil, settler, req)
+}
+
+// openRelayJob is the open job row for an upstream id: the generation a start recorded and no
+// settlement has closed yet.
+func openRelayJob(ctx context.Context, store JobStore, relayName, upstreamID string) *cstables.TableProviderJob {
+	for gen := 1; gen <= MaxRelayJobGenerations; gen++ {
+		id, _ := RelayJobRowID(relayName, upstreamID, gen)
+		job, err := store.GetProviderJob(ctx, id)
+		if err != nil || job == nil {
+			return nil
+		}
+		if job.AccountingStatus != cstables.ProviderJobAccountingStatusAccounted && job.AccountingStatus != cstables.ProviderJobAccountingStatusUnpriceable {
+			return job
+		}
+	}
+	return nil
+}
+
 // relayVerdict is what a poll learned, for Settle to decide under the claim.
 type relayVerdict struct {
 	snap        *relay.JobSnapshot
@@ -84,8 +160,9 @@ type relayVerdict struct {
 	body        []byte
 	reason      string // set when the job ended without a reply to price
 	reasonErr   error
-	httpStatus  int  // the final poll's HTTP status as answered, 0 when it got no answer
-	polled      bool // a poll was sent to end the job, answered or not
+	httpStatus  int    // the final poll's HTTP status as answered, 0 when it got no answer
+	polled      bool   // a poll was sent to end the job, answered or not
+	settledBy   string // the caller's request whose status check settled the job, "" for a poll
 
 	usage   *schemas.RelayUsage // the priced usage, set by Settle
 	written bool                // the settlement row already exists
@@ -390,8 +467,9 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 		OutputTokens:       usage.OutputTokens,
 		TotalTokens:        usage.TotalTokens,
 	}
-	entry.JobDebugParsed = &logstore.RelayJobDebug{Polls: job.PollAttempts, LastStatus: job.ProviderStatus, LastHTTPStatus: e.verdict.httpStatus, SettledAt: time.Now().UTC()}
-	if e.verdict.polled {
+	entry.JobDebugParsed = &logstore.RelayJobDebug{Polls: job.PollAttempts, LastStatus: job.ProviderStatus, LastHTTPStatus: e.verdict.httpStatus,
+		SettledByRequestID: e.verdict.settledBy, SettledAt: time.Now().UTC()}
+	if e.verdict.polled && e.verdict.settledBy == "" {
 		entry.JobDebugParsed.Polls++ // the poll that ended the job
 	}
 	if e.verdict.status != "" {

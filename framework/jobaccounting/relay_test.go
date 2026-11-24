@@ -614,3 +614,80 @@ func TestRelayJobDebugRecordsTheAnsweredStatusAndEverySentPoll(t *testing.T) {
 		})
 	}
 }
+
+// seedRelayJobGeneration records a job the way the start call does, in generation gen of upstream id j-1.
+func seedRelayJobGeneration(t *testing.T, store *fakeAccountingStore, gen int) *cstables.TableProviderJob {
+	t.Helper()
+	job := seedEndpointJob(t, store)
+	delete(store.jobs, job.ID)
+	id, scoped := RelayJobRowID("textract", "j-1", gen)
+	job.ID, job.JobID = id, scoped
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
+	return store.jobs[id]
+}
+
+func statusCheck(status int, body string) JobRequest {
+	return JobRequest{Provider: "textract", ProviderJobID: "j-1", ClaimedBy: "logging:node-1",
+		Payload: RelayStatusCheckPayload{StatusCode: status, ContentType: "application/json", Body: []byte(body), RequestID: "call-9"}}
+}
+
+// A caller's status check that finds the job finished settles it there, as a terminal video retrieve does.
+func TestRelayStatusCheckSettlesAFinishedJobOnce(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	job := seedRelayJobGeneration(t, store, 1)
+	logs := newFakeEndpointLogs()
+	reporter := &fakeEndpointReporter{}
+
+	out, err := AccountRelayJob(ctx, store, logs, reporter, statusCheck(200, `{"status":"IN_PROGRESS"}`))
+	require.NoError(t, err)
+	assert.Nil(t, out, "a running job is left to the sweeper")
+	assert.Empty(t, logs.rows)
+
+	out, err = AccountRelayJob(ctx, store, logs, reporter, statusCheck(200, `{"status":"SUCCEEDED","pages":3}`))
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.True(t, out.Accounted)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+	require.Len(t, reporter.reports, 1)
+	assert.InDelta(t, 3*0.05, reporter.reports[0].Cost, 1e-12)
+	row := logs.rows[relayRowID(job)]
+	require.NotNil(t, row)
+	assert.Equal(t, "call-9", row.JobDebugParsed.SettledByRequestID)
+	assert.Equal(t, 0, row.JobDebugParsed.Polls, "Bifrost sent no poll of its own")
+
+	_, err = AccountRelayJob(ctx, store, logs, reporter, statusCheck(200, `{"status":"SUCCEEDED","pages":3}`))
+	require.NoError(t, err)
+	assert.Len(t, reporter.reports, 1, "a later status check finds the job settled and charges nothing")
+}
+
+func TestRelayStatusCheckIgnoresUnknownJobsAndFailedReplies(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	logs := newFakeEndpointLogs()
+	out, err := AccountRelayJob(ctx, store, logs, nil, statusCheck(200, `{"status":"SUCCEEDED","pages":3}`))
+	require.NoError(t, err)
+	assert.Nil(t, out, "an id Bifrost never saw started is not billed to anyone")
+
+	job := seedRelayJobGeneration(t, store, 1)
+	out, err = AccountRelayJob(ctx, store, logs, nil, statusCheck(500, `{"status":"SUCCEEDED","pages":3}`))
+	require.NoError(t, err)
+	assert.Nil(t, out)
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+}
+
+// With reused_id_is_new_job, a status check settles the open generation, not one already charged.
+func TestRelayStatusCheckSettlesTheOpenGeneration(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	first := seedRelayJobGeneration(t, store, 1)
+	first.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
+	second := seedRelayJobGeneration(t, store, 2)
+	reporter := &fakeEndpointReporter{}
+	out, err := AccountRelayJob(ctx, store, newFakeEndpointLogs(), reporter, statusCheck(200, `{"status":"SUCCEEDED","pages":1}`))
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, second.ID, out.JobID)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, second.AccountingStatus)
+	require.Len(t, reporter.reports, 1)
+}

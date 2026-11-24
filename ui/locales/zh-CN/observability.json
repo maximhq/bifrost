@@ -910,6 +910,7 @@
 			"jobLastStatus": "最后的作业状态",
 			"jobLastHttpStatus": "最后一次轮询的 HTTP 状态",
 			"jobSettledAt": "结算时间",
+			"jobSettledBy": "由状态查询结算",
 			"jobLastError": "未计价结束的原因",
 			"responseBodyPreview": "响应正文（预览）",
 			"filterByValue": "显示具有此值的中继调用",
