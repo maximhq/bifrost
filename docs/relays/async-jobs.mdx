@@ -189,4 +189,4 @@ Jobs are recorded by request logging. With logging off, the start call is still 
 
 ## Job ids Bifrost will not follow
 
-The job id comes from the API's reply and goes into the status check's path. To keep it from reaching another path on the API with the relay's credential, Bifrost only follows an id of printable characters with no spaces, `\`, `?`, `#`, `.` or `..` path segments, at most 160 bytes. A reply with any other id is charged as an ordinary call and the job is not followed.
+The job id comes from the API's reply and goes into the status check's path. To keep it from reaching another path on the API with the relay's credential, Bifrost only follows an id of printable characters with no spaces, `\`, `?`, `#`, `.` or `..` path segments (also with `;params` after them, as in `..;x`), at most 160 bytes. A reply with any other id is charged as an ordinary call and the job is not followed.

@@ -261,8 +261,10 @@ func validRelayJobID(id string) bool {
 			return false
 		}
 	}
+	// A ;param does not stop some servers (Tomcat) reading "..;x" as "..", so it is stripped first,
+	// as gapSegmentOK does for a ** segment.
 	for _, segment := range strings.Split(id, "/") {
-		if segment == "." || segment == ".." {
+		if name, _, _ := strings.Cut(segment, ";"); name == "." || name == ".." {
 			return false
 		}
 	}
