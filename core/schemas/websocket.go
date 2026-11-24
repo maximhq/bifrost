@@ -31,6 +31,7 @@ type WebSocketResponsesEvent struct {
 	Metadata           json.RawMessage    `json:"metadata,omitempty"`
 	Text               json.RawMessage    `json:"text,omitempty"`
 	Truncation         string             `json:"truncation,omitempty"`
+	AccessPrograms     *AccessPrograms    `json:"access_programs,omitempty"`
 }
 
 // WebSocketErrorEvent represents a server-sent error event over WebSocket.

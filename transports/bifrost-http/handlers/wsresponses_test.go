@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
@@ -696,4 +697,35 @@ func TestEventLoopIgnoresResponseInterrupt(t *testing.T) {
 	_, data, err := clientConn.ReadMessage()
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "unsupported event type: response.unknown", "the interrupt must not produce an error frame ahead of the next event's reply")
+}
+
+// TestConvertEventToRequestKeepsAccessPrograms pins OpenAI's Daybreak selector on
+// the Responses WebSocket HTTP bridge. The native upstream relays the raw event,
+// but the bridge rebuilds typed params from the event, so a field the event does
+// not model only survives as an extra param, which is not sent without the
+// passthrough flag.
+func TestConvertEventToRequestKeepsAccessPrograms(t *testing.T) {
+	message := []byte(`{"type":"response.create","model":"openai/gpt-6-sol","input":"hi","access_programs":{"cyber":"daybreak_blue"}}`)
+	var event schemas.WebSocketResponsesEvent
+	if err := sonic.Unmarshal(message, &event); err != nil {
+		t.Fatal(err)
+	}
+	req, err := (&WSResponsesHandler{}).convertEventToRequest(&event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := sonic.Marshal(req.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(params), `"access_programs":{"cyber":"daybreak_blue"}`) {
+		t.Errorf("access_programs lost on the HTTP bridge: %s", params)
+	}
+	extras, err := extractExtraParams(message, wsResponsesKnownFields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := extras["access_programs"]; ok {
+		t.Errorf("access_programs must be typed, not an extra param")
+	}
 }
