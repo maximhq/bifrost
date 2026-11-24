@@ -913,3 +913,26 @@ func TestGenAIGenerateContentNullEntriesDoNotPanic(t *testing.T) {
 		})
 	}
 }
+
+// TestRewriteGeminiInteractionsRawRequestBody verifies an Interactions create is rewritten in the fields passthroughparse
+// reads (system instruction, text parts of user and model steps, replayed function call arguments, function result
+// values, a plain string input) and nowhere else. Synthetic payloads.
+func TestRewriteGeminiInteractionsRawRequestBody(t *testing.T) {
+	replacements := map[string]string{"alice@example.com": "[EMAIL]"}
+	body := `{"model":"gemini-3.8-flash","system_instruction":"reply to alice@example.com","previous_interaction_id":"alice@example.com",` +
+		`"input":[{"type":"user_input","content":[{"type":"text","text":"mail alice@example.com"},{"type":"image","uri":"alice@example.com"}]},` +
+		`{"type":"model_output","content":[{"type":"text","text":"sent to alice@example.com"}]},` +
+		`{"type":"function_result","name":"lookup","call_id":"c1","result":{"content":[{"type":"text","text":"found alice@example.com"}]}},` +
+		`{"type":"thought","summary":[{"type":"text","text":"alice@example.com"}]},` +
+		`{"type":"function_call","id":"alice@example.com","name":"send","arguments":{"to":"alice@example.com","cc":["alice@example.com"]}}]}`
+	got, err := rewriteGeminiInteractionsRawRequestBody([]byte(body), replacements)
+	require.NoError(t, err)
+	assertRawPaths(t, got,
+		[]string{"system_instruction", "input.0.content.0.text", "input.1.content.0.text", "input.2.result.content.0.text", "input.4.arguments.to", "input.4.arguments.cc.0"},
+		map[string]string{"previous_interaction_id": "alice@example.com", "input.0.content.1.uri": "alice@example.com", "input.3.summary.0.text": "alice@example.com", "input.4.id": "alice@example.com"},
+	)
+
+	got, err = rewriteGeminiInteractionsRawRequestBody([]byte(`{"model":"gemini-3.8-flash","input":"mail alice@example.com"}`), replacements)
+	require.NoError(t, err)
+	assertRawPaths(t, got, []string{"input"}, nil)
+}
