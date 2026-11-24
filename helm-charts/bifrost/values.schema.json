@@ -4717,6 +4717,11 @@
                     "minimum": 0,
                     "description": "Number of preceding conversation turns to include when send_all_conversation_turns is false. 0 sends only the current input."
                   },
+                  "exclude_system_prompt": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Keep system messages away from the rule's guardrail providers, both as content to check and as conversation context. When false (default), they are sent like any other turn. Applies to LLM rules; the turn window counts only the turns that are sent."
+                  },
                   "evaluation_mode": {
                     "type": "string",
                     "enum": ["bundled", "per_turn"],
