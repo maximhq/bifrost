@@ -542,3 +542,31 @@ func BenchmarkEnrichListModelsResponse(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkEnrichListModelsResponseAliased measures a Bedrock listing whose
+// models are key aliases with opaque profile IDs, half resolving through the
+// alias's model_name and half missing the catalog.
+func BenchmarkEnrichListModelsResponseAliased(b *testing.B) {
+	mc := modelInfoCatalog(b)
+	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{
+		ID:     "key-1",
+		Models: schemas.WhiteList{"claude-opus-5", "unknown-profile"},
+		Aliases: schemas.KeyAliases{
+			"claude-opus-5":   {ModelID: "a1b2c3d4", ModelName: schemas.Ptr("anthropic.claude-opus-5")},
+			"unknown-profile": {ModelID: "c9d0e1f2", ModelName: schemas.Ptr("anthropic.unknown-model")},
+		},
+	}})
+	b.ReportAllocs()
+	for b.Loop() {
+		b.StopTimer()
+		data := make([]schemas.Model, 0, 50)
+		for i := 0; i < 25; i++ {
+			data = append(data,
+				schemas.Model{ID: "bedrock/claude-opus-5", Alias: schemas.Ptr("a1b2c3d4")},
+				schemas.Model{ID: "bedrock/unknown-profile", Alias: schemas.Ptr("c9d0e1f2")})
+		}
+		resp := &schemas.BifrostListModelsResponse{Data: data}
+		b.StartTimer()
+		mc.EnrichListModelsResponse(resp)
+	}
+}
