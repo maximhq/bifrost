@@ -23,7 +23,7 @@ func TestIsModelAllowedForProvider_ExplicitList(t *testing.T) {
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),
 	}
-	mc.initCaches()
+	withTestCaches(t, mc)
 	// Give OpenAI a live catalog carrying a provider-prefixed entry, so the
 	// prefixed branch has something to match (ParseModelString only strips
 	// recognized provider prefixes, so this must be a real provider).
@@ -68,7 +68,7 @@ func TestIsModelAllowedForProvider_KeyAliases(t *testing.T) {
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),
 	}
-	mc.initCaches()
+	withTestCaches(t, mc)
 	provider := schemas.Bedrock
 	const canonical = "us.anthropic.claude-sonnet-4-6"
 	// Real keys carry a models list; an empty one allows nothing, so core never selects such a key.
@@ -142,7 +142,7 @@ func TestKeyAliasesResolveToAllowed_KeyIDs(t *testing.T) {
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),
 	}
-	mc.initCaches()
+	withTestCaches(t, mc)
 	const canonical = "us.anthropic.claude-sonnet-4-6"
 	anyModel := schemas.WhiteList{"*"}
 	sonnet := schemas.KeyAliases{"claude-sonnet": {ModelID: canonical}}
@@ -291,7 +291,7 @@ func BenchmarkIsModelAllowedForProvider_ExplicitList(b *testing.B) {
 		keyconf:   keyconfig.New(nil),
 		done:      make(chan struct{}),
 	}
-	mc.initCaches()
+	withTestCaches(b, mc)
 	cfg := &configstore.ProviderConfig{}
 	for k := 0; k < 3; k++ {
 		aliases := schemas.KeyAliases{}

@@ -22,7 +22,7 @@ type cachedHeaderCredential struct {
 	credential   *schemas.MCPHeadersUserCredential
 }
 
-// headerCredentialCache adapts lrucache.Cache to per-user MCP header
+// headerCredentialCache adapts a live-store cache to per-user MCP header
 // credential lookups: it owns the binding-key scheme, registers each entry
 // under its credential row ID for targeted eviction (upsert, delete,
 // revoke), and provides the scoped bulk evictions the credential lifecycle
@@ -35,7 +35,7 @@ type headerCredentialCache struct {
 
 // headerCredentialCacheKey builds the cache key for a (mode, identity,
 // mcp client) binding. identity is a caller-asserted string with no
-// charset restriction, so this goes through lrucache.EncodeKey rather than
+// charset restriction, so this goes through livestore.EncodeKey rather than
 // a plain separator join — see its doc comment for why a naive join lets
 // an identity value forge a component boundary and alias two distinct
 // bindings onto one cache entry. Admin-mode bindings carry an empty

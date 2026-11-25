@@ -7783,7 +7783,7 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	}
 
 	// Use default modelcatalog initialization when no enterprise overrides are provided
-	pricingManager, err := modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, logger)
+	pricingManager, err := modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, config.LiveStore, logger)
 	if err != nil {
 		logger.Fatal("failed to initialize pricing manager: %v", err)
 	}

@@ -144,6 +144,12 @@ func (c *Cache[V]) Get(key string) (V, bool) {
 	return ent.value, true
 }
 
+// Expiry returns when key's entry expires, and false when key holds no live entry or its entry
+// never expires.
+func (c *Cache[V]) Expiry(key string) (time.Time, bool) {
+	return c.entries.Expiry(key)
+}
+
 // Fill runs load for key and installs its result, unless an eviction or flush landed while the
 // load ran; errors are returned but never cached. A caller never receives a load that started
 // before its call: one that arrives while a load runs waits for it and shares one follow-up load
