@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1200,9 +1201,7 @@ func TestPreLLMHookBindsObjectsAcrossProviderAliases(t *testing.T) {
 		buildProviderConfig("other-service", []string{"*"}),
 		buildProviderConfig("anthropic", []string{"*"}),
 	}
-	plugin := newAccessTestPlugin(t, vk, nil)
-	plugin.configStore = store
-	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+	plugin := newAccessTestPluginWithFixture(t, vk, nil, &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
 		// The standard provider names its default endpoint explicitly and the custom one leaves it
 		// unset: both reach api.openai.com, so they are still one upstream.
 		schemas.OpenAI: {NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com/"}},
@@ -1212,7 +1211,8 @@ func TestPreLLMHookBindsObjectsAcrossProviderAliases(t *testing.T) {
 			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://inference.other-service.example/v1"},
 		},
 		schemas.Anthropic: {},
-	}}
+	}})
+	plugin.configStore = store
 	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-other", "vk-someone-else")
 
 	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "my-openai", FileID: "file-other"}})
@@ -1250,7 +1250,7 @@ func TestProviderObjectOwnershipReadsTheGrant(t *testing.T) {
 	grantOnly := func() *schemas.BifrostContext {
 		ctx := emptyCtx()
 		settleTestIdentity(ctx)
-		recordVirtualKeyIdentity(ctx, &configstoreTables.TableVirtualKey{ID: "vk-grant-only", Name: "grant-only"})
+		recordVirtualKeyIdentity(ctx, &registry.VirtualKey{ID: "vk-grant-only", Name: "grant-only"}, keyOrganization{})
 		require.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID), "the deprecated key is deliberately absent")
 		return ctx
 	}
@@ -1747,12 +1747,11 @@ func TestPostLLMHookForgetsDeletedObjectsUnderEveryAlias(t *testing.T) {
 	store := newProviderObjectConfigStore(t)
 	vk := buildVKForMCPStamping(nil)
 	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("my-openai", []string{"*"}))
-	plugin := newAccessTestPlugin(t, vk, nil)
-	plugin.configStore = store
-	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+	plugin := newAccessTestPluginWithFixture(t, vk, nil, &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: {},
 		"my-openai":    {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}},
-	}}
+	}})
+	plugin.configStore = store
 	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-aliased", "vk-mcp-stamp")
 
 	ctx := presentCtx(mcpTestVKValue)

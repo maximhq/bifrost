@@ -36,6 +36,11 @@ const (
 	cleanupLogsShareNum = 5
 	cleanupLogsShareDen = 6
 
+	// reclaimStepPages is how many freed pages one incremental_vacuum step
+	// returns to the OS. Steps are separate statements so writers can run
+	// between them.
+	reclaimStepPages = 2000
+
 	// cleanupProgressEvery is how many batches pass between Debug progress lines.
 	cleanupProgressEvery = 100
 
@@ -69,6 +74,17 @@ type RelayLogRetentionManager interface {
 type WarpTopicRetentionManager interface {
 	DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 	DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+}
+
+// SpaceReclaimer is implemented by stores whose engine keeps deleted pages in
+// the file until told to release them (SQLite). Optional for the same reason
+// MCPToolLogRetentionManager is. The cleaner calls it after a retention pass.
+type SpaceReclaimer interface {
+	// ReclaimSpace returns up to maxPages freed pages to the filesystem per
+	// step, repeating until nothing is left to free or ctx ends. It returns
+	// the number of pages released and is a no-op where the engine does not
+	// need it.
+	ReclaimSpace(ctx context.Context, maxPages int) (int64, error)
 }
 
 // RetentionScheduler is how the cleaner reads a store's retention interval; every LogStore implements it.
@@ -201,6 +217,10 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	// Calculate cutoff time
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
 	c.logger.Info("starting log cleanup: deleting logs older than %s (retention: %d days)", cutoff.Format(time.RFC3339), retentionDays)
+	// Reclaim runs even when this pass deleted nothing: an earlier pass may have
+	// stopped at its time ceiling or on an error with freed pages still waiting,
+	// and with an empty freelist the call returns without taking the write lock.
+	defer c.reclaimSpace(ctx)
 
 	mcp, hasMCP := c.manager.(MCPToolLogRetentionManager)
 	topics, hasTopics := c.manager.(WarpTopicRetentionManager)
@@ -248,6 +268,23 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 		}
 		c.drainExpired(tableCtx, table.label, cutoff, table.deleteBatch)
 		cancelTable()
+	}
+}
+
+// reclaimSpace hands pages freed by the retention pass back to the filesystem
+// when the store supports it. A failure is logged and never fails the pass.
+func (c *LogsCleaner) reclaimSpace(ctx context.Context) {
+	reclaimer, ok := c.manager.(SpaceReclaimer)
+	if !ok || ctx.Err() != nil {
+		return
+	}
+	pages, err := reclaimer.ReclaimSpace(ctx, reclaimStepPages)
+	if err != nil {
+		c.logger.Warn("log store space reclaim failed after %d pages: %v", pages, err)
+		return
+	}
+	if pages > 0 {
+		c.logger.Info("log store space reclaim released %d pages", pages)
 	}
 }
 

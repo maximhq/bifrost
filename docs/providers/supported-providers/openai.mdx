@@ -150,6 +150,7 @@ The Responses API is OpenAI's structured output API.
 | `model` | string | ✅ | Model identifier |
 | `input` | string/[array](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L40) | ✅ | Text or [`ContentBlock`](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L500) array ([docs](https://platform.openai.com/docs/api-reference/responses/create#responses-create-input)) |
 | `max_output_tokens` | int | ✅ | Maximum output length |
+| `access_programs` | object | ❌ | Trusted-access program selection, `{"cyber": "standard" \| "daybreak_blue" \| "daybreak_red"}`. OpenAI only; see [Trusted access](#trusted-access-daybreak) |
 | `background` | bool | ❌ | Run request in background mode |
 | `conversation` | string | ❌ | Conversation ID for continuing a conversation |
 | `include` | array | ❌ | Array of fields to include in response (e.g., `"web_search_call.action.sources"`) |
@@ -193,6 +194,25 @@ This conversion ensures compatibility across different model architectures for t
 - Unsupported tool types are silently filtered (only these are supported: `function`, `file_search`, `computer_use_preview`, `web_search`, `mcp`, `code_interpreter`, `image_generation`, `local_shell`, `shell`, `programmatic_tool_calling`, `apply_patch`, `custom`, `web_search_preview`, `tool_search`, `namespace`)
 
 **Response:** Includes `id`, `status` (`completed`, `incomplete`, `pending`, `error`), `output` array with message content, and token `usage`.
+
+### Trusted access (Daybreak)
+
+OpenAI's [Daybreak](https://developers.openai.com/api/docs/guides/daybreak) programs give approved organizations reduced cyber refusals on selected models. Set `access_programs.cyber` on a Responses request to choose the program:
+
+```json
+{
+  "model": "openai/gpt-6-sol",
+  "input": "Triage this crash dump for exploitability.",
+  "access_programs": { "cyber": "daybreak_blue" }
+}
+```
+
+- Bifrost forwards `access_programs` as sent, with no header needed, on `/v1/responses`, `/openai/v1/responses`, the Responses WebSocket and the Go SDK. It does not check the value, and it forwards members it does not model as sent, so a misspelled key is rejected by OpenAI rather than dropped. OpenAI returns `400 invalid_access_program`, `400 unsupported_access_program` or `403 access_program_not_enabled`, and Bifrost passes those errors through unchanged.
+- The field goes to OpenAI only, including a custom provider whose base provider is OpenAI. Bifrost drops it for Azure OpenAI and every other OpenAI-compatible provider, since they don't define it.
+- The response carries `access_programs.cyber` with the program that served the request. It is absent when OpenAI applied standard safeguards implicitly.
+- Approval is set up on OpenAI's side, per organization and per non-default project. The API key Bifrost uses must belong to a project with the program enabled.
+- A fallback to a provider other than OpenAI runs without the program. If a workload requires Daybreak, don't configure non-OpenAI fallbacks for it.
+- Daybreak models such as `gpt-6-cyber` are priced as their own models; the program selection does not change token prices.
 
 **Streaming:** Server-Sent Events. `stream_options: { include_usage: true }` is set by default for all streaming calls. Each event carries a `type` field ([`ResponsesStreamResponseType`](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L3039)) with one of the following values:
 

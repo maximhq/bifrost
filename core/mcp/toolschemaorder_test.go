@@ -162,12 +162,13 @@ func TestPerformCheck_RepeatedSyncs_ToolSchemaBytesStable(t *testing.T) {
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}},
 		logger:         &MockLogger{},
-		clientMap:      map[string]*schemas.MCPClientState{},
+		account:        newTestAccount(),
+		clientMap:      map[string]*clientConn{},
 	}
 	state, config := newSyncTestClientState("client-order", "orderclient", schemas.MCPAuthTypeHeaders)
 	config.ConnectionType = schemas.MCPConnectionTypeHTTP
 	config.ConnectionString = schemas.NewSecretVar(ts.URL)
-	manager.clientMap[config.ID] = state
+	putClient(manager, state)
 
 	callCount := 0
 	manager.SetDiscoveryChangeCallback(func(string, string, *schemas.MCPDiscovery) {

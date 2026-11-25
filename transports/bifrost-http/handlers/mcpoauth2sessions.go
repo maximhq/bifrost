@@ -120,10 +120,6 @@ func parseOAuth2SessionsListQuery(ctx *fasthttp.RequestCtx) (oauth2SessionsListQ
 // MCP auth-sessions handler — there is nothing to slice here. The store also
 // returns the total count matching the filters, used for the page indicator.
 func (h *OAuth2SessionsHandler) listSessions(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store unavailable")
-		return
-	}
 	q, ok := parseOAuth2SessionsListQuery(ctx)
 	if !ok {
 		return
@@ -163,10 +159,6 @@ func accessTokenTTLSeconds(store *lib.Config) int {
 
 // DELETE /api/oauth2/sessions/{id} — revoke a specific downstream grant.
 func (h *OAuth2SessionsHandler) revokeSession(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store unavailable")
-		return
-	}
 	id, ok := ctx.UserValue("id").(string)
 	if !ok || id == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid session id")

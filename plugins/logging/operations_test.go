@@ -914,11 +914,11 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve testdata path: %v", err)
 	}
-	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + abs})
+	ds := datasheetForTest(t, nil, testLogger{}, datasheet.Config{URL: "file://" + abs})
 	if err := ds.LoadFromURLIntoMemory(context.Background()); err != nil {
 		t.Fatalf("load pricing datasheet: %v", err)
 	}
-	pricingManager := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	pricingManager := catalogWithDatasheetForTest(t, ds)
 
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, pricingManager, nil)
 	if err != nil {
@@ -1297,11 +1297,11 @@ func newTestPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
 	if err != nil {
 		t.Fatalf("resolve testdata path: %v", err)
 	}
-	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + abs})
+	ds := datasheetForTest(t, nil, testLogger{}, datasheet.Config{URL: "file://" + abs})
 	if err := ds.LoadFromURLIntoMemory(context.Background()); err != nil {
 		t.Fatalf("load pricing datasheet: %v", err)
 	}
-	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+	return catalogWithDatasheetForTest(t, ds)
 }
 
 func TestApplyInternalCallCostsRoutingOwnershipAndBudgetFlag(t *testing.T) {
@@ -2346,16 +2346,17 @@ func TestMCPConnectCallsAreNotLogged(t *testing.T) {
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	require.NoError(t, err)
+	notes := &schemas.MCPClientConfig{
+		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://notes.example/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+	}
 	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{
 		PerUserDiscoveryStore:  noCallerDiscoveries{},
 		PluginPipelineProvider: func() interface{} { return loggingPipeline{plugin: plugin} },
 		ReleasePluginPipeline:  func(interface{}) {},
-	}, signInCredStore{}, testLogger{}, nil)
+	}, oneMCPClientAccount{client: notes}, signInCredStore{}, testLogger{}, nil)
 	t.Cleanup(func() { _ = manager.Cleanup() })
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
-		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
-		ConnectionString: schemas.NewSecretVar("https://notes.example/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
-	}))
+	require.NoError(t, manager.AddClient(context.Background(), notes.ID))
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyUserID, "alice")
@@ -2436,16 +2437,17 @@ func TestMCPUpstreamConnectNamedByALaterPluginIsLogged(t *testing.T) {
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	require.NoError(t, err)
+	notes := &schemas.MCPClientConfig{
+		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+	}
 	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{
 		PerUserDiscoveryStore:  aliceDiscoversConnect{},
 		PluginPipelineProvider: func() interface{} { return loggingPipeline{plugin: plugin, user: "alice"} },
 		ReleasePluginPipeline:  func(interface{}) {},
-	}, bearerCredStore{}, testLogger{}, nil)
+	}, oneMCPClientAccount{client: notes}, bearerCredStore{}, testLogger{}, nil)
 	t.Cleanup(func() { _ = manager.Cleanup() })
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
-		ID: "notes-id", Name: "notes", AuthType: schemas.MCPAuthTypePerUserOauth, ConnectionType: schemas.MCPConnectionTypeHTTP,
-		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1/mcp"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
-	}))
+	require.NoError(t, manager.AddClient(context.Background(), notes.ID))
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-upstream-late")
@@ -2894,6 +2896,136 @@ func TestKeyTurningContentOnOverClientFlagKeepsEarlyCapturedContent(t *testing.T
 	})
 }
 
+// TestLayersStampedAfterPreHooksDecideCapturedContent pins the layers the virtual key's pending check
+// missed. A caller who authenticated without a virtual key (an MCP token in user mode) is resolved
+// by governance after our PreMCPHook, so its arguments are held until the final policy; and on the
+// LLM path core picks the provider key after every PreLLMHook, so a provider key that turns content
+// on over a disabled client flag keeps the input captured before it was known.
+func TestLayersStampedAfterPreHooksDecideCapturedContent(t *testing.T) {
+	toolName := "docs-search"
+	userCtx := func(requestID, mcpLogID string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetGrant(grant.New())
+		ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialMCPToken, "mcp-jwt"), nil, nil, nil, nil, nil, nil))
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, mcpLogID)
+		return ctx
+	}
+	runMCP := func(t *testing.T, plugin *LoggerPlugin, ctx *schemas.BifrostContext, stampLayers func()) *logstore.MCPToolLog {
+		t.Helper()
+		_, _, err := plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+			RequestType: schemas.MCPRequestTypeChatToolCall,
+			ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{"query":"find this"}`},
+			},
+		})
+		if err != nil {
+			t.Fatalf("PreMCPHook() error = %v", err)
+		}
+		mcpLogID := ctx.Value(schemas.BifrostContextKeyMCPLogID).(string)
+		pendingValue, ok := plugin.pendingMCPLogsToInject.Load(mcpLogID)
+		if !ok {
+			t.Fatal("expected pending MCP log entry")
+		}
+		if args := pendingValue.(*logstore.MCPToolLog).ArgumentsParsed; args != nil {
+			t.Fatalf("arguments must be held aside while the user's layers are unresolved, got %#v", args)
+		}
+		// Governance's PreMCPHook runs after ours: it stamps the user's layers and marks them resolved.
+		stampLayers()
+		schemas.MarkCallerContentLoggingResolved(ctx)
+		result := `{"answer":"done"}`
+		_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+			ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+		}, nil)
+		if err != nil {
+			t.Fatalf("PostMCPHook() error = %v", err)
+		}
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := plugin.store.FindMCPToolLog(context.Background(), mcpLogID)
+		if err != nil {
+			t.Fatalf("FindMCPToolLog() error = %v", err)
+		}
+		return logEntry
+	}
+
+	t.Run("mcp user layer off drops held arguments", func(t *testing.T) {
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := userCtx("req-user-off", "mcp-user-off")
+		logEntry := runMCP(t, plugin, ctx, func() {
+			schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyUserDisableContentLogging, true)
+		})
+		if logEntry.ArgumentsParsed != nil || logEntry.ResultParsed != nil {
+			t.Fatalf("a user who turned content off must persist no arguments or result, got args=%#v result=%#v", logEntry.ArgumentsParsed, logEntry.ResultParsed)
+		}
+	})
+
+	t.Run("mcp user layer on keeps held arguments over a disabled client flag", func(t *testing.T) {
+		plugin, err := Init(context.Background(), &Config{DisableContentLogging: new(true)}, testLogger{}, newTestStore(t), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := userCtx("req-user-on", "mcp-user-on")
+		logEntry := runMCP(t, plugin, ctx, func() {
+			schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyUserDisableContentLogging, false)
+		})
+		if logEntry.ArgumentsParsed == nil {
+			t.Fatal("a user who turned content on must keep the arguments held for them")
+		}
+	})
+
+	t.Run("provider key on keeps input over a disabled client flag", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{DisableContentLogging: new(true)}, testLogger{}, store, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-provider-key-on")
+		_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+			RequestType: schemas.PassthroughRequest,
+			PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Provider:    schemas.OpenAI,
+				Method:      "POST",
+				Path:        "/v1/fine-tuning/jobs",
+				Body:        []byte(`{"training_file":"file-kept"}`),
+				SafeHeaders: map[string]string{"content-type": "application/json"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("PreLLMHook() error = %v", err)
+		}
+		// Core picks the key after every PreLLMHook and stamps its decision.
+		schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyProviderKeyDisableContentLogging, false)
+		_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				StatusCode:  200,
+				Body:        []byte(`{"id":"ftjob-1"}`),
+				Path:        "/v1/fine-tuning/jobs",
+				ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("PostLLMHook() error = %v", err)
+		}
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+		logEntry, err := store.FindByID(context.Background(), "req-provider-key-on")
+		if err != nil {
+			t.Fatalf("FindByID() error = %v", err)
+		}
+		if logEntry.PassthroughRequestBody != `{"training_file":"file-kept"}` {
+			t.Fatalf("expected the body kept for a content-on provider key, got %q", logEntry.PassthroughRequestBody)
+		}
+	})
+}
+
 // projectNamingCtx is a request with no virtual key that names a project through the request
 // header, before governance has admitted it: the caller is a dashboard session.
 func projectNamingCtx(requestID string, header string) *schemas.BifrostContext {
@@ -2906,52 +3038,57 @@ func projectNamingCtx(requestID string, header string) *schemas.BifrostContext {
 }
 
 // admitProject leaves the context the way the documented contract describes a request once its
-// named project is admitted: the identity carries the project, and the governance content
-// decision key carries the project's decision when it has one.
+// named project is admitted: the identity carries the project, the governance content decision key
+// carries the project's decision when it has one, and the caller is marked resolved, since
+// governance admits the project while it resolves the caller.
 func admitProject(ctx *schemas.BifrostContext, disableContentLogging *bool) {
 	project := &schemas.EntityRef{ID: "proj-1", Name: "Project One"}
 	ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialSessionToken, "session"), nil, nil, nil, nil, nil, project))
 	if disableContentLogging != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, *disableContentLogging)
 	}
+	schemas.MarkCallerContentLoggingResolved(ctx)
 }
 
-// TestGovernanceDecisionPending pins when the logging hooks treat the content decision on the
-// context as not final yet: while a presented virtual key or a named project is still unresolved.
-func TestGovernanceDecisionPending(t *testing.T) {
+// TestContentDecisionPendingOnNamedProject pins when the logging hooks treat the content decision on
+// the context as not final yet because of a named project: until governance marks the caller
+// resolved, which it does in the same step that admits the project.
+func TestContentDecisionPendingOnNamedProject(t *testing.T) {
+	pending := func(ctx *schemas.BifrostContext) bool { return contentDecisionPending(ctx, contentScopeMCP) }
 	t.Run("nothing presented or named", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		require.False(t, governanceDecisionPending(ctx))
+		require.False(t, pending(ctx))
 	})
 	t.Run("project named by id", func(t *testing.T) {
-		require.True(t, governanceDecisionPending(projectNamingCtx("req-pending-id", schemas.HeaderGovernanceProjectID)))
+		require.True(t, pending(projectNamingCtx("req-pending-id", schemas.HeaderGovernanceProjectID)))
 	})
 	t.Run("project named by name", func(t *testing.T) {
-		require.True(t, governanceDecisionPending(projectNamingCtx("req-pending-name", schemas.HeaderGovernanceProjectName)))
+		require.True(t, pending(projectNamingCtx("req-pending-name", schemas.HeaderGovernanceProjectName)))
 	})
 	t.Run("an empty project header still names one", func(t *testing.T) {
 		// The governance funnel treats an empty header as having asked, and refuses the request
 		// when nothing was admitted behind it; until then its decision is not known either.
 		ctx := projectNamingCtx("req-pending-empty", schemas.HeaderGovernanceProjectID)
 		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{schemas.HeaderGovernanceProjectID: ""})
-		require.True(t, governanceDecisionPending(ctx))
+		require.True(t, pending(ctx))
 	})
 	t.Run("an admitted project is settled", func(t *testing.T) {
 		ctx := projectNamingCtx("req-pending-admitted", schemas.HeaderGovernanceProjectID)
 		admitProject(ctx, nil)
-		require.False(t, governanceDecisionPending(ctx))
+		require.False(t, pending(ctx))
 	})
-	t.Run("an admitted project still waits on an unresolved key", func(t *testing.T) {
+	t.Run("a named project and a presented key wait on one resolution", func(t *testing.T) {
 		ctx := projectNamingCtx("req-pending-key", schemas.HeaderGovernanceProjectID)
-		admitProject(ctx, nil)
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
-		require.True(t, governanceDecisionPending(ctx))
+		require.True(t, pending(ctx))
+		schemas.MarkCallerContentLoggingResolved(ctx)
+		require.False(t, pending(ctx), "governance admits the project while it resolves the caller")
 	})
-	t.Run("a stamped key with no project named is settled", func(t *testing.T) {
+	t.Run("a resolved key with no project named is settled", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
-		require.False(t, governanceDecisionPending(ctx))
+		schemas.MarkCallerContentLoggingResolved(ctx)
+		require.False(t, pending(ctx))
 	})
 }
 
@@ -6539,7 +6676,7 @@ func TestRelayLogContentPolicy(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-policy")
 		if decision != nil {
 			// A presented key governance has not resolved yet: the body is captured provisionally,
-			// as PreLLMHook captures input while governanceDecisionPending.
+			// as PreLLMHook captures input while contentDecisionPending.
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-1")
 		}
 		_, _, err := plugin.PreRelayHook(ctx, &schemas.BifrostRelayRequest{
@@ -6659,7 +6796,7 @@ func TestRelayLogStampsContentCaptureSignal(t *testing.T) {
 	t.Run("off once governance has decided against it", func(t *testing.T) {
 		ctx := policyCtx(false, map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: true})
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "vk-presented")
-		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-presented")
+		schemas.MarkCallerContentLoggingResolved(ctx)
 		require.False(t, capture(t, policyTestPlugin(nil, nil, false), ctx))
 	})
 	for _, tc := range []struct {
@@ -7075,6 +7212,21 @@ func (a *streamAccount) GetConfigForProvider(provider schemas.ModelProvider) (*s
 	return &config, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a *streamAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a *streamAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a *streamAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // failedUsageRecorder keeps the billed usage of every stream failure its post-hook sees.
 type failedUsageRecorder struct {
 	usage chan *schemas.BifrostLLMUsage
@@ -7381,4 +7533,32 @@ func BenchmarkSpeechSessionContextLookup(b *testing.B) {
 			}
 		})
 	}
+}
+
+// oneMCPClientAccount is an Account serving one MCP client, for tests that drive an MCP manager
+// directly. Its provider methods are never called.
+type oneMCPClientAccount struct {
+	schemas.Account
+	client *schemas.MCPClientConfig
+}
+
+// GetConfiguredMCPClients lists the account's client.
+func (a oneMCPClientAccount) GetConfiguredMCPClients() ([]string, error) {
+	return []string{a.client.ID}, nil
+}
+
+// GetConfigForMCPClient returns the account's client when the ID is its.
+func (a oneMCPClientAccount) GetConfigForMCPClient(id string) (*schemas.MCPClientConfig, error) {
+	if id != a.client.ID {
+		return nil, fmt.Errorf("MCP client %s is not configured", id)
+	}
+	return a.client, nil
+}
+
+// GetConfigForMCPClientByName returns the account's client when the name is its.
+func (a oneMCPClientAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+	if name != a.client.Name {
+		return nil, fmt.Errorf("MCP client %s is not configured", name)
+	}
+	return a.client, nil
 }

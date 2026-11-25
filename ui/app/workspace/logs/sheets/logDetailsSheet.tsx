@@ -79,7 +79,10 @@ export function LogDetailSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%] 2xl:max-w-[40%]">
+			<SheetContent
+				resizeKey="log-details"
+				className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%] 2xl:max-w-[40%]"
+			>
 				{!isFullDataReady ? (
 					<div className="flex h-full items-center justify-center">
 						<SheetTitle className="sr-only">{t("logs.detail.loadingDetails")}</SheetTitle>

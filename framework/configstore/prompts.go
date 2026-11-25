@@ -346,23 +346,6 @@ func (s *RDBConfigStore) assertPromptInScope(ctx context.Context, promptID strin
 	return nil
 }
 
-// GetAllPromptVersions returns every version across all prompts in a single query.
-//
-// Deliberately unscoped: its only caller is the prompts plugin, which loads every version at
-// startup to serve prompt injection for the whole deployment and runs on a background context
-// that carries no scope. It is not reachable from any HTTP route, so no caller-supplied
-// identifier reaches it. Do not wire it to a request-scoped path without adding a scope filter.
-func (s *RDBConfigStore) GetAllPromptVersions(ctx context.Context) ([]tables.TablePromptVersion, error) {
-	var versions []tables.TablePromptVersion
-	if err := s.DB().WithContext(ctx).
-		Preload("Messages", func(db *gorm.DB) *gorm.DB { return db.Order("order_index ASC") }).
-		Order("prompt_id ASC, version_number DESC").
-		Find(&versions).Error; err != nil {
-		return nil, err
-	}
-	return versions, nil
-}
-
 // GetPromptVersions gets all versions for a prompt.
 //
 // Returns ErrNotFound when the parent prompt is outside the caller's scope, matching

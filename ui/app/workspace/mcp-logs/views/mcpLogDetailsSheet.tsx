@@ -208,7 +208,10 @@ export function MCPLogDetailSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%]">
+			<SheetContent
+				resizeKey="mcp-log-details"
+				className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%]"
+			>
 				<MCPLogDetailView
 					log={log}
 					open={open}

@@ -39,6 +39,10 @@ type fakeStore struct {
 	// cancelledMeta records the final progress snapshot stored for a cancelled job.
 	cancelledMeta map[string]string
 	terminal      chan string
+	// deleteHook, when set, runs before each DeleteTerminalSidekiqJobs call without the lock held;
+	// call is 1-based across the store's lifetime, and a non-nil error fails that call.
+	deleteHook  func(ctx context.Context, call int, kind string) error
+	deleteCalls int
 }
 
 func newFakeStore() *fakeStore {
@@ -210,6 +214,32 @@ func (f *fakeStore) ListClaimableSidekiqJobs(_ context.Context, staleBefore time
 		}
 	}
 	return out, nil
+}
+
+// DeleteTerminalSidekiqJobs deletes up to limit finished jobs of kind updated before the cutoff.
+func (f *fakeStore) DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error) {
+	f.mu.Lock()
+	f.deleteCalls++
+	call, hook := f.deleteCalls, f.deleteHook
+	f.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx, call, kind); err != nil {
+			return 0, err
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for id, j := range f.jobs {
+		if n >= int64(limit) {
+			break
+		}
+		if j.kind == kind && tables.IsSidekiqTerminalStatus(j.status) && j.updatedAt.Before(before) {
+			delete(f.jobs, id)
+			n++
+		}
+	}
+	return n, nil
 }
 
 // waitTerminal blocks until a job reaches a terminal state or the test times out.
@@ -828,4 +858,194 @@ func TestSummarizerRegistry(t *testing.T) {
 	got, ok = r.Summarize("no-summarizer", "{}")
 	assert.False(t, ok, "kinds without a summarizer report no progress")
 	assert.Equal(t, JobSummary{}, got)
+}
+
+// TestSweepRetention pins that only finished jobs of a kind with a retention,
+// older than it, are deleted; pending and running jobs, recent finished jobs
+// and kinds without a retention are kept; a backlog over one batch is fully
+// removed; and the dispatcher sweeps at most once per interval.
+func TestSweepRetention(t *testing.T) {
+	store := newFakeStore()
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	add := func(id, kind, status string, at time.Time) {
+		store.jobs[id] = &jobState{kind: kind, status: status, updatedAt: at}
+	}
+	for i := 0; i < retentionDeleteBatch+5; i++ {
+		add(fmt.Sprintf("old-%d", i), "timer", tables.SidekiqStatusCompleted, old)
+	}
+	add("old-failed", "timer", tables.SidekiqStatusFailed, old)
+	add("old-cancelled", "timer", tables.SidekiqStatusCancelled, old)
+	add("old-pending", "timer", tables.SidekiqStatusPending, old)
+	add("old-running", "timer", tables.SidekiqStatusRunning, old)
+	add("recent", "timer", tables.SidekiqStatusCompleted, now.Add(-time.Hour))
+	add("other-kind", "manual", tables.SidekiqStatusCompleted, old)
+
+	r := New(store, bifrost.NewDefaultLogger(schemas.LogLevelError), 1, "")
+	r.RegisterRetention("timer", 24*time.Hour)
+	r.SweepRetention(context.Background(), now)
+
+	var left []string
+	for id := range store.jobs {
+		left = append(left, id)
+	}
+	assert.ElementsMatch(t, []string{"old-pending", "old-running", "other-kind", "recent"}, left)
+
+	ctx := context.Background()
+	add("again-1", "timer", tables.SidekiqStatusCompleted, old)
+	waitSweep(t, r.sweepRetentionIfDue(ctx, now))
+	assert.NotContains(t, store.jobs, "again-1", "the first scheduled sweep runs at once")
+	add("again-2", "timer", tables.SidekiqStatusCompleted, old)
+	assert.Nil(t, r.sweepRetentionIfDue(ctx, now.Add(5*time.Minute)), "a dispatcher tick within the interval does not sweep again")
+	assert.Contains(t, store.jobs, "again-2")
+	waitSweep(t, r.sweepRetentionIfDue(ctx, now.Add(RetentionSweepInterval)))
+	assert.NotContains(t, store.jobs, "again-2", "the next interval sweeps again")
+
+	keep, ok := r.Retention("timer")
+	assert.True(t, ok)
+	assert.Equal(t, 24*time.Hour, keep)
+	_, ok = r.Retention("manual")
+	assert.False(t, ok, "a kind never registered has no retention")
+
+	r.RegisterRetention("timer", 0)
+	_, ok = r.Retention("timer")
+	assert.False(t, ok, "keep <= 0 removes the retention")
+	add("again-3", "timer", tables.SidekiqStatusCompleted, old)
+	r.SweepRetention(context.Background(), now)
+	assert.Contains(t, store.jobs, "again-3", "a removed retention keeps jobs forever")
+}
+
+// waitSweep blocks until a sweep started by sweepRetentionIfDue ends.
+func waitSweep(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	require.NotNil(t, done, "expected a retention sweep to start")
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the retention sweep to end")
+	}
+}
+
+// countKind returns how many jobs of kind the fake store holds.
+func countKind(f *fakeStore, kind string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, j := range f.jobs {
+		if j.kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// TestSweepRetentionDoesNotBlockDispatch pins that a slow retention sweep runs
+// off the dispatcher goroutine: the dispatcher still claims and runs a pending
+// job while the sweep is stuck, and a second due sweep does not overlap it.
+func TestSweepRetentionDoesNotBlockDispatch(t *testing.T) {
+	store := newFakeStore()
+	old := time.Now().Add(-48 * time.Hour)
+	store.jobs["old"] = &jobState{kind: "timer", status: tables.SidekiqStatusCompleted, updatedAt: old}
+	entered, gate := make(chan struct{}), make(chan struct{})
+	store.deleteHook = func(_ context.Context, call int, _ string) error {
+		if call == 1 {
+			close(entered)
+			<-gate
+		}
+		return nil
+	}
+
+	r := testRunner(store)
+	r.RegisterRetention("timer", 24*time.Hour)
+	r.Register("k", func(_ context.Context, _ tables.TableSidekiqJob, _ ProgressFunc) (string, error) {
+		return "done", nil
+	})
+	now := time.Now()
+	done := r.sweepRetentionIfDue(context.Background(), now)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the sweep to start deleting")
+	}
+
+	assert.Nil(t, r.sweepRetentionIfDue(context.Background(), now.Add(RetentionSweepInterval)),
+		"a due sweep must not start while the previous one still runs")
+	store.seed("pending", "k", tables.SidekiqStatusPending, 0)
+	r.dispatchOnce()
+	assert.Equal(t, "pending", waitTerminal(t, store), "dispatch must not wait for the retention sweep")
+
+	close(gate)
+	waitSweep(t, done)
+	assert.NotContains(t, store.jobs, "old")
+	waitSweep(t, r.sweepRetentionIfDue(context.Background(), now.Add(RetentionSweepInterval)))
+}
+
+// TestSweepRetentionPartialFailure pins that a failed batch keeps the rows
+// already deleted, stops only that kind, lets the other kinds run, and leaves
+// the remainder for the next sweep.
+func TestSweepRetentionPartialFailure(t *testing.T) {
+	store := newFakeStore()
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	for i := 0; i < retentionDeleteBatch+5; i++ {
+		store.jobs[fmt.Sprintf("timer-%d", i)] = &jobState{kind: "timer", status: tables.SidekiqStatusCompleted, updatedAt: old}
+	}
+	for i := 0; i < 3; i++ {
+		store.jobs[fmt.Sprintf("report-%d", i)] = &jobState{kind: "report", status: tables.SidekiqStatusFailed, updatedAt: old}
+	}
+	timerCalls := 0
+	store.deleteHook = func(_ context.Context, _ int, kind string) error {
+		if kind != "timer" {
+			return nil
+		}
+		timerCalls++
+		if timerCalls == 2 {
+			return errors.New("db unavailable")
+		}
+		return nil
+	}
+
+	r := testRunner(store)
+	r.RegisterRetention("timer", 24*time.Hour)
+	r.RegisterRetention("report", 24*time.Hour)
+	r.SweepRetention(context.Background(), now)
+
+	assert.Equal(t, 2, timerCalls, "the failed batch stops that kind's loop")
+	assert.Equal(t, 5, countKind(store, "timer"), "the batch deleted before the failure stays deleted")
+	assert.Zero(t, countKind(store, "report"), "a failing kind does not stop the other kinds")
+
+	store.mu.Lock()
+	store.deleteHook = nil
+	store.mu.Unlock()
+	r.SweepRetention(context.Background(), now)
+	assert.Zero(t, countKind(store, "timer"), "the next sweep removes the remainder")
+}
+
+// TestSweepRetentionStopsOnCancel pins that cancelling the sweep context stops
+// the batch loop: no further batch is requested after cancellation.
+func TestSweepRetentionStopsOnCancel(t *testing.T) {
+	store := newFakeStore()
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	for i := 0; i < 2*retentionDeleteBatch+5; i++ {
+		store.jobs[fmt.Sprintf("timer-%d", i)] = &jobState{kind: "timer", status: tables.SidekiqStatusCompleted, updatedAt: old}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store.deleteHook = func(_ context.Context, call int, _ string) error {
+		if call == 1 {
+			cancel()
+		}
+		return nil
+	}
+
+	r := testRunner(store)
+	r.RegisterRetention("timer", 24*time.Hour)
+	r.SweepRetention(ctx, now)
+
+	store.mu.Lock()
+	calls := store.deleteCalls
+	store.mu.Unlock()
+	assert.Equal(t, 1, calls, "no batch is requested after cancellation")
+	assert.Equal(t, retentionDeleteBatch+5, countKind(store, "timer"))
 }
