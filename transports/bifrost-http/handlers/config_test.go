@@ -33,6 +33,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 )
 
 type inferenceSetupAccount struct {
@@ -64,6 +65,9 @@ func (a inferenceSetupAccount) GetConfigForMCPClientByName(string) (*schemas.MCP
 	return nil, nil
 }
 
+// TestUpdateConfig_InferenceAuthBlocksUpstream checks that once setup turns on inference auth, an
+// anonymous chat, files or responses request is refused before it reaches the provider, while one
+// presenting a configured virtual key goes through.
 func TestUpdateConfig_InferenceAuthBlocksUpstream(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
@@ -88,11 +92,12 @@ func TestUpdateConfig_InferenceAuthBlocksUpstream(t *testing.T) {
 	}))
 	defer upstream.Close()
 	log := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	declared := libtest.FileOnlyGovernance(t, &lib.Config{}, nil, &configstore.GovernanceConfig{VirtualKeys: []configtables.TableVirtualKey{{
+		ID: "setup-vk", Name: "setup-vk", Value: *schemas.NewSecretVar("sk-bf-setup"), IsActive: new(true),
+		ProviderConfigs: []configtables.TableVirtualKeyProviderConfig{{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true}},
+	}}})
 	plugin, err := governance.Init(t.Context(), &governance.Config{IsVkMandatory: &cfg.ClientConfig.EnforceAuthOnInference}, log, nil,
-		&configstore.GovernanceConfig{VirtualKeys: []configtables.TableVirtualKey{{
-			ID: "setup-vk", Name: "setup-vk", Value: *schemas.NewSecretVar("sk-bf-setup"), IsActive: new(true),
-			ProviderConfigs: []configtables.TableVirtualKeyProviderConfig{{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true}},
-		}}}, nil, nil, nil)
+		declared.LiveStore, nil, nil)
 	require.NoError(t, err)
 	client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{
 		Account: inferenceSetupAccount{url: upstream.URL}, Logger: log, LLMPlugins: []schemas.LLMPlugin{plugin},

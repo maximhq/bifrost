@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/mcpdiscovery"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -762,4 +763,50 @@ func TestMCPHeaderAllowlistFollowsTheClients(t *testing.T) {
 	require.NoError(t, c.ConfigStore.DeleteMCPClientConfig(ctx, "docs"))
 	require.NoError(t, c.refreshMCPClient(ctx, "docs"))
 	require.Equal(t, schemas.WhiteList{"x-search"}, c.GetMCPHeaderCombinedAllowlist(), "a deleted client's headers go with it")
+}
+
+// TestLoadConfigLoadsGovernanceInBothModes checks that the governance config.json declares is
+// served from the live store whether boot reads it back from the config store or, with none, loads
+// it from the file alone: a key under a team holding a budget, and a model config holding a rate
+// limit, are found by the governance store built on that live store.
+func TestLoadConfigLoadsGovernanceInBothModes(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	withStore, fileOnly := bootBothModes(t, `"providers": {"openai": {"keys": [
+		{"id": "k1", "name": "first", "value": "sk-1", "models": ["*"], "weight": 1}
+	]}},
+	"governance": {
+		"budgets": [{"id": "budget-team", "max_limit": 50, "reset_duration": "1d", "team_id": "team-1"}],
+		"rate_limits": [{"id": "rl-mc", "request_max_limit": 10, "request_reset_duration": "1m"}],
+		"teams": [{"id": "team-1", "name": "platform"}],
+		"virtual_keys": [{"id": "vk-1", "name": "app", "value": "sk-bf-app", "is_active": true, "team_id": "team-1",
+			"provider_configs": [{"provider": "openai", "weight": 1, "allowed_models": ["*"]}]}],
+		"model_configs": [{"id": "mc-1", "model_name": "gpt-4o", "provider": "openai", "rate_limit_id": "rl-mc"}]
+	}`)
+
+	for name, config := range map[string]*Config{"config store": withStore, "file only": fileOnly} {
+		gs, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, config.LiveStore, nil)
+		require.NoError(t, err, name)
+		t.Cleanup(gs.Close)
+
+		vk, ok := gs.GetVirtualKey(ctx, "sk-bf-app")
+		require.True(t, ok, "%s: the key is served by its value", name)
+		require.Equal(t, "vk-1", vk.ID, name)
+		require.True(t, vk.Active, name)
+		require.Equal(t, "team-1", vk.TeamID, name)
+		require.Equal(t, "platform", gs.GetTeamName(ctx, "team-1"), name)
+
+		budgets := gs.CollectTeamBudgets(ctx, "team-1")
+		require.Len(t, budgets, 1, "%s: the team holds its budget", name)
+		require.Equal(t, "budget-team", budgets[0].ID, name)
+		require.Equal(t, 50.0, budgets[0].MaxLimit, name)
+
+		_, rateLimits := gs.GlobalModelLimits(ctx, schemas.OpenAI, "gpt-4o")
+		require.Len(t, rateLimits, 1, "%s: the model config holds its rate limit", name)
+		require.Equal(t, "rl-mc", rateLimits[0].ID, name)
+		require.Equal(t, "mc-1", rateLimits[0].HolderID, name)
+		rateLimit := gs.LoadRateLimit(ctx, "rl-mc")
+		require.NotNil(t, rateLimit, name)
+		require.Equal(t, int64(10), *rateLimit.RequestMaxLimit, name)
+	}
 }

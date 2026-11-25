@@ -17,7 +17,8 @@ type FileInput struct {
 
 // FileRecords holds the records a gateway without a config store loads, built from config.json.
 type FileRecords struct {
-	Providers    []*Provider
+	Providers    []*Provider    // settings only: Config.Keys is nil
+	ProviderKeys []*ProviderKey // each provider's keys, Order their position in config.json
 	VirtualKeys  []*VirtualKey
 	Teams        []*Team
 	Customers    []*Customer
@@ -27,8 +28,9 @@ type FileRecords struct {
 }
 
 // FromConfig builds the records config.json declares, for a gateway without a config store: a
-// provider record for each provider in.Providers holds, naming the budget and rate limit governance gives
-// it, and the governance records. Governance is joined the way such a gateway has always joined
+// settings-only provider record for each provider in.Providers holds, naming the budget and rate
+// limit governance gives it, a key record for each of its keys, ordered by the key's position in
+// config.json, and the governance records. Governance is joined the way such a gateway has always joined
 // it: a key's, provider config's and customer's budgets are the ones nested under it; a team's are
 // those nested under it and the listed budgets naming it; a model config's are those nested under
 // it, or else the listed budgets naming it. A holder's rate limit is the one its rate_limit_id
@@ -49,6 +51,9 @@ func FromConfig(in FileInput) *FileRecords {
 			Name: name, Settings: cfg.Settings(),
 			BudgetID: providerBudget[string(name)], RateLimitID: providerRateLimit[string(name)],
 		})
+		for i, key := range cfg.Keys {
+			g.ProviderKeys = append(g.ProviderKeys, &ProviderKey{Provider: name, Order: int64(i), Key: key})
+		}
 	}
 	return g
 }

@@ -5108,19 +5108,6 @@ func (s *RDBConfigStore) GetVirtualMCPs(ctx context.Context) ([]tables.TableVirt
 	return defs, nil
 }
 
-// GetVirtualMCPAssignments returns each VK's assigned Virtual MCP IDs, keyed by VK row ID.
-func (s *RDBConfigStore) GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error) {
-	var assignments []tables.TableVirtualKeyVirtualMCP
-	if err := s.DB().WithContext(ctx).Find(&assignments).Error; err != nil {
-		return nil, err
-	}
-	out := make(map[string][]uint, len(assignments))
-	for _, a := range assignments {
-		out[a.VirtualKeyID] = append(out[a.VirtualKeyID], a.VirtualMCPID)
-	}
-	return out, nil
-}
-
 // CreateVirtualMCP inserts a Virtual MCP. The endpoint_slug is taken from the caller's slug when set,
 // else derived from the name; a slug collision is reported as ErrMCPEndpointSlugExists rather than
 // auto-suffixed. Name uniqueness is left to the table's own unique index.
@@ -5839,8 +5826,8 @@ func (s *RDBConfigStore) UpdateRateLimit(ctx context.Context, rateLimit *tables.
 			return err
 		}
 		// Same ownership boundary as UpdateBudget: the four counters are advanced
-		// by the governance dump path and UpdateRateLimitUsage, never by a
-		// configuration write, which is why GenerateRateLimitHash excludes them.
+		// by the governance dump path, never by a configuration write, which is
+		// why GenerateRateLimitHash excludes them.
 		// The existing row is already read under the same lock that guards the
 		// Save below, so this adds no new race window.
 		rateLimit.TokenCurrentUsage = existing.TokenCurrentUsage
@@ -6165,30 +6152,6 @@ func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, curre
 		Model(&tables.TableBudget{}).
 		Where("id = ?", id).
 		Update("current_usage", currentUsage)
-	if result.Error != nil {
-		return s.parseGormError(result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// UpdateRateLimitUsage updates only the usage fields of a rate limit.
-// Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
-func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
-	db := s.DB()
-	if len(tx) > 0 && tx[0] != nil {
-		db = tx[0]
-	}
-	result := db.WithContext(ctx).
-		Session(&gorm.Session{SkipHooks: true}).
-		Model(&tables.TableRateLimit{}).
-		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"token_current_usage":   tokenCurrentUsage,
-			"request_current_usage": requestCurrentUsage,
-		})
 	if result.Error != nil {
 		return s.parseGormError(result.Error)
 	}

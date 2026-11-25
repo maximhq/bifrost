@@ -397,10 +397,11 @@ func startGateway(t testing.TB, h *MCPServerHandler) string {
 	return "http://" + ln.Addr().String()
 }
 
+// newGatewayHandler is a gateway handler over an echo tool manager that reports instructions.
 func newGatewayHandler(t testing.TB) *MCPServerHandler {
 	t.Helper()
 	tm := &echoToolManager{fakeInstructionsToolManager{instructions: "gateway instructions"}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil)
 	require.NoError(t, err)
 	return h
 }
@@ -599,7 +600,7 @@ func TestMCPGateway_OriginValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tm := &echoToolManager{fakeInstructionsToolManager{instructions: "gateway instructions"}}
 			cfg := &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: tc.enforce, AllowedOrigins: tc.allowed}}
-			h, err := NewMCPServerHandler(context.Background(), cfg, tm, nil, nil, nil)
+			h, err := NewMCPServerHandler(context.Background(), cfg, tm, nil, nil)
 			require.NoError(t, err)
 			baseURL := startGateway(t, h)
 
@@ -824,7 +825,7 @@ func (r *refusingToolManager) ExecuteChatMCPTool(ctx context.Context, call *sche
 // (governance, logging) run and the refusal says why, instead of mcp-go answering "not found".
 func TestMCPGateway_NarrowedToolCallReachesBifrost(t *testing.T) {
 	tm := &refusingToolManager{echoToolManager: echoToolManager{fakeInstructionsToolManager{}}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil)
 	require.NoError(t, err)
 	h.admitter = slugAdmitter{vmcps: map[string][]string{"nothing": {"other-tool"}}}
 	baseURL := startGateway(t, h)
@@ -903,10 +904,11 @@ func (s *servingToolManager) CompleteMCPArgument(ctx context.Context, params mcp
 	return &mcp.CompleteResult{Completion: mcp.Completion{Values: []string{ref.Name + ":" + params.Argument.Value}}}, nil
 }
 
+// newServingGatewayHandler is a gateway handler over a tool manager that also serves resources and prompts.
 func newServingGatewayHandler(t testing.TB) *MCPServerHandler {
 	t.Helper()
 	tm := &servingToolManager{echoToolManager{fakeInstructionsToolManager{}}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil)
 	require.NoError(t, err)
 	return h
 }
@@ -1008,7 +1010,7 @@ func TestMCPGateway_RecordsCallerCapabilities(t *testing.T) {
 				servingToolManager: servingToolManager{echoToolManager{fakeInstructionsToolManager{}}},
 				seen:               map[string]*mcp.ClientCapabilities{},
 			}
-			h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+			h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil)
 			require.NoError(t, err)
 			baseURL := startGateway(t, h)
 
@@ -1091,7 +1093,7 @@ func (m *inputRequiringToolManager) ExecuteChatMCPTool(ctx context.Context, _ *s
 // with the call across rounds while a separate call gets its own.
 func TestMCPGateway_PassesInputRequiredThrough(t *testing.T) {
 	tm := &inputRequiringToolManager{echoToolManager: echoToolManager{fakeInstructionsToolManager{}}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil)
 	require.NoError(t, err)
 	baseURL := startGateway(t, h)
 
@@ -1243,7 +1245,7 @@ func (c *chartToolManager) ExecuteChatMCPTool(_ context.Context, call *schemas.C
 // (images and structured content included); a result a plugin rewrote is rebuilt from the message
 // instead, and isError follows the message either way.
 func TestMCPGateway_ToolMetadataAndResultFidelity(t *testing.T) {
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, &chartToolManager{}, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, &chartToolManager{}, nil, nil)
 	require.NoError(t, err)
 	baseURL := startGateway(t, h)
 	for _, version := range []string{mcp.ProtocolVersion20250618, mcp.ProtocolVersion20251125, mcp.ProtocolVersion20260728} {
@@ -1660,6 +1662,8 @@ func editLoadedMCPClient(t testing.TB, cfg *lib.Config, id string, edit func(*sc
 	libtest.MCPClients(t, cfg, clients...)
 }
 
+// newPerCallerGatewayHandler is a gateway handler whose clients discover per caller, with the tool
+// manager and the per-user discovery names it reads.
 func newPerCallerGatewayHandler(t testing.TB) (*MCPServerHandler, *perCallerToolManager, *perCallerNamesStore) {
 	t.Helper()
 	store := &perCallerNamesStore{names: map[string]configstore.MCPPerUserDiscoveryNames{
@@ -1676,7 +1680,7 @@ func newPerCallerGatewayHandler(t testing.TB) (*MCPServerHandler, *perCallerTool
 		{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)},
 	}...)
 	tm := &perCallerToolManager{}
-	h, err := NewMCPServerHandler(context.Background(), config, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), config, tm, nil, nil)
 	require.NoError(t, err)
 	return h, tm, store
 }
@@ -2112,7 +2116,7 @@ func newAppsGateway(tb testing.TB) *MCPServerHandler {
 	tb.Cleanup(func() { _ = m.Cleanup() })
 	require.NoError(tb, m.AddClient(ctx, "apps"))
 	admitter := slugAdmitter{vmcps: map[string][]string{"bundle": {"apps-view", "apps-refresh", "apps-item"}}, clients: map[string][]string{"apps": {"apps-*"}}}
-	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, admitter, nil, nil)
+	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, admitter, nil)
 	require.NoError(tb, err)
 	return h
 }
@@ -2153,7 +2157,7 @@ func newCodeModeGateway(tb testing.TB, codeMode bool, slug schemas.MCPServerType
 		vmcps:   map[string][]string{"bundle": {"github-create_issue", "slack-post"}},
 		clients: map[string][]string{"github": {"github-*"}, "slack": {"slack-*"}},
 	}
-	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, admitter, nil, nil)
+	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, admitter, nil)
 	require.NoError(tb, err)
 	return h
 }
@@ -2501,7 +2505,7 @@ func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
 		clients: map[string][]string{"apps": {"apps-*"}, "other": {"other-*"}},
 	}
 	tm := &recordingGatewayManager{coreGatewayManager: coreGatewayManager{m}}
-	h, err := NewMCPServerHandler(ctx, cfg, tm, admitter, nil, nil)
+	h, err := NewMCPServerHandler(ctx, cfg, tm, admitter, nil)
 	require.NoError(t, err)
 	baseURL := startGateway(t, h)
 

@@ -795,11 +795,6 @@ func TestCodexCallerKey(t *testing.T) {
 // that may use OpenAI.
 func codexGovernedFixture(t *testing.T, enforceAuth, allowDirectKeys bool) *codexRelayFixture {
 	t.Helper()
-	config := libtest.FileOnly(t, &lib.Config{
-		ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth},
-	}, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("sk-openai"), Weight: 1}}},
-	})
 	virtualKey := func(name string) configtables.TableVirtualKey {
 		return configtables.TableVirtualKey{
 			ID: name, Name: name, Value: *schemas.NewSecretVar("sk-bf-" + name), IsActive: new(true),
@@ -811,8 +806,12 @@ func codexGovernedFixture(t *testing.T, enforceAuth, allowDirectKeys bool) *code
 	expired := virtualKey("codex-expired")
 	expiredAt := time.Now().Add(-time.Hour)
 	expired.ExpiresAt = &expiredAt
-	plugin, err := governance.Init(t.Context(), nil, bifrost.NewNoOpLogger(), nil,
-		&configstore.GovernanceConfig{VirtualKeys: []configtables.TableVirtualKey{virtualKey("codex-a"), virtualKey("codex-b"), inactive, expired}}, nil, nil, scribeInMemoryStore{config})
+	config := libtest.FileOnlyGovernance(t, &lib.Config{
+		ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth},
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("sk-openai"), Weight: 1}}},
+	}, &configstore.GovernanceConfig{VirtualKeys: []configtables.TableVirtualKey{virtualKey("codex-a"), virtualKey("codex-b"), inactive, expired}})
+	plugin, err := governance.Init(t.Context(), nil, bifrost.NewNoOpLogger(), nil, config.LiveStore, nil, nil)
 	require.NoError(t, err)
 	return newCodexRelayFixtureWith(t, config, codexFixtureOptions{store: testWSHandlerStore{allowDirectKeys: allowDirectKeys}, plugins: []schemas.LLMPlugin{plugin}})
 }

@@ -69,6 +69,14 @@ func WithProviders(t testing.TB, c *lib.Config, providers map[schemas.ModelProvi
 // it; explicit IDs and the key order are kept, and the caller's maps are left as they are.
 func FileOnly(t testing.TB, c *lib.Config, providers map[schemas.ModelProvider]configstore.ProviderConfig) *lib.Config {
 	t.Helper()
+	return FileOnlyGovernance(t, c, providers, nil)
+}
+
+// FileOnlyGovernance is FileOnly with the virtual keys, teams, customers, budgets, rate limits and
+// model configs gov declares loaded beside the providers, as config.json declares them to a
+// gateway without a config store. A governance store built on c's live store then serves them.
+func FileOnlyGovernance(t testing.TB, c *lib.Config, providers map[schemas.ModelProvider]configstore.ProviderConfig, gov *configstore.GovernanceConfig) *lib.Config {
+	t.Helper()
 	live, err := livestore.New()
 	if err != nil {
 		t.Fatalf("libtest: live store: %v", err)
@@ -77,17 +85,7 @@ func FileOnly(t testing.TB, c *lib.Config, providers map[schemas.ModelProvider]c
 	if err := c.AttachLiveStore(live); err != nil {
 		t.Fatalf("libtest: attaching live store: %v", err)
 	}
-	records := make([]livestore.Record, 0, len(providers))
-	for name, config := range providers {
-		records = append(records, livestore.Rec(live.Collections.Providers, &registry.Provider{Name: name, Settings: config.Settings()}))
-		for i, key := range config.Keys {
-			if key.ID == "" {
-				key.ID = missingKeyID(name, i)
-			}
-			records = append(records, livestore.Rec(live.Collections.ProviderKeys, &registry.ProviderKey{Provider: name, Order: int64(i), Key: key}))
-		}
-	}
-	if err := live.LoadRecords(context.Background(), records); err != nil {
+	if err := live.LoadRecords(context.Background(), lib.FileOnlyRecords(live, withKeyIDs(providers), gov)); err != nil {
 		t.Fatalf("libtest: loading live store: %v", err)
 	}
 	return c
@@ -103,7 +101,9 @@ func MCPClients(t testing.TB, c *lib.Config, clients ...*schemas.MCPClientConfig
 		t.Fatalf("libtest: live store: %v", err)
 	}
 	t.Cleanup(live.Close)
-	c.AttachLiveStore(live)
+	if err := c.AttachLiveStore(live); err != nil {
+		t.Fatalf("libtest: attaching live store: %v", err)
+	}
 	records := make([]livestore.Record, 0, len(clients))
 	for _, client := range clients {
 		records = append(records, livestore.Rec(live.Collections.MCPClients, &registry.MCPClient{Config: *client}))
@@ -126,7 +126,9 @@ func FromStore(t testing.TB, c *lib.Config) *lib.Config {
 		t.Fatalf("libtest: live store: %v", err)
 	}
 	t.Cleanup(live.Close)
-	c.AttachLiveStore(live)
+	if err := c.AttachLiveStore(live); err != nil {
+		t.Fatalf("libtest: attaching live store: %v", err)
+	}
 	if err := live.LoadAll(context.Background(), c.ConfigStore.DB()); err != nil {
 		t.Fatalf("libtest: loading live store: %v", err)
 	}
@@ -182,6 +184,26 @@ func storable(providers map[schemas.ModelProvider]configstore.ProviderConfig) ma
 			keys[i] = key
 		}
 		if config.Keys != nil {
+			config.Keys = keys
+		}
+		out[provider] = config
+	}
+	return out
+}
+
+// withKeyIDs copies providers, giving each key without an ID one of its own, as the file loader
+// does, so two keys a test leaves without an ID stay two key records.
+func withKeyIDs(providers map[schemas.ModelProvider]configstore.ProviderConfig) map[schemas.ModelProvider]configstore.ProviderConfig {
+	out := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(providers))
+	for provider, config := range providers {
+		if config.Keys != nil {
+			keys := make([]schemas.Key, len(config.Keys))
+			for i, key := range config.Keys {
+				if key.ID == "" {
+					key.ID = missingKeyID(provider, i)
+				}
+				keys[i] = key
+			}
 			config.Keys = keys
 		}
 		out[provider] = config

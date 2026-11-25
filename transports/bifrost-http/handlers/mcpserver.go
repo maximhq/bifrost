@@ -66,14 +66,6 @@ type MCPGatewayAdmitter interface {
 	MCPClientToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, ok bool)
 }
 
-// VirtualKeyCache resolves a virtual key by its row ID from an in-memory cache,
-// letting the JWT auth path avoid a per-request database read. Satisfied by the
-// governance plugin's in-memory store. Optional: when nil (or a cache miss), the
-// handler falls back to the config store.
-type VirtualKeyCache interface {
-	GetVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, bool)
-}
-
 // MCPServerHandler manages HTTP requests for MCP server operations
 // It implements the MCP protocol over HTTP streaming (SSE) for MCP clients
 type MCPServerHandler struct {
@@ -86,10 +78,6 @@ type MCPServerHandler struct {
 	// governance's: whether a user-mode caller still exists, and whether user mode is offered at
 	// all. Optional.
 	identityResolver OAuth2IdentityResolver
-	// vkCache serves by-ID virtual key lookups on the JWT auth path from the
-	// governance in-memory store, avoiding a per-request DB read. Optional: a nil
-	// cache or a miss falls back to the config store. See getVirtualKeyByID.
-	vkCache VirtualKeyCache
 	// mcpServer is the one server every caller is served from, for the life of the handler. What
 	// each caller sees of it is decided per request, from the tool list stamped on the request
 	// context, so nothing about it is per caller. Its tools are replaced in place on a registry change.
@@ -144,17 +132,8 @@ func (h *MCPServerHandler) GatewayAudience(ctx *fasthttp.RequestCtx) string {
 	return oauth2GatewayAudience(ctx, h.config)
 }
 
-// getVirtualKeyByID resolves a virtual key by its row ID for the JWT auth path,
-// preferring the governance in-memory cache and falling back to the config store
-// on a miss (e.g. a key created since the cache last refreshed) or when no cache
-// is wired. Whether the key may be used is not decided here: governance refuses a
-// key that is inactive or expired, from the grant it resolves for it.
-func (h *MCPServerHandler) getVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, error) {
-	return virtualKeyByID(ctx, h.vkCache, h.config.ConfigStore, vkID)
-}
-
 // NewMCPServerHandler creates a new MCP server handler instance
-func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MCPToolManager, admitter MCPGatewayAdmitter, identityResolver OAuth2IdentityResolver, vkCache VirtualKeyCache) (*MCPServerHandler, error) {
+func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MCPToolManager, admitter MCPGatewayAdmitter, identityResolver OAuth2IdentityResolver) (*MCPServerHandler, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -167,7 +146,6 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 		admitter:         admitter,
 		config:           config,
 		identityResolver: identityResolver,
-		vkCache:          vkCache,
 	}
 
 	handler.served, _ = toolManager.(MCPResourcesAndPromptsServer)
@@ -1093,7 +1071,7 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					return fmt.Errorf("user is no longer active")
 				}
 			}
-			return injectJWTContext(bifrostCtx, claims, nil)
+			return injectJWTContext(bifrostCtx, claims, "")
 
 		case schemas.MCPAuthModeSession:
 			// Session-mode tokens carry no verified identity. When the operator
@@ -1105,7 +1083,7 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
 				return fmt.Errorf("authentication required; session-mode tokens are not accepted when authentication is enforced - re-authenticate with a virtual key or user identity")
 			}
-			return injectJWTContext(bifrostCtx, claims, nil)
+			return injectJWTContext(bifrostCtx, claims, "")
 
 		case schemas.MCPAuthModeVK:
 			// Live virtual-key identity cutoff: when virtual-key identity has been
@@ -1123,14 +1101,14 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			}
 			// The token names the key by row ID; governance resolves keys by value, so the
 			// row is read to stamp the value. Nothing else about the key is decided here.
-			vk, err := h.getVirtualKeyByID(ctx, claims.Subject)
+			vkValue, err := virtualKeyValueByID(h.config.LiveStore, claims.Subject)
 			if err != nil {
 				return err
 			}
-			return injectJWTContext(bifrostCtx, claims, vk)
+			return injectJWTContext(bifrostCtx, claims, vkValue)
 
 		default:
-			return injectJWTContext(bifrostCtx, claims, nil)
+			return injectJWTContext(bifrostCtx, claims, "")
 		}
 	}
 

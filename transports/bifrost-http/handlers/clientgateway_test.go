@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,15 +34,35 @@ func newClaudeCodeGateway(t testing.TB, enforceAuth bool) (*clientGatewayEndpoin
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, enforceAuth)
 	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
-	return NewClientGatewayHandler(cfg, nil, nil, nil).endpoint("claude-code"), NewOAuth2ConsentHandler(cfg, nil, nil), store, cfg
+	cfg.LiveStore = gatewayLiveStore(t, store)
+	return NewClientGatewayHandler(cfg, nil, nil).endpoint("claude-code"), NewOAuth2ConsentHandler(cfg, nil, nil), store, cfg
 }
 
-// seedGatewayVK stores an active virtual key and returns it.
-func seedGatewayVK(t testing.TB, store configstore.ConfigStore, id, value string) *configtables.TableVirtualKey {
+// seedGatewayVK stores an active virtual key, brings it into cfg's live store as a key write does,
+// and returns it.
+func seedGatewayVK(t testing.TB, cfg *lib.Config, id, value string) *configtables.TableVirtualKey {
 	t.Helper()
 	vk := &configtables.TableVirtualKey{ID: id, Name: id, Value: *schemas.NewSecretVar(value), IsActive: new(true)}
-	require.NoError(t, store.CreateVirtualKey(context.Background(), vk))
+	require.NoError(t, cfg.ConfigStore.CreateVirtualKey(context.Background(), vk))
+	refreshGatewayVK(t, cfg, id)
 	return vk
+}
+
+// refreshGatewayVK re-reads a virtual key into cfg's live store, as the server does after a key
+// write; the gateway resolves the keys its tokens name from there.
+func refreshGatewayVK(t testing.TB, cfg *lib.Config, id string) {
+	t.Helper()
+	require.NoError(t, cfg.LiveStore.Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindVirtualKey, ID: id}}))
+}
+
+// gatewayLiveStore is a live store loaded from store's database, closed when the test ends.
+func gatewayLiveStore(t testing.TB, store configstore.ConfigStore) *livestore.Store {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	require.NoError(t, live.LoadAll(context.Background(), store.DB()))
+	return live
 }
 
 func jsonBody(t *testing.T, ctx *fasthttp.RequestCtx) map[string]any {
@@ -140,10 +161,11 @@ func TestClientGateway_GrantsStayOnTheirGateway(t *testing.T) {
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
 	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
-	gateways := NewClientGatewayHandler(cfg, nil, nil, nil, claudeCodeProfile{}, otherGatewayProfile{})
+	cfg.LiveStore = gatewayLiveStore(t, store)
+	gateways := NewClientGatewayHandler(cfg, nil, nil, claudeCodeProfile{}, otherGatewayProfile{})
 	claude, other := gateways.endpoint("claude-code"), gateways.endpoint("other-client")
 	consent := NewOAuth2ConsentHandler(cfg, nil, nil)
-	vk := seedGatewayVK(t, store, "vk-cross", "sk-bf-cross")
+	vk := seedGatewayVK(t, cfg, "vk-cross", "sk-bf-cross")
 
 	deviceCode, userCode := startDeviceSignIn(t, claude)
 
@@ -182,7 +204,7 @@ func TestClientGateway_SharedDeviceVerify(t *testing.T) {
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
 	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
-	gateways := NewClientGatewayHandler(cfg, nil, nil, nil, claudeCodeProfile{}, otherGatewayProfile{})
+	gateways := NewClientGatewayHandler(cfg, nil, nil, claudeCodeProfile{}, otherGatewayProfile{})
 	verify := func(userCode string) *fasthttp.RequestCtx {
 		ctx := jsonPostCtx(`{"user_code":"` + userCode + `"}`)
 		gateways.handleDeviceVerify(ctx)
@@ -260,7 +282,7 @@ func TestClaudeCodeGateway_Metadata(t *testing.T) {
 
 func TestClaudeCodeGateway_DeviceSignInWithVirtualKey(t *testing.T) {
 	h, consent, store, cfg := newClaudeCodeGateway(t, true)
-	vk := seedGatewayVK(t, store, "vk-cc-1", "sk-bf-claude-code")
+	vk := seedGatewayVK(t, cfg, "vk-cc-1", "sk-bf-claude-code")
 
 	deviceCode, userCode := startDeviceSignIn(t, h)
 
@@ -427,8 +449,11 @@ func TestClaudeCodeGateway_RefreshRejectsOtherClients(t *testing.T) {
 	assert.Nil(t, rt.RevokedAt)
 }
 
+// TestClaudeCodeGateway_BearerRejections checks that the gateway answers 401 to a missing, misused or
+// expired bearer, and to a session whose virtual key is inactive, expired or deleted. The inactive and
+// expired keys are held, so they are refused for their state rather than as missing.
 func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
-	h, _, store, _ := newClaudeCodeGateway(t, true)
+	h, _, store, cfg := newClaudeCodeGateway(t, true)
 	signingKey, err := store.GetOAuth2SigningKey(bgCtx())
 	require.NoError(t, err)
 	gatewayPriv, err := parseRSAPrivateKeyPEM(signingKey.PrivateKeyPEM)
@@ -436,9 +461,11 @@ func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
 
 	inactive := &configtables.TableVirtualKey{ID: "vk-off", Name: "vk-off", Value: *schemas.NewSecretVar("sk-bf-off"), IsActive: new(false)}
 	require.NoError(t, store.CreateVirtualKey(context.Background(), inactive))
+	refreshGatewayVK(t, cfg, "vk-off")
 	past := time.Now().Add(-time.Hour)
 	expired := &configtables.TableVirtualKey{ID: "vk-expired", Name: "vk-expired", Value: *schemas.NewSecretVar("sk-bf-expired"), IsActive: new(true), ExpiresAt: &past}
 	require.NoError(t, store.CreateVirtualKey(context.Background(), expired))
+	refreshGatewayVK(t, cfg, "vk-expired")
 
 	mint := func(mutate func(jwt.MapClaims)) string {
 		return mintTestToken(t, gatewayPriv, signingKey.KID, func(c jwt.MapClaims) {
@@ -475,6 +502,9 @@ func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
 			body := jsonBody(t, ctx)
 			assert.Equal(t, "error", body["type"])
 			assert.Equal(t, "authentication_error", body["error"].(map[string]any)["type"])
+			if name == "expired virtual key" {
+				assert.Contains(t, string(ctx.Response.Body()), "has expired", "an expired key is refused as expired, not as missing")
+			}
 		})
 	}
 
@@ -585,8 +615,8 @@ func TestClientGateway_DeviceVerifyNeedsNoCredentials(t *testing.T) {
 // 8628 §3.5) instead of polling until the code expires, and the refused sign-in cannot then be
 // approved.
 func TestClaudeCodeGateway_DeniedSignIn(t *testing.T) {
-	h, consent, store, _ := newClaudeCodeGateway(t, false)
-	vk := seedGatewayVK(t, store, "vk-deny", "sk-bf-deny")
+	h, consent, _, cfg := newClaudeCodeGateway(t, false)
+	vk := seedGatewayVK(t, cfg, "vk-deny", "sk-bf-deny")
 	deviceCode, userCode := startDeviceSignIn(t, h)
 
 	verify := jsonPostCtx(`{"user_code":"` + userCode + `"}`)
@@ -688,7 +718,7 @@ func TestClaudeCodeGatewayTokenCache(t *testing.T) {
 // no longer matches) and once the virtual key behind it is deactivated.
 func TestClaudeCodeGateway_CachedTokenStillChecked(t *testing.T) {
 	h, _, store, cfg := newClaudeCodeGateway(t, true)
-	vk := seedGatewayVK(t, store, "vk-cached", "sk-bf-cached")
+	vk := seedGatewayVK(t, cfg, "vk-cached", "sk-bf-cached")
 	signingKey, err := store.GetOAuth2SigningKey(bgCtx())
 	require.NoError(t, err)
 	priv, err := parseRSAPrivateKeyPEM(signingKey.PrivateKeyPEM)
@@ -718,26 +748,18 @@ func TestClaudeCodeGateway_CachedTokenStillChecked(t *testing.T) {
 		require.Equal(t, fasthttp.StatusOK, run())
 		vk.IsActive = new(false)
 		require.NoError(t, store.UpdateVirtualKey(context.Background(), vk))
+		refreshGatewayVK(t, cfg, vk.ID)
 		assert.Equal(t, fasthttp.StatusUnauthorized, run())
 	})
-}
-
-// staticVKCache is a warm governance virtual-key cache for the benchmark.
-type staticVKCache map[string]*configtables.TableVirtualKey
-
-func (c staticVKCache) GetVirtualKeyByID(_ context.Context, id string) (*configtables.TableVirtualKey, bool) {
-	vk, ok := c[id]
-	return vk, ok
 }
 
 // BenchmarkClaudeCodeGatewayBearerMiddleware measures what the bearer
 // middleware adds to every gateway request in steady state: the enabled check,
 // RS256 verification against the cached signing key, the identity re-check
-// (a warm virtual-key cache hit, or the user resolver), and the header rewrite.
+// (a live-store virtual-key lookup, or the user resolver), and the header rewrite.
 func BenchmarkClaudeCodeGatewayBearerMiddleware(b *testing.B) {
-	h, _, store, _ := newClaudeCodeGateway(b, true)
-	vk := seedGatewayVK(b, store, "vk-bench", "sk-bf-bench")
-	h.vkCache = staticVKCache{vk.ID: vk}
+	h, _, store, cfg := newClaudeCodeGateway(b, true)
+	vk := seedGatewayVK(b, cfg, "vk-bench", "sk-bf-bench")
 	h.identityResolver = &fakeResolver{userModeAvailable: true}
 	signingKey, err := store.GetOAuth2SigningKey(bgCtx())
 	require.NoError(b, err)

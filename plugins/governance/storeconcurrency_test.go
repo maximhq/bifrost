@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,13 +30,16 @@ func newStandaloneStore(t *testing.T) *LocalGovernanceStore {
 // TestGetVirtualKeyByID exercises the ID-keyed lookup directly without taking
 // the full governance snapshot path.
 func TestGetVirtualKeyByID(t *testing.T) {
-	store := newStandaloneStore(t)
 	vk := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "test", Value: *schemas.NewSecretVar("sk-bf-test")}
-	store.storeVirtualKey(vk.Value.GetValue(), vk)
+	store, err := newTestGovernanceStore(t, NewMockLogger(), &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
 
 	got, found := store.GetVirtualKeyByID(context.Background(), vk.ID)
 	require.True(t, found)
-	assert.Same(t, vk, got)
+	assert.Same(t, storedVirtualKey(t, store, vk.ID), got, "the lookup hands back the live record itself")
+	assert.Equal(t, "test", got.Name)
 
 	got, found = store.GetVirtualKeyByID(context.Background(), "missing")
 	assert.False(t, found)
@@ -455,15 +459,18 @@ func TestSeedConfigConcurrentDeletion(t *testing.T) {
 	}
 }
 
-// TestOwnerCacheMissRefresh checks that loading an uncached owner preserves
-// existing accounting and seeds genuinely new limits from the snapshot.
+// TestOwnerCacheMissRefresh checks that loading an owner preserves the accounting of the limits
+// the store already holds and seeds genuinely new limits from the rows. The live store re-reads an
+// owner's budgets and rate limit with it and hands each to the store as a limit row, whichever kind
+// of owner holds it.
 func TestOwnerCacheMissRefresh(t *testing.T) {
 	ctx := context.Background()
 	for _, owner := range []string{"team", "customer", "virtual key", "virtual key provider"} {
 		t.Run(owner, func(t *testing.T) {
 			for _, mode := range []string{"existing limits", "new limits"} {
 				t.Run(mode, func(t *testing.T) {
-					store := newStandaloneStore(t)
+					h := newLiveHarness(t, &configstore.GovernanceConfig{}, nil)
+					store := h.mustGovernanceStore(NewMockLogger(), nil)
 					reset := time.Unix(100, 0)
 					budget := configstoreTables.TableBudget{ID: "budget", MaxLimit: 100, CurrentUsage: 1, LastReset: reset}
 					rate := *buildRateLimit("rate", 100, 100)
@@ -493,23 +500,45 @@ func TestOwnerCacheMissRefresh(t *testing.T) {
 					budgets := []configstoreTables.TableBudget{budget}
 					switch owner {
 					case "team":
-						store.UpdateTeamInMemory(ctx, &configstoreTables.TableTeam{ID: "team", Budgets: budgets, RateLimit: &rate}, nil)
+						h.putTeam(&configstoreTables.TableTeam{ID: "team", Name: "team", Budgets: budgets, RateLimit: &rate})
 					case "customer":
-						store.UpdateCustomerInMemory(ctx, &configstoreTables.TableCustomer{ID: "customer", Budgets: budgets, RateLimit: &rate}, nil)
+						h.putCustomer(&configstoreTables.TableCustomer{ID: "customer", Name: "customer", Budgets: budgets, RateLimit: &rate})
 					case "virtual key":
-						vk := &configstoreTables.TableVirtualKey{ID: "key", Value: *schemas.NewSecretVar("sk-bf-test"), Budgets: budgets, RateLimit: &rate}
-						store.UpdateVirtualKeyInMemory(ctx, vk, nil, nil, nil)
+						h.putVirtualKey(&configstoreTables.TableVirtualKey{ID: "key", Name: "key", Value: *schemas.NewSecretVar("sk-bf-test"), Budgets: budgets, RateLimit: &rate})
 					case "virtual key provider":
-						vk := &configstoreTables.TableVirtualKey{
-							ID: "key", Value: *schemas.NewSecretVar("sk-bf-test"),
-							ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{{Budgets: budgets, RateLimit: &rate}},
-						}
-						store.UpdateVirtualKeyInMemory(ctx, vk, nil, nil, nil)
+						h.putVirtualKey(&configstoreTables.TableVirtualKey{
+							ID: "key", Name: "key", Value: *schemas.NewSecretVar("sk-bf-test"),
+							ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{{Provider: "openai", Budgets: budgets, RateLimit: &rate}},
+						})
 					}
-					require.Equal(t, &wantBudget, store.LoadBudget(ctx, budget.ID))
-					require.Equal(t, &wantRate, store.LoadRateLimit(ctx, rate.ID))
+					requireLimitAccounting(t, &wantBudget, &wantRate, store.LoadBudget(ctx, budget.ID), store.LoadRateLimit(ctx, rate.ID))
 				})
 			}
 		})
+	}
+}
+
+// requireLimitAccounting checks that a budget and a rate limit loaded from a store carry the
+// settings and accounting of want: the limits, and each counter's usage, last reset and reset
+// evidence. Columns the database fills in are not compared.
+func requireLimitAccounting(t *testing.T, wantBudget *configstoreTables.TableBudget, wantRate *configstoreTables.TableRateLimit, gotBudget *configstoreTables.TableBudget, gotRate *configstoreTables.TableRateLimit) {
+	t.Helper()
+	if wantBudget != nil {
+		require.NotNil(t, gotBudget)
+		require.Equal(t, wantBudget.MaxLimit, gotBudget.MaxLimit)
+		require.Equal(t, wantBudget.CurrentUsage, gotBudget.CurrentUsage)
+		require.True(t, wantBudget.LastReset.Equal(gotBudget.LastReset), "budget last reset: want %v, got %v", wantBudget.LastReset, gotBudget.LastReset)
+		require.Equal(t, wantBudget.UsageResetEpoch, gotBudget.UsageResetEpoch)
+	}
+	if wantRate != nil {
+		require.NotNil(t, gotRate)
+		require.Equal(t, wantRate.TokenMaxLimit, gotRate.TokenMaxLimit)
+		require.Equal(t, wantRate.RequestMaxLimit, gotRate.RequestMaxLimit)
+		require.Equal(t, wantRate.TokenCurrentUsage, gotRate.TokenCurrentUsage)
+		require.Equal(t, wantRate.RequestCurrentUsage, gotRate.RequestCurrentUsage)
+		require.True(t, wantRate.TokenLastReset.Equal(gotRate.TokenLastReset), "token last reset: want %v, got %v", wantRate.TokenLastReset, gotRate.TokenLastReset)
+		require.True(t, wantRate.RequestLastReset.Equal(gotRate.RequestLastReset), "request last reset: want %v, got %v", wantRate.RequestLastReset, gotRate.RequestLastReset)
+		require.Equal(t, wantRate.TokenUsageResetEpoch, gotRate.TokenUsageResetEpoch)
+		require.Equal(t, wantRate.RequestUsageResetEpoch, gotRate.RequestUsageResetEpoch)
 	}
 }

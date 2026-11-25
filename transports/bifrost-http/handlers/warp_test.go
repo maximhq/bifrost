@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
@@ -22,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -717,11 +719,12 @@ func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
 // A grant the snapshot drops, settles without its user, or settles past a
 // presented key breaks the chat or widens it, and either shows up here.
 func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
-	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil, &configstore.GovernanceConfig{}, nil, nil)
+	live := libtest.FileOnly(t, &lib.Config{}, nil).LiveStore
+	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil, live, nil)
 	require.NoError(t, err)
 	isVkMandatory := false
 	plugin, err := governance.InitFromStore(context.Background(), &governance.Config{IsVkMandatory: &isVkMandatory},
-		&mockLogger{}, store, nil, nil, nil, nil)
+		&mockLogger{}, store, nil, nil, nil, live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1467,15 +1470,16 @@ func TestWarpChatPresentsWarpVirtualKeyForACallerWithNoIdentity(t *testing.T) {
 		ID: "vk-warp", Name: "warp", Value: *schemas.NewSecretVar("sk-bf-warp"), IsActive: &active,
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{{Provider: "openai", AllowedModels: []string{"*"}, Weight: new(1.0)}},
 	}
-	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil,
-		&configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{warpKey}}, nil, nil)
+	live := libtest.FileOnlyGovernance(t, &lib.Config{}, nil,
+		&configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{warpKey}}).LiveStore
+	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil, live, nil)
 	require.NoError(t, err)
 	isVkMandatory := true
 	plugin, err := governance.InitFromStore(context.Background(), &governance.Config{IsVkMandatory: &isVkMandatory},
-		&mockLogger{}, store, nil, nil, nil, nil)
+		&mockLogger{}, store, nil, nil, nil, live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
-	handler := &WarpHandler{virtualKeyCache: func() VirtualKeyCache { return store }}
+	handler := &WarpHandler{live: live}
 
 	// governed records what governance attributed the call to.
 	var governed string
@@ -1569,34 +1573,14 @@ func TestWarpChatPresentsWarpVirtualKeyForACallerWithNoIdentity(t *testing.T) {
 	})
 }
 
-// blockingVirtualKeyStore answers no lookup until its context ends, as a config
-// store does while every pooled connection is taken.
-type blockingVirtualKeyStore struct{}
+// Warp's virtual key is read from the live store, so a handler built without one
+// cannot resolve it. That is a wiring fault (the chat's 500), not a key that no
+// longer exists (its 409).
+func TestWarpVirtualKeyWithoutLiveStoreIsNotMissing(t *testing.T) {
+	handler := &WarpHandler{}
 
-func (blockingVirtualKeyStore) GetVirtualKey(ctx context.Context, _ string) (*tables.TableVirtualKey, error) {
-	<-ctx.Done()
-	return nil, ctx.Err()
-}
+	_, err := handler.warpVirtualKey(&fasthttp.RequestCtx{}, "vk-warp")
 
-// The store read of Warp's virtual key runs on a background context, so neither
-// the request nor a disconnect bounds it. A store that never answers must end in
-// an error (the chat's 500), not hold the turn open.
-func TestWarpVirtualKeyLookupIsBounded(t *testing.T) {
-	previous := warpVirtualKeyLookupTimeout
-	warpVirtualKeyLookupTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { warpVirtualKeyLookupTimeout = previous })
-	handler := &WarpHandler{virtualKeyStore: blockingVirtualKeyStore{}}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := handler.warpVirtualKey(&fasthttp.RequestCtx{}, "vk-warp")
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-		require.NotErrorIs(t, err, errWarpVirtualKeyMissing, "a slow store is not a deleted key")
-	case <-time.After(2 * time.Second):
-		t.Fatal("warp's virtual key lookup did not return while the store was blocked")
-	}
+	require.ErrorIs(t, err, livestore.ErrNoLiveStore)
+	require.NotErrorIs(t, err, errWarpVirtualKeyMissing, "an unwired live store is not a deleted key")
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -29,5 +30,25 @@ func TestLoggingPluginConfigTakesCaptureClientIPFromLogsStore(t *testing.T) {
 	}
 	if got.CaptureClientIP {
 		t.Error("without a logs_store config, capture stays off")
+	}
+}
+
+// TestGovernanceLogTimestampPrecisionFollowsTheLogsStore pins that governance compares charges
+// with resets at ClickHouse's millisecond timestamps only when a ClickHouse logs store is open.
+func TestGovernanceLogTimestampPrecisionFollowsTheLogsStore(t *testing.T) {
+	open := struct{ logstore.LogStore }{}
+	for _, tc := range []struct {
+		name   string
+		config *lib.Config
+		want   time.Duration
+	}{
+		{"clickhouse", &lib.Config{LogsStore: open, LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypeClickHouse}}, time.Millisecond},
+		{"postgres", &lib.Config{LogsStore: open, LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypePostgres}}, 0},
+		{"clickhouse not open", &lib.Config{LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypeClickHouse}}, 0},
+		{"no logs store", &lib.Config{}, 0},
+	} {
+		if got := GovernanceLogTimestampPrecision(tc.config); got != tc.want {
+			t.Errorf("%s: precision = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

@@ -70,8 +70,7 @@ type GovernanceManager interface {
 	// Virtual MCP cache refresh after a write, surgically per operation (mirrors the VK/team callbacks).
 	ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error)
 	RemoveVirtualMCP(ctx context.Context, id uint) error
-	AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
-	DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
+	ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error
 	// ReloadVirtualKeys reloads many virtual keys exactly as ReloadVirtualKey
 	// reloads one, from batched reads. Enterprise also propagates the reload to
 	// cluster peers. An error means nothing was reloaded, and the caller falls
@@ -3850,12 +3849,6 @@ func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve team")
 		return
 	}
-	// Removing team from in-memory store
-	err = h.governanceManager.RemoveTeam(ctx, team.ID)
-	if err != nil {
-		// But we ignore this error because its not
-		logger.Error("failed to remove team: %v", err)
-	}
 	if err := h.configStore.DeleteTeam(ctx, teamID); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Team not found")
@@ -3863,6 +3856,10 @@ func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 		}
 		SendError(ctx, 500, "Failed to delete team")
 		return
+	}
+	// The row goes first: removing the team re-reads the keys under it, which then no longer name it.
+	if err := h.governanceManager.RemoveTeam(ctx, team.ID); err != nil {
+		logger.Error("failed to remove team: %v", err)
 	}
 	lib.RecordAuditChange(ctx, "team.deleted", "team", team.ID, team.Name, auditTeam(team), nil)
 	SendJSON(ctx, map[string]interface{}{
@@ -4234,11 +4231,6 @@ func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve customer")
 		return
 	}
-	err = h.governanceManager.RemoveCustomer(ctx, customer.ID)
-	if err != nil {
-		// But we ignore this error because its not
-		logger.Error("failed to remove customer: %v", err)
-	}
 	if err := h.configStore.DeleteCustomer(ctx, customerID); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Customer not found")
@@ -4246,6 +4238,11 @@ func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 		}
 		SendError(ctx, 500, "Failed to delete customer")
 		return
+	}
+	// The row goes first: removing the customer re-reads the keys and teams under it, which then no
+	// longer name it.
+	if err := h.governanceManager.RemoveCustomer(ctx, customer.ID); err != nil {
+		logger.Error("failed to remove customer: %v", err)
 	}
 	lib.RecordAuditChange(ctx, "customer.deleted", "customer", customer.ID, customer.Name, auditCustomer(customer), nil)
 	SendJSON(ctx, map[string]interface{}{

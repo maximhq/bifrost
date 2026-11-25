@@ -123,7 +123,8 @@ func TestFromConfigJoins(t *testing.T) {
 		{Name: schemas.Anthropic, BudgetID: "b-anth"},
 		{Name: schemas.Gemini},
 		{Name: schemas.OpenAI, BudgetID: "b-prov", RateLimitID: "rl-prov"},
-	}, g.Providers, "each configured provider, in name order, names the limits governance gives it")
+	}, g.Providers, "each configured provider, in name order, names the limits governance gives it, with its settings only")
+	require.Equal(t, []*ProviderKey{{Provider: schemas.OpenAI, Key: schemas.Key{ID: "k1"}}}, g.ProviderKeys, "a provider's keys are records of their own")
 	require.Equal(t, "openai", BudgetProvider(budgets["b-prov"]))
 	require.False(t, budgets["b-prov"].IsCalendarAligned, "a provider has no calendar flag")
 	require.Equal(t, "anthropic", BudgetProvider(budgets["b-anth"]), "a provider's nested budget is used when none is listed")
@@ -169,6 +170,22 @@ func TestFromConfigWithoutGovernance(t *testing.T) {
 	require.Empty(t, g.VirtualKeys)
 	require.Empty(t, g.Budgets)
 	require.Equal(t, []*Provider{{Name: schemas.OpenAI}}, g.Providers)
+}
+
+// TestFromConfigProviderKeys checks that a provider's keys become key records under it, ordered by
+// their position in config.json, while its provider record holds its settings only and the
+// caller's config keeps its keys.
+func TestFromConfigProviderKeys(t *testing.T) {
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "z-first"}, {ID: "a-second"}}, SendBackRawResponse: true},
+	}
+	g := FromConfig(FileInput{Providers: providers})
+	require.Equal(t, []*Provider{{Name: schemas.OpenAI, Settings: configstore.ProviderSettings{SendBackRawResponse: true}}}, g.Providers)
+	require.Equal(t, []*ProviderKey{
+		{Provider: schemas.OpenAI, Order: 0, Key: schemas.Key{ID: "z-first"}},
+		{Provider: schemas.OpenAI, Order: 1, Key: schemas.Key{ID: "a-second"}},
+	}, g.ProviderKeys, "a key's order is its position in config.json, not its ID")
+	require.Len(t, providers[schemas.OpenAI].Keys, 2, "the caller's config is not rewritten")
 }
 
 // keysOf lists a budget map's IDs.

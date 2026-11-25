@@ -1,37 +1,22 @@
 package handlers
 
 import (
-	"context"
 	"errors"
 
-	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
-type virtualKeyByIDStore interface {
-	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
-}
-
-// errVirtualKeyNotFound is returned when a virtual key ID resolves to nothing
-// in either the cache or the store.
+// errVirtualKeyNotFound is returned when a virtual key ID resolves to nothing.
 var errVirtualKeyNotFound = errors.New("virtual key not found or inactive")
 
-// virtualKeyByID resolves a virtual key by its row ID, preferring the governance
-// in-memory cache and falling back to the store on a miss (e.g. a key created
-// since the cache last refreshed) or when no cache is wired. The active-state
-// check is left to the caller, matching both sources (neither filters inactive
-// keys by ID).
-func virtualKeyByID(ctx context.Context, cache VirtualKeyCache, store virtualKeyByIDStore, vkID string) (*tables.TableVirtualKey, error) {
-	if cache != nil {
-		if vk, ok := cache.GetVirtualKeyByID(ctx, vkID); ok && vk != nil {
-			return vk, nil
-		}
+// virtualKeyValueByID resolves a virtual key's value from its row ID through the live store, which
+// every write refreshes, so a key it does not hold does not exist. A key whose value could not be
+// resolved is not found either. Whether the key may be used is not decided here: governance refuses
+// an inactive or expired key from the grant it resolves.
+func virtualKeyValueByID(live *livestore.Store, vkID string) (string, error) {
+	vk, ok := live.Collections.VirtualKeys.Get(vkID)
+	if !ok || vk.Value == "" {
+		return "", errVirtualKeyNotFound
 	}
-	if store == nil {
-		return nil, errVirtualKeyNotFound
-	}
-	vk, err := store.GetVirtualKey(ctx, vkID)
-	if err != nil || vk == nil {
-		return nil, errVirtualKeyNotFound
-	}
-	return vk, nil
+	return vk.Value, nil
 }

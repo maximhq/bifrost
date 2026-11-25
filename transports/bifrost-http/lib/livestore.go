@@ -66,6 +66,24 @@ func loadLiveStore(ctx context.Context, config *Config) error {
 	return nil
 }
 
+// moveGovernanceContentToBoot moves the governance entity lists loadGovernanceConfig assembled
+// into the boot struct, where every config.json content kind waits for the live store, leaving
+// Config.GovernanceConfig its settings (auth, the complexity analyzer). From here on governance
+// and the admin API read the live store and the database, never these lists, and loadLiveStore
+// drops them with the boot struct.
+func (c *Config) moveGovernanceContentToBoot() {
+	g := c.GovernanceConfig
+	if g == nil || c.boot == nil {
+		return
+	}
+	c.boot.governance = &configstore.GovernanceConfig{
+		VirtualKeys: g.VirtualKeys, Teams: g.Teams, Customers: g.Customers,
+		Budgets: g.Budgets, RateLimits: g.RateLimits, ModelConfigs: g.ModelConfigs, Providers: g.Providers,
+	}
+	g.VirtualKeys, g.Teams, g.Customers = nil, nil, nil
+	g.Budgets, g.RateLimits, g.ModelConfigs, g.Providers = nil, nil, nil, nil
+}
+
 // AttachLiveStore makes live the config's live store and keeps the views derived from it current: a
 // provider's "name/model" prefix is registered when its record is published and unregistered when
 // it is removed, and the MCP header allowlist is rebuilt whenever a client changes. A refresh calls
@@ -145,18 +163,48 @@ type bootConfig struct {
 	featureFlags *FeatureFlagsFileConfig
 }
 
-// records builds the live store records for everything b holds, for file-only mode. A provider's
-// keys become records of their own, ordered by their position in config.json.
+// records builds the live store records a gateway without a config store loads, from b: the
+// providers with their keys and the governance lists. Every other content kind is skipped in that
+// mode, as its loader has always skipped it: MCP clients and virtual MCPs (loadMCPConfig warns that
+// the MCP manager will not be initialized), webhooks, agents, relays, model routers and routing
+// rules. Datasheet overrides and feature flags are tables their owners fill in both modes. Loading
+// a skipped kind in this mode means adding its records here and dropping its loader's early return.
 func (b *bootConfig) records(live *livestore.Store) []livestore.Record {
-	records := make([]livestore.Record, 0, len(b.providers)+len(b.mcpClients))
-	for name, providerConfig := range b.providers {
-		records = append(records, livestore.Rec(live.Collections.Providers, &registry.Provider{Name: name, Settings: providerConfig.Settings()}))
-		for i, key := range providerConfig.Keys {
-			records = append(records, livestore.Rec(live.Collections.ProviderKeys, &registry.ProviderKey{Provider: name, Order: int64(i), Key: key}))
-		}
+	return FileOnlyRecords(live, b.providers, b.governance)
+}
+
+// FileOnlyRecords wraps the records a gateway without a config store loads into live, as
+// registry.FromConfig builds them from config.json: settings-only provider records, a record per
+// provider key ordered by its position in config.json, and the governance records. Tests outside
+// lib load them the same way through libtest.
+func FileOnlyRecords(live *livestore.Store, providers map[schemas.ModelProvider]configstore.ProviderConfig, declared *configstore.GovernanceConfig) []livestore.Record {
+	fc := registry.FromConfig(registry.FileInput{Providers: providers, Governance: declared})
+	cols := live.Collections
+	records := make([]livestore.Record, 0, len(fc.Providers)+len(fc.ProviderKeys)+len(fc.VirtualKeys)+
+		len(fc.Teams)+len(fc.Customers)+len(fc.Budgets)+len(fc.RateLimits)+len(fc.ModelConfigs))
+	for _, p := range fc.Providers {
+		records = append(records, livestore.Rec(cols.Providers, p))
 	}
-	for _, client := range b.mcpClients {
-		records = append(records, livestore.Rec(live.Collections.MCPClients, &registry.MCPClient{Config: *client}))
+	for _, k := range fc.ProviderKeys {
+		records = append(records, livestore.Rec(cols.ProviderKeys, k))
+	}
+	for _, k := range fc.VirtualKeys {
+		records = append(records, livestore.Rec(cols.VirtualKeys, k))
+	}
+	for _, t := range fc.Teams {
+		records = append(records, livestore.Rec(cols.Teams, t))
+	}
+	for _, c := range fc.Customers {
+		records = append(records, livestore.Rec(cols.Customers, c))
+	}
+	for _, budget := range fc.Budgets {
+		records = append(records, livestore.Rec(cols.Budgets, budget))
+	}
+	for _, rateLimit := range fc.RateLimits {
+		records = append(records, livestore.Rec(cols.RateLimits, rateLimit))
+	}
+	for _, mc := range fc.ModelConfigs {
+		records = append(records, livestore.Rec(cols.ModelConfigs, mc))
 	}
 	return records
 }

@@ -4046,6 +4046,7 @@ func loadGovernanceConfig(ctx context.Context, config *Config, configData *Confi
 	if governanceConfig != nil && configData.Governance != nil {
 		mergeGovernanceConfig(ctx, config, configData, governanceConfig)
 	}
+	config.moveGovernanceContentToBoot()
 }
 
 func resolveGovernanceKeyReferences(ctx context.Context, config *Config, governanceConfig *configstore.GovernanceConfig) error {

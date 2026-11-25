@@ -32,7 +32,7 @@ func newWarmupBudgetFixture(t *testing.T) (*GovernancePlugin, GovernanceStore) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("provider-budget", 1000.0, 0.0, "1d")
 	budgetID := budget.ID
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Budgets:   []configstoreTables.TableBudget{*budget},
 		Providers: []configstoreTables.TableProvider{{Name: "openai", BudgetID: &budgetID}},
 	}, nil, nil)

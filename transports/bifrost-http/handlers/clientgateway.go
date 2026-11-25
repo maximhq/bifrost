@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -142,7 +143,6 @@ type ClientGatewayHandler struct {
 	issuance         *OAuth2IssuanceHandler
 	tempTokens       *temptoken.Service     // optional; nil = consent page needs a dashboard session
 	identityResolver OAuth2IdentityResolver // optional; nil = vk and session identities only
-	vkCache          VirtualKeyCache        // optional; nil = virtual keys read from the config store
 
 	deviceAuthLimiter *ipRateLimiter
 	verifyLimiter     *ipRateLimiter
@@ -160,9 +160,9 @@ type clientGatewayEndpoint struct {
 }
 
 // NewClientGatewayHandler creates the client gateway handler for profiles, or
-// for every built-in profile when none are given. tempTokens, identityResolver
-// and vkCache may each be nil.
-func NewClientGatewayHandler(store *lib.Config, tempTokens *temptoken.Service, identityResolver OAuth2IdentityResolver, vkCache VirtualKeyCache, profiles ...ClientGatewayProfile) *ClientGatewayHandler {
+// for every built-in profile when none are given. tempTokens and identityResolver
+// may each be nil.
+func NewClientGatewayHandler(store *lib.Config, tempTokens *temptoken.Service, identityResolver OAuth2IdentityResolver, profiles ...ClientGatewayProfile) *ClientGatewayHandler {
 	if len(profiles) == 0 {
 		profiles = clientGatewayProfiles
 	}
@@ -171,7 +171,6 @@ func NewClientGatewayHandler(store *lib.Config, tempTokens *temptoken.Service, i
 		issuance:          NewOAuth2IssuanceHandler(store, tempTokens, identityResolver),
 		tempTokens:        tempTokens,
 		identityResolver:  identityResolver,
-		vkCache:           vkCache,
 		deviceAuthLimiter: newIPRateLimiter(clientGatewayDeviceAuthorizationLimit, clientGatewayRateLimitWindow),
 		verifyLimiter:     newIPRateLimiter(clientGatewayDeviceVerifyLimit, clientGatewayRateLimitWindow),
 		polls:             newDevicePollTracker(),
@@ -713,18 +712,18 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 		if oauth2ServerCfg(ep.store).DisableVKIdentity && ep.identityResolver != nil && ep.identityResolver.IsUserModeAvailable() {
 			return fasthttp.StatusUnauthorized, "virtual-key sign-in is no longer accepted; " + hint
 		}
-		vk, err := ep.virtualKeyByID(ctx, claims.Subject)
+		vk, err := ep.virtualKeyByID(claims.Subject)
 		if err != nil {
 			return fasthttp.StatusServiceUnavailable, "failed to verify virtual key"
 		}
-		if vk == nil || !vk.IsActiveValue() {
+		if vk == nil || !vk.Active {
 			return fasthttp.StatusUnauthorized, "the virtual key behind this session is no longer active; " + hint
 		}
 		if vk.IsExpiredAt(now) {
 			return fasthttp.StatusUnauthorized, "the virtual key behind this session has expired; " + hint
 		}
 		stripGatewayCredentials(ctx)
-		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), vk.Value.GetValue())
+		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), vk.Value)
 	case schemas.MCPAuthModeUser:
 		if ep.identityResolver != nil {
 			active, err := ep.identityResolver.IsUserActive(ctx, claims.Subject)
@@ -760,24 +759,16 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 	return 0, ""
 }
 
-// virtualKeyByID resolves the key a vk-mode token names, preferring the
-// governance in-memory store. It returns (nil, nil) when the key is gone and an
-// error only for a transient lookup failure, so a database blip is a retriable
-// 503 rather than a sign-out.
-func (h *ClientGatewayHandler) virtualKeyByID(ctx context.Context, id string) (*configtables.TableVirtualKey, error) {
-	if h.vkCache != nil {
-		if vk, ok := h.vkCache.GetVirtualKeyByID(ctx, id); ok && vk != nil {
-			return vk, nil
-		}
-	}
-	if h.store.ConfigStore == nil {
-		return nil, fmt.Errorf("config store unavailable")
-	}
-	vk, err := h.store.ConfigStore.GetVirtualKey(ctx, id)
-	if errors.Is(err, configstore.ErrNotFound) {
+// virtualKeyByID resolves the key a vk-mode token names from the live store, which every key write
+// refreshes, so a key it does not hold is gone: (nil, nil), as is a key whose value could not be
+// resolved. The gateway is never built without a live store, so the error is always nil; it stays
+// in the signature for the callers that answer a failed lookup with a retriable 503.
+func (h *ClientGatewayHandler) virtualKeyByID(id string) (*registry.VirtualKey, error) {
+	vk, ok := h.store.LiveStore.Collections.VirtualKeys.Get(id)
+	if !ok || vk.Value == "" {
 		return nil, nil
 	}
-	return vk, err
+	return vk, nil
 }
 
 // stripGatewayCredentials removes every header that could carry a credential
