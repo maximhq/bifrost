@@ -18,6 +18,7 @@ func TestVKUpstreamHealthFiltersReachablePairsAndFoldsStaticLimits(t *testing.T)
 	configs := []configstoreTables.TableVirtualKeyProviderConfig{{
 		Provider:          "anthropic",
 		AllowedModels:     schemas.WhiteList{"*"},
+		AllowAllKeys:      true,
 		BlacklistedModels: schemas.BlackList{"claude-blocked"},
 		Budgets:           []configstoreTables.TableBudget{{MaxLimit: 10, CurrentUsage: 2}},
 		ModelBudgets: []configstoreTables.VKProviderModelBudget{{
@@ -52,6 +53,7 @@ func TestVKUpstreamHealthAllowAllProvidersReachesUnnamedProviders(t *testing.T) 
 	configs := []configstoreTables.TableVirtualKeyProviderConfig{{
 		Provider:          "anthropic",
 		AllowedModels:     schemas.WhiteList{"*"},
+		AllowAllKeys:      true,
 		BlacklistedModels: schemas.BlackList{"claude-blocked"},
 	}}
 	got := vkUpstreamHealth(snapshot, configs, true, nil, canonicalModelConfigMatch)
@@ -73,6 +75,7 @@ func TestVKUpstreamHealthFoldsLimitsTheMatcherGoverns(t *testing.T) {
 	configs := []configstoreTables.TableVirtualKeyProviderConfig{{
 		Provider:      "openai",
 		AllowedModels: schemas.WhiteList{"*"},
+		AllowAllKeys:  true,
 		ModelBudgets: []configstoreTables.VKProviderModelBudget{{
 			ModelName: "gpt-4o",
 			Budgets:   []configstoreTables.TableBudget{{MaxLimit: 10, CurrentUsage: 10}},
@@ -128,5 +131,23 @@ func TestVKUpstreamHealthFoldsProviderScopedLimitWithoutProviderConfig(t *testin
 	got := vkUpstreamHealth(snapshot, nil, true, models, canonicalModelConfigMatch)
 	if len(got) != 2 || got[0].EffectiveRemainingFraction != 0 || got[1].EffectiveRemainingFraction != 1 {
 		t.Fatalf("expected the exhausted openai/gpt-4o limit to bound only the openai pair, got %+v", got)
+	}
+}
+
+// A provider config that allows no keys (deny-by-default) serves nothing, so neither an available
+// nor a cooling-down pair on its provider is reachable, even though its models allow them.
+func TestVKUpstreamHealthSkipsDenyAllProviderConfig(t *testing.T) {
+	snapshot := []schemas.UpstreamHealth{
+		{Provider: schemas.OpenAI, Model: "gpt-a", Status: schemas.UpstreamHealthDegraded, Available: true, EffectiveRemainingFraction: 1},
+		{Provider: schemas.OpenAI, Model: "gpt-b", Status: schemas.UpstreamHealthCoolingDown},
+		{Provider: schemas.Anthropic, Model: "claude-a", Status: schemas.UpstreamHealthCoolingDown},
+	}
+	configs := []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
+		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"*"}, Keys: []configstoreTables.TableKey{{KeyID: "key-1"}}},
+	}
+	got := vkUpstreamHealth(snapshot, configs, true, nil, canonicalModelConfigMatch)
+	if len(got) != 1 || got[0].Provider != schemas.Anthropic {
+		t.Fatalf("expected only the provider whose config allows a key, got %+v", got)
 	}
 }

@@ -2391,7 +2391,7 @@ func TestGetVirtualKeyQuota_UpstreamHealthFoldsAllProviderModelLimits(t *testing
 			Name:     "Production",
 			IsActive: &active,
 			ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
-				{ID: 7, VirtualKeyID: "vk-1", Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
+				{ID: 7, VirtualKeyID: "vk-1", Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
 			},
 		},
 		modelConfigs: []configstoreTables.TableModelConfig{{

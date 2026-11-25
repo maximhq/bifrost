@@ -43,7 +43,7 @@ var allProviderKeys = schemas.WhiteList{"*"}
 // can reach, with each pair's EffectiveRemainingFraction narrowed by the static budgets and rate
 // limits the key has on that provider, on that model under it (with or without a provider
 // config), and on that model across all providers (a model config with no provider, which
-// governance enforces on every provider). A pair is reachable through a provider config that allows the model, or, when the key allows all
+// governance enforces on every provider). A pair is reachable through a provider config that allows the model and at least one key, or, when the key allows all
 // providers, through any provider it names no config for: inference grants those with every
 // model. Every pair in the snapshot was dispatched to, so its provider is configured. match
 // decides which per-model limits govern a pair, through the keys the key's provider config allows
@@ -59,7 +59,8 @@ func vkUpstreamHealth(snapshot []schemas.UpstreamHealth, providerConfigs []confi
 				break
 			}
 		}
-		if pc != nil && (!pc.AllowedModels.IsAllowed(entry.Model) || pc.BlacklistedModels.IsBlocked(entry.Model)) {
+		// A config that allows no keys (deny-by-default) serves nothing, whatever its models allow.
+		if pc != nil && (!pc.AllowedModels.IsAllowed(entry.Model) || pc.BlacklistedModels.IsBlocked(entry.Model) || len(pc.KeyIDs()) == 0) {
 			continue
 		}
 		if !named && !allowAllProviders {
