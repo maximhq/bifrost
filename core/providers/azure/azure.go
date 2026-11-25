@@ -3857,6 +3857,7 @@ func (provider *AzureProvider) PassthroughStream(
 		fasthttpReq.Header.Set(k, v)
 	}
 
+	req = openai.WithPassthroughStreamUsage(req)
 	if err := providerUtils.SetPassthroughRequestBody(fasthttpReq, req); err != nil {
 		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
 	}

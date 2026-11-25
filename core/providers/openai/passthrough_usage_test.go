@@ -439,3 +439,148 @@ func BenchmarkEndsOpenAIPassthroughStream(b *testing.B) {
 		})
 	}
 }
+
+// A streamed chat or text completion only reports usage when the request asks
+// for it with stream_options.include_usage. The typed routes always ask; the
+// passthrough route asks too, so a streamed passthrough call is metered the same
+// way whatever the caller put in the body.
+func TestEnsurePassthroughStreamUsage(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		want   string
+	}{
+		{
+			name:   "streamed chat without stream_options",
+			method: "POST", path: "/v1/chat/completions",
+			body: `{"model":"gpt-4o","stream":true,"messages":[]}`,
+			want: `{"model":"gpt-4o","stream":true,"messages":[],"stream_options":{"include_usage":true}}`,
+		},
+		{
+			name:   "streamed chat with include_usage false",
+			method: "POST", path: "/v1/chat/completions",
+			body: `{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false,"include_obfuscation":false}}`,
+			want: `{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":true,"include_obfuscation":false}}`,
+		},
+		{
+			name:   "streamed chat that already asks is untouched",
+			method: "POST", path: "/v1/chat/completions?api-version=1",
+			body: `{"stream": true, "stream_options": {"include_usage": true}}`,
+			want: `{"stream": true, "stream_options": {"include_usage": true}}`,
+		},
+		{
+			name:   "streamed text completion",
+			method: "POST", path: "/v1/completions",
+			body: `{"model":"gpt-3.5-turbo-instruct","prompt":"hi","stream":true}`,
+			want: `{"model":"gpt-3.5-turbo-instruct","prompt":"hi","stream":true,"stream_options":{"include_usage":true}}`,
+		},
+		{
+			name:   "a chat that brings its own data sources is untouched",
+			method: "POST", path: "/openai/deployments/gpt-4o/chat/completions",
+			body: `{"stream":true,"messages":[],"data_sources":[{"type":"azure_search","parameters":{}}]}`,
+			want: `{"stream":true,"messages":[],"data_sources":[{"type":"azure_search","parameters":{}}]}`,
+		},
+		{
+			name:   "non-streamed chat is untouched",
+			method: "POST", path: "/v1/chat/completions",
+			body: `{"model":"gpt-4o","messages":[]}`,
+			want: `{"model":"gpt-4o","messages":[]}`,
+		},
+		{
+			name:   "stream false is untouched",
+			method: "POST", path: "/v1/chat/completions",
+			body: `{"model":"gpt-4o","stream":false}`,
+			want: `{"model":"gpt-4o","stream":false}`,
+		},
+		{
+			name:   "responses streams always carry usage",
+			method: "POST", path: "/v1/responses",
+			body: `{"model":"gpt-4o","stream":true}`,
+			want: `{"model":"gpt-4o","stream":true}`,
+		},
+		{
+			name:   "a GET on the chat route is untouched",
+			method: "GET", path: "/v1/chat/completions",
+			body: `{"stream":true}`,
+			want: `{"stream":true}`,
+		},
+		{
+			name:   "a body that is not a JSON object is untouched",
+			method: "POST", path: "/v1/chat/completions",
+			body: `--boundary`,
+			want: `--boundary`,
+		},
+		{
+			name:   "an empty body is untouched",
+			method: "POST", path: "/v1/chat/completions",
+			body: ``,
+			want: ``,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := []byte(tt.body)
+			got := openai.EnsurePassthroughStreamUsage(tt.method, tt.path, in)
+			if string(got) != tt.want {
+				t.Fatalf("body = %s, want %s", got, tt.want)
+			}
+			if string(in) != tt.body {
+				t.Fatalf("the caller's body was modified in place: %s", in)
+			}
+		})
+	}
+}
+
+// The request handed to a provider is reused across retries and fallbacks, so
+// the usage option is applied to a copy and the caller's request keeps its body.
+func TestWithPassthroughStreamUsage_LeavesCallerRequestUntouched(t *testing.T) {
+	original := `{"model":"gpt-4o","stream":true}`
+	req := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/v1/chat/completions", Body: []byte(original)}
+
+	upstream := openai.WithPassthroughStreamUsage(req)
+	if upstream == req {
+		t.Fatal("expected a copy of the request when the body changes")
+	}
+	if got, want := string(upstream.Body), `{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":true}}`; got != want {
+		t.Fatalf("upstream body = %s, want %s", got, want)
+	}
+	if string(req.Body) != original {
+		t.Fatalf("caller body changed: %s", req.Body)
+	}
+	if upstream.Method != req.Method || upstream.Path != req.Path {
+		t.Fatal("the copy must keep the request's other fields")
+	}
+
+	unchanged := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/v1/embeddings", Body: []byte(`{"input":"x"}`)}
+	if openai.WithPassthroughStreamUsage(unchanged) != unchanged {
+		t.Fatal("a request that needs no change must be returned as is")
+	}
+	streamed := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/v1/chat/completions", BodySource: schemas.NewBytesBodySource([]byte("x"))}
+	if openai.WithPassthroughStreamUsage(streamed) != streamed {
+		t.Fatal("a request with a streamed body source must be returned as is")
+	}
+}
+
+// BenchmarkEnsurePassthroughStreamUsage measures the body check a streamed passthrough
+// request goes through: the body that gets the option, and the bodies left as they are.
+func BenchmarkEnsurePassthroughStreamUsage(b *testing.B) {
+	messages := `"messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"` + strings.Repeat("hello world ", 200) + `"}]`
+	cases := map[string]struct{ path, body string }{
+		"streamed chat, option added":  {"/v1/chat/completions", `{"model":"gpt-4o","stream":true,` + messages + `}`},
+		"streamed chat, already asked": {"/v1/chat/completions", `{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":true},` + messages + `}`},
+		"non-streamed chat":            {"/v1/chat/completions", `{"model":"gpt-4o",` + messages + `}`},
+		"another route":                {"/v1/embeddings", `{"model":"text-embedding-3-small","input":"hello"}`},
+	}
+	for name, tc := range cases {
+		body := []byte(tc.body)
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(body)))
+			for b.Loop() {
+				_ = openai.EnsurePassthroughStreamUsage("POST", tc.path, body)
+			}
+		})
+	}
+}
