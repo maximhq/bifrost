@@ -2,6 +2,9 @@ import i18n from "@/lib/i18n";
 import { withBasePath } from "@/lib/utils/basePath";
 import type { Relay, RelayJobConfig, RelayRouteConfig, RelaySecret, RelayUsageConfig } from "@/lib/types/relays";
 import {
+	exactJSONNumbers,
+	isJSONText,
+	parseJSONExact,
 	type RelayFormValues,
 	type RelayUsageForm,
 	relayAuthSchema,
@@ -163,7 +166,43 @@ export function emptyRelayForm(): RelayFormValues {
 		routes: [],
 		skip_route_check: false,
 		ignore_upstream_cost: false,
+		body_overrides: [],
 	};
+}
+
+type BodyOverridePair = { name: string; value: string };
+
+/** Forced body fields as the form's path/JSON-text pairs. */
+// A whole number past 2^53 that this browser already rounded while reading (no JSON.rawJSON).
+function roundedNumber(value: unknown): boolean {
+	// Infinity too: a number past a double's range would be saved back as null.
+	if (typeof value === "number") return !Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value));
+	if (Array.isArray(value)) return value.some(roundedNumber);
+	if (value && typeof value === "object") return Object.values(value).some(roundedNumber);
+	return false;
+}
+
+/** Whether saving this relay from this browser would write back a rounded body override. */
+export function hasRoundedBodyOverride(relay: Relay, exact = exactJSONNumbers): boolean {
+	if (exact) return false;
+	return roundedNumber(relay.body_overrides) || (relay.routes ?? []).some((route) => roundedNumber(route.body_overrides));
+}
+
+export function toBodyOverridePairs(overrides: Record<string, unknown> | undefined): BodyOverridePair[] {
+	return Object.entries(overrides ?? {}).map(([name, value]) => ({ name, value: JSON.stringify(value) }));
+}
+
+/** The form's pairs as the API's map; blank rows are skipped, the schema has refused invalid ones. */
+export function toBodyOverrides(pairs: BodyOverridePair[] | undefined): Record<string, unknown> | undefined {
+	// No prototype, so a __proto__ path is stored as a key instead of hitting the inherited setter.
+	const out: Record<string, unknown> = Object.create(null);
+	for (const pair of pairs ?? []) {
+		const name = pair.name.trim();
+		if (!name || !isJSONText(pair.value)) continue;
+		// Exact: a big whole number keeps its digits on the way to the API.
+		out[name] = parseJSONExact(pair.value);
+	}
+	return Object.keys(out).length ? out : undefined;
 }
 
 /** Turns an endpoint read from the API (secrets redacted) into form values. */
@@ -205,9 +244,12 @@ export function toRelayForm(e: Relay): RelayFormValues {
 			stream: r.stream,
 			usage: r.usage ? { ...r.usage } : undefined,
 			job: r.job,
+			body_overrides: toBodyOverridePairs(r.body_overrides),
+			inherit_body_overrides: r.inherit_body_overrides,
 		})),
 		skip_route_check: e.skip_route_check ?? false,
 		ignore_upstream_cost: e.ignore_upstream_cost ?? false,
+		body_overrides: toBodyOverridePairs(e.body_overrides),
 	};
 }
 
@@ -325,6 +367,7 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 				// token mapping the gateway still reads on every call is sent.
 				const usage =
 					(r.billable ?? routeBillableByDefault(r.method)) ? cleanUsage(r.usage, true) : withoutPricing(cleanUsage(r.usage, true));
+				const bodyOverrides = toBodyOverrides(r.body_overrides);
 				return {
 					method: r.method,
 					path: r.path.trim(),
@@ -334,11 +377,14 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 					...(r.stream !== undefined ? { stream: r.stream } : {}),
 					...(usage ? { usage } : {}),
 					...(r.job ? { job: cleanJob(r.job) } : {}),
+					...(bodyOverrides ? { body_overrides: bodyOverrides } : {}),
+					...(r.inherit_body_overrides === false ? { inherit_body_overrides: false } : {}),
 				};
 			})
 			.sort(compareRoutes),
 		skip_route_check: v.skip_route_check || undefined,
 		ignore_upstream_cost: v.ignore_upstream_cost || undefined,
+		body_overrides: toBodyOverrides(v.body_overrides),
 	};
 }
 

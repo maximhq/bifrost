@@ -1,4 +1,4 @@
-import { HeadersTable } from "@/components/ui/headersTable";
+import { HeadersTable, rowOrder } from "@/components/ui/headersTable";
 import type { SecretVar } from "@/lib/types/mcp";
 import { useRef } from "react";
 import type { FieldError } from "react-hook-form";
@@ -9,10 +9,15 @@ type PairErrors = { name?: FieldError; value?: FieldError } | undefined;
 /**
  * The pairs the form gets from the table's headers: a row the table holds as a conflict (a duplicate
  * or a second cleared name) carries the name typed there, so the form's validation sees it and blocks
- * the save, instead of silently saving the row's previous name.
+ * the save, instead of silently saving the row's previous name. Pairs follow the table's row order,
+ * which the conflict indices count in.
  */
-export function pairsFromRecord<T>(record: Record<string, T>, conflicts: ReadonlyMap<number, string>): HeaderPair<T>[] {
-	return Object.entries(record).map(([name, value], i) => ({ name: conflicts.get(i) ?? name, value }));
+export function pairsFromRecord<T>(
+	record: Record<string, T>,
+	conflicts: ReadonlyMap<number, string>,
+	order: readonly string[] = [],
+): HeaderPair<T>[] {
+	return rowOrder(record, order).map((name, i) => ({ name: conflicts.get(i) ?? name, value: record[name] }));
 }
 
 /** The headers the table shows for the form's pairs: a held row keeps its last valid name. */
@@ -28,8 +33,9 @@ export function recordFromPairs<T>(pairs: HeaderPair<T>[], originals: ReadonlyMa
 export function heldConflicts<T>(
 	conflicts: ReadonlyMap<number, string>,
 	headers: Record<string, T>,
+	order: readonly string[] = [],
 ): { conflicts: Map<number, string>; originals: Map<number, string> } {
-	const names = Object.keys(headers);
+	const names = rowOrder(headers, order);
 	const held = new Map<number, string>();
 	const originals = new Map<number, string>();
 	conflicts.forEach((typed, i) => {
@@ -74,8 +80,8 @@ export function HeaderPairsTable<T extends string | SecretVar>({
 		originals.current = new Map();
 	}
 	const record = recordFromPairs(value, originals.current);
-	const emit = (next: Record<string, T>) => {
-		const pairs = pairsFromRecord(next, conflicts.current);
+	const emit = (next: Record<string, T>, order: readonly string[]) => {
+		const pairs = pairsFromRecord(next, conflicts.current, order);
 		emitted.current = JSON.stringify(pairs);
 		onChange(pairs);
 	};
@@ -89,11 +95,11 @@ export function HeaderPairsTable<T extends string | SecretVar>({
 				label=""
 				value={record}
 				onChange={emit}
-				onConflictsChange={(next, headers) => {
-					const held = heldConflicts(next, headers);
+				onConflictsChange={(next, headers, order) => {
+					const held = heldConflicts(next, headers, order);
 					conflicts.current = held.conflicts;
 					originals.current = held.originals;
-					emit(headers);
+					emit(headers, order);
 				}}
 				keyPlaceholder={keyPlaceholder}
 				valuePlaceholder={valuePlaceholder}
