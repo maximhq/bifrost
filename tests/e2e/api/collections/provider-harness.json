@@ -351606,11 +351606,11 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Per-run name, so two runs against one gateway never contend, and the sweep below can",
-                  "// reap anything an interrupted run left behind by its prefix.",
+                  "// Per-run name, also sent as the client_id, so the cleanup deletes this run's client by id however",
+                  "// many clients the gateway lists, and the sweep below can reap what an interrupted run left behind.",
                   "pm.collectionVariables.set('codeModeVfsClient', 'harness_codemode_vfs_' + Date.now());",
-                  "pm.collectionVariables.set('codeModeVfsQueue', '[]');",
-                  "pm.collectionVariables.set('codeModeVfsSweeps', '0');"
+                  "pm.collectionVariables.set('codeModeVfsClientId', '');",
+                  "pm.collectionVariables.set('codeModeVfsDeleteAttempts', '0');"
                 ]
               }
             },
@@ -351622,7 +351622,10 @@
                   "pm.test('code-mode client registers against the SSE fixture', function () {",
                   "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
                   "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
-                  "});"
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('codeModeVfsClientId', pm.collectionVariables.get('codeModeVfsClient'));",
+                  "}"
                 ]
               }
             }
@@ -351637,7 +351640,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"{{codeModeVfsClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\"\n  ]\n}"
+              "raw": "{\n  \"client_id\": \"{{codeModeVfsClient}}\",\n  \"name\": \"{{codeModeVfsClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\"\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/mcp/client",
@@ -351791,7 +351794,53 @@
           }
         },
         {
-          "name": "[EXPECT-200] openai code-mode-vfs queue this run's client, plus any stale leftovers",
+          "name": "[EXPECT-200] openai code-mode-vfs getToolDocs reads stub paths for the server and the tool",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stub paths resolve to the echo docs', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var client = pm.collectionVariables.get('codeModeVfsClient');",
+                  "  pm.expect(pm.response.json().is_error, 'getToolDocs errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var docs = String(pm.response.json().content || '');",
+                  "  pm.expect(docs, 'not the echo tool docs:\\n' + docs).to.include('# Documentation for ' + client + '.echo tool');",
+                  "  pm.expect(docs, 'docs have no echo signature:\\n' + docs).to.include('def echo(');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-vfs\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"getToolDocs\",\n    \"arguments\": \"{\\\"server\\\":\\\"servers/{{codeModeVfsClient}}.pyi\\\",\\\"tool\\\":\\\"servers/{{codeModeVfsClient}}/echo.pyi\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-vfs sweep stale code-mode leftovers",
           "event": [
             {
               "listen": "test",
@@ -351803,21 +351852,32 @@
                   "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
                   "// Anything younger than this belongs to a run that may still be executing: never touch it.",
                   "var STALE_MS = 3600000;",
-                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "var stale = [];",
+                  "pm.test('the code-mode leftovers are listed', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "  var clients = pm.response.json().clients || [];",
-                  "  var mine = null, stale = [];",
                   "  for (var i = 0; i < clients.length; i++) {",
                   "    var cfg = clients[i].config;",
-                  "    if (!cfg || !cfg.name || cfg.name.indexOf(PREFIX) !== 0) { continue; }",
-                  "    if (cfg.name === client) { mine = cfg.client_id; continue; }",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf(PREFIX) !== 0 || cfg.name === client) { continue; }",
                   "    var stamp = parseInt(cfg.name.substring(PREFIX.length), 10);",
                   "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
                   "  }",
-                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
-                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
-                  "  pm.collectionVariables.set('codeModeVfsQueue', JSON.stringify([mine].concat(stale)));",
-                  "});"
+                  "});",
+                  "",
+                  "// Each stale leftover gets one DELETE, however many there are. A 404 means a parallel run removed",
+                  "// it first, which leaves the same state. A leftover that fails here, or that a page past the",
+                  "// first hundred holds, is swept by the next run.",
+                  "(function sweep() {",
+                  "  if (!stale.length) { return; }",
+                  "  var id = stale.shift();",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(id), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('stale code-mode client ' + id + ' is gone', function () {",
+                  "      pm.expect(err, 'delete failed: ' + err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.oneOf([200, 404]);",
+                  "    });",
+                  "    sweep();",
+                  "  });",
+                  "})();"
                 ]
               }
             }
@@ -351826,7 +351886,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/mcp/clients",
+              "raw": "{{baseUrl}}/api/mcp/clients?search=harness_codemode_vfs_&limit=100",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -351834,22 +351894,30 @@
                 "api",
                 "mcp",
                 "clients"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "harness_codemode_vfs_"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
               ]
             }
           }
         },
         {
-          "name": "[EXPECT-200] openai code-mode-vfs remove every queued code-mode client",
+          "name": "[EXPECT-200] openai code-mode-vfs remove this run's code-mode client",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeVfsQueue') || '[]');",
-                  "// An empty queue means the listing above already failed: skip, rather than add a second failure.",
-                  "if (!queue.length) { pm.execution.skipRequest(); return; }",
-                  "pm.collectionVariables.set('codeModeVfsClientId', queue[0]);"
+                  "// No id means the create above already failed: skip, rather than add a second failure.",
+                  "if (!pm.collectionVariables.get('codeModeVfsClientId')) { pm.execution.skipRequest(); }"
                 ]
               }
             },
@@ -351858,28 +351926,16 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "// Only this run created this client, so the delete must remove it: 404 is a failure here.",
+                  "pm.test('cleanup removes this run\\'s code-mode client', function () {",
                   "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "",
-                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeVfsQueue') || '[]');",
-                  "// Only a removed client leaves the queue: a failed delete stays queued for the next pass.",
-                  "if (pm.response.code === 200) {",
-                  "  queue.shift();",
-                  "  pm.collectionVariables.set('codeModeVfsQueue', JSON.stringify(queue));",
-                  "}",
-                  "",
-                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
-                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeVfsSweeps') || '0', 10) + 1;",
-                  "pm.collectionVariables.set('codeModeVfsSweeps', String(sweeps));",
-                  "",
-                  "if (queue.length > 0 && sweeps < 10) {",
+                  "// Bounded self-repeat (the collection's existing idiom): a failed delete is retried, at most three attempts.",
+                  "var attempts = parseInt(pm.collectionVariables.get('codeModeVfsDeleteAttempts') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeVfsDeleteAttempts', String(attempts));",
+                  "if (pm.response.code !== 200 && attempts < 3) {",
                   "  postman.setNextRequest(pm.info.requestName);",
-                  "} else {",
-                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
-                  "  pm.test('the sweep drained every queued client', function () {",
-                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
-                  "  });",
                   "}"
                 ]
               }
