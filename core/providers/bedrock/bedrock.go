@@ -3,10 +3,8 @@ package bedrock
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,15 +19,12 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	openai "github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/providers/utils/awsauth"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -49,11 +44,6 @@ type BedrockProvider struct {
 	sendBackRawRequest    bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse   bool                          // Whether to include raw response in BifrostResponse
 }
-
-// assumeRoleCredsCache caches *aws.CredentialsCache instances keyed by the
-// unique combination of role parameters so that STS AssumeRole is not called
-// on every request.
-var assumeRoleCredsCache sync.Map
 
 // bedrockChatResponsePool provides a pool for Bedrock response objects.
 var bedrockChatResponsePool = sync.Pool{
@@ -633,57 +623,6 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	return resp, nil
 }
 
-// Returns a BifrostError if signing fails.
-// unsignableHeaders must not be covered by the SigV4 signature: hop-by-hop and
-// proxy-managed headers that an intermediary may rewrite in transit, which invalidates the
-// signature. AWS's signing guide requires only host and x-amz-* to be signed and warns
-// against "volatile transport headers that are mutated by proxies, load balancers, and the
-// nodes in a distributed system". The AWS SDK itself skips only authorization, user-agent,
-// x-amzn-trace-id, expect and transfer-encoding, so the rest is on us. These are removed for
-// signing and restored afterwards, so what goes on the wire is unchanged.
-var unsignableHeaders = map[string]struct{}{
-	"connection":          {},
-	"keep-alive":          {},
-	"te":                  {},
-	"trailer":             {},
-	"upgrade":             {},
-	"proxy-authorization": {},
-	"proxy-authenticate":  {},
-	"x-real-ip":           {},
-	"x-request-id":        {},
-}
-
-// internalHeaderPrefix marks Bifrost's own headers. They carry the caller's virtual key, so
-// they are dropped outright rather than restored — they must never reach a provider.
-const internalHeaderPrefix = "x-bf-"
-
-// restoredHeader is a header lifted off the request for signing, to be put back after.
-type restoredHeader struct {
-	name   string
-	values []string
-}
-
-// stripHeadersForSigning removes headers that must not be signed and returns the ones to put
-// back after signing. Bifrost-internal headers are dropped and never returned. A request with
-// no volatile headers — the common case — allocates nothing and leaves the request untouched.
-func stripHeadersForSigning(header http.Header) []restoredHeader {
-	var restore []restoredHeader
-	for name, values := range header {
-		lower := strings.ToLower(name)
-		internal := strings.HasPrefix(lower, internalHeaderPrefix)
-		_, volatile := unsignableHeaders[lower]
-		if !internal && !volatile && !strings.HasPrefix(lower, "x-forwarded-") {
-			continue
-		}
-		if !internal {
-			restore = append(restore, restoredHeader{name: name, values: values})
-		}
-		// The name came straight off the map, so skip Del's redundant canonicalization.
-		delete(header, name)
-	}
-	return restore
-}
-
 // SignAWSRequest SigV4-signs req for service in region with the key's AWS credentials (static,
 // assumed role, or the default chain when the key holds none). Other providers that relay to AWS
 // APIs (relays) sign through it so the credential handling lives in one place.
@@ -734,35 +673,9 @@ func signAWSRequestWithDefaults(
 		}
 	}
 
-	// Calculate SHA256 hash of the request body
-	var bodyHash string
-	if req.Body != nil && req.GetBody != nil {
-		// A body that can be re-read (every request built from a byte slice) is hashed as a stream
-		// and then rewound, so signing a large upload never holds a second copy of it.
-		h := sha256.New()
-		if _, err := io.Copy(h, req.Body); err != nil {
-			return providerUtils.NewBifrostOperationError("error reading request body", err)
-		}
-		body, err := req.GetBody()
-		if err != nil {
-			return providerUtils.NewBifrostOperationError("error rewinding request body", err)
-		}
-		req.Body = body
-		bodyHash = hex.EncodeToString(h.Sum(nil))
-	} else if req.Body != nil {
-		bodyBytes, err := io.ReadAll(req.Body)
-		if err != nil {
-			return providerUtils.NewBifrostOperationError("error reading request body", err)
-		}
-		// Restore the body for subsequent reads
-		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-		hash := sha256.Sum256(bodyBytes)
-		bodyHash = hex.EncodeToString(hash[:])
-	} else {
-		// For empty body, use the hash of an empty string
-		hash := sha256.Sum256([]byte{})
-		bodyHash = hex.EncodeToString(hash[:])
+	bodyHash, err := awsauth.HashBody(req)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("error reading request body", err)
 	}
 
 	// Set x-amz-content-sha256 header (required for S3, harmless for other AWS services)
@@ -776,117 +689,21 @@ func signAWSRequestWithDefaults(
 	return signWithCredentials(ctx, req, creds, bodyHash, service, region)
 }
 
-// signWithCredentials signs req with SigV4 using already resolved credentials. The SDK signs
-// every header still on the request, so the volatile ones are lifted out while it signs.
+// signWithCredentials signs req with SigV4 using already resolved credentials.
 func signWithCredentials(ctx context.Context, req *http.Request, creds aws.Credentials, payloadHash, service, region string) *schemas.BifrostError {
-	restoreHeaders := stripHeadersForSigning(req.Header)
-	// S3 rejects a path escaped a second time (an object key holding %20 would be signed as
-	// %2520), so the SDK's own S3 client turns the extra escaping off; a relay signing for s3 does
-	// the same, and every other service keeps the default.
-	signer := v4.NewSigner(func(o *v4.SignerOptions) {
-		o.DisableURIPathEscaping = service == "s3"
-	})
-	err := signer.SignHTTP(ctx, creds, req, payloadHash, service, region, time.Now())
-	for _, h := range restoreHeaders {
-		req.Header[h.name] = h.values
-	}
-	if err != nil {
+	if err := awsauth.Sign(ctx, req, creds, payloadHash, service, region); err != nil {
 		return providerUtils.NewBifrostOperationError("failed to sign request", err)
 	}
 	return nil
 }
 
 // ResolveAWSCredentials resolves the AWS credentials for keyCfg: explicit keys, else the default
-// chain, with an optional STS AssumeRole on top (cached per role and source identity).
+// chain, with an optional STS AssumeRole on top. Providers are cached per source and role, so a
+// warm call fetches nothing.
 func ResolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockKeyConfig, region string) (aws.Credentials, *schemas.BifrostError) {
-	var accessKey, secretKey schemas.SecretVar
-	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
-
-	if keyCfg != nil {
-		accessKey = keyCfg.AccessKey
-		secretKey = keyCfg.SecretKey
-		sessionToken = keyCfg.SessionToken
-		roleARN = keyCfg.RoleARN
-		externalID = keyCfg.ExternalID
-		sessionName = keyCfg.RoleSessionName
-	}
-
-	var cfg aws.Config
-	var err error
-
-	// If both accessKey and secretKey are empty, use the default credential provider chain
-	// This will automatically use IAM roles, environment variables, shared credentials, etc.
-	if accessKey.GetValue() == "" && secretKey.GetValue() == "" {
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-		)
-	} else {
-		// Use explicit credentials when provided
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-			config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
-				creds := aws.Credentials{
-					AccessKeyID:     accessKey.GetValue(),
-					SecretAccessKey: secretKey.GetValue(),
-				}
-				if sessionToken != nil && sessionToken.GetValue() != "" {
-					creds.SessionToken = sessionToken.GetValue()
-				}
-				return creds, nil
-			})),
-		)
-	}
+	provider, err := awsauth.CredentialsProvider(ctx, awsAuthConfig(keyCfg), region)
 	if err != nil {
 		return aws.Credentials{}, providerUtils.NewBifrostOperationError("failed to load aws config", err)
-	}
-
-	if roleARN != nil && roleARN.GetValue() != "" {
-		extID := ""
-		if externalID != nil {
-			extID = externalID.GetValue()
-		}
-		sessName := "bifrost-session"
-		if sessionName != nil && sessionName.GetValue() != "" {
-			sessName = sessionName.GetValue()
-		}
-		sourceIdentity := "default_chain"
-		if accessKey.GetValue() != "" || secretKey.GetValue() != "" {
-			sourceIdentity = accessKey.GetValue()
-			if sessionToken != nil && sessionToken.GetValue() != "" {
-				tokenHash := sha256.Sum256([]byte(sessionToken.GetValue()))
-				sourceIdentity = sourceIdentity + "|" + hex.EncodeToString(tokenHash[:8])
-			}
-		}
-		cacheKey := strings.Join([]string{
-			region,
-			roleARN.GetValue(),
-			extID,
-			sessName,
-			sourceIdentity,
-		}, "|")
-
-		if cached, ok := assumeRoleCredsCache.Load(cacheKey); ok {
-			cfg.Credentials = cached.(*aws.CredentialsCache)
-		} else {
-			stsClient := sts.NewFromConfig(cfg)
-
-			opts := func(o *stscreds.AssumeRoleOptions) {
-				if extID != "" {
-					o.ExternalID = aws.String(extID)
-				}
-				o.RoleSessionName = sessName
-			}
-
-			credsCache := aws.NewCredentialsCache(
-				stscreds.NewAssumeRoleProvider(
-					stsClient,
-					roleARN.GetValue(),
-					opts,
-				),
-			)
-			actual, _ := assumeRoleCredsCache.LoadOrStore(cacheKey, credsCache)
-			cfg.Credentials = actual.(*aws.CredentialsCache)
-		}
 	}
 
 	// Get credentials. Nested "credentials-fetch" span: on a cache miss this triggers a
@@ -894,7 +711,7 @@ func ResolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockK
 	// chain's IMDS/env/STS lookup), which is the dominant cost on an idle box whose
 	// credential cache has expired between sparse requests.
 	credT, credH := providerUtils.StartPhaseSpan(ctx, "credentials-fetch")
-	creds, err := cfg.Credentials.Retrieve(ctx)
+	creds, err := provider.Retrieve(ctx)
 	if credT != nil {
 		if err != nil {
 			credT.EndSpan(credH, schemas.SpanStatusError, "credential retrieval failed")
@@ -906,6 +723,27 @@ func ResolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockK
 		return aws.Credentials{}, providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
 	}
 	return creds, nil
+}
+
+// awsAuthConfig maps a Bedrock key's AWS credential fields onto awsauth.Config.
+func awsAuthConfig(keyCfg *schemas.BedrockKeyConfig) awsauth.Config {
+	if keyCfg == nil {
+		return awsauth.Config{}
+	}
+	value := func(v *schemas.SecretVar) string {
+		if v == nil {
+			return ""
+		}
+		return v.GetValue()
+	}
+	return awsauth.Config{
+		AccessKey:    keyCfg.AccessKey.GetValue(),
+		SecretKey:    keyCfg.SecretKey.GetValue(),
+		SessionToken: value(keyCfg.SessionToken),
+		RoleARN:      value(keyCfg.RoleARN),
+		ExternalID:   value(keyCfg.ExternalID),
+		SessionName:  value(keyCfg.RoleSessionName),
+	}
 }
 
 // listModelsByKey performs a list models request to Bedrock's API for a single key.
