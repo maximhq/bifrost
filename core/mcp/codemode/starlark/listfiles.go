@@ -125,9 +125,10 @@ func (s *StarlarkCodeMode) handleCompleteToolFiles(ctx context.Context, toolCall
 			files = append(files, fmt.Sprintf("servers/%s.pyi", clientName))
 		} else {
 			// Tool-level: one file per tool
+			names := callableChatToolNames(clientName, tools)
 			for _, tool := range tools {
 				if tool.Function != nil && tool.Function.Name != "" {
-					toolName := getCanonicalToolName(clientName, tool.Function.Name)
+					toolName := names[tool.Function.Name]
 					if err := validateNormalizedToolName(toolName); err != nil {
 						s.logger.Warn("%s Skipping tool '%s' from client '%s': %v", codemcp.CodeModeLogPrefix, tool.Function.Name, clientName, err)
 						continue

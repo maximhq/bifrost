@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -107,11 +108,18 @@ func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code stri
 	calls := 0
 	for client, tools := range bindings {
 		members := starlark.StringDict{}
-		for _, tool := range tools {
+		// Each tool is bound under its own callable name first, so a
+		// compatibility alias never takes the name of another tool. Raw-name
+		// order picks between tools that share an alias.
+		names := callableToolNames(client, tools)
+		aliases := map[string]*starlark.Builtin{}
+		ordered := slices.Clone(tools)
+		slices.Sort(ordered)
+		for _, tool := range ordered {
 			if err := thread.AddAllocs(starlark.SafeInt(512 + len(client) + 3*len(tool))); err != nil {
 				return sandboxFailure(err.Error())
 			}
-			name := getCanonicalToolName(client, tool)
+			name := names[tool]
 			fn := starlark.NewBuiltinWithSafety(name, starlark.CPUSafe|starlark.MemSafe|starlark.TimeSafe,
 				func(thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 					calls++
@@ -151,10 +159,13 @@ func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code stri
 				})
 			members[name] = fn
 			alias := getCompatibilityToolAlias(client, tool)
-			if alias != name && isValidStarlarkIdentifier(alias) {
-				if _, exists := members[alias]; !exists {
-					members[alias] = fn
-				}
+			if _, exists := aliases[alias]; !exists && alias != name && isValidStarlarkIdentifier(alias) {
+				aliases[alias] = fn
+			}
+		}
+		for alias, fn := range aliases {
+			if _, exists := members[alias]; !exists {
+				members[alias] = fn
 			}
 		}
 		predeclared[client] = starlarkstruct.FromStringDict(starlark.String(client), members)

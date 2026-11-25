@@ -96,11 +96,8 @@ type discoveryRankResponse struct {
 }
 
 // discoveryTool is one visible tool with its lexical score. path is the
-// tool's .pyi file at tool binding. Two raw names can come to one canonical
-// name and so one file; such tools are listed under their raw-name file
-// instead, which readToolFile resolves to that exact tool. candidate.ID is the
-// canonical file, and the ranker contract needs one id per candidate, so later
-// tools sharing it get a "#N" suffix.
+// tool's .pyi file at tool binding, named by its callable name, which is
+// unique per server (see callableToolNames); candidate.ID is that path.
 type discoveryTool struct {
 	candidate discoveryCandidate
 	path      string
@@ -149,7 +146,6 @@ func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context, bindingLevel 
 	toolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 	type entry struct {
 		tool       discoveryTool
-		rawName    string
 		definition []byte
 	}
 	entries := make([]entry, 0)
@@ -158,11 +154,12 @@ func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context, bindingLevel 
 		if client == nil || client.ExecutionConfig == nil || !client.ExecutionConfig.CodeModeFor(ctx) {
 			continue
 		}
+		names := callableChatToolNames(clientName, tools)
 		for _, tool := range tools {
 			if tool.Function == nil || tool.Function.Name == "" {
 				continue
 			}
-			name := getCanonicalToolName(clientName, tool.Function.Name)
+			name := names[tool.Function.Name]
 			if validateNormalizedToolName(name) != nil {
 				continue
 			}
@@ -187,49 +184,19 @@ func (s *StarlarkCodeMode) discoveryCatalogue(ctx context.Context, bindingLevel 
 			path := fmt.Sprintf("servers/%s/%s.pyi", clientName, name)
 			entries = append(entries, entry{
 				tool: discoveryTool{path: path, candidate: discoveryCandidate{
+					ID:          path,
 					Server:      clientName,
 					Name:        name,
 					Description: description,
 					Parameters:  parameters,
 				}},
-				rawName:    tool.Function.Name,
 				definition: definition,
 			})
 		}
 	}
-	// The raw name breaks ties between tools that share a file, so ids and the
-	// revision do not depend on the order the tools were listed in.
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].tool.path != entries[j].tool.path {
-			return entries[i].tool.path < entries[j].tool.path
-		}
-		return entries[i].rawName < entries[j].rawName
-	})
-	// A real path ends in ".pyi" and a canonical name has no '#', so a
-	// suffixed id cannot collide with another tool's path.
-	shared := 0
-	for i := range entries {
-		if i > 0 && entries[i-1].tool.path == entries[i].tool.path {
-			shared++
-		} else {
-			shared = 0
-		}
-		entries[i].tool.candidate.ID = entries[i].tool.path
-		if shared > 0 {
-			entries[i].tool.candidate.ID = fmt.Sprintf("%s#%d", entries[i].tool.path, shared+1)
-		}
-	}
-	// The canonical file of colliding tools resolves to whichever is listed
-	// first, so each is shown under its raw-name file. IDs are already set.
-	for i := range entries {
-		e := &entries[i]
-		id := e.tool.candidate.ID
-		collides := strings.Contains(id, "#") ||
-			(i+1 < len(entries) && strings.HasPrefix(entries[i+1].tool.candidate.ID, id+"#"))
-		if raw := stripClientPrefix(e.rawName, e.tool.candidate.Server); collides && validateNormalizedToolName(raw) == nil {
-			e.tool.path = fmt.Sprintf("servers/%s/%s.pyi", e.tool.candidate.Server, raw)
-		}
-	}
+	// Callable names are unique per server and do not depend on the order the
+	// tools were listed in, so neither do the ids or the revision.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].tool.path < entries[j].tool.path })
 
 	hash := sha256.New()
 	hash.Write([]byte(bindingLevel))
@@ -438,12 +405,16 @@ func (s *StarlarkCodeMode) handleRankedToolFiles(ctx context.Context, toolCall s
 		return s.handleCompleteToolFiles(ctx, toolCall)
 	}
 
-	// A query that is exactly a tool reference needs no ranking.
-	for _, item := range catalogue {
-		c := item.candidate
-		if strings.EqualFold(query, item.path) || strings.EqualFold(query, c.Server+"."+c.Name) {
-			return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, bindingLevel, []discoveryTool{item}, nil, limit,
-				fmt.Sprintf("# Exact match for this query: 1 of %d tools visible to this caller.", len(catalogue))), false), nil
+	// A query that is exactly a tool reference needs no ranking. A reference
+	// that matches one tool exactly wins over one matching another tool only
+	// when case is ignored.
+	for _, equal := range []func(a, b string) bool{func(a, b string) bool { return a == b }, strings.EqualFold} {
+		for _, item := range catalogue {
+			c := item.candidate
+			if equal(query, item.path) || equal(query, c.Server+"."+c.Name) {
+				return createToolResponseMessage(toolCall, s.discoveryShortlist(ctx, bindingLevel, []discoveryTool{item}, nil, limit,
+					fmt.Sprintf("# Exact match for this query: 1 of %d tools visible to this caller.", len(catalogue))), false), nil
+			}
 		}
 	}
 

@@ -29,6 +29,7 @@
 - fix: vertex - Claude request bodies always end with `tools`, `system`, `messages` so prompt cache reads hit
 - fix: anthropic - streamed usage counts each cached prompt token once on chat, Responses and passthrough streams (thanks [@is911](https://github.com/is911) and [@wangkanai](https://github.com/wangkanai)!)
 - fix: prompt cache auto-injection checks an alias's canonical model (thanks [@bardrop](https://github.com/bardrop)!)
+- fix: code mode - two tool names on one server that normalize to one identifier get distinct callable names, so each listed file, stub, `getToolDocs` name and `executeToolCode` call reaches its own tool (thanks [@Xytronix](https://github.com/Xytronix)!)
 - fix: `prompt_cache_options` reaches only models that accept it
 - fix: anthropic - a deferred web search is replayed without a made-up `web_search_tool_result`, and its late result stays in place on replay, Responses and streams
 - fix: anthropic - history with MCP or server-tool blocks no longer sends a roleless message to OpenAI-compatible providers; Responses items with no chat equivalent are dropped on the Responses-to-Chat fallback (thanks [@1AbdullahButt](https://github.com/1AbdullahButt)!)
