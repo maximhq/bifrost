@@ -3438,14 +3438,18 @@ func applyCodeModeDiscoveryRanker(mcpCfg, fileCfg *schemas.MCPConfig) {
 }
 
 // resolveCodeModeDiscoveryRanker merges the file setting with its environment
-// overrides. It returns nil when no URL is set or the result is invalid.
+// overrides. A URL from the environment replaces the file's URL and token
+// file; a token file from the environment applies last. It returns nil when no
+// URL is set or the result is invalid.
 func resolveCodeModeDiscoveryRanker(fileCfg *schemas.MCPConfig) *schemas.MCPCodeModeDiscoveryRanker {
 	var ranker schemas.MCPCodeModeDiscoveryRanker
 	if fileCfg != nil && fileCfg.ToolManagerConfig != nil && fileCfg.ToolManagerConfig.CodeModeDiscoveryRanker != nil {
 		ranker = *fileCfg.ToolManagerConfig.CodeModeDiscoveryRanker
 	}
 	if value := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerURL)); value != "" {
-		ranker.URL = value
+		// A new endpoint must not receive the file endpoint's bearer token; an
+		// explicit token-file variable below still applies to it.
+		ranker.URL, ranker.TokenFile = value, ""
 	}
 	if value := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerTokenFile)); value != "" {
 		ranker.TokenFile = value

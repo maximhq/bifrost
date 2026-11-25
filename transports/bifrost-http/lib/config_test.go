@@ -28671,6 +28671,28 @@ func TestApplyCodeModeDiscoveryRanker(t *testing.T) {
 		}
 	})
 
+	// The file's token belongs to the file's endpoint: an environment URL that
+	// replaces it must not carry that token to the new endpoint, while an
+	// explicit token-file variable still applies.
+	t.Run("environment url drops the file token file", func(t *testing.T) {
+		t.Setenv(envCodeModeDiscoveryRankerURL, "https://other-ranker.example/rank")
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "")
+		mcpCfg := &schemas.MCPConfig{}
+		applyCodeModeDiscoveryRanker(mcpCfg, fileWith(&schemas.MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TokenFile: "/run/secrets/ranker", TimeoutSeconds: 4}))
+		got := mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker
+		if got == nil || got.URL != "https://other-ranker.example/rank" || got.TokenFile != "" || got.TimeoutSeconds != 4 {
+			t.Fatalf("unexpected ranker %+v", got)
+		}
+
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "/run/secrets/other-ranker")
+		mcpCfg = &schemas.MCPConfig{}
+		applyCodeModeDiscoveryRanker(mcpCfg, fileWith(&schemas.MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TokenFile: "/run/secrets/ranker"}))
+		got = mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker
+		if got == nil || got.URL != "https://other-ranker.example/rank" || got.TokenFile != "/run/secrets/other-ranker" {
+			t.Fatalf("unexpected ranker with an explicit token file %+v", got)
+		}
+	})
+
 	t.Run("invalid settings are dropped", func(t *testing.T) {
 		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "")
 		for _, ranker := range []schemas.MCPCodeModeDiscoveryRanker{
