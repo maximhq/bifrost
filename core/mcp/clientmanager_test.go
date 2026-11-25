@@ -825,6 +825,97 @@ func TestBuildTLSHTTPClientAllowsLoopback(t *testing.T) {
 	}
 }
 
+// TestBuildTLSHTTPClientRedirectsStayOnRegisteredOrigin covers the client's
+// redirect policy. A redirect within the origin the client was registered for
+// is followed, and the configured headers travel with it. A redirect to any
+// other origin is not followed: the 3xx response is handed back to the caller,
+// so the headers configured for the registered server are never sent elsewhere.
+// A plain http to https upgrade on the same host is the one cross-origin hop
+// that is followed.
+func TestBuildTLSHTTPClientRedirectsStayOnRegisteredOrigin(t *testing.T) {
+	var otherHits atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		otherHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer other.Close()
+
+	var finalKey atomic.Value
+	registered := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/same":
+			http.Redirect(w, r, "/final", http.StatusTemporaryRedirect)
+		case "/cross":
+			http.Redirect(w, r, other.URL+"/landing", http.StatusTemporaryRedirect)
+		case "/final":
+			finalKey.Store(r.Header.Get("X-Api-Key"))
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer registered.Close()
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
+	require.NoError(t, err)
+
+	do := func(path string) *http.Response {
+		req, err := http.NewRequest(http.MethodPost, registered.URL+path, strings.NewReader("{}"))
+		require.NoError(t, err)
+		req.Header.Set("X-Api-Key", "configured-value")
+		resp, err := httpClient.Do(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = resp.Body.Close() })
+		return resp
+	}
+
+	t.Run("same origin is followed", func(t *testing.T) {
+		resp := do("/same")
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "configured-value", finalKey.Load())
+	})
+
+	t.Run("another origin is not followed", func(t *testing.T) {
+		resp := do("/cross")
+		assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
+		assert.Zero(t, otherHits.Load())
+	})
+
+	t.Run("policy", func(t *testing.T) {
+		mustReq := func(raw string) *http.Request {
+			u, err := url.Parse(raw)
+			require.NoError(t, err)
+			return &http.Request{URL: u}
+		}
+		first := mustReq("http://mcp.example.com/mcp")
+		assert.NoError(t, mcpCheckRedirect(mustReq("http://mcp.example.com/mcp/"), []*http.Request{first}))
+		assert.NoError(t, mcpCheckRedirect(mustReq("https://mcp.example.com/mcp"), []*http.Request{first}))
+		assert.ErrorIs(t, mcpCheckRedirect(mustReq("http://mcp.example.com:8080/mcp"), []*http.Request{first}), http.ErrUseLastResponse)
+		assert.ErrorIs(t, mcpCheckRedirect(mustReq("https://other.example.com/mcp"), []*http.Request{first}), http.ErrUseLastResponse)
+		assert.ErrorIs(t, mcpCheckRedirect(mustReq("http://mcp.example.com/mcp"), []*http.Request{mustReq("https://mcp.example.com/mcp")}), http.ErrUseLastResponse)
+		// An omitted port is the scheme's default, so naming it changes nothing.
+		explicit := mustReq("https://mcp.example.com:443/mcp")
+		assert.NoError(t, mcpCheckRedirect(mustReq("https://mcp.example.com/mcp/"), []*http.Request{explicit}))
+		assert.NoError(t, mcpCheckRedirect(mustReq("https://MCP.example.com:443/mcp/"), []*http.Request{mustReq("https://mcp.example.com/mcp")}))
+		assert.NoError(t, mcpCheckRedirect(mustReq("https://mcp.example.com:443/mcp"), []*http.Request{mustReq("http://mcp.example.com:80/mcp")}))
+		assert.ErrorIs(t, mcpCheckRedirect(mustReq("https://mcp.example.com:8443/mcp"), []*http.Request{first}), http.ErrUseLastResponse)
+		assert.ErrorIs(t, mcpCheckRedirect(mustReq("https://mcp.example.com/mcp"), []*http.Request{mustReq("http://mcp.example.com:8080/mcp")}), http.ErrUseLastResponse)
+		// Hostnames match by their ASCII form only: letters that merely fold together are different hosts.
+		assert.ErrorIs(t, mcpCheckRedirect(mustReq("https://σ.example.com/mcp"), []*http.Request{mustReq("https://ς.example.com/mcp")}), http.ErrUseLastResponse)
+
+		// via holds one entry per request already made, so the Nth redirect arrives with N entries.
+		hops := func(n int) []*http.Request {
+			via := make([]*http.Request, n)
+			for i := range via {
+				via[i] = first
+			}
+			return via
+		}
+		assert.NoError(t, mcpCheckRedirect(mustReq("http://mcp.example.com/again"), hops(mcpMaxRedirects)), "the fifth redirect is followed")
+		assert.ErrorIs(t, mcpCheckRedirect(mustReq("http://mcp.example.com/again"), hops(mcpMaxRedirects+1)), http.ErrUseLastResponse, "the sixth is not")
+	})
+}
+
 // TestBuildTLSHTTPClientRoutesThroughConfiguredProxy proves the client honors
 // the transport's proxy selector for a permitted destination, which is what a
 // deployment with no direct egress depends on: the request must reach the
@@ -2609,4 +2700,29 @@ func TestAddClientRefusesTheInternalClientName(t *testing.T) {
 	_, added := m.clientMap["user-client"]
 	m.mu.RUnlock()
 	assert.False(t, added, "the refused client is not added")
+}
+
+// BenchmarkMCPCheckRedirect measures the redirect policy. It runs once per redirect an
+// MCP server answers with, never on a request that is not redirected.
+func BenchmarkMCPCheckRedirect(b *testing.B) {
+	parse := func(raw string) *http.Request {
+		u, err := url.Parse(raw)
+		if err != nil {
+			b.Fatal(err)
+		}
+		return &http.Request{URL: u}
+	}
+	via := []*http.Request{parse("https://mcp.example.com/mcp")}
+	cases := map[string]*http.Request{
+		"same origin":    parse("https://mcp.example.com:443/mcp/"),
+		"another origin": parse("https://other.example.com/mcp"),
+	}
+	for name, next := range cases {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = mcpCheckRedirect(next, via)
+			}
+		})
+	}
 }

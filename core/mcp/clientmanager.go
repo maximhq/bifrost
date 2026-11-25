@@ -3806,7 +3806,10 @@ func (m *MCPManager) buildTLSHTTPClientWithProxyAndResolver(config *schemas.MCPC
 	// and on the direct path (no proxy configured, or a NO_PROXY match) the
 	// dialer sees the real target.
 	if !config.RequirePublicTarget {
-		return &http.Client{Transport: newTransport(mcpProxySelector(proxy, false, resolver), network.PrivateNetworkDialContext(mcpDialTimeout))}, nil
+		return &http.Client{
+			Transport:     newTransport(mcpProxySelector(proxy, false, resolver), network.PrivateNetworkDialContext(mcpDialTimeout)),
+			CheckRedirect: mcpCheckRedirect,
+		}, nil
 	}
 	// A RequirePublicTarget client needs two dial policies: the strict one for
 	// its destinations and the private-network one for the proxy itself, which
@@ -3815,11 +3818,90 @@ func (m *MCPManager) buildTLSHTTPClientWithProxyAndResolver(config *schemas.MCPC
 	// is selected for it, on two separate transports, so a direct request can
 	// never inherit the proxy policy because its destination happens to be an
 	// address a proxied request used before.
-	return &http.Client{Transport: &network.ProxyAwareTransport{
-		Proxy:    proxy,
-		Direct:   newTransport(nil, network.SSRFSafeDialContext(mcpDialTimeout)),
-		ViaProxy: newTransport(mcpProxySelector(proxy, true, resolver), network.PrivateNetworkDialContext(mcpDialTimeout)),
-	}}, nil
+	return &http.Client{
+		Transport: &network.ProxyAwareTransport{
+			Proxy:    proxy,
+			Direct:   newTransport(nil, network.SSRFSafeDialContext(mcpDialTimeout)),
+			ViaProxy: newTransport(mcpProxySelector(proxy, true, resolver), network.PrivateNetworkDialContext(mcpDialTimeout)),
+		},
+		CheckRedirect: mcpCheckRedirect,
+	}, nil
+}
+
+// mcpMaxRedirects bounds how many redirects an MCP HTTP client follows.
+const mcpMaxRedirects = 5
+
+// mcpCheckRedirect is the redirect policy of every MCP HTTP client. An MCP
+// client is registered for one server, and the headers configured for it
+// (API keys, per-user headers, OAuth tokens) are meant for that server only.
+// Go's default policy follows a redirect to any host and keeps every header
+// except Authorization and Cookie, so a redirect answered by the server would
+// carry those headers, and on a 307/308 the request body, to wherever it
+// points. This policy keeps a client on the origin it was registered for:
+//
+//   - a redirect to the same scheme, host and port is followed;
+//   - an http to https upgrade on the same host is followed when both URLs use
+//     their scheme's default port;
+//   - anything else is not followed. The 3xx response is returned as is, so
+//     the caller sees a normal non-success response instead of a transport error.
+//
+// An omitted port is the scheme's default, so "https://host" and
+// "https://host:443" are the same origin. Hostnames are compared in ASCII
+// lower case: URLs carry internationalized names in their ASCII form, and
+// Unicode case folding would treat distinct names as equal.
+//
+// At most mcpMaxRedirects redirects are followed. via holds one entry per
+// request already made, so the Nth redirect arrives with N entries.
+func mcpCheckRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	if len(via) > mcpMaxRedirects {
+		return http.ErrUseLastResponse
+	}
+	origin, next := via[0].URL, req.URL
+	originScheme, nextScheme := asciiLower(origin.Scheme), asciiLower(next.Scheme)
+	if asciiLower(origin.Hostname()) != asciiLower(next.Hostname()) {
+		return http.ErrUseLastResponse
+	}
+	originPort, nextPort := mcpEffectivePort(originScheme, origin.Port()), mcpEffectivePort(nextScheme, next.Port())
+	if originScheme == nextScheme && originPort == nextPort {
+		return nil
+	}
+	if originScheme == "http" && nextScheme == "https" && originPort == "80" && nextPort == "443" {
+		return nil
+	}
+	return http.ErrUseLastResponse
+}
+
+// mcpEffectivePort returns port, or the default port of scheme when port is empty.
+func mcpEffectivePort(scheme, port string) string {
+	if port != "" {
+		return port
+	}
+	switch scheme {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	}
+	return ""
+}
+
+// asciiLower lower-cases the ASCII letters of s and leaves every other byte as it is.
+func asciiLower(s string) string {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c >= 'A' && c <= 'Z' {
+			b := []byte(s)
+			for j := i; j < len(b); j++ {
+				if b[j] >= 'A' && b[j] <= 'Z' {
+					b[j] += 'a' - 'A'
+				}
+			}
+			return string(b)
+		}
+	}
+	return s
 }
 
 // mcpProxySelector wraps an http.Transport Proxy selector so the dial-time
