@@ -351845,6 +351845,129 @@
               ]
             }
           }
+        },
+        {
+          "name": "Logs: openai gpt-4o-mini /openai_passthrough/v1/responses stream with content logging off records provider_response_id (provider response id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough responses stream, content off: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('passthrough responses stream, content off: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "var wireId;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (wireId || line.indexOf('data:') !== 0) { return; }",
+                  "  try { var evt = JSON.parse(line.slice(5).trim()); if (evt && evt.response && evt.response.id) { wireId = evt.response.id; } } catch (e) {}",
+                  "});",
+                  "pm.test('passthrough responses stream, content off: response carries an id', function () { pm.expect(wireId, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                  "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      pm.test('passthrough responses stream, content off: log row provider_response_id equals the id on the wire', function () { pm.expect(j.provider_response_id, JSON.stringify(j)).to.eql(wireId); });",
+                  "      pm.test('passthrough responses stream, content off: content_hidden is true', function () { pm.expect(j.content_hidden, JSON.stringify(j)).to.eql(true); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('passthrough responses stream, content off: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-test-key-nocontent"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"input\": \"Say hi\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Logs: openai gpt-4o-mini /openai_passthrough/v1/chat/completions records provider_response_id (provider response id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough chat non-stream: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('passthrough chat non-stream: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "var wireId;",
+                  "wireId = pm.response.json().id;",
+                  "pm.test('passthrough chat non-stream: response carries an id', function () { pm.expect(wireId, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                  "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      pm.test('passthrough chat non-stream: log row provider_response_id equals the id on the wire', function () { pm.expect(j.provider_response_id, JSON.stringify(j)).to.eql(wireId); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('passthrough chat non-stream: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
         }
       ]
     }

@@ -328,6 +328,59 @@ func TestExtractOpenAIPassthroughUsage_ResponsesTopLevelToolUsage(t *testing.T) 
 	}
 }
 
+// TestExtractOpenAIPassthroughUsage_ResponseID pins that the frame usage is read from also yields
+// the response it belongs to, on every shape that frame takes: a streamed response.completed
+// event, a unary Responses body, a unary chat completion, and a chat stream's final usage chunk.
+func TestExtractOpenAIPassthroughUsage_ResponseID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		body string
+		want string
+	}{
+		{
+			name: "responses stream response.completed",
+			path: "/backend-api/codex/responses",
+			body: `{"type":"response.completed","response":{"id":"resp_stream_1","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`,
+			want: "resp_stream_1",
+		},
+		{
+			name: "responses unary",
+			path: "/v1/responses",
+			body: `{"id":"resp_unary_1","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`,
+			want: "resp_unary_1",
+		},
+		{
+			name: "chat unary",
+			path: "/v1/chat/completions",
+			body: `{"id":"chatcmpl-unary-1","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+			want: "chatcmpl-unary-1",
+		},
+		{
+			name: "chat stream usage chunk",
+			path: "/v1/chat/completions",
+			body: `{"id":"chatcmpl-stream-1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+			want: "chatcmpl-stream-1",
+		},
+		{
+			name: "payload names no id",
+			path: "/v1/responses",
+			body: `{"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`,
+			want: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := openai.ExtractOpenAIPassthroughUsage("POST", tc.path, nil, []byte(tc.body))
+			if u == nil {
+				t.Fatal("expected usage")
+			}
+			if u.ResponseID != tc.want {
+				t.Fatalf("ResponseID = %q, want %q", u.ResponseID, tc.want)
+			}
+		})
+	}
+}
+
 func TestClassifyPassthroughPath(t *testing.T) {
 	tests := []struct {
 		method string

@@ -1507,6 +1507,10 @@ func applyProviderResponseID(entry *logstore.Log, result *schemas.BifrostRespons
 		id = *result.ResponsesStreamResponse.Response.ID
 	case result.TextCompletionResponse != nil:
 		id = result.TextCompletionResponse.ID
+	case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil:
+		// A passthrough body is never decoded on the request path; the provider reads the
+		// ID off the frame it parses for usage.
+		id = result.PassthroughResponse.PassthroughUsage.ResponseID
 	}
 	if id == "" || len(id) > maxPersistedProviderResponseIDLen {
 		return

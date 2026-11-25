@@ -161,6 +161,7 @@ func firstFormValue(form map[string][]string, key string) string {
 // BifrostLLMUsage is OpenAI-compatible so we can unmarshal directly.
 
 type oaiChatUsageWrapper struct {
+	ID          string                   `json:"id"`
 	Usage       *schemas.BifrostLLMUsage `json:"usage"`
 	ServiceTier *string                  `json:"service_tier"`
 }
@@ -173,7 +174,7 @@ func ExtractOAIChatUsage(body []byte) *schemas.BifrostPassthroughUsage {
 	if err := sonic.Unmarshal(body, &w); err != nil || w.Usage == nil || w.Usage.TotalTokens == 0 {
 		return nil
 	}
-	u := &schemas.BifrostPassthroughUsage{LLMUsage: w.Usage}
+	u := &schemas.BifrostPassthroughUsage{LLMUsage: w.Usage, ResponseID: w.ID}
 	if w.ServiceTier != nil {
 		t := schemas.BifrostServiceTier(*w.ServiceTier)
 		u.ServiceTier = &t
@@ -188,10 +189,12 @@ func ExtractOAIChatUsage(body []byte) *schemas.BifrostPassthroughUsage {
 //   - tool_usage is a sibling of usage in both
 type oaiResponsesWrapper struct {
 	Response *struct {
+		ID          string                          `json:"id"`
 		Usage       *schemas.ResponsesResponseUsage `json:"usage"`
 		ToolUsage   *schemas.ToolUsage              `json:"tool_usage"`
 		ServiceTier *string                         `json:"service_tier"`
 	} `json:"response"`
+	ID          string                          `json:"id"`
 	Usage       *schemas.ResponsesResponseUsage `json:"usage"`
 	ToolUsage   *schemas.ToolUsage              `json:"tool_usage"`
 	ServiceTier *string                         `json:"service_tier"`
@@ -208,15 +211,18 @@ func extractOAIResponsesUsage(body []byte) *schemas.BifrostPassthroughUsage {
 	}
 
 	// Streaming takes priority: nested under "response" with a non-zero total.
-	ru, toolUsage, tier := w.Usage, w.ToolUsage, w.ServiceTier
+	ru, toolUsage, tier, responseID := w.Usage, w.ToolUsage, w.ServiceTier, w.ID
 	if w.Response != nil && w.Response.Usage != nil && w.Response.Usage.TotalTokens > 0 {
-		ru, toolUsage, tier = w.Response.Usage, w.Response.ToolUsage, w.Response.ServiceTier
+		ru, toolUsage, tier, responseID = w.Response.Usage, w.Response.ToolUsage, w.Response.ServiceTier, w.Response.ID
 	}
 	if ru == nil || ru.TotalTokens == 0 {
 		return nil
 	}
 	ru.ToolUsage = toolUsage
-	return buildOAIResponsesUsage(ru, tier)
+	usage := buildOAIResponsesUsage(ru, tier)
+	// The same frame that carries the usage names the response it belongs to.
+	usage.ResponseID = responseID
+	return usage
 }
 
 func buildOAIResponsesUsage(ru *schemas.ResponsesResponseUsage, serviceTier *string) *schemas.BifrostPassthroughUsage {
