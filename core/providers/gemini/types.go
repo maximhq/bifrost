@@ -3653,7 +3653,7 @@ type GenerateVideosOperation struct {
 	Response *GenerateVideosOperationResponse `json:"response,omitempty"`
 }
 
-// geminiResumableUploadSession holds the metadata stored in the KV store
+// GeminiResumableUploadSession holds the metadata stored in the upload table
 // between step 1 (resumable upload initiation) and step 2 (binary upload)
 // of a Gemini-format file upload destined for non-Gemini/Vertex providers.
 type GeminiResumableUploadSession struct {

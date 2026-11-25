@@ -34,6 +34,8 @@ folders:
                     $ref: '../../schemas/management/prompts.yaml#/Folder'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createFolder
@@ -74,6 +76,8 @@ folders:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 folders-by-id:
   get:
@@ -119,6 +123,8 @@ folders-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updateFolder
@@ -171,6 +177,8 @@ folders-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteFolder
@@ -212,6 +220,8 @@ folders-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 prompts:
   get:
@@ -253,6 +263,8 @@ prompts:
                     $ref: '../../schemas/management/prompts.yaml#/Prompt'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createPrompt
@@ -293,6 +305,8 @@ prompts:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 prompts-by-id:
   get:
@@ -338,6 +352,8 @@ prompts-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updatePrompt
@@ -384,6 +400,8 @@ prompts-by-id:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deletePrompt
@@ -425,6 +443,8 @@ prompts-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 prompt-versions:
   get:
@@ -467,6 +487,8 @@ prompt-versions:
                     $ref: '../../schemas/management/prompts.yaml#/PromptVersion'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createPromptVersion
@@ -514,6 +536,8 @@ prompt-versions:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 versions-by-id:
   get:
@@ -560,6 +584,8 @@ versions-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deletePromptVersion
@@ -602,6 +628,8 @@ versions-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 prompt-sessions:
   get:
@@ -644,6 +672,8 @@ prompt-sessions:
                     $ref: '../../schemas/management/prompts.yaml#/PromptSession'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createPromptSession
@@ -691,6 +721,8 @@ prompt-sessions:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 sessions-by-id:
   get:
@@ -737,6 +769,8 @@ sessions-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updatePromptSession
@@ -784,6 +818,8 @@ sessions-by-id:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deletePromptSession
@@ -826,6 +862,8 @@ sessions-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 sessions-rename:
   put:
@@ -874,6 +912,8 @@ sessions-rename:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 sessions-commit:
   post:
@@ -922,3 +962,5 @@ sessions-commit:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'

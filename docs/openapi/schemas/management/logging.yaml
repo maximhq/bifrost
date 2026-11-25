@@ -53,7 +53,7 @@ LogEntry:
       type: array
       items:
         type: string
-      description: Routing engines that acted on this request (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core). core records fallback transitions; loadbalancing and circuit-breaker appear only in Bifrost Enterprise.
+      description: Routing engines that acted on this request (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core). core records fallback transitions; loadbalancing and circuit-breaker appear only in Bifrost Enterprise. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out.
     tool_call_names:
       type: array
       items:
@@ -69,10 +69,11 @@ LogEntry:
     model_router_id:
       type: string
       nullable: true
-      description: The model router that took the request; omitted when none did.
+      description: The model router that took the request; omitted when none did. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out.
     model_router_name:
       type: string
       nullable: true
+      description: Returned only by GET /api/logs/{id}; GET /api/logs leaves it out.
     complexity_tier:
       type: string
       enum: ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"]
@@ -81,7 +82,7 @@ LogEntry:
     complexity_mechanism:
       type: [string, 'null']
       enum: [semantic, decision, llm, session, skipped, null]
-      description: How the effective complexity tier was determined. decision means the configured decision model supplied the tier; session means retained session state supplied it; skipped means classification was demanded but produced no tier.
+      description: How the effective complexity tier was determined. decision means the configured decision model supplied the tier; session means retained session state supplied it; skipped means classification was demanded but produced no tier. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out.
     complexity_score:
       type: number
       description: Similarity score of the nearest reference phrase behind the tier. Absent for decision-model, LLM, session, and skipped decisions.
@@ -199,6 +200,7 @@ LogEntry:
     cache_debug:
       type: object
       additionalProperties: true
+      description: Semantic cache result for the request. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out.
     metadata:
       type: object
       additionalProperties: true
@@ -242,7 +244,7 @@ LogEntry:
     video_generation_input:
       type: object
       additionalProperties: true
-      description: Video generation request input
+      description: Video generation request input. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out.
     video_generation_output:
       type: object
       additionalProperties: true

@@ -173,12 +173,12 @@ func TestExecuteTool_MultiModalResultAndToolMetadata(t *testing.T) {
 	})
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(upstream))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "chart", Name: "plots", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 
 	state, ok := snapshotClientState(m, config.ID)

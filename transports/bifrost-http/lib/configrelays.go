@@ -15,6 +15,9 @@ import (
 // configstore CRUD, so the vault callbacks and encryption hooks see every secret. The runtime manager
 // is built later from the reconciled rows.
 func loadRelaysConfig(ctx context.Context, config *Config, configData *ConfigData) {
+	if config.boot != nil {
+		config.boot.relays = configData.Relays
+	}
 	declared := make(map[string]bool)
 	counts := make(map[string]int)
 	for _, cfg := range configData.Relays {

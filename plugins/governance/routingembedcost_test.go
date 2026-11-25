@@ -19,9 +19,9 @@ func newOfflinePricingCatalog(t *testing.T) *modelcatalog.ModelCatalog {
 	t.Helper()
 	abs, err := filepath.Abs("../../framework/modelcatalog/datasheet/testdata/pricing.json")
 	require.NoError(t, err)
-	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + abs})
+	ds := datasheetForTest(t, nil, NewMockLogger(), datasheet.Config{URL: "file://" + abs})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
-	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+	return catalogWithDatasheetForTest(t, ds)
 }
 
 // newWarmupBudgetFixture wires a plugin over a store whose "openai" provider
@@ -32,7 +32,7 @@ func newWarmupBudgetFixture(t *testing.T) (*GovernancePlugin, GovernanceStore) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("provider-budget", 1000.0, 0.0, "1d")
 	budgetID := budget.ID
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Budgets:   []configstoreTables.TableBudget{*budget},
 		Providers: []configstoreTables.TableProvider{{Name: "openai", BudgetID: &budgetID}},
 	}, nil, nil)
@@ -92,7 +92,7 @@ func TestPostHookWorkerAddsRoutingCostToProviderUsageOnError(t *testing.T) {
 	}
 
 	settled := settleLimits(fixture.store, "sk-bf-acct", schemas.OpenAI, "gpt-4o", &UsageUpdate{})
-	plugin.postHookWorker(nil, bifrostErr, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, "routing-error", "", false, 0, 0, false, nil, settled.Budgets, settled.RateLimits, routingMetadata)
+	plugin.postHookWorker(nil, bifrostErr, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, "routing-error", "", time.Time{}, false, 0, 0, false, nil, settled.Budgets, settled.RateLimits, routingMetadata)
 
 	// gpt-4o testdata: 2.5e-6 input, 1e-5 output. Routing embedding:
 	// text-embedding-3-small at 2e-8/input token. Both calls are billable.

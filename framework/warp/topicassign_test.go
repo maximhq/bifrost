@@ -263,7 +263,7 @@ func TestWarpIndexerPrunesThePool(t *testing.T) {
 // a logging plugin enabled later brings it, and one removed takes it away.
 func TestWarpIndexerFollowsTheLogReader(t *testing.T) {
 	logs := map[string]logstore.Log{}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: assignTestRow()}), WithLogReader(&semanticLogReader{logs: logs}),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(assignTestEmbedding),
 	)
@@ -302,7 +302,7 @@ func TestWarpTopicsRunRefreshesLiveAssignment(t *testing.T) {
 	for id, vector := range topicTestVectors() {
 		require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, id, vector, map[string]interface{}{"log_id": id, "timestamp": logs[id].Timestamp.Unix(), "warp_log": true}))
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: row}), WithLogReader(reader),
 		WithVectorStore(vectors), WithEmbeddingExecutor(assignTestEmbedding), WithChatFunc(topicTestNaming),
 	)

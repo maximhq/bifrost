@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -10,22 +11,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"sync"
+	"fmt"
 	"time"
+
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 const (
-	wsTicketTTL       = 30 * time.Second
-	wsTicketCleanupHz = 60 * time.Second
-	wsTicketVersion   = 1
+	wsTicketTTL     = 30 * time.Second
+	wsTicketVersion = 1
+	// wsTicketTable is the live-store table unsigned tickets live in, one per process.
+	wsTicketTable = "ws_tickets"
 )
 
 var errInvalidWSTicketPayload = errors.New("invalid websocket ticket payload")
-
-type wsTicketEntry struct {
-	sessionToken string
-	expiresAt    time.Time
-}
 
 type signedWSTicketPayload struct {
 	Version      int    `json:"v"`
@@ -38,22 +37,24 @@ type signedWSTicketPayload struct {
 // Instead of putting the long-lived session token in the WS URL (visible in logs/history),
 // clients exchange their session for a 30-second one-time ticket via an authenticated endpoint.
 type WSTicketStore struct {
-	mu         sync.Mutex
-	tickets    map[string]wsTicketEntry
-	done       chan struct{}
-	stopOnce   sync.Once
+	// tickets maps an unsigned ticket to its session token until it expires; the
+	// live store sweeps expired ones. Nil in signed mode.
+	tickets    *livestore.Table[string, string]
+	live       *livestore.Store
 	signingKey []byte
 }
 
-// NewWSTicketStore creates a new ticket store and starts a background goroutine
-// that periodically purges expired tickets.
-func NewWSTicketStore() *WSTicketStore {
-	s := &WSTicketStore{
-		tickets: make(map[string]wsTicketEntry),
-		done:    make(chan struct{}),
+// NewWSTicketStore creates a ticket store that keeps its tickets in live, each
+// expiring after wsTicketTTL.
+func NewWSTicketStore(live *livestore.Store) (*WSTicketStore, error) {
+	if live == nil {
+		return nil, fmt.Errorf("websocket tickets: %w", livestore.ErrNoLiveStore)
 	}
-	go s.cleanup()
-	return s
+	tickets, err := live.NewTable[string, string](context.Background(), wsTicketTable, livestore.WithTTL(wsTicketTTL))
+	if err != nil {
+		return nil, err
+	}
+	return &WSTicketStore{tickets: tickets, live: live}, nil
 }
 
 // NewSignedWSTicketStore creates a ticket store that signs self-verifying tickets.
@@ -63,15 +64,12 @@ func NewWSTicketStore() *WSTicketStore {
 // forgeable key. Falling back to the in-memory store keeps single-node
 // deployments safe while letting multi-node deployments opt into signed mode by
 // supplying a real shared key.
-func NewSignedWSTicketStore(signingKey []byte) *WSTicketStore {
+func NewSignedWSTicketStore(live *livestore.Store, signingKey []byte) (*WSTicketStore, error) {
 	if len(signingKey) == 0 {
-		return NewWSTicketStore()
+		return NewWSTicketStore(live)
 	}
 	key := deriveWSTicketKey("sig", signingKey)
-	return &WSTicketStore{
-		signingKey: key,
-		done:       make(chan struct{}),
-	}
+	return &WSTicketStore{signingKey: key}, nil
 }
 
 // Issue generates a cryptographically random ticket bound to the given session token.
@@ -86,13 +84,7 @@ func (s *WSTicketStore) Issue(sessionToken string) (string, error) {
 		return "", err
 	}
 	ticket := hex.EncodeToString(b)
-
-	s.mu.Lock()
-	s.tickets[ticket] = wsTicketEntry{
-		sessionToken: sessionToken,
-		expiresAt:    time.Now().Add(wsTicketTTL),
-	}
-	s.mu.Unlock()
+	s.tickets.Put(ticket, sessionToken)
 	return ticket, nil
 }
 
@@ -103,25 +95,15 @@ func (s *WSTicketStore) Consume(ticket string) string {
 		return s.consumeSigned(ticket)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	entry, ok := s.tickets[ticket]
-	if !ok {
-		return ""
-	}
-	delete(s.tickets, ticket)
-	if time.Now().After(entry.expiresAt) {
-		return ""
-	}
-	return entry.sessionToken
+	sessionToken, _ := s.tickets.GetAndDelete(ticket)
+	return sessionToken
 }
 
-// Stop terminates the background cleanup goroutine.
+// Stop drops the unsigned tickets' table, so a later store can create it again.
 func (s *WSTicketStore) Stop() {
-	s.stopOnce.Do(func() {
-		close(s.done)
-	})
+	if s.tickets != nil {
+		_ = s.live.DropTable(context.Background(), wsTicketTable)
+	}
 }
 
 // issueSigned generates an HMAC-signed ticket that any node with the key can verify.
@@ -235,30 +217,4 @@ func decryptWSTicketPayload(key []byte, encryptedPayload []byte) ([]byte, error)
 	nonce := encryptedPayload[:nonceSize]
 	ciphertext := encryptedPayload[nonceSize:]
 	return aead.Open(nil, nonce, ciphertext, nil)
-}
-
-// cleanup periodically removes expired tickets to prevent unbounded memory growth.
-func (s *WSTicketStore) cleanup() {
-	if s.tickets == nil {
-		<-s.done
-		return
-	}
-
-	ticker := time.NewTicker(wsTicketCleanupHz)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.done:
-			return
-		case <-ticker.C:
-			now := time.Now()
-			s.mu.Lock()
-			for k, v := range s.tickets {
-				if now.After(v.expiresAt) {
-					delete(s.tickets, k)
-				}
-			}
-			s.mu.Unlock()
-		}
-	}
 }

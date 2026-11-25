@@ -2,14 +2,6 @@ package logstore
 
 import (
 	"context"
-	"path/filepath"
-	"reflect"
-	"sort"
-	"strings"
-	"sync/atomic"
-	"testing"
-	"time"
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -17,6 +9,13 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
 )
 
 type testLogger struct{}
@@ -317,7 +316,7 @@ func TestGetNodeUsageSinceTracksMaxTimestampAndExclusiveCursor(t *testing.T) {
 		}
 	}
 
-	usage, err := store.GetNodeUsageAfter(ctx, nodeID, NodeUsageCursor{Timestamp: base})
+	usage, err := store.GetNodeUsageAfter(ctx, nodeID, NodeUsageCursor{Timestamp: base}, NodeUsageWindows{})
 	if err != nil {
 		t.Fatalf("GetNodeUsageSince() error = %v", err)
 	}
@@ -362,7 +361,7 @@ func TestGetNodeUsageSinceTracksMaxTimestampAndExclusiveCursor(t *testing.T) {
 		t.Fatalf("Create(%s) error = %v", lateEntry.ID, err)
 	}
 
-	usage, err = store.GetNodeUsageAfter(ctx, nodeID, usage.NextCursor)
+	usage, err = store.GetNodeUsageAfter(ctx, nodeID, usage.NextCursor, NodeUsageWindows{})
 	if err != nil {
 		t.Fatalf("GetNodeUsageAfter(after inc cursor) error = %v", err)
 	}
@@ -376,7 +375,7 @@ func TestGetNodeUsageSinceTracksMaxTimestampAndExclusiveCursor(t *testing.T) {
 		t.Fatalf("expected next cursor inc_number %d, got %+v", inc3, usage.NextCursor)
 	}
 
-	usage, err = store.GetNodeUsageAfter(ctx, nodeID, usage.NextCursor)
+	usage, err = store.GetNodeUsageAfter(ctx, nodeID, usage.NextCursor, NodeUsageWindows{})
 	if err != nil {
 		t.Fatalf("GetNodeUsageAfter(after max) error = %v", err)
 	}
@@ -448,7 +447,7 @@ func TestGetNodeUsageAfterIncludesSameTimestampGreaterLogIDs(t *testing.T) {
 	}
 
 	// Cursor after usage-1: should get usage-2 and usage-3 (same timestamp, greater IDs)
-	usage, err := store.GetNodeUsageAfter(ctx, nodeID, NodeUsageCursor{Timestamp: timestamp, LogID: "usage-1"})
+	usage, err := store.GetNodeUsageAfter(ctx, nodeID, NodeUsageCursor{Timestamp: timestamp, LogID: "usage-1"}, NodeUsageWindows{})
 	if err != nil {
 		t.Fatalf("GetNodeUsageAfter() error = %v", err)
 	}
@@ -805,4 +804,45 @@ func BenchmarkLogListSelectColumns(b *testing.B) {
 	for b.Loop() {
 		store.listSelectColumns()
 	}
+}
+
+// TestNodeUsageWindowsFilterBeforeAggregation keeps dimensions and insertion cursors independent.
+func TestNodeUsageWindowsFilterBeforeAggregation(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	t.Cleanup(func() { require.NoError(t, store.Close(ctx)) })
+	node := "ghost"
+	boundary := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	for i, stamp := range []time.Time{boundary.Add(-time.Minute), boundary.Add(time.Minute)} {
+		cost := []float64{4, 7}[i]
+		inc := int64(i + 1)
+		require.NoError(t, store.Create(ctx, &Log{ID: []string{"before", "after"}[i], IncNumber: &inc, Timestamp: stamp, Object: "chat.completion", Provider: "openai", Model: "test", Status: "success", ClusterNodeID: &node, Cost: &cost, TotalTokens: (i + 1) * 10, BudgetIDsParsed: []string{"b", "b"}, RateLimitIDsParsed: []string{"r", "r"}}))
+	}
+	cursor := NodeUsageCursor{Timestamp: boundary.Add(-2 * time.Minute)}
+	windows := NodeUsageWindows{Budgets: map[string]int64{"b": boundary.UnixNano()}, Tokens: map[string]int64{"r": boundary.UnixNano()}, Requests: map[string]int64{"r": boundary.Add(2 * time.Minute).UnixNano()}}
+	usage, err := store.GetNodeUsageAfter(ctx, node, cursor, windows)
+	require.NoError(t, err)
+	require.Equal(t, 7.0, usage.BudgetCosts["b"])
+	require.Equal(t, int64(20), usage.RateLimitTokens["r"])
+	require.Zero(t, usage.RateLimitRequests["r"])
+	require.Equal(t, 2, usage.RowCount)
+	require.NotNil(t, usage.NextCursor.IncNumber)
+	// A late-inserted old request is scanned, excluded, and acknowledged by the cursor.
+	cost := 9.0
+	inc := int64(3)
+	require.NoError(t, store.Create(ctx, &Log{ID: "late-old", IncNumber: &inc, Timestamp: boundary.Add(-time.Second), Object: "chat.completion", Provider: "openai", Model: "test", Status: "success", ClusterNodeID: &node, Cost: &cost, TotalTokens: 99, BudgetIDsParsed: []string{"b"}, RateLimitIDsParsed: []string{"r"}}))
+	late, err := store.GetNodeUsageAfter(ctx, node, usage.NextCursor, windows)
+	require.NoError(t, err)
+	require.Empty(t, late.BudgetCosts)
+	require.Empty(t, late.RateLimitTokens)
+	require.Empty(t, late.RateLimitRequests)
+	require.Greater(t, *late.NextCursor.IncNumber, *usage.NextCursor.IncNumber)
+	legacy, err := store.GetNodeUsageAfter(ctx, node, cursor, NodeUsageWindows{})
+	require.NoError(t, err)
+	require.Equal(t, 20.0, legacy.BudgetCosts["b"])
+	// Hybrid storage must use the same row filtering rather than its legacy aggregate reader.
+	hybrid := &HybridLogStore{inner: store}
+	wrapped, err := hybrid.GetNodeUsageAfter(ctx, node, cursor, windows)
+	require.NoError(t, err)
+	require.Equal(t, 7.0, wrapped.BudgetCosts["b"])
 }

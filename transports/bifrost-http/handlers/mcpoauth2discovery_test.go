@@ -16,7 +16,7 @@ func TestDiscovery_GatedOnAuthMode(t *testing.T) {
 	store := &mockOAuth2Store{signingKey: key}
 
 	t.Run("headers mode returns 404 on all discovery endpoints", func(t *testing.T) {
-		h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false))
+		h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false))
 		for _, fn := range []func(*fasthttp.RequestCtx){h.handlePRM, h.handleASMetadata, h.handleJWKS} {
 			ctx := &fasthttp.RequestCtx{}
 			fn(ctx)
@@ -26,7 +26,7 @@ func TestDiscovery_GatedOnAuthMode(t *testing.T) {
 
 	t.Run("oauth and both modes serve discovery", func(t *testing.T) {
 		for _, mode := range []configtables.MCPServerAuthMode{configtables.MCPServerAuthModeBoth, configtables.MCPServerAuthModeOAuth} {
-			h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(store, mode, false))
+			h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(t, store, mode, false))
 			for _, fn := range []func(*fasthttp.RequestCtx){h.handlePRM, h.handleASMetadata, h.handleJWKS} {
 				ctx := &fasthttp.RequestCtx{}
 				fn(ctx)
@@ -38,7 +38,7 @@ func TestDiscovery_GatedOnAuthMode(t *testing.T) {
 
 func TestDiscovery_ProtectedResourceMetadata(t *testing.T) {
 	store := &mockOAuth2Store{}
-	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false))
 	ctx := &fasthttp.RequestCtx{}
 	h.handlePRM(ctx)
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
@@ -51,7 +51,7 @@ func TestDiscovery_ProtectedResourceMetadata(t *testing.T) {
 
 func TestDiscovery_AuthorizationServerMetadata(t *testing.T) {
 	store := &mockOAuth2Store{}
-	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false))
 	ctx := &fasthttp.RequestCtx{}
 	h.handleASMetadata(ctx)
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
@@ -84,7 +84,7 @@ func TestDiscovery_AuthorizationServerMetadata(t *testing.T) {
 // TestDiscovery_IssuerWithTrailingSlash pins that an issuer_url ending in "/" is
 // served without it, so no URL built from the issuer carries "//".
 func TestDiscovery_IssuerWithTrailingSlash(t *testing.T) {
-	cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+	cfg := newTestOAuth2Config(t, &mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
 	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = schemas.NewSecretVar(testIssuer + "/")
 	h := NewOAuth2DiscoveryHandler(cfg)
 
@@ -113,7 +113,7 @@ func TestDiscovery_IssuerWithTrailingSlash(t *testing.T) {
 func TestDiscovery_JWKS(t *testing.T) {
 	key, _ := newTestSigningKey(t)
 	store := &mockOAuth2Store{signingKey: key}
-	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false))
 	ctx := &fasthttp.RequestCtx{}
 	h.handleJWKS(ctx)
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
@@ -137,7 +137,7 @@ func TestDiscovery_JWKS(t *testing.T) {
 func TestDiscovery_ResponsesAreNotCacheable(t *testing.T) {
 	key, _ := newTestSigningKey(t)
 	store := &mockOAuth2Store{signingKey: key}
-	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false))
 	for i, fn := range []func(*fasthttp.RequestCtx){h.handlePRM, h.handleASMetadata, h.handleJWKS} {
 		ctx := &fasthttp.RequestCtx{}
 		fn(ctx)
@@ -150,7 +150,7 @@ func TestDiscovery_ResponsesAreNotCacheable(t *testing.T) {
 // authorization server metadata, and that nothing changes without one.
 func TestDiscovery_ASMetadataExtensions(t *testing.T) {
 	store := &mockOAuth2Store{}
-	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false))
 	h.SetExtensions(fakeGrantExtension{grantType: "urn:test:grant"})
 	ctx := &fasthttp.RequestCtx{}
 	h.handleASMetadata(ctx)
@@ -168,7 +168,7 @@ func TestDiscovery_ASMetadataExtensions(t *testing.T) {
 func TestDiscovery_ExtensionOnlyServer(t *testing.T) {
 	key, _ := newTestSigningKey(t)
 	store := &mockOAuth2Store{signingKey: key}
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	h := NewOAuth2DiscoveryHandler(cfg)
 	h.SetExtensions(fakeGrantExtension{grantType: "urn:test:grant"})
 
@@ -210,7 +210,7 @@ func TestDiscovery_ExtensionOnlyServer(t *testing.T) {
 // must answer at those paths. The resource itself stays under the issuer.
 func TestDiscovery_ResourceMetadataUnderIssuerPath(t *testing.T) {
 	const issuer = "https://bifrost.test/bifrost"
-	cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+	cfg := newTestOAuth2Config(t, &mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
 	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = schemas.NewSecretVar(issuer)
 	h := NewOAuth2DiscoveryHandler(cfg)
 

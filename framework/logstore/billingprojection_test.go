@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,6 +67,92 @@ func TestListProjectionIncludesBillingScalars(t *testing.T) {
 			t.Fatalf("listSelectColumns is missing %q; cost recomputation cannot see it", scalar)
 		}
 	}
+}
+
+// listDetailOnlyColumns are the columns only the log detail sheet reads. The sheet
+// renders from GET /api/logs/{id}, so /api/logs leaves them out.
+var listDetailOnlyColumns = []string{
+	"alias_model_family", "server_side_fallback_model", "served_model",
+	"routing_engines_used", "complexity_mechanism",
+	"model_router_id", "model_router_name",
+	"video_generation_input", "cache_debug",
+}
+
+// TestListProjectionLeavesOutDetailOnlyColumns pins both sides of the trim: the
+// detail-only columns stay out, and the ones a list reader still needs stay in.
+func TestListProjectionLeavesOutDetailOnlyColumns(t *testing.T) {
+	cols := newProjectionTestStore(t).listSelectColumns()
+	for _, column := range listDetailOnlyColumns {
+		assert.False(t, containsColumn(cols, column), "listSelectColumns must not select %q: only the detail sheet reads it", column)
+	}
+	for column, reader := range map[string]string{
+		"is_passthrough":    "the logs table tags passthrough rows",
+		"alias":             "Warp's log search tool reports it",
+		"complexity_tier":   "Warp's log search tool reports it",
+		"selected_key_name": "the handler attaches selected_key only when the name is set",
+		"content_hidden":    "Warp skips hidden rows before hydrating them",
+		"guardrail_debug":   "agent logs and the Guardrail Incidents view read it",
+		"created_at":        "it is not omitempty, so a missing column serializes as the zero time",
+	} {
+		assert.True(t, containsColumn(cols, column), "listSelectColumns must select %q: %s", column, reader)
+	}
+}
+
+// TestDetailOnlyFieldsServedByIDNotByList writes a row carrying every detail-only
+// field and checks that the list row leaves the keys out while FindByID still
+// returns each value.
+func TestDetailOnlyFieldsServedByIDNotByList(t *testing.T) {
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+	now := time.Now().UTC()
+	family, fallback, served := "gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-2024-11-20"
+	mechanism, routerID, routerName := "llm", "router-1", "Support router"
+	cacheID := "cache-1"
+	entry := &Log{
+		ID: "detail-only", Timestamp: now, Object: "chat_completion", Provider: "openai", Model: "gpt-4o", Status: "success",
+		AliasModelFamily: &family, ServerSideFallbackModel: &fallback, ServedModel: &served,
+		RoutingEnginesUsed: []string{"model-router"}, ComplexityMechanism: &mechanism,
+		ModelRouterID: &routerID, ModelRouterName: &routerName,
+		VideoGenerationInputParsed: &schemas.VideoGenerationInput{Prompt: "a cat"},
+		CacheDebugParsed:           &schemas.BifrostCacheMetadata{CacheHit: true, CacheID: &cacheID},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, store.Create(ctx, entry))
+
+	list, err := store.SearchLogs(ctx, SearchFilters{RequestID: "detail-only"}, PaginationOptions{Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, list.Logs, 1)
+	body, err := sonic.Marshal(list.Logs[0])
+	require.NoError(t, err)
+	var row map[string]any
+	require.NoError(t, sonic.Unmarshal(body, &row))
+	for _, key := range listDetailOnlyColumns {
+		assert.NotContains(t, row, key, "/api/logs must leave %q out of a list row", key)
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, row["created_at"].(string))
+	require.NoError(t, err)
+	assert.False(t, createdAt.IsZero(), "the list row must carry the real created_at")
+
+	full, err := store.FindByID(ctx, "detail-only")
+	require.NoError(t, err)
+	require.NotNil(t, full.AliasModelFamily)
+	assert.Equal(t, family, *full.AliasModelFamily)
+	require.NotNil(t, full.ServerSideFallbackModel)
+	assert.Equal(t, fallback, *full.ServerSideFallbackModel)
+	require.NotNil(t, full.ServedModel)
+	assert.Equal(t, served, *full.ServedModel)
+	assert.Equal(t, []string{"model-router"}, full.RoutingEnginesUsed)
+	require.NotNil(t, full.ComplexityMechanism)
+	assert.Equal(t, mechanism, *full.ComplexityMechanism)
+	require.NotNil(t, full.ModelRouterID)
+	assert.Equal(t, routerID, *full.ModelRouterID)
+	require.NotNil(t, full.ModelRouterName)
+	assert.Equal(t, routerName, *full.ModelRouterName)
+	require.NotNil(t, full.VideoGenerationInputParsed)
+	assert.Equal(t, "a cat", full.VideoGenerationInputParsed.Prompt)
+	require.NotNil(t, full.CacheDebugParsed)
+	require.NotNil(t, full.CacheDebugParsed.CacheID)
+	assert.Equal(t, cacheID, *full.CacheDebugParsed.CacheID)
 }
 
 func TestBillingProjectionSelectsEveryPricingInput(t *testing.T) {
