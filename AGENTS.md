@@ -428,6 +428,14 @@ type CompletionHandler struct {
 
 **Route registration:** Each handler implements `RegisterRoutes(router, middlewares...)` — routes get middleware chains applied per-route via `lib.ChainMiddlewares()`.
 
+**Audit changes:** A management handler that writes config records the change with `lib.RecordAuditChange` right after the write commits, before any step that can still fail (an in-memory reload, a read-back, a client rebuild, a cluster broadcast). The enterprise audit layer writes a recorded change even when the request then fails, so recording later loses the event for a change that is already saved. Never record before the write: a failed write must leave no event.
+
+- Snapshot the row as written. When the response comes from a reload or read-back, call `rec.SetAfter(...)` with it once that step succeeds, so a successful request records what it serves.
+- On a branch whose rollback undid the write, call `rec.Discard()`, also when the rollback committed and then returned `lib.SavedNotAppliedError`. Keep the event only when the rollback write itself failed, because the change is still stored.
+- A loop of writes records one change per write as it commits.
+- Snapshots never carry secrets: pass redacted values (`Redacted()`, `configstore.RedactedKey`).
+- When a lower layer commits and then fails, return `lib.SavedNotAppliedError` so the handler can tell a saved change from a failed write (`lib.IsSavedNotApplied`).
+
 **SDK integration layers** (`transports/bifrost-http/integrations/`) provide request/response converters between provider-native SDK formats and Bifrost's internal format. This enables drop-in replacement of OpenAI SDK, Anthropic SDK, AWS Bedrock SDK, Google GenAI SDK, LangChain, and LiteLLM.
 
 ---
