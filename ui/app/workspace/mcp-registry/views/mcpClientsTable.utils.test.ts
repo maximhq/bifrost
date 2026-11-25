@@ -34,6 +34,10 @@ describe("authTypeLabel", () => {
 	it("names client credentials", () => {
 		expect(authTypeLabel("client_credentials")).toBe("OAuth Client Credentials");
 	});
+
+	it("names AWS SigV4", () => {
+		expect(authTypeLabel("aws_sigv4")).toBe("AWS IAM (SigV4)");
+	});
 });
 
 describe("canReconnectMCPClient", () => {

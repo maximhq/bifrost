@@ -365,6 +365,20 @@ export function authRows(config: MCPClientConfig, scopeLabel: string): MCPClient
 			});
 		}
 	}
+	if (config.auth_type === "aws_sigv4") {
+		const aws = config.aws_sigv4;
+		// A reference is shown as its name; its resolved value is masked on read.
+		const shown = (v?: { value?: string; ref?: string }) => v?.ref?.trim() || v?.value?.trim() || "";
+		rows.push(
+			{ key: "aws_sigv4_region", label: i18n.t("registry.awsSigV4.region", { ns: "mcp" }), value: shown(aws?.region) || notSet() },
+			{ key: "aws_sigv4_service", label: i18n.t("registry.awsSigV4.service", { ns: "mcp" }), value: aws?.service || "bedrock-agentcore" },
+			{
+				key: "aws_sigv4_role",
+				label: i18n.t("registry.awsSigV4.assumedRole", { ns: "mcp" }),
+				value: shown(aws?.role_arn) || i18n.t("registry.awsSigV4.noRole", { ns: "mcp" }),
+			},
+		);
+	}
 	if (config.auth_type === "client_credentials") {
 		const cc = config.client_credentials;
 		const usesKey = !!(cc?.private_key?.value || cc?.private_key?.ref);

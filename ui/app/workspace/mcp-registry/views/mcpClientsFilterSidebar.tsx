@@ -112,6 +112,7 @@ export function MCPClientsFilterSidebar({ filters, onFiltersChange }: SidebarPro
 			{ value: "per_user_headers", label: t("registry.filter.perUserHeaders") },
 			{ value: "token_exchange", label: t("registry.filter.tokenExchange") },
 			{ value: "client_credentials", label: t("registry.clientCredentials.authType") },
+			{ value: "aws_sigv4", label: t("registry.awsSigV4.authType") },
 		],
 		[t],
 	);

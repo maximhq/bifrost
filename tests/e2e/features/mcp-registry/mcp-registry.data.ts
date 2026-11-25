@@ -217,6 +217,21 @@ export function createClientCredentialsClientData(overrides: Partial<MCPClientCo
 }
 
 /**
+ * Create HTTP client with AWS SigV4. The tests intercept the create call, since
+ * nothing local verifies a SigV4 signature.
+ */
+export function createAWSSigV4ClientData(overrides: Partial<MCPClientConfig> = {}): MCPClientConfig {
+  return createMCPClientData({
+    name: `aws_sigv4_client_${Date.now()}`,
+    connectionType: 'http',
+    connectionUrl: 'https://gw-1.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp',
+    authType: 'aws_sigv4',
+    isPingAvailable: false,
+    ...overrides,
+  })
+}
+
+/**
  * Create HTTP client pointing at oauth-demo-server (port 3003) with Per-User OAuth 2.0.
  * Requires user consent via browser before tools are accessible.
  * Requires oauth-demo-server to be running: examples/mcps/oauth-demo-server
