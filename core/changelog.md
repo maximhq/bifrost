@@ -1,4 +1,4 @@
-- fix: openai - a Responses stream that ends with `[DONE]` but no terminal event (`response.completed`, `response.incomplete`, `response.failed` or `error`) is reported as truncated instead of closing silently [@ahmedabdou14](https://github.com/ahmedabdou14)
+- fix: openai - a Responses stream that ends with `[DONE]` but no terminal event (`response.completed`, `response.incomplete`, `response.failed` or `error`) is reported as truncated instead of closing silently (#10287) (thanks [@ahmedabdou14](https://github.com/ahmedabdou14)!)
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
 - feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)
