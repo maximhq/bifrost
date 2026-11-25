@@ -114,7 +114,7 @@ func (h *OAuth2DiscoveryHandler) handleASMetadata(ctx *fasthttp.RequestCtx) {
 		"scopes_supported":                      []string{},
 	}
 	if mcpOAuth {
-		doc["authorization_endpoint"] = base + "/oauth2/authorize"
+		doc["authorization_endpoint"] = oauth2BrowserBaseURL(ctx, h.store) + "/oauth2/authorize"
 		doc["registration_endpoint"] = base + "/oauth2/register"
 		doc["response_types_supported"] = []string{"code"}
 		doc["grant_types_supported"] = []string{"authorization_code", "refresh_token"}

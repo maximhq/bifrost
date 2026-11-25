@@ -2950,6 +2950,37 @@ func TestValidateClientConfig_AllowedRedirectURIsWildcard(t *testing.T) {
 	}
 }
 
+// TestValidateClientConfig_BrowserBaseURL pins that a malformed browser_base_url
+// stops startup rather than falling back to the issuer, which on a split network
+// would send browsers to a hostname they cannot resolve.
+func TestValidateClientConfig_BrowserBaseURL(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		wantErr bool
+	}{
+		{"", false},
+		{"https://bifrost.corp.example.com", false},
+		{"https://bifrost.corp.example.com/bifrost/", false},
+		{"bifrost.corp.example.com", true},
+		{"ftp://bifrost.corp.example.com", true},
+		{"https://bifrost.corp.example.com?x=1", true},
+		{"https://user:pass@bifrost.corp.example.com", true},
+	} {
+		err := validateClientConfig(&configstore.ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{BrowserBaseURL: schemas.NewSecretVar(tc.value)}})
+		if tc.wantErr {
+			require.Error(t, err, tc.value)
+			require.Contains(t, err.Error(), "browser_base_url")
+			require.NotContains(t, err.Error(), tc.value, "the error must not echo a value that may come from a secret")
+		} else {
+			require.NoError(t, err, tc.value)
+		}
+	}
+
+	t.Setenv("BIFROST_TEST_BROWSER_URL", "")
+	err := validateClientConfig(&configstore.ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{BrowserBaseURL: schemas.NewSecretVar("env.BIFROST_TEST_BROWSER_URL")}})
+	require.ErrorContains(t, err, "browser_base_url references env.BIFROST_TEST_BROWSER_URL, which resolves to an empty value")
+}
+
 // TestValidateClientConfig_IssuerURLRequiredForDiscovery locks in that OAuth
 // discovery (mode oauth|both) cannot be enabled without a pinned issuer_url -
 // left unset, every issuer reference would derive from the unauthenticated,

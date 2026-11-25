@@ -377,7 +377,7 @@ func (ep *clientGatewayEndpoint) handleDeviceAuthorization(ctx *fasthttp.Request
 		}
 	}
 
-	verificationURI := clientGatewayDeviceVerificationURL(oauth2IssuerURL(ctx, ep.store))
+	verificationURI := clientGatewayDeviceVerificationURL(oauth2BrowserBaseURL(ctx, ep.store))
 	data, err := providerUtils.MarshalSorted(map[string]any{
 		"device_code":               deviceCode,
 		"user_code":                 userCode,
@@ -612,7 +612,7 @@ func (h *ClientGatewayHandler) handleDeviceVerify(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	consentURL := fmt.Sprintf("%s/oauth/consent?flow=%s", oauth2IssuerURL(ctx, h.store), url.QueryEscape(req.ID))
+	consentURL := fmt.Sprintf("%s/oauth/consent?flow=%s", oauth2BrowserBaseURL(ctx, h.store), url.QueryEscape(req.ID))
 	if h.tempTokens != nil {
 		tok, err := h.tempTokens.Mint(ctx, temptoken.OAuth2ConsentScopeName, req.ID, time.Until(req.ExpiresAt))
 		if err != nil {

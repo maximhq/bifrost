@@ -82,13 +82,15 @@ func TestClientGatewayTelemetryConfig_DropDuplicateDestinations(t *testing.T) {
 func TestOAuth2ServerConfig_StorageJSONKeepsReferencesOnly(t *testing.T) {
 	t.Setenv("BIFROST_TEST_OTEL_TOKEN", "resolved-env-secret")
 	t.Setenv("BIFROST_TEST_ISSUER", "https://issuer.example.com")
+	t.Setenv("BIFROST_TEST_BROWSER_URL", "https://browser.example.com")
 	var cfg OAuth2ServerConfig
-	require.NoError(t, json.Unmarshal([]byte(`{"issuer_url":"env.BIFROST_TEST_ISSUER","gateways":{"claude_code":{"enabled":true,"managed_settings":{"env":{"ref":"env.POLICY_REF","value":"keep-me"}},"telemetry":{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"env.BIFROST_TEST_OTEL_TOKEN","x-team":"plain-team"}}]}}}}`), &cfg))
+	require.NoError(t, json.Unmarshal([]byte(`{"issuer_url":"env.BIFROST_TEST_ISSUER","browser_base_url":"env.BIFROST_TEST_BROWSER_URL","gateways":{"claude_code":{"enabled":true,"managed_settings":{"env":{"ref":"env.POLICY_REF","value":"keep-me"}},"telemetry":{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"env.BIFROST_TEST_OTEL_TOKEN","x-team":"plain-team"}}]}}}}`), &cfg))
 	stored, err := cfg.StorageJSON()
 	require.NoError(t, err)
 	assert.Contains(t, stored, `"value":"keep-me"`, "managed settings are written as is, even when they look like a secret")
 	assert.NotContains(t, stored, "resolved-env-secret")
 	assert.NotContains(t, stored, "https://issuer.example.com")
+	assert.NotContains(t, stored, "https://browser.example.com")
 	assert.Contains(t, stored, `"ref":"env.BIFROST_TEST_OTEL_TOKEN"`)
 	assert.Contains(t, stored, "plain-team")
 	assert.Equal(t, "resolved-env-secret", cfg.ClaudeCodeGateway().Telemetry.Destinations[0].Headers["authorization"].GetValue(), "the live config keeps its resolved value")
@@ -97,4 +99,5 @@ func TestOAuth2ServerConfig_StorageJSONKeepsReferencesOnly(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(stored), &reloaded))
 	assert.Equal(t, "resolved-env-secret", reloaded.ClaudeCodeGateway().Telemetry.Destinations[0].Headers["authorization"].GetValue())
 	assert.Equal(t, "https://issuer.example.com", reloaded.IssuerURL.GetValue())
+	assert.Equal(t, "https://browser.example.com", reloaded.BrowserBaseURL.GetValue())
 }

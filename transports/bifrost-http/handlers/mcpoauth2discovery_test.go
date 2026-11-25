@@ -110,6 +110,35 @@ func TestDiscovery_IssuerWithTrailingSlash(t *testing.T) {
 	assert.Equal(t, `Bearer resource_metadata="`+testIssuer+`/.well-known/oauth-protected-resource/mcp"`, wwwAuthenticateValue(&fasthttp.RequestCtx{}, cfg))
 }
 
+// TestDiscovery_BrowserBaseURL pins that browser_base_url moves only the
+// authorization endpoint, which the user's browser opens; everything an MCP
+// client's backend calls, and the issuer it checks, stays on issuer_url.
+func TestDiscovery_BrowserBaseURL(t *testing.T) {
+	cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+	cfg.ClientConfig.OAuth2ServerConfig.BrowserBaseURL = schemas.NewSecretVar(testBrowserBase)
+	h := NewOAuth2DiscoveryHandler(cfg)
+
+	ctx := &fasthttp.RequestCtx{}
+	h.handleASMetadata(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &doc))
+	assert.Equal(t, testBrowserBase+"/oauth2/authorize", doc["authorization_endpoint"])
+	assert.Equal(t, testIssuer, doc["issuer"])
+	assert.Equal(t, testIssuer+"/oauth2/token", doc["token_endpoint"])
+	assert.Equal(t, testIssuer+"/oauth2/register", doc["registration_endpoint"])
+	assert.Equal(t, testIssuer+"/.well-known/jwks.json", doc["jwks_uri"])
+
+	prm := &fasthttp.RequestCtx{}
+	h.handlePRM(prm)
+	require.Equal(t, fasthttp.StatusOK, prm.Response.StatusCode())
+	var prmDoc map[string]any
+	require.NoError(t, json.Unmarshal(prm.Response.Body(), &prmDoc))
+	assert.Equal(t, testMCPResource, prmDoc["resource"])
+	assert.Equal(t, []any{testIssuer}, prmDoc["authorization_servers"])
+	assert.Equal(t, `Bearer resource_metadata="`+testIssuer+`/.well-known/oauth-protected-resource/mcp"`, wwwAuthenticateValue(&fasthttp.RequestCtx{}, cfg))
+}
+
 func TestDiscovery_JWKS(t *testing.T) {
 	key, _ := newTestSigningKey(t)
 	store := &mockOAuth2Store{signingKey: key}

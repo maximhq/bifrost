@@ -3,6 +3,7 @@ package handlers
 import (
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -69,6 +70,22 @@ func TestOAuth2IssuerURL(t *testing.T) {
 			got := oauth2IssuerURL(ctx, cfg)
 			assert.NotContains(t, got, "evil.example", string(mode))
 		}
+	})
+}
+
+func TestOAuth2BrowserBaseURL(t *testing.T) {
+	t.Run("is the issuer when unset", func(t *testing.T) {
+		cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+		assert.Equal(t, testIssuer, oauth2BrowserBaseURL(&fasthttp.RequestCtx{}, cfg))
+	})
+
+	t.Run("is the configured value, without a trailing slash, whatever the request host", func(t *testing.T) {
+		cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+		cfg.ClientConfig.OAuth2ServerConfig.BrowserBaseURL = schemas.NewSecretVar(testBrowserBase + "/")
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetHost("evil.example")
+		assert.Equal(t, testBrowserBase, oauth2BrowserBaseURL(ctx, cfg))
+		assert.Equal(t, testIssuer, oauth2IssuerURL(ctx, cfg), "the issuer does not move")
 	})
 }
 

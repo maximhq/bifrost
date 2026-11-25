@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"testing"
 	"time"
 
@@ -248,6 +249,23 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 		// The flow is now consented and bound to the VK row id.
 		assert.Equal(t, "vk", store.authReqs["flow-1"].BfMode)
 		assert.Equal(t, "vk-row-1", store.authReqs["flow-1"].BfSub)
+	})
+
+	t.Run("iss stays the issuer when browser_base_url is set", func(t *testing.T) {
+		store := newConsentStore()
+		store.vksByValue["sk-bf-active"] = activeVK
+		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+		h := newConsentHandler(store, nil, false)
+		h.store.ClientConfig.OAuth2ServerConfig.BrowserBaseURL = schemas.NewSecretVar(testBrowserBase)
+		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-active"}`)
+		h.flowSubmit(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+		var resp consentFlowSubmitResponse
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		redirect, err := url.Parse(resp.RedirectURL)
+		require.NoError(t, err)
+		assert.Equal(t, testIssuer, redirect.Query().Get("iss"))
 	})
 
 	t.Run("inactive VK is rejected", func(t *testing.T) {
