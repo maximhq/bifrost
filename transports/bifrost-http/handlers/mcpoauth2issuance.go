@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
@@ -47,13 +49,48 @@ type OAuth2IssuanceHandler struct {
 	// extensions serves grant types the handler does not; nil when none.
 	extensions     OAuth2Extensions
 	clientMetadata *oauth2ClientMetadataResolver // resolves Client ID Metadata Document client_ids
+	// registerLimiter bounds dynamic client registrations per remote address.
+	registerLimiter *ipRateLimiter
 }
+
+// Dynamic client registration is anonymous and each accepted registration is a
+// stored row that the orphan sweep keeps for a day. An MCP client registers once
+// and caches its client_id, so a real deployment sees a handful of registrations
+// per address. The limit sits far above that and bounds how fast one address can
+// add rows. Like the other limiters here it is keyed by the remote address and
+// keeps its windows in a live-store table.
+const (
+	oauth2RegisterLimit       = 60
+	oauth2RegisterLimitWindow = time.Hour
+	// oauth2RegisterWindowsTable is the live-store table the registration limit
+	// keeps its per-address windows in.
+	oauth2RegisterWindowsTable = "oauth2_register_windows"
+)
 
 // NewOAuth2IssuanceHandler creates a new issuance handler. identityResolver may
 // be nil — the VK-refresh cutoff degrades to a no-op, consistent with the
 // consent handler offering vk when no resolver is present.
 func NewOAuth2IssuanceHandler(store *lib.Config, tempTokens *temptoken.Service, identityResolver OAuth2IdentityResolver) *OAuth2IssuanceHandler {
-	return &OAuth2IssuanceHandler{store: store, tempTokens: tempTokens, identityResolver: identityResolver, clientMetadata: defaultClientMetadataResolver}
+	return &OAuth2IssuanceHandler{
+		store: store, tempTokens: tempTokens, identityResolver: identityResolver, clientMetadata: defaultClientMetadataResolver,
+	}
+}
+
+// LimitRegistrations bounds dynamic client registrations per remote address,
+// keeping the windows in live. It is called once, on the handler whose routes
+// are registered; a handler built only to issue tokens serves no registration
+// and needs none. A live store holds one table of a name, so a second handler
+// on the same store cannot take the limit as well.
+func (h *OAuth2IssuanceHandler) LimitRegistrations(live *livestore.Store) error {
+	if live == nil {
+		return fmt.Errorf("oauth2 registration limit: %w", livestore.ErrNoLiveStore)
+	}
+	limiter, err := newIPRateLimiter(live, oauth2RegisterWindowsTable, oauth2RegisterLimit, oauth2RegisterLimitWindow)
+	if err != nil {
+		return err
+	}
+	h.registerLimiter = limiter
+	return nil
 }
 
 // Bounds on the client-controlled free-text fields of the issuance endpoints.
@@ -207,6 +244,16 @@ func (h *OAuth2IssuanceHandler) handleRegister(ctx *fasthttp.RequestCtx) {
 	grantTypes, responseTypes, scope, metadataErr := validateOAuth2ClientMetadata(h.store, req)
 	if metadataErr != nil {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, metadataErr.code, metadataErr.description)
+		return
+	}
+
+	// Counted once the request is a valid registration, so a client retrying a
+	// malformed body does not spend its allowance. A valid attempt counts whether
+	// or not the insert below succeeds: a store that is failing must not become a
+	// way to retry without limit.
+	if h.registerLimiter != nil && !h.registerLimiter.allow(ctx.RemoteIP().String(), time.Now()) {
+		ctx.Response.Header.Set("Retry-After", strconv.Itoa(int(oauth2RegisterLimitWindow.Seconds())))
+		sendOAuthError(ctx, fasthttp.StatusTooManyRequests, "temporarily_unavailable", "too many client registrations from this address; try again later")
 		return
 	}
 
