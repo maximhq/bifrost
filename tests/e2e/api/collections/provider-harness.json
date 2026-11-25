@@ -351593,6 +351593,125 @@
           }
         }
       ]
+    },
+    {
+      "name": "388. Virtual key model listing pages past pages it filters to empty (list-models-vk-paging) (PR #10275)",
+      "description": "The unscoped GET /v1/models walks each provider's listing 1,000 rows a page, and governance filters every page to the models the virtual key allows after the provider has paginated it. The walk used to stop at the first page that came back empty, so a key whose allowed models sit past row 1,000 got an empty or truncated listing, although the page still carried a next_page_token. The case walks the provider-scoped huggingface listing (the largest catalog in the integration profile, as in folder 262), creates a virtual key whose huggingface allowlist names only the last model of that listing, lists the unscoped /v1/models with the key, and asserts the listing is exactly that model. It fails on a gateway that stops at an empty filtered page and passes with PR #10275.",
+      "item": [
+        {
+          "name": "/v1/models - virtual key allowing one huggingface model past row 1,000 lists it - huggingface - #10275",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls ----",
+                  "// Walk the provider-scoped huggingface listing (1,000 rows a page, the size the aggregate walks",
+                  "// each provider with), pick its last model, and create a virtual key whose huggingface allowlist",
+                  "// names only that model. Every earlier page of the unscoped listing then filters to empty.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.unset('listPagingVkId');",
+                  "pm.collectionVariables.unset('listPagingVkValue');",
+                  "pm.collectionVariables.unset('listPagingModel');",
+                  "var scoped = [];",
+                  "var pages = 0;",
+                  "function fail(msg) { pm.test('setup: ' + msg, function () { pm.expect.fail(msg); }); }",
+                  "function createKey() {",
+                  "  if (scoped.length <= 1000) { return fail('scoped huggingface listing has ' + scoped.length + ' rows; the case needs more than one 1,000-row page'); }",
+                  "  var id = scoped[scoped.length - 1];",
+                  "  var model = id.indexOf('huggingface/') === 0 ? id.slice('huggingface/'.length) : id;",
+                  "  pm.collectionVariables.set('listPagingModel', 'huggingface/' + model);",
+                  "  pm.sendRequest({",
+                  "    url: BASE + '/api/governance/virtual-keys',",
+                  "    method: 'POST',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({",
+                  "      name: 'harness-list-paging-' + run,",
+                  "      provider_configs: [{ provider: 'huggingface', allowed_models: [model], key_ids: ['*'] }]",
+                  "    }) }",
+                  "  }, function (err, res) {",
+                  "    var j = null; try { j = res.json(); } catch (e) { j = null; }",
+                  "    var vk = (j || {}).virtual_key || {};",
+                  "    var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "    pm.test('setup: virtual key allowing one huggingface model from row ' + scoped.length + ' created', function () {",
+                  "      pm.expect(err, String(err)).to.not.be.ok;",
+                  "      pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200);",
+                  "      pm.expect(value, res ? res.text() : 'no response').to.be.a('string').and.not.empty;",
+                  "    });",
+                  "    pm.collectionVariables.set('listPagingVkId', vk.id || '');",
+                  "    pm.collectionVariables.set('listPagingVkValue', value || '');",
+                  "  });",
+                  "}",
+                  "function walk(token) {",
+                  "  var url = BASE + '/v1/models?provider=huggingface&page_size=1000' + (token ? '&page_token=' + encodeURIComponent(token) : '');",
+                  "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+                  "    if (err) { return fail('scoped listing request error: ' + err); }",
+                  "    if (res.code !== 200) { return fail('scoped page ' + (pages + 1) + ' returned ' + res.code + ': ' + res.text().slice(0, 2000)); }",
+                  "    pages++;",
+                  "    var body = res.json();",
+                  "    (body.data || []).forEach(function (m) { scoped.push(m.id); });",
+                  "    if (body.next_page_token) {",
+                  "      if (pages < 20) { return walk(body.next_page_token); }",
+                  "      return fail('scoped listing still had a next_page_token after ' + pages + ' pages');",
+                  "    }",
+                  "    createKey();",
+                  "  });",
+                  "}",
+                  "walk('');"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var vkId = pm.collectionVariables.get('listPagingVkId');",
+                  "var model = pm.collectionVariables.get('listPagingModel');",
+                  "var ids = [];",
+                  "if (pm.response.code === 200) { ids = (pm.response.json().data || []).map(function (m) { return m.id; }); }",
+                  "pm.test('unscoped /v1/models with the virtual key answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 2000)).to.equal(200);",
+                  "});",
+                  "pm.test('the allowed model past the first 1,000 rows is listed, and nothing else', function () {",
+                  "  pm.expect(model, 'setup did not pick a model').to.be.a('string').and.not.empty;",
+                  "  pm.expect(ids, 'listed: ' + JSON.stringify(ids.slice(0, 20))).to.eql([model]);",
+                  "});",
+                  "// Reused gateways and persistent config stores would otherwise keep the key.",
+                  "if (vkId) {",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + vkId, method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: virtual key deleted', function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : String(err))).to.eql(200); });",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{listPagingVkValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

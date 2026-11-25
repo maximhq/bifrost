@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -430,6 +431,64 @@ func TestListAllModelsLastKnownModelsPassThroughPostHooks(t *testing.T) {
 	}
 	if containsModelID(resp, "groq/llama-guard-4") {
 		t.Fatalf("last-known model the plugin's PostLLMHook drops leaked into the aggregate; got %v", modelIDs(resp))
+	}
+}
+
+// A plugin narrows each listed page after the provider paginates it, so a page can come back
+// empty while the provider still has more. The aggregate must keep following NextPageToken past
+// such pages, and stop when the token runs out rather than at MaxPaginationRequests.
+func TestListAllModelsContinuesPastPagesAPluginEmptied(t *testing.T) {
+	const totalModels = 4*schemas.DefaultPageSize + 1
+	ids := make([]string, totalModels)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("model-%05d", i)
+	}
+	// Pages 1, 2 and 4 hold only denied models; the two allowed ones are on pages 3 and 5.
+	allowed := []string{ids[2*schemas.DefaultPageSize], ids[4*schemas.DefaultPageSize]}
+	deny := make(map[string]bool, totalModels)
+	for _, id := range ids {
+		deny[id] = true
+	}
+	for _, id := range allowed {
+		delete(deny, id)
+	}
+
+	var fetches atomic.Int32
+	listing := openAIStyleModelsHandler(ids...)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		listing(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
+	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+	tuneProviderForTest(t, account, schemas.OpenAI)
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: []schemas.LLMPlugin{&modelDenyPlugin{deny: deny}},
+	})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bfErr != nil {
+		t.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
+	}
+	want := []string{"openai/" + allowed[0], "openai/" + allowed[1]}
+	if got := modelIDs(resp); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("aggregate listed %v; want exactly %v", got, want)
+	}
+	// One upstream fetch per page: five pages, then the token runs out.
+	if got := fetches.Load(); got != 5 {
+		t.Fatalf("upstream fetched %d times; want 5, one per page of %d models", got, totalModels)
 	}
 }
 
