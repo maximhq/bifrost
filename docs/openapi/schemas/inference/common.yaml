@@ -44,6 +44,7 @@ ModelProvider:
     - baseten
     - kimchi
     - soniox
+    - oruk
 
 Fallback:
   type: object

@@ -3858,6 +3858,48 @@ func TestCalculateCost_TranscriptionProviderComputedCostPassthrough(t *testing.T
 	assert.InDelta(t, 0.001705, s.CalculateCost(streamResp, nil), 1e-12)
 }
 
+func TestCalculateCost_OrukFourier2BTranscriptionDurationPricing(t *testing.T) {
+	// Oruk Fourier 2B hosted API rate: $0.0080/minute ($0.0001333333.../second).
+	perSecond := 0.008 / 60.0
+	pricing := configstoreTables.TableModelPricing{
+		Model:                      "oruk-fourier-2b",
+		Provider:                   "oruk",
+		Mode:                       "audio_transcription",
+		InputCostPerAudioPerSecond: bifrost.Ptr(perSecond),
+	}
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+
+	var usage60 schemas.TranscriptionUsage
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"duration","seconds":60}`), &usage60))
+	resp60 := &schemas.BifrostResponse{
+		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{
+			Text:  "one minute sample",
+			Usage: &usage60,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.TranscriptionRequest,
+				RoutingInfo: routingInfoFor(schemas.Oruk, "oruk-fourier-2b"),
+			},
+		},
+	}
+	assert.InDelta(t, 0.008, s.CalculateCost(resp60, nil), 1e-12)
+
+	var usage30 schemas.TranscriptionUsage
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"duration","seconds":30}`), &usage30))
+	resp30 := &schemas.BifrostResponse{
+		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{
+			Text:  "half minute sample",
+			Usage: &usage30,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.TranscriptionRequest,
+				RoutingInfo: routingInfoFor(schemas.Oruk, "oruk-fourier-2b"),
+			},
+		},
+	}
+	assert.InDelta(t, 0.004, s.CalculateCost(resp30, nil), 1e-12)
+}
+
 // Video/3D provider-reported cost hangs off VideoGenerationResponse.Usage.Cost. Runware reports an
 // exact per-task price (and 3D has no datasheet rate), so the reported cost must win verbatim.
 func TestCalculateCost_VideoProviderComputedCostPassthrough(t *testing.T) {

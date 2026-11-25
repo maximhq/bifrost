@@ -94,6 +94,7 @@ const (
 	Baseten       ModelProvider = "baseten"
 	Kimchi        ModelProvider = "kimchi"
 	Soniox        ModelProvider = "soniox"
+	Oruk          ModelProvider = "oruk"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -151,6 +152,7 @@ var StandardProviders = []ModelProvider{
 	Baseten,
 	Kimchi,
 	Soniox,
+	Oruk,
 }
 
 // RequestType represents the type of request being made to a provider.
