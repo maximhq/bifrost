@@ -365,7 +365,7 @@ func TestLoadAllIndexesAndInterned(t *testing.T) {
 	if ts, ok := f.tags.Get(g1.Set); !ok || ts.Tag != "a" {
 		t.Fatalf("interned tag = %+v, %v", ts, ok)
 	}
-	if got := ids(f.items.List("parent:group", "g1"), func(i *item) string { return i.ID }); !slices.Equal(got, []string{"i1", "i2"}) {
+	if got := ids(f.items.List(ParentIndex(Kind("group")), "g1"), func(i *item) string { return i.ID }); !slices.Equal(got, []string{"i1", "i2"}) {
 		t.Fatalf("children of g1 = %v", got)
 	}
 }
@@ -382,13 +382,13 @@ func TestListOfOneRecordSkipsIDAndSort(t *testing.T) {
 	}
 	f.idOf.Store(0)
 
-	if got := ids(f.items.List("parent:group", "g2"), func(i *item) string { return i.ID }); !slices.Equal(got, []string{"i3"}) {
+	if got := ids(f.items.List(ParentIndex(Kind("group")), "g2"), func(i *item) string { return i.ID }); !slices.Equal(got, []string{"i3"}) {
 		t.Fatalf("children of g2 = %v", got)
 	}
-	if allocs := testing.AllocsPerRun(100, func() { f.items.List("parent:group", "g2") }); !raceEnabled && allocs > 1 {
+	if allocs := testing.AllocsPerRun(100, func() { f.items.List(ParentIndex(Kind("group")), "g2") }); !raceEnabled && allocs > 1 {
 		t.Fatalf("listing one record allocated %v times, want 1", allocs)
 	}
-	if got := ids(f.items.List("parent:group", "g1"), func(i *item) string { return i.ID }); !slices.Equal(got, []string{"i1", "i2"}) {
+	if got := ids(f.items.List(ParentIndex(Kind("group")), "g1"), func(i *item) string { return i.ID }); !slices.Equal(got, []string{"i1", "i2"}) {
 		t.Fatalf("children of g1 = %v", got)
 	}
 	if n := f.idOf.Load(); n != 0 {
@@ -789,10 +789,10 @@ func TestParentRefreshKeepsAChildThatMovedToAnotherParent(t *testing.T) {
 	if it, ok := f.items.Get("i2"); !ok || it.GroupID != "g2" {
 		t.Fatalf("i2 = %+v, %v; want it kept under its new parent g2", it, ok)
 	}
-	if got := ids(f.items.List("parent:group", "g2"), func(i *item) string { return i.ID }); !slices.Equal(got, []string{"i2", "i3"}) {
+	if got := ids(f.items.List(ParentIndex("group"), "g2"), func(i *item) string { return i.ID }); !slices.Equal(got, []string{"i2", "i3"}) {
 		t.Fatalf("children of g2 = %v", got)
 	}
-	if got := ids(f.items.List("parent:group", "g1"), func(i *item) string { return i.ID }); !slices.Equal(got, []string{"i1"}) {
+	if got := ids(f.items.List(ParentIndex("group"), "g1"), func(i *item) string { return i.ID }); !slices.Equal(got, []string{"i1"}) {
 		t.Fatalf("children of g1 = %v", got)
 	}
 	if v, ok := usage.Get("i2"); !ok || *v != 7 {
@@ -1295,7 +1295,7 @@ func TestConcurrentReadsDuringRefresh(t *testing.T) {
 					f.groups.Get("g1")
 					f.groups.GetBy("name", "n1")
 					f.groups.List("tag", "a")
-					f.items.List("parent:group", "g1")
+					f.items.List(ParentIndex(Kind("group")), "g1")
 				}
 			}
 		}()
@@ -1335,7 +1335,7 @@ func TestIndexWriteDoesNotCopyTheKeysRecords(t *testing.T) {
 	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
 		t.Fatalf("adding 100 records under a key holding 20000 allocated %d bytes; an index write must not copy the key's records", grew)
 	}
-	if got := len(f.items.List("parent:group", "g")); got != 20100 {
+	if got := len(f.items.List(ParentIndex(Kind("group")), "g")); got != 20100 {
 		t.Fatalf("the key lists %d records, want 20100", got)
 	}
 }
@@ -1369,11 +1369,11 @@ func TestIndexReadsDuringWritesToTheSameKey(t *testing.T) {
 		wg.Wait()
 	})
 	for range 2000 {
-		list := f.items.List("parent:group", "g")
+		list := f.items.List(ParentIndex(Kind("group")), "g")
 		if len(list) == 0 || list[0].ID != "a-stays" {
 			t.Fatalf("List lost the record that never left: %d records", len(list))
 		}
-		if got, ok := f.items.GetBy("parent:group", "g"); !ok || got.ID != "a-stays" {
+		if got, ok := f.items.GetBy(ParentIndex(Kind("group")), "g"); !ok || got.ID != "a-stays" {
 			t.Fatalf("GetBy = %v, %v; want the lowest ID, a-stays", got, ok)
 		}
 	}

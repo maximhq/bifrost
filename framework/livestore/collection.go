@@ -156,10 +156,11 @@ func Uses[T, V any](interned *Interned[V], ref func(*T) Hash) Option[T] {
 // byParent no longer returns is read by ID: it is dropped when its row is gone, or names no
 // parent on a Cascade link, and kept otherwise, as when the
 // row moved to another parent. Removing a parent removes its children (Cascade) or re-reads them
-// (SetNull). ChildOf does not order kinds; dependsOn does.
+// (SetNull). ChildOf does not order kinds; dependsOn does. It indexes the children by parent
+// under ParentIndex(parent).
 func ChildOf[T any](parent Kind, parentID func(*T) string, byParent func(ctx context.Context, db *gorm.DB, parentIDs []string) ([]*T, error), onDelete OnDelete) Option[T] {
 	return func(c *Collection[T]) error {
-		name := "parent:" + string(parent)
+		name := ParentIndex(parent)
 		if err := c.addIndex(&keyIndex[T]{name: name, keys: singleKey(parentID)}); err != nil {
 			return err
 		}
@@ -224,6 +225,10 @@ func ShareIDs[T any](share func(rec *T, shared func(kind Kind, id string) string
 		return nil
 	}
 }
+
+// ParentIndex names the index ChildOf adds on a child collection, under which List finds the
+// children of one parent.
+func ParentIndex(parent Kind) string { return "parent_" + string(parent) }
 
 // WithNegativeTTL makes Load remember a miss for ttl, so an ID with no row is read at most once
 // per ttl. The misses are kept in a table the store owns, named internal:negative_<kind>, which
