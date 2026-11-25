@@ -17,6 +17,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/complexity/suggest"
@@ -55,7 +57,7 @@ func suggestionPlugin(t *testing.T) (*RoutingPlugin, logstore.LogStore, *[]strin
 func suggestionPluginWith(t *testing.T, settings *configstore.ComplexitySuggestionsConfig) (*RoutingPlugin, logstore.LogStore, *[]string) {
 	t.Helper()
 	p := newCapturePlugin(t, settings)
-	p.startComplexitySuggestions(context.Background(), 0)
+	startTestSuggestions(t, context.Background(), p)
 	store := suggestionTestStore(t)
 	p.SetComplexitySuggestionStore(store, func(_ context.Context, ids []string, _ int) (map[string]string, error) {
 		out := map[string]string{}
@@ -928,7 +930,7 @@ func TestComplexitySuggestionsRunNowNeedsAServingBank(t *testing.T) {
 	p := &RoutingPlugin{logger: logger, semanticClassifier: complexity.NewSemanticClassifier(ctx, logger)}
 	p.routerMatcher = newTestRouterMatcher(t)
 	p.startComplexityCapture(ctx, time.Hour, time.Hour)
-	p.startComplexitySuggestions(ctx, 0)
+	startTestSuggestions(t, ctx, p)
 	t.Cleanup(func() { _ = p.Cleanup() })
 	store := suggestionTestStore(t)
 	p.SetComplexitySuggestionStore(store, func(context.Context, []string, int) (map[string]string, error) { return nil, nil })
@@ -1403,7 +1405,7 @@ func TestComplexitySuggestionsRefusedOnChromem(t *testing.T) {
 	settings := suggestionTestSettings()
 	settings.Schedule = hourlyFrom(start)
 	p := newCapturePluginWithStore(t, settings, false)
-	p.startComplexitySuggestions(context.Background(), 0)
+	startTestSuggestions(t, context.Background(), p)
 	store := suggestionTestStore(t)
 	p.SetComplexitySuggestionStore(store, func(context.Context, []string, int) (map[string]string, error) { return nil, nil })
 	ctx := context.Background()
@@ -1580,4 +1582,37 @@ func TestComplexitySuggestionsCancelNeverOverwritesAFinishedRun(t *testing.T) {
 	require.Len(t, runs, 1)
 	assert.Equal(t, logstore.ComplexitySuggestionRunSucceeded, runs[0].Status, "the outcome that landed is kept")
 	assert.EqualValues(t, 2, runs[0].Created)
+}
+
+// TestSuggestionScheduleViewGoesWithItsRouter checks this process's view of a router's next run is
+// state of the router: removing the router drops it, where it used to stay until the plugin
+// was rebuilt.
+func TestSuggestionScheduleViewGoesWithItsRouter(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	p := &RoutingPlugin{logger: logger}
+	startTestSuggestions(t, context.Background(), p)
+	t.Cleanup(p.closeComplexitySuggestions)
+	at := time.Now().Add(time.Hour)
+	p.suggestions.rememberNext("router-1", "hash", at)
+	p.suggestions.rememberNext("router-2", "hash", at)
+
+	require.NoError(t, p.live.LoadRecords(context.Background(), []livestore.Record{
+		livestore.Rec(p.live.Collections.ModelRouters, &registry.ModelRouter{Router: configstore.ModelRouter{ID: "router-1"}}),
+		livestore.Rec(p.live.Collections.ModelRouters, &registry.ModelRouter{Router: configstore.ModelRouter{ID: "router-2"}}),
+	}))
+	require.NoError(t, p.live.Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindModelRouter, ID: "router-1", Remove: true}}))
+
+	assert.Equal(t, complexitySuggestionNext{}, p.suggestions.cachedNext("router-1"), "a removed router's next run goes with it")
+	assert.Equal(t, complexitySuggestionNext{hash: "hash", at: at}, p.suggestions.cachedNext("router-2"))
+}
+
+// startTestSuggestions starts p's suggestion runner, its schedule view in a new live store closed
+// when the test ends, as InitFromStore does in the rule store's.
+func startTestSuggestions(t *testing.T, ctx context.Context, p *RoutingPlugin) {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	p.live = live
+	require.NoError(t, p.startComplexitySuggestions(ctx, 0))
 }
