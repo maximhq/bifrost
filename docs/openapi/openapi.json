@@ -151542,7 +151542,7 @@
           },
           "upstream_health": {
             "type": "array",
-            "description": "What the gateway has recently observed from each upstream provider/model pair this key can reach (its provider configs, allowed and blacklisted models). A pair appears once a request to it failed upstream; a pair that has only succeeded is absent and available. Only requests served from the provider's shared key pool are recorded: one pinned to a key by ID or name, one bringing its own credential, or one limited to some of the provider's keys is not. A streamed request is recorded when its stream ends. State is in memory per gateway process and starts empty on restart.\n",
+            "description": "What the gateway has recently observed from each upstream provider/model pair this key can reach (its provider configs, allowed and blacklisted models, and with `allow_all_providers` every configured provider it names no config for). A pair appears once a request to it failed upstream; a pair that has only succeeded is absent and available. Only requests served from the provider's shared key pool are recorded: one pinned to a key by ID or name, one bringing its own credential, or one limited to some of the provider's keys is not. A streamed request is recorded when its stream ends. State is in memory per gateway process and starts empty on restart.\n",
             "items": {
               "type": "object",
               "required": [
@@ -151571,7 +151571,7 @@
                     "degraded",
                     "cooling_down"
                   ],
-                  "description": "`cooling_down` while every key the gateway tried was refused for a reason waiting is needed for (rate limit, quota, credential, model access, region block, retired model), until the cooldown passes or a request to the pair succeeds; `degraded` when the pair has failed since its last success, the latest failure is inside the window and no cooldown is running: a transient failure (5xx, network, timeout), a refusal whose cooldown has passed, or a stream that failed after reaching the client; `available` otherwise.\n"
+                  "description": "`cooling_down` while every key in the pair's pool was refused for a reason waiting is needed for (rate limit, quota, credential, model access, region block, retired model), until the cooldown passes or a request to the pair succeeds; `degraded` when the pair has failed since its last success, the latest failure is inside the window and no cooldown is running: a transient failure (5xx, network, timeout), a refusal whose cooldown has passed, or a stream that failed after reaching the client; `available` otherwise.\n"
                 },
                 "available": {
                   "type": "boolean",

@@ -71,6 +71,19 @@ type upstreamHealthTracker struct {
 	entries map[upstreamHealthKey]*upstreamHealthState
 }
 
+// upstreamCooldownEffect is what a recorded failure does to the pair's cooldown.
+type upstreamCooldownEffect int
+
+const (
+	// cooldownStart starts (or extends) a cooldown: every key in the pool was refused.
+	cooldownStart upstreamCooldownEffect = iota
+	// cooldownKeep leaves any cooldown as it was: the chain stopped before every key had been
+	// refused, so another key may still serve the pair.
+	cooldownKeep
+	// cooldownEnd ends any cooldown: the upstream had accepted the request before failing it.
+	cooldownEnd
+)
+
 // upstreamCooldown returns how long a pair stays unavailable after a final failure of class,
 // and false for a class that does not make the pair unavailable.
 func upstreamCooldown(class schemas.FailureClass, retryAfterMs int64, consecutive int) (time.Duration, bool) {
@@ -160,11 +173,10 @@ func (t *upstreamHealthTracker) recordSuccess(provider schemas.ModelProvider, mo
 	st.mu.Unlock()
 }
 
-// recordFailure records the final failure of one provider attempt chain. accepted reports that
-// the upstream had accepted the request before failing it (a stream that failed after reaching
-// the client): that counts as a failure, but no other key could have taken over and the upstream
-// did serve the pair, so it ends any cooldown instead of starting one.
-func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, model string, class schemas.FailureClass, statusCode *int, retryAfterMs int64, accepted bool, now time.Time) {
+// recordFailure records the final failure of one provider attempt chain; effect says what it does
+// to the pair's cooldown. A stream that failed after reaching the client ends it: that counts as
+// a failure, but no other key could have taken over and the upstream did serve the pair.
+func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, model string, class schemas.FailureClass, statusCode *int, retryAfterMs int64, effect upstreamCooldownEffect, now time.Time) {
 	if model == "" || !recordsUpstreamFailure(class) {
 		return
 	}
@@ -215,8 +227,11 @@ func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, mo
 	if class == schemas.FailureClassRateLimit || class == schemas.FailureClassQuota {
 		bucket.rateLimits++
 	}
-	if accepted {
+	switch effect {
+	case cooldownEnd:
 		st.cooldownUntil = time.Time{}
+		return
+	case cooldownKeep:
 		return
 	}
 	if d, ok := upstreamCooldown(class, retryAfterMs, st.consecutiveFailures); ok {
@@ -334,15 +349,54 @@ func upstreamPoolShared(ctx *schemas.BifrostContext, baseProvider schemas.ModelP
 	return !restricted
 }
 
-// recordUpstreamOutcome records the outcome of one provider attempt chain.
-func (bifrost *Bifrost) recordUpstreamOutcome(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, err *schemas.BifrostError) {
+// recordUpstreamOutcome records the outcome of one provider attempt chain over a pool of
+// poolSize keys.
+func (bifrost *Bifrost) recordUpstreamOutcome(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, err *schemas.BifrostError, poolSize int) {
 	now := time.Now()
 	if err == nil {
 		bifrost.upstreamHealth.recordSuccess(provider, model, now)
 		return
 	}
 	class, statusCode, retryAfter := upstreamFinalFailure(ctx, err, now)
-	bifrost.upstreamHealth.recordFailure(provider, model, class, statusCode, retryAfter, false, now)
+	effect := cooldownStart
+	if !upstreamPoolRefused(ctx, poolSize) {
+		effect = cooldownKeep
+	}
+	bifrost.upstreamHealth.recordFailure(provider, model, class, statusCode, retryAfter, effect, now)
+}
+
+// upstreamPoolRefused reports whether a refusal came back from every key of a poolSize-key pool
+// during this chain. The retry budget can end a chain before every key was tried (MaxRetries 0
+// stops after the first rate limit), and a key never tried may still serve the pair, so only a
+// refusal from each key puts the pair in cooldown. A pool of at most one key is refused by its
+// final failure.
+func upstreamPoolRefused(ctx *schemas.BifrostContext, poolSize int) bool {
+	if poolSize <= 1 {
+		return true
+	}
+	if ctx == nil {
+		return false
+	}
+	trail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+	refused := 0
+	for i := range trail {
+		if trail[i].KeyID == "" || !trail[i].FailureClass.IsPerKey() {
+			continue
+		}
+		// The trail is bounded by the retry budget, so counting distinct keys by scanning back
+		// costs less than a set.
+		seen := false
+		for j := range i {
+			if trail[j].KeyID == trail[i].KeyID && trail[j].FailureClass.IsPerKey() {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			refused++
+		}
+	}
+	return refused >= poolSize
 }
 
 // recordUpstreamStreamEnd records how a stream that reached the client ended. A failure counts
@@ -354,5 +408,5 @@ func (bifrost *Bifrost) recordUpstreamStreamEnd(provider schemas.ModelProvider, 
 		bifrost.upstreamHealth.recordSuccess(provider, model, now)
 		return
 	}
-	bifrost.upstreamHealth.recordFailure(provider, model, ClassifyFailure(err), err.StatusCode, 0, true, now)
+	bifrost.upstreamHealth.recordFailure(provider, model, ClassifyFailure(err), err.StatusCode, 0, cooldownEnd, now)
 }

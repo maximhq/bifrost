@@ -33,7 +33,7 @@ func findUpstreamHealth(t *testing.T, snap []schemas.UpstreamHealth, provider sc
 
 func TestUpstreamHealthRateLimitCoolsDownUntilRetryAfter(t *testing.T) {
 	b := &Bifrost{}
-	b.recordUpstreamOutcome(nil, schemas.Anthropic, "claude-x", upstreamError(429, "rate_limit_error", 20_000))
+	b.recordUpstreamOutcome(nil, schemas.Anthropic, "claude-x", upstreamError(429, "rate_limit_error", 20_000), 0)
 
 	now := time.Now()
 	h := findUpstreamHealth(t, b.UpstreamHealthSnapshot(now), schemas.Anthropic, "claude-x")
@@ -55,8 +55,8 @@ func TestUpstreamHealthRateLimitCoolsDownUntilRetryAfter(t *testing.T) {
 
 func TestUpstreamHealthSuccessClearsCooldown(t *testing.T) {
 	b := &Bifrost{}
-	b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", upstreamError(429, "insufficient_quota", 0))
-	b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", nil)
+	b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", upstreamError(429, "insufficient_quota", 0), 0)
+	b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", nil, 0)
 
 	h := findUpstreamHealth(t, b.UpstreamHealthSnapshot(time.Now()), schemas.OpenAI, "gpt-x")
 	if !h.Available || h.Status != schemas.UpstreamHealthAvailable || h.ConsecutiveFailures != 0 || h.LastSuccessAt == nil {
@@ -66,8 +66,8 @@ func TestUpstreamHealthSuccessClearsCooldown(t *testing.T) {
 
 func TestUpstreamHealthIgnoresCallerFaultsAndUntrackedSuccesses(t *testing.T) {
 	b := &Bifrost{}
-	b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", upstreamError(400, "invalid_request_error", 0))
-	b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-y", nil)
+	b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", upstreamError(400, "invalid_request_error", 0), 0)
+	b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-y", nil, 0)
 	if snap := b.UpstreamHealthSnapshot(time.Now()); len(snap) != 0 {
 		t.Fatalf("expected no tracked pairs, got %+v", snap)
 	}
@@ -86,7 +86,7 @@ func TestUpstreamHealthCredentialsExhaustedUsesAttemptTrail(t *testing.T) {
 		Error:       &schemas.ErrorField{Type: schemas.Ptr("upstream_credentials_exhausted"), Message: "all keys dead"},
 		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeProviderCredentialsExhausted},
 	}
-	b.recordUpstreamOutcome(ctx, schemas.Gemini, "gemini-x", exhausted)
+	b.recordUpstreamOutcome(ctx, schemas.Gemini, "gemini-x", exhausted, 0)
 
 	h := findUpstreamHealth(t, b.UpstreamHealthSnapshot(time.Now()), schemas.Gemini, "gemini-x")
 	if h.Available || h.FailureClass != schemas.FailureClassRateLimit || h.StatusCode == nil || *h.StatusCode != 429 {
@@ -121,7 +121,7 @@ func TestUpstreamHealthTrailHintCountsFromAnswer(t *testing.T) {
 	}
 
 	var tracker upstreamHealthTracker
-	tracker.recordFailure(schemas.Gemini, "gemini-x", class, status, hint, false, end)
+	tracker.recordFailure(schemas.Gemini, "gemini-x", class, status, hint, cooldownStart, end)
 	if h := findUpstreamHealth(t, tracker.snapshot(t0.Add(20*time.Second-time.Millisecond)), schemas.Gemini, "gemini-x"); h.Available {
 		t.Fatalf("expected cooling down before the first answer plus its hint, got %+v", h)
 	}
@@ -141,7 +141,7 @@ func TestUpstreamHealthTrailHintCountsFromAnswer(t *testing.T) {
 // update, or the update lands on a pair no snapshot reports.
 func TestUpstreamHealthFailureHoldsTrackerUntilPairLocked(t *testing.T) {
 	b := &Bifrost{}
-	b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", upstreamError(503, "server_error", 0))
+	b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", upstreamError(503, "server_error", 0), 0)
 	st := b.upstreamHealth.entries[upstreamHealthKey{schemas.OpenAI, "gpt-x"}]
 	if st == nil {
 		t.Fatal("expected the first failure to track the pair")
@@ -151,7 +151,7 @@ func TestUpstreamHealthFailureHoldsTrackerUntilPairLocked(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", upstreamError(503, "server_error", 0))
+		b.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", upstreamError(503, "server_error", 0), 0)
 	}()
 	// While the second failure waits for the pair, a writer must not get the tracker. Two misses in
 	// a row rule out catching the lookup's own brief read lock.
@@ -180,7 +180,7 @@ func TestUpstreamHealthCountsEveryFailureInWindow(t *testing.T) {
 	b := &Bifrost{}
 	const failures = 40
 	for range failures {
-		b.recordUpstreamOutcome(nil, schemas.Anthropic, "claude-x", upstreamError(429, "rate_limit_error", 0))
+		b.recordUpstreamOutcome(nil, schemas.Anthropic, "claude-x", upstreamError(429, "rate_limit_error", 0), 0)
 	}
 
 	now := time.Now()
@@ -196,14 +196,70 @@ func TestUpstreamHealthCountsEveryFailureInWindow(t *testing.T) {
 	}
 }
 
-// newUpstreamHealthTestClient serves two OpenAI keys, key-a and key-b, from handler.
-func newUpstreamHealthTestClient(t *testing.T, handler http.HandlerFunc) *Bifrost {
+// The tracker runs once per provider attempt chain on the request path: a success on a pair never
+// seen failing (the common case) takes a read lock and one map lookup, a success on a tracked pair
+// also takes the pair's lock, and a failure updates the pair.
+func BenchmarkUpstreamHealthRecordOutcome(b *testing.B) {
+	failure := upstreamError(429, "rate_limit_error", 0)
+	b.Run("success_untracked", func(b *testing.B) {
+		client := &Bifrost{}
+		b.ReportAllocs()
+		for b.Loop() {
+			client.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", nil, 2)
+		}
+	})
+	b.Run("success_tracked", func(b *testing.B) {
+		client := &Bifrost{}
+		client.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", failure, 0)
+		b.ReportAllocs()
+		for b.Loop() {
+			client.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", nil, 2)
+		}
+	})
+	b.Run("failure_tracked", func(b *testing.B) {
+		client := &Bifrost{}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
+			{KeyID: "key-a", FailureClass: schemas.FailureClassRateLimit},
+			{KeyID: "key-b", FailureClass: schemas.FailureClassRateLimit},
+		})
+		b.ReportAllocs()
+		for b.Loop() {
+			client.recordUpstreamOutcome(ctx, schemas.OpenAI, "gpt-x", failure, 2)
+		}
+	})
+	b.Run("parallel_success_tracked", func(b *testing.B) {
+		client := &Bifrost{}
+		client.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", failure, 0)
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				client.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", nil, 2)
+			}
+		})
+	})
+	b.Run("parallel_failure_tracked", func(b *testing.B) {
+		client := &Bifrost{}
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				client.recordUpstreamOutcome(nil, schemas.OpenAI, "gpt-x", failure, 0)
+			}
+		})
+	})
+}
+
+// newUpstreamHealthTestClient serves two OpenAI keys, key-a and key-b, from handler, with
+// maxRetries retries per attempt chain.
+func newUpstreamHealthTestClient(t *testing.T, maxRetries int, handler http.HandlerFunc) *Bifrost {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 4, server.URL)
-	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = maxRetries
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = time.Millisecond
 	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
 		{ID: "key-a", Name: "key-a", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 100},
 		{ID: "key-b", Name: "key-b", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 100},
@@ -246,7 +302,7 @@ func TestUpstreamHealthRecordsOnlySharedPoolChains(t *testing.T) {
 	}
 	for _, tc := range scoped {
 		t.Run(tc.name, func(t *testing.T) {
-			client := newUpstreamHealthTestClient(t, rateLimitedHandler)
+			client := newUpstreamHealthTestClient(t, 1, rateLimitedHandler)
 			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
 			tc.scope(ctx)
 			if _, err := client.ChatCompletionRequest(ctx, upstreamHealthChatRequest()); err == nil {
@@ -259,7 +315,7 @@ func TestUpstreamHealthRecordsOnlySharedPoolChains(t *testing.T) {
 	}
 
 	t.Run("shared pool", func(t *testing.T) {
-		client := newUpstreamHealthTestClient(t, rateLimitedHandler)
+		client := newUpstreamHealthTestClient(t, 1, rateLimitedHandler)
 		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
 		if _, err := client.ChatCompletionRequest(ctx, upstreamHealthChatRequest()); err == nil {
 			t.Fatal("expected the rate-limited upstream to fail the request")
@@ -269,6 +325,55 @@ func TestUpstreamHealthRecordsOnlySharedPoolChains(t *testing.T) {
 			t.Fatalf("expected the shared pool's refusal to cool the pair down, got %+v", h)
 		}
 	})
+}
+
+// A chain the retry budget ends before every key was refused proves nothing about the keys it
+// never tried: with MaxRetries 0 a rate limit on the first key ends the chain, and the second key
+// may still serve the pair, so the pair is degraded but stays available.
+func TestUpstreamHealthPartialKeyWalkStartsNoCooldown(t *testing.T) {
+	var calls atomic.Int32
+	client := newUpstreamHealthTestClient(t, 0, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		rateLimitedHandler(w, r)
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	if _, err := client.ChatCompletionRequest(ctx, upstreamHealthChatRequest()); err == nil {
+		t.Fatal("expected the rate-limited upstream to fail the request")
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("expected MaxRetries 0 to stop after the first key, got %d upstream calls", n)
+	}
+	h := findUpstreamHealth(t, client.UpstreamHealthSnapshot(time.Now()), schemas.OpenAI, "gpt-4o-mini")
+	if !h.Available || h.Status != schemas.UpstreamHealthDegraded || h.FailureClass != schemas.FailureClassRateLimit || h.ConsecutiveFailures != 1 {
+		t.Fatalf("expected a pair with an untried key to stay available and degraded, got %+v", h)
+	}
+}
+
+// A pool is refused once each distinct key returned a per-key refusal. A partial walk counts as a
+// failure but leaves a running cooldown alone: the refusal that started it covered every key, and
+// a chain that tried fewer says nothing newer about the rest.
+func TestUpstreamPoolRefusedCountsDistinctRefusedKeys(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
+		{KeyID: "key-a", FailureClass: schemas.FailureClassRateLimit},
+		{KeyID: "key-a", FailureClass: schemas.FailureClassRateLimit},
+		{KeyID: "key-b", FailureClass: schemas.FailureClassTransient},
+	})
+	if upstreamPoolRefused(ctx, 2) {
+		t.Fatal("a pool with one refused key and one transient failure is not refused")
+	}
+	if !upstreamPoolRefused(ctx, 1) || !upstreamPoolRefused(nil, 0) {
+		t.Fatal("a single-key pool is refused by its final failure")
+	}
+
+	var tracker upstreamHealthTracker
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	tracker.recordFailure(schemas.OpenAI, "gpt-x", schemas.FailureClassRateLimit, schemas.Ptr(429), 20_000, cooldownStart, t0)
+	tracker.recordFailure(schemas.OpenAI, "gpt-x", schemas.FailureClassRateLimit, schemas.Ptr(429), 0, cooldownKeep, t0.Add(time.Second))
+	h := findUpstreamHealth(t, tracker.snapshot(t0.Add(2*time.Second)), schemas.OpenAI, "gpt-x")
+	if h.Available || h.CooldownUntil == nil || !h.CooldownUntil.Equal(t0.Add(20*time.Second)) || h.ConsecutiveFailures != 2 {
+		t.Fatalf("expected the partial walk to count but keep the running cooldown, got %+v", h)
+	}
 }
 
 // A stream records how it ended, not only that it started: one that fails after reaching the
@@ -281,7 +386,7 @@ func TestUpstreamHealthRecordsStreamOutcome(t *testing.T) {
 		completes
 	)
 	var phase atomic.Int32
-	client := newUpstreamHealthTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+	client := newUpstreamHealthTestClient(t, 1, func(w http.ResponseWriter, r *http.Request) {
 		switch phase.Load() {
 		case midStreamFailure:
 			sseHandler(

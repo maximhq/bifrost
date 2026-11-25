@@ -8348,6 +8348,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 
 		var keys []schemas.Key
+		// poolSize is the number of keys the attempt chain may rotate across; the upstream health
+		// tracker starts a cooldown only once a refusal has come back from every one of them.
+		poolSize := 0
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
 		// It is nil when no key is required (e.g. providerRequiresKey=false) or for multi-key
 		// batch/file/container operations that manage their own key lists.
@@ -8463,6 +8466,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						continue
 					}
 
+					poolSize = len(supportedKeys)
 					if len(supportedKeys) == 0 {
 						// SkipKeySelection path — keyProvider stays nil, zero Key is used.
 					} else if !canRotate {
@@ -8749,7 +8753,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// a refusal that survived the key walk puts the pair in cooldown, a success clears it.
 		// A stream that started is recorded when it ends, by its postHookRunner.
 		if recordHealth && (bifrostError != nil || !IsStreamRequestType(req.RequestType)) {
-			bifrost.recordUpstreamOutcome(req.Context, provider.GetProviderKey(), model, bifrostError)
+			bifrost.recordUpstreamOutcome(req.Context, provider.GetProviderKey(), model, bifrostError, poolSize)
 		}
 
 		// For streaming with an error, route release through the LAST attempt's
