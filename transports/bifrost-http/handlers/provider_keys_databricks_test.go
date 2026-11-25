@@ -28,8 +28,7 @@ func TestDatabricksKey_RedactedUpdateRoundTrip(t *testing.T) {
 		},
 	}
 
-	pc := &configstore.ProviderConfig{Keys: []schemas.Key{stored}}
-	redacted := pc.Redacted().Keys[0]
+	redacted := configstore.RedactedKey(stored)
 
 	if redacted.DatabricksKeyConfig == nil {
 		t.Fatal("GET dropped databricks_key_config entirely")

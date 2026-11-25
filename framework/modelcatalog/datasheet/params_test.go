@@ -20,17 +20,17 @@ import (
 
 // TestModelParameterCandidates checks alias precedence and deterministic suffix matching.
 func TestModelParameterCandidates(t *testing.T) {
-	s := NewTestStore(map[string]string{
+	s := testStore(t, map[string]string{
 		"gpt-4o-2024-08-06": "gpt-4o",
 	})
 	s.mu.Lock()
-	s.modelParameterKeys = []string{
+	s.modelParameterKeys.store([]string{
 		"gpt-5.5",
 		"openrouter/moonshotai/kimi-k2.5",
 		"openrouter/openai/gpt-5.5",
 		"openrouter/moonshotai/kimi-k2.7",
 		"openrouter/moonshotai2/kimi-k2.5",
-	}
+	})
 	s.mu.Unlock()
 
 	tests := []struct {
@@ -85,7 +85,7 @@ func TestApplyModelParameters_FiresAppliedHook(t *testing.T) {
 	}
 
 	t.Run("fires on a usable record", func(t *testing.T) {
-		s := &Store{}
+		s := testStore(t, nil)
 		fired := 0
 		s.SetOnModelParametersApplied(func() { fired++ })
 		if applied := s.applyModelParameters(usable); applied != 1 {
@@ -97,7 +97,7 @@ func TestApplyModelParameters_FiresAppliedHook(t *testing.T) {
 	})
 
 	t.Run("survives a runtime sync-config update", func(t *testing.T) {
-		s := &Store{}
+		s := testStore(t, nil)
 		fired := 0
 		s.SetOnModelParametersApplied(func() { fired++ })
 		s.UpdateSyncConfig(Config{
@@ -117,12 +117,12 @@ func TestApplyModelParameters_FiresAppliedHook(t *testing.T) {
 	// the deployment is split: an empty parameter allowlist alongside capability
 	// records that still describe the previous sheet.
 	t.Run("leaves the derived indexes untouched on an empty feed", func(t *testing.T) {
-		s := &Store{}
+		s := testStore(t, nil)
 		if applied := s.applyModelParameters(usable); applied != 1 {
 			t.Fatalf("seed applied = %d, want 1", applied)
 		}
 		s.mu.RLock()
-		seeded := len(s.supportedParams)
+		seeded := s.supportedParams.Len()
 		s.mu.RUnlock()
 
 		if applied := s.applyModelParameters(map[string]json.RawMessage{
@@ -131,7 +131,7 @@ func TestApplyModelParameters_FiresAppliedHook(t *testing.T) {
 			t.Fatalf("applied = %d, want 0", applied)
 		}
 		s.mu.RLock()
-		after := len(s.supportedParams)
+		after := s.supportedParams.Len()
 		s.mu.RUnlock()
 		if after != seeded {
 			t.Errorf("supportedParams size = %d after an empty feed, want %d (unchanged)", after, seeded)
@@ -141,7 +141,7 @@ func TestApplyModelParameters_FiresAppliedHook(t *testing.T) {
 	// The flush is what refills the cache, so a feed carrying nothing usable
 	// must not drop records it cannot replace.
 	t.Run("does not fire when every record is empty", func(t *testing.T) {
-		s := &Store{}
+		s := testStore(t, nil)
 		fired := 0
 		s.SetOnModelParametersApplied(func() { fired++ })
 		applied := s.applyModelParameters(map[string]json.RawMessage{
@@ -182,9 +182,9 @@ func TestLoadModelCapabilities_MatchesBedrockMantleRows(t *testing.T) {
 		model:                     `{"provider":"bedrock","mode":"chat"}`,
 		"bedrock_mantle/" + model: `{"provider":"bedrock_mantle","mode":"chat","supported_endpoints":["/v1/chat/completions"]}`,
 	}
-	s := NewTestStore(nil)
+	s := testStore(t, nil)
 	s.configStore = paramsOnlyConfigStore{rows: rows}
-	s.modelParameterKeys = []string{"bedrock_mantle/" + model}
+	s.modelParameterKeys.store([]string{"bedrock_mantle/" + model})
 
 	caps, err := s.LoadModelCapabilities(context.Background(), schemas.BedrockMantle, model)
 	if err != nil {
@@ -216,11 +216,11 @@ func TestLoadModelCapabilities_MatchesBedrockMantleRows(t *testing.T) {
 // migration), so it must survive the row -> capability record decode for the
 // provider's runtime lookup.
 func TestLoadModelCapabilities_CarriesServerSideModel(t *testing.T) {
-	s := NewTestStore(nil)
+	s := testStore(t, nil)
 	s.configStore = paramsOnlyConfigStore{rows: map[string]string{
 		"deepseek/deepseek-v4-flash": `{"provider":"deepseek","mode":"chat","base_model":"deepseek-v4-flash","server_side_model":"deepseek-flash"}`,
 	}}
-	s.modelParameterKeys = []string{"deepseek/deepseek-v4-flash"}
+	s.modelParameterKeys.store([]string{"deepseek/deepseek-v4-flash"})
 
 	caps, err := s.LoadModelCapabilities(context.Background(), schemas.DeepSeek, "deepseek-v4-flash")
 	if err != nil {
@@ -265,7 +265,7 @@ func TestSyncModelParamsFromURL_PreservesDBOnlyRows(t *testing.T) {
 	}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s := New(cs, nil, Config{ModelParametersURL: "file://" + feedPath})
+	s := newForTest(t, cs, nil, Config{ModelParametersURL: "file://" + feedPath})
 	if _, err := s.LoadModelParamsFromDB(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestSyncModelParamsFromURL_ProviderCollisions(t *testing.T) {
 					feed = fmt.Sprintf(`{%q:%s,%q:%s}`, key, tc.incoming, siblingKey, providerless)
 				}
 				require.NoError(t, os.WriteFile(path, []byte(feed), 0o600))
-				s := New(cs, nil, Config{ModelParametersURL: "file://" + path})
+				s := newForTest(t, cs, nil, Config{ModelParametersURL: "file://" + path})
 				_, err := s.LoadModelParamsFromDB(ctx)
 				require.NoError(t, err)
 				require.NoError(t, s.SyncModelParamsFromURL(ctx))
@@ -371,7 +371,7 @@ func TestSyncModelParamsFromURL_ProviderCollisions(t *testing.T) {
 				require.NoError(t, json.Unmarshal([]byte(tc.want), &want))
 				for _, reload := range []bool{false, true} {
 					if reload {
-						s = New(cs, nil, Config{})
+						s = newForTest(t, cs, nil, Config{})
 						_, err := s.LoadModelParamsFromDB(ctx)
 						require.NoError(t, err)
 					}
@@ -422,7 +422,7 @@ func TestModelParameters_EmptySupportedParams(t *testing.T) {
 	feedPath := filepath.Join(t.TempDir(), "params.json")
 	require.NoError(t, os.WriteFile(feedPath, []byte(`{}`), 0o600))
 	cfg := Config{ModelParametersURL: "file://" + feedPath}
-	s := New(cs, nil, cfg)
+	s := newForTest(t, cs, nil, cfg)
 	loaded, err := s.LoadModelParamsFromDB(ctx)
 	require.NoError(t, err)
 	require.Equal(t, len(rows), loaded)
@@ -466,7 +466,7 @@ func TestModelParameters_EmptySupportedParams(t *testing.T) {
 	require.NoError(t, os.WriteFile(feedPath, []byte(`{"unrelated":{"provider":"openai","max_output_tokens":1000}}`), 0o600))
 	require.NoError(t, s.SyncModelParamsFromURL(ctx))
 	t.Run("sync preserves DB-only rows", check)
-	s = New(cs, nil, cfg)
+	s = newForTest(t, cs, nil, cfg)
 	loaded, err = s.LoadModelParamsFromDB(ctx)
 	require.NoError(t, err)
 	require.Equal(t, len(rows)+1, loaded)
@@ -481,7 +481,7 @@ func BenchmarkModelParameterCandidates(b *testing.B) {
 	}
 	rows["openai/target"] = json.RawMessage(`{"max_output_tokens":32000}`)
 	rows["openrouter/openai/target"] = json.RawMessage(`{"max_output_tokens":32000}`)
-	s := NewTestStore(nil)
+	s := testStore(b, nil)
 	s.applyModelParameters(rows)
 	for _, model := range []string{"target", "openai/target", "openrouter/openai/target", "missing"} {
 		b.Run(model, func(b *testing.B) {
@@ -496,7 +496,7 @@ func BenchmarkModelParameterCandidates(b *testing.B) {
 // The text_completion backfill checks pricingData for a completion-mode row,
 // which must match when the pricing row is spelled in another casing.
 func TestApplyModelParameters_TextCompletionBackfillMatchesAnyCase(t *testing.T) {
-	s := NewTestStore(nil)
+	s := testStore(t, nil)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "GPT-3.5-Turbo-Instruct", Provider: "openai", Mode: "completion"},
 	})

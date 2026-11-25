@@ -11,17 +11,23 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 // sharedWriteTimeout bounds one write of a client's tools to its row.
 const sharedWriteTimeout = 10 * time.Second
 
+// sharedDiscoveriesTable names the live store's state table of shared discoveries, one per MCP
+// client, deleted with the client.
+const sharedDiscoveriesTable = "mcp_shared_discoveries"
+
 var _ schemas.MCPDiscoveryStore = (*SharedStore)(nil)
 
 // SharedStore keeps the discoveries of MCP clients without
-// per_user_discovery: one per client, served to every caller from memory,
-// which is the source of truth, and written to the client's row so a restart
-// and the admin API find them.
+// per_user_discovery: one per client, in a state table of the live store,
+// served to every caller from memory, which is the source of truth, and written
+// to the client's row so a restart and the admin API find them. The client's
+// record in the live store carries no tools; this table is their one copy.
 //
 // The manager calls it while holding its own lock, so nothing here waits on
 // the database. SetDiscovery records the discovery and hands the write to a
@@ -38,8 +44,8 @@ type SharedStore struct {
 	logger      schemas.Logger
 
 	mu          sync.RWMutex
-	discoveries map[string]*schemas.MCPDiscovery // by client ID
-	writes      map[string]*sharedWrite          // by client ID
+	discoveries *livestore.Table[string, *schemas.MCPDiscovery] // by client ID
+	writes      map[string]*sharedWrite                         // by client ID; the writes in flight
 
 	// writeGate, when set, is asked before every write; see SetWriteGate.
 	writeGate atomic.Pointer[func() bool]
@@ -58,18 +64,98 @@ type sharedWrite struct {
 	writtenHash string // hash of written; "" until computed
 }
 
-// NewSharedStore returns a SharedStore writing through configStore. A nil
-// configStore keeps discoveries in memory only.
-func NewSharedStore(configStore configstore.ConfigStore, logger schemas.Logger) *SharedStore {
+// NewSharedStore returns a SharedStore keeping its discoveries in a state table it registers on
+// live, and writing through configStore. A nil configStore keeps discoveries in memory only.
+func NewSharedStore(configStore configstore.ConfigStore, live *livestore.Store, logger schemas.Logger) (*SharedStore, error) {
 	if logger == nil {
 		logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+	}
+	if live == nil {
+		return nil, fmt.Errorf("shared discovery store: %w", livestore.ErrNoLiveStore)
+	}
+	discoveries, err := live.RegisterState[schemas.MCPDiscovery](context.Background(), sharedDiscoveriesTable, livestore.KindMCPClient)
+	if err != nil {
+		return nil, fmt.Errorf("shared discovery store: %w", err)
 	}
 	return &SharedStore{
 		configStore: configStore,
 		logger:      logger,
-		discoveries: make(map[string]*schemas.MCPDiscovery),
+		discoveries: discoveries,
 		writes:      make(map[string]*sharedWrite),
+	}, nil
+}
+
+// Load fills the store from the discoveries the clients' rows hold, so a restart serves them
+// before any client is dialed. They are taken as what the rows hold and not written back. A client
+// with per_user_discovery on keeps no shared discovery and is left out, as is one with nothing
+// discovered. No-op without a config store.
+func (s *SharedStore) Load(ctx context.Context) error {
+	if s == nil || s.configStore == nil {
+		return nil
 	}
+	clients, err := s.configStore.GetMCPClientConfigs(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to read the MCP clients' discoveries: %w", err)
+	}
+	for _, client := range clients {
+		s.restore(client)
+	}
+	return nil
+}
+
+// LoadClient fills the store with the discovery one client's row holds, as Load does for every
+// client at boot, when the store holds none for the client: a client connected while Bifrost runs,
+// by this process or by another over the same database, is served the tools its row was written
+// with instead of discovering them again. A discovery the store already holds is as new as the row
+// or newer, so it is kept and the row is not read. A client with no row is left out, as is one Load
+// would leave out. No-op without a config store.
+func (s *SharedStore) LoadClient(ctx context.Context, id string) error {
+	if s == nil || s.configStore == nil {
+		return nil
+	}
+	if _, held := s.discoveries.Get(id); held {
+		return nil
+	}
+	client, err := s.configStore.GetMCPClientConfigByID(ctx, id)
+	if errors.Is(err, configstore.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read MCP client %s: %w", id, err)
+	}
+	s.restore(client)
+	return nil
+}
+
+// restore records the discovery client's row holds as what the row holds, so it is not written
+// back, unless the store already holds a discovery for the client, which is as new as the row or
+// newer. A client with per_user_discovery on keeps no shared discovery and is left out, as is one
+// with nothing discovered.
+func (s *SharedStore) restore(client *schemas.MCPClientConfig) {
+	if client.PerUserDiscovery != nil && *client.PerUserDiscovery {
+		return
+	}
+	if len(client.DiscoveredTools) == 0 && client.DiscoveredInstructions == "" && len(client.DiscoveredResources) == 0 &&
+		len(client.DiscoveredResourceTemplates) == 0 && len(client.DiscoveredPrompts) == 0 {
+		return
+	}
+	for name, tool := range client.DiscoveredTools {
+		_ = tool.EnsureSerialized() // cache serialized JSON at the source
+		client.DiscoveredTools[name] = tool
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, held := s.discoveries.Get(client.ID); held {
+		return
+	}
+	// Zero DiscoveredAt: restored from the row, so it is recorded as what the row holds.
+	s.setLocked(client.ID, &schemas.MCPDiscovery{
+		Tools:             client.DiscoveredTools,
+		Instructions:      client.DiscoveredInstructions,
+		Resources:         client.DiscoveredResources,
+		ResourceTemplates: client.DiscoveredResourceTemplates,
+		Prompts:           client.DiscoveredPrompts,
+	})
 }
 
 // GetDiscovery returns client's discovery; ctx is ignored.
@@ -77,9 +163,8 @@ func (s *SharedStore) GetDiscovery(_ context.Context, client *schemas.MCPClientC
 	if s == nil || client == nil {
 		return nil
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.discoveries[client.ID]
+	discovery, _ := s.discoveries.Get(client.ID)
+	return discovery
 }
 
 // SetDiscovery replaces client's discovery and, unless it was restored,
@@ -94,26 +179,31 @@ func (s *SharedStore) SetDiscovery(_ context.Context, client *schemas.MCPClientC
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.discoveries[client.ID] = discovery
+	s.setLocked(client.ID, discovery)
+	return nil
+}
+
+// setLocked is SetDiscovery for the client with this ID; the caller holds s.mu.
+func (s *SharedStore) setLocked(clientID string, discovery *schemas.MCPDiscovery) {
+	s.discoveries.Put(clientID, discovery)
 	if s.configStore == nil {
-		return nil
+		return
 	}
-	w := s.writes[client.ID]
+	w := s.writes[clientID]
 	if w == nil {
 		w = &sharedWrite{}
-		s.writes[client.ID] = w
+		s.writes[clientID] = w
 	}
 	w.seq++
 	if discovery.DiscoveredAt.IsZero() {
 		w.written, w.writtenSeq, w.writtenHash = discovery, w.seq, ""
-		return nil
+		return
 	}
 	w.pending, w.pendingSeq = discovery, w.seq
 	if !w.running {
 		w.running = true
-		go s.drain(client.ID, w)
+		go s.drain(clientID, w)
 	}
-	return nil
 }
 
 // DeleteDiscovery forgets client's discovery; ctx is ignored. The row is left
@@ -126,7 +216,7 @@ func (s *SharedStore) DeleteDiscovery(_ context.Context, client *schemas.MCPClie
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.discoveries, client.ID)
+	s.discoveries.Delete(client.ID)
 	if w := s.writes[client.ID]; w != nil && !w.running {
 		delete(s.writes, client.ID)
 	}
@@ -173,12 +263,12 @@ func (s *SharedStore) drain(clientID string, w *sharedWrite) {
 		discovery, seq := w.pending, w.pendingSeq
 		w.pending = nil
 		written, writtenHash := w.written, w.writtenHash
-		if _, present := s.discoveries[clientID]; attempt > 0 && !present {
+		if _, present := s.discoveries.Get(clientID); attempt > 0 && !present {
 			discovery = nil // deleted while its write kept failing: nothing is left to save
 		}
 		if discovery == nil {
 			w.running = false
-			if _, ok := s.discoveries[clientID]; !ok && s.writes[clientID] == w {
+			if _, ok := s.discoveries.Get(clientID); !ok && s.writes[clientID] == w {
 				delete(s.writes, clientID)
 			}
 			s.mu.Unlock()

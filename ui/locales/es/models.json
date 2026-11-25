@@ -1329,6 +1329,8 @@
 		"rotateGraceNote": "Las claves anteriores siguen siendo válidas hasta el {{date}}.",
 		"rotatedBulkPartial": "Se rotaron {{count}} claves virtuales. {{failed}} fallaron.{{graceNote}}",
 		"rotatedBulk": "Se rotaron {{count}} claves virtuales.{{graceNote}}",
+		"rotatedBulkNotLoaded": "Claves guardadas pero posiblemente sin cargar: {{notLoaded}}. Los valores anteriores pueden seguir funcionando hasta que vuelvas a guardar cada clave o reinicies Bifrost.",
+		"rotatedNotLoaded": "Se rotó la clave virtual, pero es posible que el nuevo valor no se haya cargado. El valor anterior puede seguir funcionando hasta que vuelvas a guardar la clave o reinicies Bifrost.",
 		"filtersApplied": "Filtros aplicados:",
 		"filterSearch": "búsqueda «{{query}}»",
 		"filterCustomer": "filtro de cliente",

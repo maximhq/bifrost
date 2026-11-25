@@ -82,6 +82,9 @@ func generateDatasheetOverrideHash(row tables.TableDatasheetOverride) (string, e
 // null section decodes to a nil slice and is treated as omitted.
 // Without a config store the entries apply in memory only.
 func loadDatasheetOverridesFromFile(ctx context.Context, config *Config, configData *ConfigData) {
+	if config != nil && config.boot != nil && configData != nil {
+		config.boot.datasheetOverrides = configData.DatasheetOverrides
+	}
 	if config == nil || config.ModelCatalog == nil || configData == nil {
 		return
 	}

@@ -1004,9 +1004,10 @@ func BenchmarkIsRateLimitError(b *testing.B) {
 
 // Mock Account implementation for testing UpdateProvider
 type MockAccount struct {
-	mu      sync.RWMutex
-	configs map[schemas.ModelProvider]*schemas.ProviderConfig
-	keys    map[schemas.ModelProvider][]schemas.Key
+	mu         sync.RWMutex
+	configs    map[schemas.ModelProvider]*schemas.ProviderConfig
+	keys       map[schemas.ModelProvider][]schemas.Key
+	mcpClients []*schemas.MCPClientConfig // in the order they were added
 	// keyLookups counts GetKeysForProvider calls per provider
 	keyLookups sync.Map
 }
@@ -1076,6 +1077,73 @@ func (ma *MockAccount) GetConfigForProvider(provider schemas.ModelProvider) (*sc
 		return &configCopy, nil
 	}
 	return nil, fmt.Errorf("provider %s not configured", provider)
+}
+
+// AddMCPClients configures MCP clients on the account, for ConnectConfiguredMCPClients to dial.
+func (ma *MockAccount) AddMCPClients(clients ...*schemas.MCPClientConfig) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	ma.mcpClients = append(ma.mcpClients, clients...)
+}
+
+// SetMCPClient stores client as the record for its ID, replacing the record added with that ID or
+// adding it last. A record is read-only once stored: to edit a client, store a changed copy.
+func (ma *MockAccount) SetMCPClient(client *schemas.MCPClientConfig) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	for i, existing := range ma.mcpClients {
+		if existing.ID == client.ID {
+			ma.mcpClients[i] = client
+			return
+		}
+	}
+	ma.mcpClients = append(ma.mcpClients, client)
+}
+
+// addMCPClient stores client on b's MockAccount and adds it, as a caller writes the client's
+// configuration and then adds the client by ID.
+func addMCPClient(ctx context.Context, b *Bifrost, client *schemas.MCPClientConfig) error {
+	account, ok := b.account.(*MockAccount)
+	if !ok {
+		return fmt.Errorf("addMCPClient: the Bifrost account is a %T, not a *MockAccount", b.account)
+	}
+	account.SetMCPClient(client)
+	return b.AddMCPClient(ctx, client.ID)
+}
+
+// GetConfiguredMCPClients lists the IDs of the MCP clients added with AddMCPClients.
+func (ma *MockAccount) GetConfiguredMCPClients() ([]string, error) {
+	ma.mu.RLock()
+	defer ma.mu.RUnlock()
+	ids := make([]string, 0, len(ma.mcpClients))
+	for _, client := range ma.mcpClients {
+		ids = append(ids, client.ID)
+	}
+	return ids, nil
+}
+
+// GetConfigForMCPClient returns the MCP client added with this ID.
+func (ma *MockAccount) GetConfigForMCPClient(clientID string) (*schemas.MCPClientConfig, error) {
+	ma.mu.RLock()
+	defer ma.mu.RUnlock()
+	for _, client := range ma.mcpClients {
+		if client.ID == clientID {
+			return client, nil
+		}
+	}
+	return nil, fmt.Errorf("MCP client %s not configured", clientID)
+}
+
+// GetConfigForMCPClientByName returns the MCP client added with this name.
+func (ma *MockAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+	ma.mu.RLock()
+	defer ma.mu.RUnlock()
+	for _, client := range ma.mcpClients {
+		if client.Name == name {
+			return client, nil
+		}
+	}
+	return nil, fmt.Errorf("MCP client %s not configured", name)
 }
 
 func (ma *MockAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
@@ -1405,62 +1473,61 @@ func TestRunStreamPreHooks_ReturnsPreHookRequest(t *testing.T) {
 	})
 }
 
-// mockKVStore implements schemas.KVStore for session stickiness tests.
+// mockKVStore implements SessionAffinityStore for session stickiness tests, keeping each
+// value with the TTL it was written with so tests can check both.
 type mockKVStore struct {
 	mu   sync.RWMutex
 	data map[string]struct {
-		value any
+		value string
 		ttl   time.Duration
 	}
 }
 
+// newMockKVStore returns an empty store.
 func newMockKVStore() *mockKVStore {
 	return &mockKVStore{data: make(map[string]struct {
-		value any
+		value string
 		ttl   time.Duration
 	})}
 }
 
-func (m *mockKVStore) Get(key string) (any, error) {
+// Get implements SessionAffinityStore.
+func (m *mockKVStore) Get(key string) (string, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if e, ok := m.data[key]; ok {
-		return e.value, nil
-	}
-	return nil, fmt.Errorf("key not found")
+	e, ok := m.data[key]
+	return e.value, ok
 }
 
-func (m *mockKVStore) SetWithTTL(key string, value any, ttl time.Duration) error {
+// PutWithTTL implements SessionAffinityStore.
+func (m *mockKVStore) PutWithTTL(key, value string, ttl time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.data[key] = struct {
-		value any
+		value string
 		ttl   time.Duration
 	}{value: value, ttl: ttl}
-	return nil
 }
 
-func (m *mockKVStore) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, error) {
+// PutIfAbsent implements SessionAffinityStore.
+func (m *mockKVStore) PutIfAbsent(key, value string, ttl time.Duration) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.data[key]; ok {
-		return false, nil
+		return false
 	}
 	m.data[key] = struct {
-		value any
+		value string
 		ttl   time.Duration
 	}{value: value, ttl: ttl}
-	return true, nil
+	return true
 }
 
-func (m *mockKVStore) Delete(key string) (bool, error) {
+// Delete implements SessionAffinityStore.
+func (m *mockKVStore) Delete(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.data[key]; ok {
-		delete(m.data, key)
-		return true, nil
-	}
-	return false, nil
+	delete(m.data, key)
 }
 
 // Test selectKeyFromProviderForModelWithPool with session stickiness: nothing is bound until a
@@ -1483,10 +1550,10 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 
 	ctx := context.Background()
 	bifrost, err := Init(ctx, schemas.BifrostConfig{
-		Account:     account,
-		Logger:      NewDefaultLogger(schemas.LogLevelError),
-		KVStore:     kvStore,
-		KeySelector: deterministicSelector,
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: storeAffinity(kvStore),
+		KeySelector:     deterministicSelector,
 	})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
@@ -1508,7 +1575,7 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 		t.Errorf("first call: the pool builder should not select, got %d keySelector calls", keySelectorCalls)
 	}
 	kvKey := SessionStateKey(bfCtx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4")
-	if _, err := kvStore.Get(kvKey); err == nil {
+	if _, ok := kvStore.Get(kvKey); ok {
 		t.Error("session bound before anything served it")
 	}
 
@@ -1516,8 +1583,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
 	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
 	bifrost.observeSessionOutcome(bfCtx, route, &route, false, false, nil)
-	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
-		t.Errorf("kvstore after the request served: expected key-a, got %v (err=%v)", raw, err)
+	if raw, ok := kvStore.Get(kvKey); !ok || raw != "key-a" {
+		t.Errorf("session store after the request served: expected key-a, got %q (found=%v)", raw, ok)
 	}
 
 	// Second request: the bound key comes first with the rest of the pool behind it, rotation off,
@@ -1555,10 +1622,10 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 
 	ctx := context.Background()
 	bifrost, err := Init(ctx, schemas.BifrostConfig{
-		Account:     account,
-		Logger:      NewDefaultLogger(schemas.LogLevelError),
-		KVStore:     kvStore,
-		KeySelector: deterministicSelector,
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: storeAffinity(kvStore),
+		KeySelector:     deterministicSelector,
 	})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
@@ -1582,7 +1649,7 @@ func TestSelectKeyFromProviderForModel_NoStickinessWithoutSessionID(t *testing.T
 	if keySelectorCalls != 0 {
 		t.Errorf("expected 0 keySelector calls from pool building (no session id), got %d", keySelectorCalls)
 	}
-	// KVStore should not have a sticky entry for an empty session id
+	// The session store should not have a sticky entry for an empty session id
 	kvStore.mu.RLock()
 	entries := len(kvStore.data)
 	kvStore.mu.RUnlock()
@@ -1608,10 +1675,10 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 
 	ctx := context.Background()
 	bifrost, err := Init(ctx, schemas.BifrostConfig{
-		Account:     account,
-		Logger:      NewDefaultLogger(schemas.LogLevelError),
-		KVStore:     kvStore,
-		KeySelector: deterministicSelector,
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: storeAffinity(kvStore),
+		KeySelector:     deterministicSelector,
 	})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
@@ -4027,10 +4094,18 @@ func newAgentLoopClient(t *testing.T, account *MockAccount, plugins ...schemas.L
 	}
 	for _, state := range client.MCPManager.GetClients() {
 		if state.ExecutionConfig.ID == "bifrostInternal" {
-			state.ExecutionConfig.ToolsToAutoExecute = []string{"*"}
-			if err := client.MCPManager.UpdateClient(state.ExecutionConfig.ID, state.ExecutionConfig); err != nil {
+			// The reported configuration is the read-only record: edit a copy and store that.
+			edited := *state.ExecutionConfig
+			edited.ToolsToAutoExecute = []string{"*"}
+			account.SetMCPClient(&edited)
+			if err := client.MCPManager.UpdateClient(edited.ID); err != nil {
 				t.Fatalf("UpdateClient failed: %v", err)
 			}
+		}
+	}
+	for _, state := range client.MCPManager.GetClients() {
+		if state.ExecutionConfig.ID == "bifrostInternal" && !reflect.DeepEqual(state.ExecutionConfig.ToolsToAutoExecute, schemas.WhiteList{"*"}) {
+			t.Fatalf("the internal client's tools are not auto-executed after the edit (ToolsToAutoExecute = %v): core ignored its edited configuration", state.ExecutionConfig.ToolsToAutoExecute)
 		}
 	}
 	return client
@@ -6549,9 +6624,9 @@ func (r *scenarioRouter) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.
 
 // scenarioClient starts core over the account, with the router when given and session state in kv
 // when given.
-func scenarioClient(t *testing.T, account *MockAccount, router *scenarioRouter, kv schemas.KVStore) *Bifrost {
+func scenarioClient(t *testing.T, account *MockAccount, router *scenarioRouter, kv SessionAffinityStore) *Bifrost {
 	t.Helper()
-	config := schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv}
+	config := schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), SessionAffinity: storeAffinity(kv)}
 	if router != nil {
 		config.LLMPlugins = []schemas.LLMPlugin{router}
 	}
@@ -7546,7 +7621,7 @@ func TestScenarioProviderPrefixedRequestUnderThePinnedRule(t *testing.T) {
 	u := newScenarioUpstream(t)
 	kv := newMockKVStore()
 	account := pinnedRuleAccount(u)
-	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv, LLMPlugins: []schemas.LLMPlugin{providerRulePlugin{}}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), SessionAffinity: storeAffinity(kv), LLMPlugins: []schemas.LLMPlugin{providerRulePlugin{}}})
 	if initErr != nil {
 		t.Fatalf("Init: %v", initErr)
 	}
@@ -7686,20 +7761,18 @@ func setMaxRetries(account *MockAccount, provider schemas.ModelProvider, n int) 
 
 // sessionState reads one of a session's bindings: its route for model (provider "") or its key on
 // provider for model.
-func sessionState(kv schemas.KVStore, session, kind string, provider schemas.ModelProvider, model string) (string, bool) {
+func sessionState(kv SessionAffinityStore, session, kind string, provider schemas.ModelProvider, model string) (string, bool) {
 	return SessionStateString(kv, SessionStateKey(sessionCtx(session), kind, string(provider), model))
 }
 
 // bindSession writes one of a session's bindings directly, as earlier turns would have left it.
-func bindSession(t *testing.T, kv schemas.KVStore, session, kind string, provider schemas.ModelProvider, model, value string) {
+func bindSession(t *testing.T, kv SessionAffinityStore, session, kind string, provider schemas.ModelProvider, model, value string) {
 	t.Helper()
-	if err := kv.SetWithTTL(SessionStateKey(sessionCtx(session), kind, string(provider), model), value, time.Hour); err != nil {
-		t.Fatalf("binding the session: %v", err)
-	}
+	kv.PutWithTTL(SessionStateKey(sessionCtx(session), kind, string(provider), model), value, time.Hour)
 }
 
 // requireSessionState fails the test unless the binding holds want, or is absent when want is "".
-func requireSessionState(t *testing.T, kv schemas.KVStore, session, kind string, provider schemas.ModelProvider, model, want string) {
+func requireSessionState(t *testing.T, kv SessionAffinityStore, session, kind string, provider schemas.ModelProvider, model, want string) {
 	t.Helper()
 	got, found := sessionState(kv, session, kind, provider, model)
 	if want == "" && found {
@@ -8961,15 +9034,16 @@ func TestSetMCPManager_ReceivesTheRegisteredFactory(t *testing.T) {
 	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
 		return server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false)), nil
 	}
-	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	account := NewMockAccount()
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 	defer b.Shutdown()
 	b.SetMCPInProcessServerFactory(factory)
-	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, account, nil, NewNoOpLogger(), nil)
 	b.SetMCPManager(injected)
-	err = b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{ID: "oa-id", Name: "oa", ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}})
+	err = addMCPClient(context.Background(), b, &schemas.MCPClientConfig{ID: "oa-id", Name: "oa", ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}})
 	if err != nil {
 		t.Fatalf("the injected manager did not get the registered factory: %v", err)
 	}
@@ -8979,7 +9053,7 @@ func TestSetMCPManager_ReceivesTheRegisteredFactory(t *testing.T) {
 	go func() { defer wg.Done(); b.SetMCPInProcessServerFactory(factory) }()
 	go func() {
 		defer wg.Done()
-		b.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil))
+		b.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, account, nil, NewNoOpLogger(), nil))
 	}()
 	wg.Wait()
 }
@@ -8999,7 +9073,7 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 		}
 		var wg sync.WaitGroup
 		wg.Add(3)
-		go func() { defer wg.Done(); _ = b.AddMCPClient(context.Background(), client("a")) }()
+		go func() { defer wg.Done(); _ = addMCPClient(context.Background(), b, client("a")) }()
 		go func() {
 			defer wg.Done()
 			_, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
@@ -9012,14 +9086,15 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 		b.Shutdown()
 	}
 
-	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	account := NewMockAccount()
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 	defer b.Shutdown()
-	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, account, nil, NewNoOpLogger(), nil)
 	b.SetMCPManager(injected)
-	_ = b.AddMCPClient(context.Background(), client("d"))
+	_ = addMCPClient(context.Background(), b, client("d"))
 	if b.MCPManager != mcp.MCPManagerInterface(injected) {
 		t.Fatal("an injected MCP manager was replaced by the lazy one")
 	}
@@ -9070,7 +9145,7 @@ func TestSetMCPDiscoveryChangeCallback_ReachesLazyManager(t *testing.T) {
 		})
 		return s, nil
 	})
-	if err := b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{
+	if err := addMCPClient(context.Background(), b, &schemas.MCPClientConfig{
 		ID:             "first-id",
 		Name:           "first",
 		ConnectionType: schemas.MCPConnectionTypeOpenAPI,
@@ -9184,10 +9259,10 @@ func TestSetMCPInProcessServerFactory_RacesLazyManagerCreation(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			_ = b.AddMCPClient(context.Background(), openAPIClient("first"))
+			_ = addMCPClient(context.Background(), b, openAPIClient("first"))
 		}()
 		wg.Wait()
-		if err := b.AddMCPClient(context.Background(), openAPIClient("second")); err != nil {
+		if err := addMCPClient(context.Background(), b, openAPIClient("second")); err != nil {
 			t.Fatalf("iteration %d: the manager lost the registered factory: %v", i, err)
 		}
 		b.Shutdown()

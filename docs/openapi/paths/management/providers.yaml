@@ -27,6 +27,8 @@ providers:
               $ref: '../../schemas/management/providers.yaml#/ListProvidersResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: addProvider
@@ -85,6 +87,8 @@ providers:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 providers-by-name:
   get:
@@ -130,6 +134,8 @@ providers-by-name:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updateProvider
@@ -197,6 +203,8 @@ providers-by-name:
           genuinely authenticated)
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteProvider
@@ -241,6 +249,8 @@ providers-by-name:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 provider-keys:
   get:
@@ -286,6 +296,8 @@ provider-keys:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createProviderKey
@@ -361,6 +373,8 @@ provider-keys:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 provider-key-by-id:
   get:
@@ -412,6 +426,8 @@ provider-key-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updateProviderKey
@@ -488,6 +504,8 @@ provider-key-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteProviderKey
@@ -538,6 +556,8 @@ provider-key-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 provider-refresh-models:
   post:
@@ -681,6 +701,8 @@ keys:
                 $ref: '../../schemas/management/providers.yaml#/StoredProviderKey'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 models:
   get:
@@ -768,6 +790,8 @@ models:
               $ref: '../../schemas/management/providers.yaml#/ListModelsResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 models-details:
   get:
@@ -849,6 +873,8 @@ models-details:
               $ref: '../../schemas/management/providers.yaml#/ListModelDetailsResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 models-parameters:
   get:
@@ -893,6 +919,8 @@ models-parameters:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 models-datasheet:
   get:
@@ -956,6 +984,8 @@ models-datasheet:
               $ref: '../../schemas/management/providers.yaml#/ListDatasheetEntriesResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 models-datasheet-entry:
   get:
@@ -1007,6 +1037,8 @@ models-datasheet-entry:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 models-datasheet-overrides:
   put:
@@ -1057,6 +1089,8 @@ models-datasheet-overrides:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 models-datasheet-override-by-id:
   delete:
@@ -1097,6 +1131,8 @@ models-datasheet-override-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 models-base:
   get:
@@ -1139,6 +1175,8 @@ models-base:
               additionalProperties: true
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 models-newest:
   get:
@@ -1216,6 +1254,8 @@ models-newest:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 models-catalog:
   put:
@@ -1256,3 +1296,5 @@ models-catalog:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
