@@ -143,16 +143,17 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	// As in Serve, a header the upstream never receives (a caller's x-amz-* under SigV4) selects no route.
 	headers = e.routeHeaders(headers, extra)
 	contentType, _ := headerValue("content-type", headers, e.operatorHeaders)
-	route := e.matchRoute(method, path, headers)
+	route := e.selectRoute(method, path, headers)
 	usage, billable, forced := e.usage, billableByDefault(method, nil), compileBodyOverrides(cfg.BodyOverrides)
 	out := &UsagePreview{RouteAllowed: (cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled)}
+	// As in plan: a dot segment never reaches the relay-any-path fallback.
+	dotSegment := route == nil && out.RouteAllowed && hasDotSegment(path)
+	if dotSegment {
+		out.RouteAllowed = false
+	}
 	if route != nil {
 		usage, billable, forced = route.usage, route.billable, route.bodyOverrides
-		for i := range e.routes {
-			if &e.routes[i] == route {
-				out.RouteIndex = schemas.Ptr(i)
-			}
-		}
+		out.RouteIndex = schemas.Ptr(route.configIndex)
 	}
 	reqBody, respBody := []byte(in.RequestBody), []byte(in.ResponseBody)
 	out.Billable = billable
@@ -172,6 +173,8 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	if !out.RouteAllowed {
 		if route != nil && route.disabled {
 			out.Notes = append(out.Notes, "the matching route is disabled: the call is refused with 404")
+		} else if dotSegment {
+			out.Notes = append(out.Notes, "the path has a . or .. segment, which the relay never forwards: the call is refused with 404")
 		} else {
 			out.Notes = append(out.Notes, "no route matches and skip_route_check is off: the call is refused with 404")
 		}

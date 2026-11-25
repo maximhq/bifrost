@@ -1,11 +1,12 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Relay, RelayRouteConfig } from "@/lib/types/relays";
 import { parseJSONExact, relayAuthSchema, relayFormSchema, relayNetworkFormSchema, relayUsageBaseSchema } from "@/lib/types/schemas";
 import {
+	displayOrder,
 	hasRoundedBodyOverride,
 	cleanJob,
 	cleanUsage,
-	compareRoutes,
 	describePricing,
 	emptyNetworkForm,
 	emptyRelayForm,
@@ -115,91 +116,6 @@ describe("relay form", () => {
 		// The gateway reads the model and tokens on every call, billed or not; only pricing is dropped.
 		expect(route("/free")?.usage).toEqual({ model_path: "model", model_source: "query", total_tokens_path: "usage.total" });
 		expect(route("/search")?.usage).toEqual({ cost_per_request: 0.02 });
-	});
-
-	it("saves routes in match order: literals A to Z, then globs, then catch-alls", () => {
-		const routes: RelayRouteConfig[] = [
-			{ method: "POST", path: "/**" },
-			{ method: "GET", path: "/models/*" },
-			{ method: "POST", path: "/search" },
-			{ method: "POST", path: "/" },
-			{ method: "GET", path: "/models/*:predict" },
-			{ method: "GET", path: "/*/*" },
-			{ method: "POST", path: "/", headers: { "X-Amz-Target": "Textract.AnalyzeDocument" } },
-			{ method: "GET", path: "/files/**" },
-			{ method: "GET", path: "/files/latest" },
-			{ method: "DELETE", path: "/batches" },
-		];
-		const back = toRelayConfig(toRelayForm({ ...stored, routes }));
-		expect(back.routes?.map((r) => `${r.method} ${r.path}${r.headers ? " +h" : ""}`)).toEqual([
-			"POST / +h",
-			"POST /",
-			"DELETE /batches",
-			"GET /files/latest",
-			"POST /search",
-			"GET /models/*:predict",
-			"GET /models/*",
-			"GET /*/*",
-			"GET /files/**",
-			"POST /**",
-		]);
-	});
-
-	it("puts an exact header matcher before a glob on the same path, which would otherwise take its calls", () => {
-		const target = (value: string): RelayRouteConfig => ({ method: "POST", path: "/", headers: { "X-Amz-Target": value } });
-		const routes = [target("*"), target("Textract.Analyze*"), target("Textract.AnalyzeDocument"), target("Textract.AnalyzeExpense")];
-		const back = toRelayConfig(toRelayForm({ ...stored, routes }));
-		expect(back.routes?.map((r) => r.headers?.["X-Amz-Target"])).toEqual([
-			"Textract.AnalyzeDocument",
-			"Textract.AnalyzeExpense",
-			"Textract.Analyze*",
-			"*",
-		]);
-	});
-
-	it("never lets a broader header matcher precede one it covers on the same path", () => {
-		const pairs: [string, string][] = [
-			["poll", "*"],
-			["Textract.Analyze*", "*"],
-			["a*b*", "a*"],
-			["foo*", "*foo*"],
-			["v?", "v*"],
-			["?", "*"],
-			["v[12]", "v[0-9]"],
-			["v[0-9]", "v?"],
-		];
-		const route = (value: string): RelayRouteConfig => ({ method: "POST", path: "/", headers: { "X-Kind": value } });
-		for (const [narrow, broad] of pairs) {
-			expect(compareRoutes(route(narrow), route(broad)), `${narrow} before ${broad}`).toBeLessThan(0);
-			expect(compareRoutes(route(broad), route(narrow)), `${narrow} before ${broad}`).toBeGreaterThan(0);
-		}
-	});
-
-	it("never lets a broader route precede one it covers", () => {
-		// Each pair is [narrower, broader]: every request the first matches, the second matches too.
-		const pairs: [string, string][] = [
-			["/files/latest", "/files/*"],
-			["/models/*:predict", "/models/*"],
-			["/a/*", "/*/*"],
-			["/*/*", "/**"],
-			["/a/*/*", "/a/**"],
-			["/a/b/**", "/a/**"],
-			["/x/a*b*", "/x/a*"],
-			["/x/foo*", "/x/*foo*"],
-			["/files/?", "/files/*"],
-			["/x/?", "/x/*"],
-			["/files/[m]", "/files/[a-z]"],
-			["/files/[a-z]", "/files/?"],
-			["/files/[^m]", "/files/*"],
-			// An escaped wildcard is a literal character, so this route is narrower than a real *.
-			["/files/a\\*", "/files/a*"],
-		];
-		for (const [narrow, broad] of pairs) {
-			expect(compareRoutes({ method: "GET", path: narrow }, { method: "GET", path: broad }), `${narrow} before ${broad}`).toBeLessThan(0);
-			expect(compareRoutes({ method: "GET", path: broad }, { method: "GET", path: narrow }), `${narrow} before ${broad}`).toBeGreaterThan(
-				0,
-			);
-		}
 	});
 
 	it("keeps settings the form does not edit, and saves a none proxy as unset, as for providers", () => {
@@ -459,5 +375,13 @@ describe("hasRoundedBodyOverride", () => {
 	});
 	it("never flags in a browser that keeps exact digits", () => {
 		expect(hasRoundedBodyOverride(relay({ seed: 9007199254740992 }), true)).toBe(false);
+	});
+});
+
+describe("displayOrder", () => {
+	it("follows the gateway's match_order, and falls back to the saved order when it is unusable", () => {
+		expect(displayOrder([2, 1, 0], 3)).toEqual([2, 1, 0]);
+		for (const bad of [undefined, [0, 1], [0, 0, 1], [0, 1.5, 2], [0, 1, 3], [-1, 0, 1]])
+			expect(displayOrder(bad, 3), JSON.stringify(bad)).toEqual([0, 1, 2]);
 	});
 });

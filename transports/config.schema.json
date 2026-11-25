@@ -6138,7 +6138,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Rooted segment glob (* within a segment); a trailing /** matches the prefix and everything below"
+          "description": "Rooted segment glob (* within a segment); a trailing /** matches the prefix and everything below; one middle /**/ matches 1 to 80 segments; neither takes a . or .. segment, with or without ;params"
         },
         "enabled": {
           "type": "boolean",
@@ -6289,7 +6289,7 @@
           "items": {
             "$ref": "#/$defs/relay_route_config"
           },
-          "description": "Upstream operations, first match wins; only listed routes are relayed unless skip_route_check is set"
+          "description": "Upstream operations, the most specific match wins; only listed routes are relayed unless skip_route_check is set"
         },
         "skip_route_check": {
           "type": "boolean",

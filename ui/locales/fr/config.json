@@ -1426,7 +1426,7 @@
 			"titleAdd": "Ajouter une route",
 			"titleEdit": "Modifier la route",
 			"pathLabel": "Chemin (obligatoire)",
-			"pathInfo": "* correspond à l’intérieur d’un segment ; un /** final correspond à tout ce qui se trouve en dessous.",
+			"pathInfo": "* correspond à l’intérieur d’un segment ; un /** final correspond à tout ce qui se trouve en dessous ; un /**/ au milieu correspond à un ou plusieurs segments.",
 			"headersLabel": "Filtres d’en-têtes (facultatif)",
 			"headersInfo": "En-têtes de requête qui doivent aussi correspondre, comme X-Amz-Target pour les API JSON d’AWS. Les valeurs sont des motifs glob.",
 			"bodyOverridesLabel": "Champs du corps imposés (facultatif)",

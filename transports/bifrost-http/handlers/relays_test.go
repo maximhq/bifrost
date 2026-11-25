@@ -69,6 +69,11 @@ func TestRelaysHandlerCRUD(t *testing.T) {
 	h.create(invalid)
 	assert.Equal(t, fasthttp.StatusBadRequest, invalid.Response.StatusCode(), "a bearer endpoint without a credential is refused")
 
+	repeated := pteRequest(fasthttp.MethodPost, `{"name":"repeated","base_url":"https://search.example.com","auth":{"type":"none"},"routes":[{"method":"GET","path":"/a"},{"method":"get","path":"/a"}]}`, "")
+	h.create(repeated)
+	assert.Equal(t, fasthttp.StatusBadRequest, repeated.Response.StatusCode(), "a route repeating an earlier one is refused")
+	assert.Contains(t, string(repeated.Response.Body()), "routes[1] repeats routes[0]")
+
 	exa := pteRequest(fasthttp.MethodPost, `{"name":"exa","base_url":"https://docs.example.com","auth":{"type":"none"}}`, "")
 	h.create(exa)
 	require.Equal(t, fasthttp.StatusCreated, exa.Response.StatusCode(), string(exa.Response.Body()))
@@ -149,8 +154,49 @@ func (r *relayChangeRecorder) ReloadVirtualKey(_ context.Context, id string) (*t
 	return nil, nil
 }
 
+// The API reports the order the gateway tries routes in, so the dashboard need not rank them.
+func TestRelaysHandlerReportsMatchOrder(t *testing.T) {
+	h, _, _ := newRelaysTestHandler(t)
+	ordered := pteRequest(fasthttp.MethodPost, `{"name":"ordered","base_url":"https://api.example.com","auth":{"type":"none"},"routes":[{"method":"GET","path":"/**"},{"method":"GET","path":"/jobs/**"},{"method":"GET","path":"/jobs/metrics"}]}`, "")
+	h.create(ordered)
+	require.Equal(t, fasthttp.StatusCreated, ordered.Response.StatusCode(), string(ordered.Response.Body()))
+	var orderedView struct {
+		MatchOrder []int `json:"match_order"`
+	}
+	require.NoError(t, json.Unmarshal(ordered.Response.Body(), &orderedView))
+	assert.Equal(t, []int{2, 1, 0}, orderedView.MatchOrder)
+
+	// A paged list builds each returned relay's order the same way.
+	other := pteRequest(fasthttp.MethodPost, `{"name":"other","base_url":"https://api.example.com","auth":{"type":"none"}}`, "")
+	h.create(other)
+	require.Equal(t, fasthttp.StatusCreated, other.Response.StatusCode(), string(other.Response.Body()))
+	list := pteRequest(fasthttp.MethodGet, "", "")
+	list.Request.URI().SetQueryString("limit=1")
+	h.list(list)
+	var page struct {
+		Relays []struct {
+			Name       string `json:"name"`
+			MatchOrder []int  `json:"match_order"`
+		} `json:"relays"`
+		TotalCount int `json:"total_count"`
+	}
+	require.NoError(t, json.Unmarshal(list.Response.Body(), &page))
+	require.Len(t, page.Relays, 1)
+	assert.Equal(t, "ordered", page.Relays[0].Name)
+	assert.Equal(t, []int{2, 1, 0}, page.Relays[0].MatchOrder)
+	assert.Equal(t, 2, page.TotalCount, "the total still counts every match")
+
+	// Mid-update the live relay can already be the new version while the store still returns the old
+	// one; the order follows the config returned, never the live relay, even with the same route count.
+	stored := &schemas.RelayConfig{Name: "ordered", Routes: []schemas.RelayRouteConfig{
+		{Method: "GET", Path: "/jobs/metrics"}, {Method: "GET", Path: "/**"}, {Method: "GET", Path: "/jobs/**"},
+	}}
+	assert.Equal(t, []int{0, 2, 1}, h.view(stored).MatchOrder)
+}
+
 // A delete reloads every key whose grant it took away, and a failed reload does not fail the
 // delete or block the name, exactly as the Agent Gateway handler treats agent grants.
+
 func TestRelaysHandlerReloadsGrantedKeysOnDelete(t *testing.T) {
 	_, store, _ := newRelaysTestHandler(t)
 	recorder := &relayChangeRecorder{failReloads: true}

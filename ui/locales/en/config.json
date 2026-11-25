@@ -1405,7 +1405,7 @@
 			"titleAdd": "Add route",
 			"titleEdit": "Edit route",
 			"pathLabel": "Path (Required)",
-			"pathInfo": "* matches within one segment; a trailing /** matches everything below.",
+			"pathInfo": "* matches within one segment; a trailing /** matches everything below; a middle /**/ matches one or more segments.",
 			"headersLabel": "Header Matchers (Optional)",
 			"headersInfo": "Request headers that must also match, such as X-Amz-Target for AWS JSON APIs. Values are globs.",
 			"bodyOverridesLabel": "Enforced Body Fields (Optional)",

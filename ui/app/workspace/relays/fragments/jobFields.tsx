@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { RelayRouteMethods } from "@/lib/types/relays";
 import type { RelayAsyncJobForm } from "@/lib/types/schemas";
-import { JOB_ID_PLACEHOLDER } from "@/lib/utils/relayAsyncJob";
+import { JOB_ID_PLACEHOLDER } from "@/lib/types/relays";
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useState, type ComponentProps } from "react";
 import type { Control } from "react-hook-form";

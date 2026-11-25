@@ -1133,6 +1133,35 @@ func TestServeDisabledRouteIsRefused(t *testing.T) {
 	assert.False(t, out.RouteAllowed)
 }
 
+// A dot segment (also ..;x) matches no ** route, so it cannot slip past a disabled /a/** to the
+// relay-any-path fallback.
+func TestServeDotSegmentCannotBypassADisabledRoute(t *testing.T) {
+	called := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer upstream.Close()
+	cfg := bearerConfig("files", upstream.URL)
+	cfg.SkipRouteCheck = true
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "GET", Path: "/a/**", Enabled: schemas.Ptr(false)}}
+	m, _ := newTestManager(t, cfg)
+	for _, p := range []string{"/a/..;x/b", "/a/../b", "/a/./b"} {
+		_, bErr := m.Serve(testCtx(t), Request{Endpoint: "files", Method: "GET", Path: p, Headers: map[string]string{}})
+		require.NotNil(t, bErr, p)
+		assert.Equal(t, http.StatusNotFound, *bErr.StatusCode, p)
+	}
+	assert.False(t, called)
+	_, bErr := m.Serve(testCtx(t), Request{Endpoint: "files", Method: "GET", Path: "/other/x", Headers: map[string]string{}})
+	assert.Nil(t, bErr, "other paths still relay")
+
+	// The Test tab says the same.
+	out, err := PreviewUsage(cfg, UsagePreviewInput{Method: "GET", Path: "/a/..;x/b"})
+	require.NoError(t, err)
+	assert.False(t, out.RouteAllowed)
+	assert.Contains(t, strings.Join(out.Notes, " "), ". or .. segment")
+	out, err = PreviewUsage(cfg, UsagePreviewInput{Method: "GET", Path: "/other/x"})
+	require.NoError(t, err)
+	assert.True(t, out.RouteAllowed)
+}
+
 func TestServeReturnsResponseRecoveredByPostHook(t *testing.T) {
 	cfg := bearerConfig("down", "http://127.0.0.1:1")
 	cfg.SkipRouteCheck = true

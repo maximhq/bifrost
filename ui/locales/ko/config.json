@@ -1425,7 +1425,7 @@
 			"titleAdd": "라우트 추가",
 			"titleEdit": "라우트 편집",
 			"pathLabel": "경로 (필수)",
-			"pathInfo": "*는 한 세그먼트 안에서 일치하고, 끝의 /**는 그 아래 모든 경로와 일치해요.",
+			"pathInfo": "*는 한 세그먼트 안에서 일치하고, 끝의 /**는 그 아래 모든 경로와, 중간의 /**/는 하나 이상의 세그먼트와 일치해요.",
 			"headersLabel": "헤더 매처 (선택사항)",
 			"headersInfo": "AWS JSON API의 X-Amz-Target처럼 함께 일치해야 하는 요청 헤더예요. 값은 글롭 패턴이에요.",
 			"bodyOverridesLabel": "강제 본문 필드 (선택)",

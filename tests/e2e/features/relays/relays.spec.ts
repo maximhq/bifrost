@@ -306,27 +306,30 @@ test.describe("Relays", () => {
     await page.closeSheets();
     expect((await getRelay(request, name)).routes[0].headers).toEqual({ "X-Amz-Target": "Textract.Analyze*" });
 
-    // A POST route (the default method) with no matcher. Routes are saved in match order, literal
-    // paths A to Z, so /v1/search lands ahead of /v1/status.
+    // A POST route (the default method) with no matcher. Routes are saved in the order they were
+    // added; the gateway ranks them itself, and two literal paths keep that order.
     await page.addRoute({ path: "/v1/search" });
-    await expect(page.routeRow(0)).toContainText("POST");
-    await expect(page.routeRow(0)).toContainText("/v1/search");
-    await expect(page.routeRow(0)).not.toContainText("Free");
-    await expect(page.routeRow(1)).toContainText("/v1/status");
+    await expect(page.routeRow(1)).toContainText("POST");
+    await expect(page.routeRow(1)).toContainText("/v1/search");
+    await expect(page.routeRow(1)).not.toContainText("Free");
+    await expect(page.routeRow(0)).toContainText("/v1/status");
 
     let relay = await getRelay(request, name);
     expect(relay.routes).toHaveLength(2);
-    expect(relay.routes[0]).toMatchObject({ method: "POST", path: "/v1/search" });
-    expect(relay.routes[1].method).toBe("GET");
-    expect(relay.routes[1].headers).toEqual({ "X-Amz-Target": "Textract.Analyze*" });
+    expect(relay.routes[1]).toMatchObject({ method: "POST", path: "/v1/search" });
+    expect(relay.routes[0].method).toBe("GET");
+    expect(relay.routes[0].headers).toEqual({ "X-Amz-Target": "Textract.Analyze*" });
 
-    // Edit: widen /v1/search into a catch-all, which is saved after the literal route it would otherwise shadow.
-    await page.openEditRoute(0);
+    // Edit: widen /v1/search into a catch-all. It keeps its saved place, and is listed after the
+    // literal route, which the gateway tries first.
+    await page.openEditRoute(1);
     await expect(page.page.getByTestId("relay-route-path")).toHaveValue("/v1/search");
     await page.fillRoute({ path: "/v1/search/**" });
     await page.saveRoute();
     await expect(page.routeRow(0)).toContainText("/v1/status");
     await expect(page.routeRow(1)).toContainText("/v1/search/**");
+    await expect(page.routeRows().nth(0)).toContainText("/v1/status");
+    await expect(page.routeRows().nth(1)).toContainText("/v1/search/**");
 
     // Disable from the row switch.
     await page.routeEnabledSwitch(1).click();
@@ -534,6 +537,46 @@ test.describe("Relays", () => {
     await expect(page.page.getByTestId("relay-job-usage-units-path")).toHaveAttribute("aria-invalid", "true");
     await expect(page.asyncJobSheet).toBeVisible();
     expect((await getRelay(request, name)).routes).toHaveLength(1);
+  });
+
+  test("lists routes in the order the gateway tries them, and edits the route each row shows", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-order-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    const saved = await request.put(`${API}/${name}`, {
+      data: {
+        name,
+        base_url: "https://api.example.com",
+        auth: { type: "bearer" },
+        credential: { value: { value: "sk-e2e-secret" } },
+        routes: [
+          { method: "GET", path: "/**" },
+          { method: "GET", path: "/jobs/**" },
+          { method: "GET", path: "/jobs/metrics" },
+        ],
+      },
+    });
+    expect(saved.status(), await saved.text()).toBe(200);
+    expect((await saved.json()).match_order).toEqual([2, 1, 0]);
+    await page.goto();
+    await page.select(name);
+
+    // The most specific route is listed first; each row keeps its saved index in its test ids.
+    const rows = page.routeRows();
+    await expect(rows.nth(0)).toHaveAttribute("data-testid", "relay-route-row-2");
+    await expect(rows.nth(1)).toHaveAttribute("data-testid", "relay-route-row-1");
+    await expect(rows.nth(2)).toHaveAttribute("data-testid", "relay-route-row-0");
+
+    // Toggling and deleting the first row act on the route it shows, not on saved position 0.
+    await page.routeEnabledSwitch(2).click();
+    await page.waitForSuccessToast("Route disabled");
+    let relay = await getRelay(request, name);
+    expect(relay.routes.find((r: { path: string }) => r.path === "/jobs/metrics").enabled).toBe(false);
+    expect(relay.routes.find((r: { path: string }) => r.path === "/**").enabled ?? true).toBe(true);
+    await page.removeRoute(2);
+    relay = await getRelay(request, name);
+    expect(relay.routes.map((r: { path: string }) => r.path)).toEqual(["/**", "/jobs/**"]);
   });
 
   test("sets body overrides on a route and on the relay, refusing a value that is not JSON", async ({ relaysPage: page, request }) => {

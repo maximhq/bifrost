@@ -23,7 +23,7 @@ import { getErrorMessage, useUpdateRelayMutation } from "@/lib/store";
 import type { Relay } from "@/lib/types/relays";
 import { cn } from "@/lib/utils";
 import type { OpenAPIImport } from "@/lib/utils/openapiImport";
-import { cleanUsage, describePricing, locateRoute, mergeUsage, routeBillableByDefault, routeKey, toRelayForm } from "@/lib/utils/relayForm";
+import { cleanUsage, describePricing, displayOrder, locateRoute, mergeUsage, routeBillableByDefault, routeKey, toRelayForm } from "@/lib/utils/relayForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { EllipsisIcon, FileUpIcon, HourglassIcon, PencilIcon, PlusIcon, SlidersHorizontalIcon, TrashIcon } from "lucide-react";
 import { useState } from "react";
@@ -88,7 +88,7 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 	const [pendingImport, setPendingImport] = useState<{ routes: RouteForm[]; dropped: string[] } | null>(null);
 	// The start route of the async job being edited, or -1 for a new one.
 	const [jobEditing, setJobEditing] = useState<{ index: number; key: string } | null>(null);
-	// Shown in saved order, which is the order requests are matched in; every save writes compareRoutes order.
+	// Listed in the order the gateway tries them, specific routes first.
 	const routes = toRelayForm(endpoint).routes;
 	const endpointUsage = cleanUsage(endpoint.usage, false);
 	const opened = (index: number) => ({ index, key: routeKey(routes[index]) });
@@ -214,7 +214,8 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 								</TableCell>
 							</TableRow>
 						)}
-						{routes.map((route, index) => {
+						{displayOrder(endpoint.match_order, routes.length).map((index) => {
+							const route = routes[index];
 							const billable = route.billable ?? routeBillableByDefault(route.method);
 							const enabled = route.enabled ?? true;
 							const override = cleanUsage(route.usage, true);

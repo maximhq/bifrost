@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -291,7 +292,7 @@ type RelayConfig struct {
 	ProxyConfig        *ProxyConfig               `json:"proxy_config,omitempty"`         // outbound proxy; nil inherits the global proxy when it is enabled for inference
 	Usage              *RelayUsageConfig          `json:"usage,omitempty"`                // endpoint-level usage mapping every route inherits
 	Streaming          *RelayStreamingConfig      `json:"streaming,omitempty"`            // which requests are relayed as streams
-	Routes             []RelayRouteConfig         `json:"routes,omitempty"`               // upstream operations, first match wins
+	Routes             []RelayRouteConfig         `json:"routes,omitempty"`               // upstream operations; the most specific match wins
 	SkipRouteCheck     bool                       `json:"skip_route_check,omitempty"`     // relay requests matching no routes[] entry instead of refusing them with 404
 	IgnoreUpstreamCost bool                       `json:"ignore_upstream_cost,omitempty"` // drop cost_path values; the operator's fee and unit pricing still apply
 	BodyOverrides      map[string]json.RawMessage `json:"body_overrides,omitempty"`       // request body fields forced on every call through any route: dotted path to JSON value
@@ -467,6 +468,42 @@ func (c *RelayConfig) MergeRedacted(stored *RelayConfig) {
 
 // Validate checks the config is internally consistent. It runs when an endpoint is created or
 // updated, never on the request path.
+// RepeatedRoute reports a route identical to an earlier one: the same method, path and header
+// matchers. The first always matches first, so the second could never be reached, and these three
+// are what tells routes apart. It runs on save only, so a config file that has one still loads.
+func (c *RelayConfig) RepeatedRoute() error {
+	if c == nil {
+		return nil
+	}
+	seen := make(map[string]int, len(c.Routes))
+	for i, route := range c.Routes {
+		key := routeIdentity(route)
+		if j, dup := seen[key]; dup {
+			return fmt.Errorf("routes[%d] repeats routes[%d]: the same method, path and headers, so it could never match", i, j)
+		}
+		seen[key] = i
+	}
+	return nil
+}
+
+// routeIdentity is a route's method, path and header matchers (names case-insensitive), encoded
+// so no two different routes share it.
+func routeIdentity(route RelayRouteConfig) string {
+	headers := make([][2]string, 0, len(route.Headers))
+	for name, value := range route.Headers {
+		// The value as written: the gateway matches it literally, so "alpha" and "alpha\u00a0" differ.
+		headers = append(headers, [2]string{strings.ToLower(name), value})
+	}
+	slices.SortFunc(headers, func(a, b [2]string) int {
+		if c := strings.Compare(a[0], b[0]); c != 0 {
+			return c
+		}
+		return strings.Compare(a[1], b[1])
+	})
+	key, _ := json.Marshal([]any{strings.ToUpper(route.Method), route.Path, headers})
+	return string(key)
+}
+
 func (c *RelayConfig) Validate() error {
 	if c == nil {
 		return nil
@@ -783,18 +820,20 @@ func unitsMeasureIsWholeBody(m RelayUnitsMeasure) bool {
 	return m == RelayUnitsBodyBytes || m == RelayUnitsBodyChars
 }
 
-// validateEndpointRouteGlob accepts a rooted segment glob: "/a/*/b", "/a/**". path.Match reports
+// validateEndpointRouteGlob accepts a rooted segment glob: "/a/*/b", "/a/**", "/a/**/b". path.Match reports
 // syntax errors for a malformed segment pattern.
 func validateEndpointRouteGlob(glob string) error {
 	if !strings.HasPrefix(glob, "/") {
 		return fmt.Errorf("path %q must start with /", glob)
 	}
 	segments := strings.Split(strings.TrimPrefix(glob, "/"), "/")
-	for i, segment := range segments {
+	doubleStar := false
+	for _, segment := range segments {
 		if segment == "**" {
-			if i != len(segments)-1 {
-				return fmt.Errorf("path %q: ** is only allowed as the last segment", glob)
+			if doubleStar {
+				return fmt.Errorf("path %q: ** is only allowed once", glob)
 			}
+			doubleStar = true
 			continue
 		}
 		if _, err := path.Match(segment, ""); err != nil {

@@ -287,6 +287,17 @@ func TestPreviewUsage(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, out.RouteIndex, "a header the gateway drops selects no route in the preview either")
 	})
+	t.Run("a trailing or doubled slash is refused by a disabled route, as on a live call", func(t *testing.T) {
+		files := &schemas.RelayConfig{Auth: schemas.RelayAuthConfig{Type: schemas.RelayAuthNone}, Routes: []schemas.RelayRouteConfig{
+			{Method: "GET", Path: "/files/**/secret", Enabled: schemas.Ptr(false)},
+			{Method: "GET", Path: "/files/**"},
+		}}
+		for _, path := range []string{"/files/x/secret/", "/files/x//secret"} {
+			out, err := previewUsage(files, nil, UsagePreviewInput{Method: "GET", Path: path}, false)
+			require.NoError(t, err)
+			assert.False(t, out.RouteAllowed, path)
+		}
+	})
 	t.Run("invalid config is refused", func(t *testing.T) {
 		_, err := previewUsage(&schemas.RelayConfig{SkipRouteCheck: true, Auth: schemas.RelayAuthConfig{Type: "magic"}}, nil, UsagePreviewInput{Method: "POST", Path: "/"}, false)
 		require.Error(t, err)

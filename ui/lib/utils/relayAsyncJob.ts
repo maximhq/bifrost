@@ -1,9 +1,6 @@
-import type { RelayFormValues } from "@/lib/types/schemas";
+import type { RelayRouteForm as RouteForm } from "@/lib/types/schemas";
 
-type RouteForm = RelayFormValues["routes"][number];
 type JobForm = NonNullable<RouteForm["job"]>;
-
-export const JOB_ID_PLACEHOLDER = "{{job.id}}";
 
 /** Same method, path and header matchers: the gateway only ever reaches the first of two such routes. */
 function sameMatcher(a: RouteForm, b: RouteForm): boolean {
