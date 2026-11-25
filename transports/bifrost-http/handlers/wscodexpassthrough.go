@@ -1100,6 +1100,8 @@ func (r *codexRelay) finishTurn(turn *codexTurn, status int) {
 			PassthroughPath:         turn.path,
 		},
 		PassthroughUsage: turn.usage,
+		// The relay already tracks each turn's response ID to match events to turns.
+		ResponseID: turn.responseID,
 	}
 	if _, err := turn.hooks.PostHookRunner(turn.ctx, &schemas.BifrostResponse{PassthroughResponse: final}, nil); err != nil {
 		logger.Debug("codex websocket relay final post-hook returned an error: %v", err)

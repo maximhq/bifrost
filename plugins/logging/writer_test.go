@@ -2761,14 +2761,12 @@ func TestApplyProviderResponseID(t *testing.T) {
 			want:   id,
 		},
 		{
-			name: "passthrough usage frame",
-			result: &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
-				PassthroughUsage: &schemas.BifrostPassthroughUsage{ResponseID: id},
-			}},
-			want: id,
+			name:   "passthrough",
+			result: &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{ResponseID: id}},
+			want:   id,
 		},
 		{
-			name:   "passthrough without usage",
+			name:   "passthrough without an id",
 			result: &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{}},
 		},
 		{
@@ -2866,9 +2864,7 @@ func BenchmarkApplyProviderResponseID(b *testing.B) {
 		{"responses_stream_with_id", &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
 			Response: &schemas.BifrostResponsesResponse{ID: &id},
 		}}},
-		{"passthrough_with_id", &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
-			PassthroughUsage: &schemas.BifrostPassthroughUsage{ResponseID: id},
-		}}},
+		{"passthrough_with_id", &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{ResponseID: id}}},
 		{"chat_without_id", &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}},
 		{"other_request_type", &schemas.BifrostResponse{}},
 	}

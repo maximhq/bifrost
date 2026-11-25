@@ -8624,8 +8624,10 @@ func (provider *OpenAIProvider) Passthrough(
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
+	var responseID string
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		passthroughUsage = ExtractOpenAIPassthroughUsage(req.Method, req.Path, providerUtils.PassthroughUsageRequestBody(req), body)
+		responseID = ExtractOpenAIPassthroughResponseID(req.Method, req.Path, body)
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -8638,6 +8640,7 @@ func (provider *OpenAIProvider) Passthrough(
 			PassthroughPath:         req.Path,
 		},
 		PassthroughUsage: passthroughUsage,
+		ResponseID:       responseID,
 	}
 
 	return bifrostResponse, nil
@@ -8745,7 +8748,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 			fmt.Errorf("provider returned an empty stream body"))
 	}
 
-	usageRequestBody := providerUtils.PassthroughUsageRequestBody(req)
+	observer := NewOpenAIPassthroughStreamObserver(req.Method, req.Path, providerUtils.PassthroughUsageRequestBody(req))
 	// Forward raw chunks to the client and extract usage incrementally per SSE event —
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, rawBodyStream,
@@ -8757,11 +8760,10 @@ func (provider *OpenAIProvider) PassthroughStream(
 			CancellationBody: providerUtils.PassthroughJSONBody(fasthttpReq, req.Body),
 			StartTime:        startTime,
 			Logger:           provider.logger,
-			HasUsage:         HasOpenAIPassthroughUsage,
+			HasUsage:         observer.HasInfo,
 			EndsStream:       EndsOpenAIPassthroughStream,
-			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
-				return ExtractOpenAIPassthroughUsage(req.Method, req.Path, usageRequestBody, event)
-			},
+			Observe:          observer.Observe,
+			Finalize:         observer.Finalize,
 		},
 	), nil
 }

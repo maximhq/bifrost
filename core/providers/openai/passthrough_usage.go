@@ -94,6 +94,95 @@ func HasOpenAIPassthroughUsage(event []byte) bool {
 		providerUtils.GetJSONField(event, "response.usage").Exists()
 }
 
+// ExtractOpenAIPassthroughResponseID returns the response ID a passthrough payload names, read
+// with a field lookup and no full unmarshal. body is the full response body (non-streaming) or a
+// single SSE data event. A chat or text completion body, and every chunk of its stream, carries
+// the ID at the top level. A Responses body carries it at the top level, and a Responses stream
+// nests the response under each lifecycle event. "" for routes whose payloads name no response.
+func ExtractOpenAIPassthroughResponseID(method, path string, body []byte) string {
+	return passthroughResponseID(ClassifyPassthroughPath(method, path), body)
+}
+
+func passthroughResponseID(requestType schemas.RequestType, body []byte) string {
+	switch requestType {
+	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest:
+		return providerUtils.GetJSONField(body, "id").Str
+	case schemas.ResponsesRequest:
+		if id := providerUtils.GetJSONField(body, "response.id").Str; id != "" {
+			return id
+		}
+		// Only the response object itself names the response at the top level; other stream
+		// events carry item or part IDs there.
+		if providerUtils.GetJSONField(body, "object").Str == "response" {
+			return providerUtils.GetJSONField(body, "id").Str
+		}
+	}
+	return ""
+}
+
+// passthroughResponseIDProbes bounds how many leading stream events are checked for a response
+// ID. Chat chunks and Responses lifecycle events name it from the first event, so a stream that
+// has not named one by then is not going to, and the remaining events skip the lookup.
+const passthroughResponseIDProbes = 8
+
+// OpenAIPassthroughStreamObserver follows a passthrough SSE stream for its usage and for the ID
+// of the response it carries, without retaining the body. The ID is read independently of usage,
+// so a stream that reports no usage frame still names its response.
+type OpenAIPassthroughStreamObserver struct {
+	method      string
+	path        string
+	requestBody []byte
+	requestType schemas.RequestType
+	responseID  string
+	probes      int
+}
+
+// NewOpenAIPassthroughStreamObserver starts observing the stream a passthrough request opened.
+// requestBody is the body usage extraction reads (providerUtils.PassthroughUsageRequestBody).
+func NewOpenAIPassthroughStreamObserver(method, path string, requestBody []byte) *OpenAIPassthroughStreamObserver {
+	return &OpenAIPassthroughStreamObserver{
+		method:      method,
+		path:        path,
+		requestBody: requestBody,
+		requestType: ClassifyPassthroughPath(method, path),
+	}
+}
+
+// wantsResponseID reports whether the next event should still be checked for a response ID.
+func (o *OpenAIPassthroughStreamObserver) wantsResponseID() bool {
+	if o.responseID != "" || o.probes >= passthroughResponseIDProbes {
+		return false
+	}
+	switch o.requestType {
+	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest:
+		return true
+	}
+	return false
+}
+
+// HasInfo is the cheap gate for events worth observing: those that carry usage, and the leading
+// events of a stream whose response has not been named yet.
+func (o *OpenAIPassthroughStreamObserver) HasInfo(event []byte) bool {
+	return o.wantsResponseID() || HasOpenAIPassthroughUsage(event)
+}
+
+// Observe records one event and returns its usage, if any.
+func (o *OpenAIPassthroughStreamObserver) Observe(event []byte) *schemas.BifrostPassthroughUsage {
+	if o.wantsResponseID() {
+		o.probes++
+		o.responseID = passthroughResponseID(o.requestType, event)
+	}
+	if !HasOpenAIPassthroughUsage(event) {
+		return nil
+	}
+	return ExtractOpenAIPassthroughUsage(o.method, o.path, o.requestBody, event)
+}
+
+// Finalize names the response the stream carried on the final response.
+func (o *OpenAIPassthroughStreamObserver) Finalize(resp *schemas.BifrostPassthroughResponse) {
+	resp.ResponseID = o.responseID
+}
+
 // EndsOpenAIPassthroughStream reports whether a passthrough SSE event ends a Responses API stream.
 // Chat Completions chunks carry no top-level type, so they never match.
 func EndsOpenAIPassthroughStream(event []byte) bool {
@@ -161,7 +250,6 @@ func firstFormValue(form map[string][]string, key string) string {
 // BifrostLLMUsage is OpenAI-compatible so we can unmarshal directly.
 
 type oaiChatUsageWrapper struct {
-	ID          string                   `json:"id"`
 	Usage       *schemas.BifrostLLMUsage `json:"usage"`
 	ServiceTier *string                  `json:"service_tier"`
 }
@@ -174,7 +262,7 @@ func ExtractOAIChatUsage(body []byte) *schemas.BifrostPassthroughUsage {
 	if err := sonic.Unmarshal(body, &w); err != nil || w.Usage == nil || w.Usage.TotalTokens == 0 {
 		return nil
 	}
-	u := &schemas.BifrostPassthroughUsage{LLMUsage: w.Usage, ResponseID: w.ID}
+	u := &schemas.BifrostPassthroughUsage{LLMUsage: w.Usage}
 	if w.ServiceTier != nil {
 		t := schemas.BifrostServiceTier(*w.ServiceTier)
 		u.ServiceTier = &t
@@ -189,12 +277,10 @@ func ExtractOAIChatUsage(body []byte) *schemas.BifrostPassthroughUsage {
 //   - tool_usage is a sibling of usage in both
 type oaiResponsesWrapper struct {
 	Response *struct {
-		ID          string                          `json:"id"`
 		Usage       *schemas.ResponsesResponseUsage `json:"usage"`
 		ToolUsage   *schemas.ToolUsage              `json:"tool_usage"`
 		ServiceTier *string                         `json:"service_tier"`
 	} `json:"response"`
-	ID          string                          `json:"id"`
 	Usage       *schemas.ResponsesResponseUsage `json:"usage"`
 	ToolUsage   *schemas.ToolUsage              `json:"tool_usage"`
 	ServiceTier *string                         `json:"service_tier"`
@@ -211,18 +297,15 @@ func extractOAIResponsesUsage(body []byte) *schemas.BifrostPassthroughUsage {
 	}
 
 	// Streaming takes priority: nested under "response" with a non-zero total.
-	ru, toolUsage, tier, responseID := w.Usage, w.ToolUsage, w.ServiceTier, w.ID
+	ru, toolUsage, tier := w.Usage, w.ToolUsage, w.ServiceTier
 	if w.Response != nil && w.Response.Usage != nil && w.Response.Usage.TotalTokens > 0 {
-		ru, toolUsage, tier, responseID = w.Response.Usage, w.Response.ToolUsage, w.Response.ServiceTier, w.Response.ID
+		ru, toolUsage, tier = w.Response.Usage, w.Response.ToolUsage, w.Response.ServiceTier
 	}
 	if ru == nil || ru.TotalTokens == 0 {
 		return nil
 	}
 	ru.ToolUsage = toolUsage
-	usage := buildOAIResponsesUsage(ru, tier)
-	// The same frame that carries the usage names the response it belongs to.
-	usage.ResponseID = responseID
-	return usage
+	return buildOAIResponsesUsage(ru, tier)
 }
 
 func buildOAIResponsesUsage(ru *schemas.ResponsesResponseUsage, serviceTier *string) *schemas.BifrostPassthroughUsage {

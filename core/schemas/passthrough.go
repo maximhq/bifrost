@@ -195,12 +195,6 @@ type BifrostPassthroughUsage struct {
 	// datasheet estimation (there is often no datasheet rate for raw passthrough task types).
 	// Used by providers whose responses include their own cost, e.g. Runware's per-task `cost`.
 	Cost *BifrostCost
-
-	// ResponseID is the response identifier on the payload the usage was read from (a chat
-	// completion ID or a Responses ID). It rides here because a passthrough body is forwarded
-	// without being decoded, and the usage frame is the one frame the provider already parses.
-	// Empty when the provider does not extract it or the payload names none.
-	ResponseID string
 }
 
 // PassthroughModelListFilter rewrites a provider's raw model-list body, keeping only the models keep accepts.
@@ -214,6 +208,7 @@ type BifrostPassthroughResponse struct {
 	Path             string                   // stripped provider path, e.g. "/v1/chat/completions"
 	PassthroughUsage *BifrostPassthroughUsage // usage extracted by the provider for billing — set on the unary response (non-streaming) or the final streaming chunk; nil when no billable usage could be extracted
 	ServedModel      string                   // model or agent the upstream reports running, for requests that named none (an Interactions poll)
+	ResponseID       string                   // response identifier the upstream put on the response (a chat completion ID or a Responses ID), read by the provider without decoding the body; empty when the provider reads none
 	ProviderJob      *BifrostPassthroughJob   // provider-side run the response reports on; its usage is billed at settlement, not on this request
 }
 

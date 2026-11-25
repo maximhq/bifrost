@@ -1493,25 +1493,10 @@ func applyServedModel(entry *logstore.Log, result *schemas.BifrostResponse) {
 // applyProviderResponseID records the response identifier the provider put on the response
 // body. On a stream it is read from the final chunk, which carries the completed response.
 func applyProviderResponseID(entry *logstore.Log, result *schemas.BifrostResponse) {
-	if entry == nil || result == nil {
+	if entry == nil {
 		return
 	}
-	var id string
-	switch {
-	case result.ChatResponse != nil:
-		id = result.ChatResponse.ID
-	case result.ResponsesResponse != nil && result.ResponsesResponse.ID != nil:
-		id = *result.ResponsesResponse.ID
-	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil &&
-		result.ResponsesStreamResponse.Response.ID != nil:
-		id = *result.ResponsesStreamResponse.Response.ID
-	case result.TextCompletionResponse != nil:
-		id = result.TextCompletionResponse.ID
-	case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil:
-		// A passthrough body is never decoded on the request path; the provider reads the
-		// ID off the frame it parses for usage.
-		id = result.PassthroughResponse.PassthroughUsage.ResponseID
-	}
+	id := result.ProviderResponseID()
 	if id == "" || len(id) > maxPersistedProviderResponseIDLen {
 		return
 	}

@@ -366,3 +366,27 @@ func TestDeepCopy_PromptCacheBreakpointTTL(t *testing.T) {
 	assert.Equal(t, "12h", *gotResp.TTL)
 	assert.NotSame(t, resp.Content.ContentBlocks[0].PromptCacheBreakpoint.TTL, gotResp.TTL)
 }
+
+func TestBifrostResponseProviderResponseID(t *testing.T) {
+	id := "msg_011ChQDewfwJ3BMDLzXNoVjS"
+	for _, tc := range []struct {
+		name string
+		resp *BifrostResponse
+		want string
+	}{
+		{"chat", &BifrostResponse{ChatResponse: &BifrostChatResponse{ID: id}}, id},
+		{"responses", &BifrostResponse{ResponsesResponse: &BifrostResponsesResponse{ID: &id}}, id},
+		{"responses without an id", &BifrostResponse{ResponsesResponse: &BifrostResponsesResponse{}}, ""},
+		{"responses stream final chunk", &BifrostResponse{ResponsesStreamResponse: &BifrostResponsesStreamResponse{Response: &BifrostResponsesResponse{ID: &id}}}, id},
+		{"responses stream chunk without a response", &BifrostResponse{ResponsesStreamResponse: &BifrostResponsesStreamResponse{}}, ""},
+		{"text completion", &BifrostResponse{TextCompletionResponse: &BifrostTextCompletionResponse{ID: id}}, id},
+		{"passthrough", &BifrostResponse{PassthroughResponse: &BifrostPassthroughResponse{ResponseID: id}}, id},
+		{"passthrough without an id", &BifrostResponse{PassthroughResponse: &BifrostPassthroughResponse{}}, ""},
+		{"response type with no id", &BifrostResponse{}, ""},
+		{"nil", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.resp.ProviderResponseID())
+		})
+	}
+}

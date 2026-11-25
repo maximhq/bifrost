@@ -2458,6 +2458,35 @@ func (r *BifrostResponse) ServedModel() string {
 	return ""
 }
 
+// ProviderResponseID returns the response identifier the provider put on the response: an
+// Anthropic message ID, a chat or text completion ID, or a Responses ID. A client that keeps its
+// own record of a conversation stores the same identifier, so it names the one response a log
+// row or span describes. On a stream it is read from the final chunk, which carries the
+// completed response. "" for response types that carry none.
+func (r *BifrostResponse) ProviderResponseID() string {
+	if r == nil {
+		return ""
+	}
+	switch {
+	case r.ChatResponse != nil:
+		return r.ChatResponse.ID
+	case r.ResponsesResponse != nil:
+		if r.ResponsesResponse.ID != nil {
+			return *r.ResponsesResponse.ID
+		}
+	case r.ResponsesStreamResponse != nil && r.ResponsesStreamResponse.Response != nil:
+		if r.ResponsesStreamResponse.Response.ID != nil {
+			return *r.ResponsesStreamResponse.Response.ID
+		}
+	case r.TextCompletionResponse != nil:
+		return r.TextCompletionResponse.ID
+	case r.PassthroughResponse != nil:
+		// A passthrough body is forwarded without being decoded; the provider reads the ID.
+		return r.PassthroughResponse.ResponseID
+	}
+	return ""
+}
+
 // IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound
 // effects API (POST /v1/sound-generation, e.g. "eleven_text_to_sound_v2")
 // rather than text-to-speech. These models are not tied to a voice.
