@@ -221,9 +221,6 @@ func (u resolvedUsage) requestUnits(body []byte) usageFields {
 	return f
 }
 
-// maxRequestJSONDepth bounds the duplicate-key walk over a billed request body.
-const maxRequestJSONDepth = 64
-
 // requestBodyError refuses a request that a billable route reading its quantity at a path in the
 // caller's body (Translate's Text) cannot measure unambiguously: a body that is not JSON, which
 // would otherwise bill nothing, and a body naming one key twice in an object, case-insensitively,
@@ -323,10 +320,10 @@ func (u resolvedUsage) unitCharge(f usageFields) float64 {
 	return u.billedUnits(f.units) * u.costPerUnit
 }
 
-// hasDuplicateKey reports whether any object in v names a key twice, case-insensitively, or v
-// nests deeper than maxRequestJSONDepth.
+// hasDuplicateKey reports whether any object in v names a key twice, case-insensitively. The body
+// was already held to maxJSONDepth, the bound every other relay JSON check uses.
 func hasDuplicateKey(v gjson.Result, depth int) bool {
-	if depth > maxRequestJSONDepth {
+	if depth > maxJSONDepth {
 		return true
 	}
 	dup := false

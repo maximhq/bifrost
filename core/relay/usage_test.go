@@ -385,10 +385,15 @@ func TestRequestBodyError(t *testing.T) {
 		"lone case variant":            `{"text":"` + strings.Repeat("b", 100) + `"}`,
 		"duplicate inside an array":    `[{"Text":"a"},{"Text":"a","TEXT":"b"}]`,
 		"duplicate in a nested object": `{"Options":{"x":1,"X":2},"Text":"a"}`,
-		"too deep":                     strings.Repeat(`{"a":`, 70) + `1` + strings.Repeat(`}`, 70),
+		"too deep":                     strings.Repeat(`{"a":`, 1001) + `1` + strings.Repeat(`}`, 1001),
 	} {
 		assert.Errorf(t, translate.requestBodyError([]byte(body)), "%s must be refused", name)
 	}
+	// The same depth bound as every other relay JSON check, not a tighter one of its own.
+	deep := strings.Repeat(`{"a":`, 70) + `1` + strings.Repeat(`}`, 70)
+	assert.NoError(t, translate.requestBodyError([]byte(`{"Text":"hi","Options":`+deep+`}`)), "70 levels is fine, as it is everywhere else")
+	assert.EqualError(t, translate.requestBodyError([]byte(strings.Repeat(`{"a":`, 1001)+`1`+strings.Repeat(`}`, 1001))), "the request body nests deeper than 1000 levels",
+		"past the bound the message says so, not \"duplicate key\"")
 
 	tts := resolveUsage(&schemas.RelayUsageConfig{UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsBodyChars, CostPerUnit: schemas.Ptr(0.001)}, nil)
 	assert.NoError(t, tts.requestBodyError([]byte(`<speak>hi</speak>`)), "a whole-body measure reads any body")
