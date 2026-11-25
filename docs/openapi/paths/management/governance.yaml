@@ -149,6 +149,8 @@ virtual-keys:
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createVirtualKey
@@ -186,6 +188,8 @@ virtual-keys:
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 virtual-keys-quota:
   get:
@@ -250,6 +254,8 @@ virtual-keys-quota:
                   type: string
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 virtual-keys-by-id:
   get:
@@ -304,6 +310,8 @@ virtual-keys-by-id:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updateVirtualKey
@@ -354,6 +362,8 @@ virtual-keys-by-id:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteVirtualKey
@@ -396,6 +406,8 @@ virtual-keys-by-id:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 virtual-keys-rotate-by-id:
   post:
@@ -460,6 +472,8 @@ virtual-keys-rotate-by-id:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 virtual-keys-budget-override:
   put:
@@ -524,6 +538,8 @@ virtual-keys-budget-override:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteVirtualKeyBudgetOverride
@@ -574,6 +590,8 @@ virtual-keys-budget-override:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 virtual-keys-rotate:
   post:
@@ -661,6 +679,8 @@ virtual-keys-rotate:
                   description: Map of virtual key ID to failure reason
                   additionalProperties:
                     type: string
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 # Teams CRUD
 
@@ -725,6 +745,8 @@ teams:
               $ref: "../../schemas/management/governance.yaml#/ListTeamsResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createTeam
@@ -762,6 +784,8 @@ teams:
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 teams-by-id:
   get:
@@ -808,6 +832,8 @@ teams-by-id:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updateTeam
@@ -858,6 +884,8 @@ teams-by-id:
               $ref: "../../schemas/management/common.yaml#/ErrorResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteTeam
@@ -900,6 +928,8 @@ teams-by-id:
               $ref: "../../schemas/management/common.yaml#/ErrorResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 # Customers CRUD
 
@@ -959,6 +989,8 @@ customers:
               $ref: "../../schemas/management/governance.yaml#/ListCustomersResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createCustomer
@@ -996,6 +1028,8 @@ customers:
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 customers-by-id:
   get:
@@ -1042,6 +1076,8 @@ customers-by-id:
               $ref: "../../schemas/management/common.yaml#/ErrorResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updateCustomer
@@ -1092,6 +1128,8 @@ customers-by-id:
               $ref: "../../schemas/management/common.yaml#/ErrorResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteCustomer
@@ -1134,6 +1172,8 @@ customers-by-id:
               $ref: "../../schemas/management/common.yaml#/ErrorResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 # Budgets and Rate Limits GET operations
 
@@ -1166,6 +1206,8 @@ budgets:
               $ref: "../../schemas/management/governance.yaml#/ListBudgetsResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 rate-limits:
   get:
@@ -1196,6 +1238,8 @@ rate-limits:
               $ref: "../../schemas/management/governance.yaml#/ListRateLimitsResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 # Routing Rules CRUD
 
@@ -1278,6 +1322,8 @@ model-configs:
               $ref: "../../schemas/management/governance.yaml#/ListModelConfigsResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createModelConfig
@@ -1328,6 +1374,8 @@ model-configs:
               $ref: "../../schemas/management/common.yaml#/ErrorResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 model-configs-by-id:
   get:
@@ -1374,6 +1422,8 @@ model-configs-by-id:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updateModelConfig
@@ -1424,6 +1474,8 @@ model-configs-by-id:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteModelConfig
@@ -1466,6 +1518,8 @@ model-configs-by-id:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 # Provider Governance
 
@@ -1505,6 +1559,8 @@ provider-governance:
               $ref: "../../schemas/management/governance.yaml#/ListProviderGovernanceResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 provider-governance-by-name:
   put:
@@ -1556,6 +1612,8 @@ provider-governance-by-name:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteProviderGovernance
@@ -1598,6 +1656,8 @@ provider-governance-by-name:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 # Pricing Overrides CRUD
 
 pricing-overrides:
@@ -1677,6 +1737,8 @@ pricing-overrides:
               $ref: "../../schemas/management/governance.yaml#/ListPricingOverridesResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createPricingOverride
@@ -1714,6 +1776,8 @@ pricing-overrides:
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 pricing-overrides-by-id:
   put:
@@ -1765,6 +1829,8 @@ pricing-overrides-by-id:
               $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deletePricingOverride
@@ -1801,5 +1867,7 @@ pricing-overrides-by-id:
               $ref: "../../schemas/management/common.yaml#/MessageResponse"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 # Complexity Analyzer Config

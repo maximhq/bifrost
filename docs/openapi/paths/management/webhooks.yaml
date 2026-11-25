@@ -68,6 +68,8 @@ webhooks:
               $ref: '../../schemas/management/webhooks.yaml#/WebhookEndpointList'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -106,6 +108,8 @@ webhooks:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -138,6 +142,8 @@ webhooks-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -179,6 +185,8 @@ webhooks-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -209,6 +217,8 @@ webhooks-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -246,6 +256,8 @@ webhooks-rotate-secret:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -293,6 +305,12 @@ webhooks-test:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '503':
+        description: Config store not available, or webhook delivery is not available.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -345,7 +363,7 @@ webhooks-deliveries:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '503':
-        description: Logs store is not available.
+        description: Config store not available, or logs store not available.
         content:
           application/json:
             schema:
@@ -485,7 +503,7 @@ webhooks-deliveries-search:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '503':
-        description: Logs store is not available.
+        description: Config store not available, or logs store not available.
         content:
           application/json:
             schema:
@@ -531,6 +549,12 @@ webhooks-deliveries-redeliver:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '409':
         description: This delivery is already in flight.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '503':
+        description: Config store not available, or logs store not available.
         content:
           application/json:
             schema:
