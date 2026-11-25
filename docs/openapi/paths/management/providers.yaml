@@ -589,8 +589,9 @@ provider-decisions-probe:
       `model` is missing, the model is not served on the provider's decisions endpoint,
       or `key_id` is not one of the provider's keys, and with `404` when the provider is
       not configured. Without `key_id`, the model check is the rule
-      `GET /api/models?decisions=true` applies, with a key alias resolved through the
-      catalog. With `key_id`, the alias is resolved through that key instead: two keys can
+      `GET /api/models?decisions=true` applies (`GET /<prefix>/api/models?decisions=true`
+      when Bifrost is mounted under `server.base_path`), with a key alias resolved through
+      the catalog. With `key_id`, the alias is resolved through that key instead: two keys can
       map one alias to different models and the catalog keeps only one of them, so a model
       the decisions listing shows can still be rejected for a key that maps it to another
       model.
