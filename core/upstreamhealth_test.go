@@ -367,6 +367,22 @@ func TestUpstreamHealthRefusedPoolCoolsDownUntilSoonestKey(t *testing.T) {
 	}
 }
 
+// A newer walk where every key was refused replaces a running cooldown, even with an earlier
+// deadline: it is the newest word on when the pool recovers.
+func TestUpstreamHealthRefusedWalkReplacesRunningCooldown(t *testing.T) {
+	var tracker upstreamHealthTracker
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	tracker.recordFailure(schemas.OpenAI, "gpt-x", schemas.FailureClassRateLimit, schemas.Ptr(429), 60_000, cooldownStart, t0)
+	tracker.recordFailure(schemas.OpenAI, "gpt-x", schemas.FailureClassRateLimit, schemas.Ptr(429), 10_000, cooldownStart, t0.Add(5*time.Second))
+	h := findUpstreamHealth(t, tracker.snapshot(t0.Add(6*time.Second)), schemas.OpenAI, "gpt-x")
+	if h.CooldownUntil == nil || !h.CooldownUntil.Equal(t0.Add(15*time.Second)) {
+		t.Fatalf("expected the newer walk's t0+15s to replace the t0+60s cooldown, got %+v", h)
+	}
+	if !findUpstreamHealth(t, tracker.snapshot(t0.Add(15*time.Second)), schemas.OpenAI, "gpt-x").Available {
+		t.Fatal("expected the pair usable at the newer walk's deadline")
+	}
+}
+
 // A key retried after a short hint that then asks for longer is free only once the longer wait
 // ends: with one key and MaxRetries 1, a 429 asking for 1s followed by one asking for 60s cools
 // the pair down for the 60s, not the 1s.

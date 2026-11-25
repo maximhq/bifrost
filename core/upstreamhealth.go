@@ -75,7 +75,9 @@ type upstreamHealthTracker struct {
 type upstreamCooldownEffect int
 
 const (
-	// cooldownStart starts (or extends) a cooldown: every key in the pool was refused.
+	// cooldownStart sets the cooldown from this failure, replacing any running one: every key in
+	// the pool was refused, so this walk is the newest word on when the pool recovers, earlier or
+	// later than the last.
 	cooldownStart upstreamCooldownEffect = iota
 	// cooldownKeep leaves any cooldown as it was: the chain stopped before every key had been
 	// refused, so another key may still serve the pair.
@@ -272,9 +274,7 @@ func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, mo
 		return
 	}
 	if d, ok := upstreamCooldown(class, retryAfterMs, st.consecutiveFailures); ok {
-		if until := now.Add(d); until.After(st.cooldownUntil) {
-			st.cooldownUntil = until
-		}
+		st.cooldownUntil = now.Add(d)
 	}
 }
 
