@@ -112,7 +112,7 @@ func TestUpstreamHealthTrailHintCountsFromAnswer(t *testing.T) {
 		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeProviderCredentialsExhausted},
 	}
 	end := t0.Add(18 * time.Second)
-	class, status, hint := upstreamFinalFailure(ctx, exhausted, end)
+	class, status, hint := upstreamFinalFailure(ctx, exhausted, true, end)
 	if class != schemas.FailureClassRateLimit || status == nil || *status != 429 {
 		t.Fatalf("expected the trail's rate limit, got %s %v", class, status)
 	}
@@ -131,7 +131,7 @@ func TestUpstreamHealthTrailHintCountsFromAnswer(t *testing.T) {
 
 	// A hint whose wait has fully passed still stands for the provider's wait, not the hintless
 	// escalating cooldown.
-	if _, _, hint := upstreamFinalFailure(ctx, exhausted, t0.Add(time.Minute)); hint != 1 {
+	if _, _, hint := upstreamFinalFailure(ctx, exhausted, true, t0.Add(time.Minute)); hint != 1 {
 		t.Fatalf("expected an elapsed hint to leave 1 ms, got %d ms", hint)
 	}
 }
@@ -325,6 +325,46 @@ func TestUpstreamHealthRecordsOnlySharedPoolChains(t *testing.T) {
 			t.Fatalf("expected the shared pool's refusal to cool the pair down, got %+v", h)
 		}
 	})
+}
+
+// A pool whose every key was refused is free again when its soonest key is, whether the chain
+// ended on the last key's own 429 or on the synthetic credentials-exhausted error: key A's 20s
+// hint ends the cooldown even though the chain ended on key B's 30s one.
+func TestUpstreamHealthRefusedPoolCoolsDownUntilSoonestKey(t *testing.T) {
+	var calls atomic.Int32
+	client := newUpstreamHealthTestClient(t, 1, func(w http.ResponseWriter, r *http.Request) {
+		hint := "30"
+		if calls.Add(1) == 1 {
+			hint = "20"
+		}
+		w.Header().Set("Retry-After", hint)
+		rateLimitedHandler(w, r)
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	_, bifrostErr := client.ChatCompletionRequest(ctx, upstreamHealthChatRequest())
+	if bifrostErr == nil {
+		t.Fatal("expected the rate-limited upstream to fail the request")
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("expected one attempt on each key, got %d upstream calls", n)
+	}
+	if bifrostErr.ExtraFields.ErrorType == schemas.ErrorTypeProviderCredentialsExhausted || bifrostErr.ExtraFields.RetryAfter != 30_000 {
+		t.Fatalf("expected the chain to end on the second key's own 30s answer, got %+v", bifrostErr.ExtraFields)
+	}
+	trail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+	if len(trail) != 2 || trail[0].AnsweredAt.IsZero() {
+		t.Fatalf("expected two answered trail records, got %+v", trail)
+	}
+	h := findUpstreamHealth(t, client.UpstreamHealthSnapshot(time.Now()), schemas.OpenAI, "gpt-4o-mini")
+	if h.Available || h.CooldownUntil == nil {
+		t.Fatalf("expected the refused pool to cool down, got %+v", h)
+	}
+	if soonest := trail[0].AnsweredAt.Add(20 * time.Second); h.CooldownUntil.After(soonest) {
+		t.Fatalf("expected the cooldown to end by the first key's answer plus 20s (%s), got %s", soonest, h.CooldownUntil)
+	}
+	if !findUpstreamHealth(t, client.UpstreamHealthSnapshot(trail[0].AnsweredAt.Add(20*time.Second)), schemas.OpenAI, "gpt-4o-mini").Available {
+		t.Fatal("expected the pair usable once the soonest key's hint has passed")
+	}
 }
 
 // A chain the retry budget ends before every key was refused proves nothing about the keys it

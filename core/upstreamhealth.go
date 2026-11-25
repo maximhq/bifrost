@@ -117,41 +117,61 @@ func recordsUpstreamFailure(class schemas.FailureClass) bool {
 
 // upstreamFinalFailure classifies the final error of one provider attempt chain. When core
 // ends the chain with its synthetic 502 upstream_credentials_exhausted (every key in the pool
-// was refused), that error carries no upstream class of its own, so the class and Retry-After
-// hint of the last upstream answer in the attempt trail stand for it. Core resets the trail on
-// the chain's first attempt and returns that error only after attempts on it, so the trail is
-// this chain's. Each trail hint counts from when its answer arrived, so the hint returned is what
-// is left of it at now: a cooldown starting at now ends no later than that answer plus its hint.
-func upstreamFinalFailure(ctx *schemas.BifrostContext, err *schemas.BifrostError, now time.Time) (schemas.FailureClass, *int, int64) {
+// was refused), that error carries no upstream class of its own, so the class of the last
+// upstream answer in the attempt trail stands for it. Core resets the trail on the chain's first
+// attempt and returns that error only after attempts on it, so the trail is this chain's.
+// When every key was refused (poolRefused), the pool is free again when its soonest key is, so
+// the Retry-After returned is the smallest left in the trail for the failure's class, falling
+// back to the final error's own hint when the trail has none.
+func upstreamFinalFailure(ctx *schemas.BifrostContext, err *schemas.BifrostError, poolRefused bool, now time.Time) (schemas.FailureClass, *int, int64) {
 	class := ClassifyFailure(err)
 	statusCode := err.StatusCode
 	retryAfter := err.ExtraFields.RetryAfter
-	if ctx == nil || err.ExtraFields.ErrorType != schemas.ErrorTypeProviderCredentialsExhausted {
+	if ctx == nil {
 		return class, statusCode, retryAfter
 	}
 	trail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
-	for i := len(trail) - 1; i >= 0; i-- {
-		if recordsUpstreamFailure(trail[i].FailureClass) {
-			// A rate-limited pool is free again when the soonest key is: take the smallest hint.
-			// A hint whose wait has already passed leaves 1 ms, so it still stands for the
-			// provider's wait rather than falling back to the hintless cooldown.
-			hint := int64(0)
-			for j := range trail {
-				if trail[j].FailureClass != trail[i].FailureClass || trail[j].RetryAfter <= 0 {
-					continue
-				}
-				left := trail[j].RetryAfter
-				if !trail[j].AnsweredAt.IsZero() {
-					left = max(left-now.Sub(trail[j].AnsweredAt).Milliseconds(), 1)
-				}
-				if hint == 0 || left < hint {
-					hint = left
-				}
+	if err.ExtraFields.ErrorType == schemas.ErrorTypeProviderCredentialsExhausted {
+		found := false
+		for i := len(trail) - 1; i >= 0; i-- {
+			if recordsUpstreamFailure(trail[i].FailureClass) {
+				class, statusCode, retryAfter, found = trail[i].FailureClass, trail[i].StatusCode, 0, true
+				break
 			}
-			return trail[i].FailureClass, trail[i].StatusCode, hint
 		}
+		if !found {
+			return class, statusCode, retryAfter
+		}
+	} else if !poolRefused {
+		return class, statusCode, retryAfter
+	}
+	if hint := soonestTrailHint(trail, class, now); hint > 0 {
+		retryAfter = hint
 	}
 	return class, statusCode, retryAfter
+}
+
+// soonestTrailHint is the smallest Retry-After left at now among the trail's answers of class, or
+// 0 when none carried one. Each hint counts from when its answer arrived, so a cooldown starting
+// at now ends no later than that answer plus its hint; a hint whose wait has already passed
+// leaves 1 ms, so it still stands for the provider's wait rather than the hintless cooldown.
+func soonestTrailHint(trail []schemas.KeyAttemptRecord, class schemas.FailureClass, now time.Time) int64 {
+	hint := int64(0)
+	for j := range trail {
+		if trail[j].FailureClass != class || trail[j].RetryAfter <= 0 {
+			continue
+		}
+		left := trail[j].RetryAfter
+		if !trail[j].AnsweredAt.IsZero() {
+			// Elapsed time rounds up to the millisecond, so the cooldown never outlasts the hint.
+			elapsed := (now.Sub(trail[j].AnsweredAt) + time.Millisecond - 1) / time.Millisecond
+			left = max(left-int64(elapsed), 1)
+		}
+		if hint == 0 || left < hint {
+			hint = left
+		}
+	}
+	return hint
 }
 
 // recordSuccess marks a pair as serving. Pairs never seen failing are not tracked, so the
@@ -357,9 +377,10 @@ func (bifrost *Bifrost) recordUpstreamOutcome(ctx *schemas.BifrostContext, provi
 		bifrost.upstreamHealth.recordSuccess(provider, model, now)
 		return
 	}
-	class, statusCode, retryAfter := upstreamFinalFailure(ctx, err, now)
+	refused := upstreamPoolRefused(ctx, poolSize)
+	class, statusCode, retryAfter := upstreamFinalFailure(ctx, err, refused, now)
 	effect := cooldownStart
-	if !upstreamPoolRefused(ctx, poolSize) {
+	if !refused {
 		effect = cooldownKeep
 	}
 	bifrost.upstreamHealth.recordFailure(provider, model, class, statusCode, retryAfter, effect, now)
