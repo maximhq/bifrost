@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "..", "provider-error-fixture.mjs");
 
 // startFixture boots the fixture on a random port and resolves once it listens. The returned post
-// sends one chat completion and, when the fixture does not answer, fails with what it printed on its
-// way out.
+// and get each send one request and, when the fixture does not answer, fail with what it printed on
+// its way out.
 async function startFixture(t) {
   const port = 20000 + Math.floor(Math.random() * 20000);
   const child = spawn(process.execPath, [FIXTURE], {
@@ -27,24 +27,23 @@ async function startFixture(t) {
     });
     child.on("exit", (code) => reject(new Error(`the fixture exited (${code}) before it listened: ${output}`)));
   });
-  const post = async (body, path = "/v1/chat/completions") => {
+  const send = async (path, init) => {
     try {
-      return await fetch(`http://127.0.0.1:${port}${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      return await fetch(`http://127.0.0.1:${port}${path}`, init);
     } catch (err) {
       assert.fail(`the fixture stopped answering (${err.cause?.code || err.message}): ${output}`);
     }
   };
-  return post;
+  const post = (body, path = "/v1/chat/completions") =>
+    send(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const get = (path) => send(path, { headers: { Authorization: "Bearer test-key" } });
+  return { post, get };
 }
 
 // The request's model picks the fixture's behaviour. A model that is not a string names none, so it
 // gets the unknown-model answer; it must not stop the one fixture every folder-185 request shares.
 test("a model that is not a string is an unknown model and the fixture keeps serving", async (t) => {
-  const post = await startFixture(t);
+  const { post } = await startFixture(t);
   for (const model of [1, true, { name: "upstream-ok" }, ["upstream-ok"]]) {
     const res = await post({ model, messages: [{ role: "user", content: "hi" }] });
     assert.equal(res.status, 404, `model ${JSON.stringify(model)}`);
@@ -54,8 +53,18 @@ test("a model that is not a string is an unknown model and the fixture keeps ser
   assert.equal(ok.status, 200, "a valid request after the malformed ones");
 });
 
+test("a response id with a malformed escape is a 400 and the fixture keeps serving", async (t) => {
+  const { get } = await startFixture(t);
+  const bad = await get("/v1/responses/resp_%ZZ");
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json()).error.code, "invalid_response_id");
+  const ok = await get("/v1/responses/resp_fixture_completed");
+  assert.equal(ok.status, 200, "a valid retrieve after the malformed one");
+  assert.match(await ok.text(), /event: response\.completed/);
+});
+
 test("filtered Live create checks accounting events and unchanged command permissions", async (t) => {
-  const post = await startFixture(t);
+  const { post } = await startFixture(t);
   const top = ["session.started", "session.updated", "session.closed", "session.usage.updated", "session.delegation.created", "session.input_transcript.delta", "session.output_transcript.delta", "error"];
   const nested = ["response.output_item.done", "response.completed", "response.incomplete", "response.failed"];
   const required = [...top.map((type) => ({ type })), ...nested.map((type) => ({ type: "response.event", response_event: type }))];

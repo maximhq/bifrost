@@ -372,12 +372,10 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
 		}
 
-		// Falling out of the loop means the body ended without a terminal event.
-		// A plain io.EOF cannot distinguish that from a healthy close, so surface it
-		// instead of closing the channel silently.
-		if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
-			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, nil)
-		}
+		// Falling out of the loop means the body ended without a terminal event,
+		// which is a truncation even when [DONE] arrived. Surface it instead of
+		// closing the channel silently.
+		providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, nil)
 	}()
 
 	return responseChan, nil
