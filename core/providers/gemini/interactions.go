@@ -611,6 +611,8 @@ func toGeminiInteractionsRequest(request *schemas.BifrostResponsesRequest, agent
 	if err != nil {
 		return nil, err
 	}
+	callerSearches := schemas.ClientToolSearchFunctionName(params.Tools, request.Input) != ""
+	tools = applyGeminiInteractionsDeferredTools(tools, request.Model, callerSearches)
 	// Responses caps built-in calls with max_tool_calls, and Interactions has no such cap.
 	if params.MaxToolCalls != nil {
 		for _, tool := range tools {
@@ -619,8 +621,7 @@ func toGeminiInteractionsRequest(request *schemas.BifrostResponsesRequest, agent
 			}
 		}
 	}
-	callerSearches := schemas.ClientToolSearchFunctionName(params.Tools, request.Input) != ""
-	out.Tools = applyGeminiInteractionsDeferredTools(tools, request.Model, callerSearches)
+	out.Tools = tools
 
 	config := &GeminiInteractionsGenerationConfig{
 		MaxOutputTokens: params.MaxOutputTokens,
@@ -1458,7 +1459,7 @@ func geminiInteractionsInputToResponses(in *GeminiInteractionsInput, clientSearc
 	}
 	var out []schemas.ResponsesMessage
 	var pendingUser []schemas.ResponsesMessageContentBlock
-	var clientCalls map[string]struct{} // ids of calls to the client search, for results that omit the name
+	var clientCalls map[string]bool // ids of the calls seen, true for the client search's, for results that omit the name
 	flushUser := func() {
 		if len(pendingUser) == 0 {
 			return
@@ -1700,6 +1701,11 @@ func geminiInteractionsResultToResponsesOutput(raw json.RawMessage) (*schemas.Re
 		}
 		return &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &s}, nil
 	case '[':
+		if isGeminiFunctionDeclarationList(trimmed) {
+			// Definitions an ordinary function returned are its data, not content.
+			text := string(trimmed)
+			return &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &text}, nil
+		}
 		var items []GeminiInteractionsItem
 		if err := sonic.Unmarshal(trimmed, &items); err != nil {
 			return nil, err
@@ -2163,8 +2169,9 @@ func ToGeminiInteractionWithClientSearch(resp *schemas.BifrostResponsesResponse,
 	out.PreviousInteractionID = resp.PreviousResponseID
 
 	hasFunctionCall := false
+	var searches hostedSearches
 	for _, item := range resp.Output {
-		for _, step := range responsesItemToGeminiInteractionSteps(item, clientSearchName) {
+		for _, step := range responsesItemToGeminiInteractionSteps(searches.pair(item), clientSearchName) {
 			if step.Type == GeminiInteractionsStepFunctionCall {
 				hasFunctionCall = true
 			}
@@ -3213,6 +3220,7 @@ type BifrostToGeminiInteractionsStreamState struct {
 	usage   *schemas.ResponsesResponseUsage
 
 	ClientToolSearchName string // the request's client tool_search name, for unnamed client search items
+	searches             hostedSearches
 }
 
 // NewBifrostToGeminiInteractionsStreamState starts a state for one stream.
@@ -3398,7 +3406,7 @@ func (s *BifrostToGeminiInteractionsStreamState) ToGeminiInteractionsStreamEvent
 			s.first[*resp.OutputIndex] = s.next
 			s.done[*resp.OutputIndex] = *resp.Item
 			s.identify(resp.Item, *resp.OutputIndex)
-			for _, step := range responsesItemToGeminiInteractionSteps(*resp.Item, s.ClientToolSearchName) {
+			for _, step := range responsesItemToGeminiInteractionSteps(s.searches.pair(*resp.Item), s.ClientToolSearchName) {
 				idx := s.next
 				s.next++
 				startStep := step

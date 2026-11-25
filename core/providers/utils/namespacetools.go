@@ -1,13 +1,18 @@
 package utils
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // namespaceToolSeparator joins a namespace and a nested function name into one flat
@@ -475,6 +480,89 @@ func realiasNamespacedFunctionCalls(input []schemas.ResponsesMessage, aliases ma
 		return input
 	}
 	return out
+}
+
+// FlattenLoadedNamespaceTools flattens the namespaces a client tool search loaded, for a wire that takes the loaded
+// tools from the search's output and knows no namespace. Each output lists its members as functions under the names
+// FlattenResponsesNamespaceTools gives declared ones, function_call history uses the same names, and the aliases are
+// added to the request's, so the response is restored. Copy-on-write; a request no search loaded a namespace for is
+// returned as it is.
+func FlattenLoadedNamespaceTools(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if req == nil {
+		return req
+	}
+	var input []schemas.ResponsesMessage
+	var aliases map[string]schemas.NamespaceToolAlias
+	var limit ToolNameLimit
+	for i := range req.Input {
+		msg := &req.Input[i]
+		if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeToolSearchOutput || !msg.IsClientToolSearchItem() ||
+			!bytes.Contains(msg.ToolSearchOutputTools, []byte(`"namespace"`)) {
+			continue
+		}
+		if input == nil {
+			input = slices.Clone(req.Input)
+			aliases = make(map[string]schemas.NamespaceToolAlias)
+			limit = ResolveToolNameLimit(ctx, schemas.ResolveBaseProvider(ctx, req.Provider), req.Model)
+		}
+		flat := msg.WithoutPreservedBytes()
+		flat.ToolSearchOutputTools = flattenLoadedTools(msg.ToolSearchOutputTools, aliases, limit)
+		input[i] = flat
+	}
+	if len(aliases) == 0 && input == nil {
+		return req
+	}
+	cp := *req
+	cp.Input = realiasNamespacedFunctionCalls(input, aliases, limit)
+	if len(aliases) > 0 {
+		merged := maps.Clone(req.NamespaceToolAliases)
+		if merged == nil {
+			merged = make(map[string]schemas.NamespaceToolAlias, len(aliases))
+		}
+		maps.Copy(merged, aliases)
+		cp.NamespaceToolAliases = merged
+	}
+	return &cp
+}
+
+// flattenLoadedTools is a tool_search_output's tools with each namespace replaced by its members. Members keep
+// their bytes but for the name, description and type, so a schema's key order is kept.
+func flattenLoadedTools(tools json.RawMessage, aliases map[string]schemas.NamespaceToolAlias, limit ToolNameLimit) json.RawMessage {
+	var out [][]byte
+	for _, tool := range gjson.ParseBytes(tools).Array() {
+		if tool.Get("type").String() != string(schemas.ResponsesToolTypeNamespace) {
+			out = append(out, []byte(tool.Raw))
+			continue
+		}
+		namespace := tool.Get("name").String()
+		for _, member := range tool.Get("tools").Array() {
+			name := member.Get("name").String()
+			if name == "" {
+				continue
+			}
+			raw := []byte(member.Raw)
+			if namespace != "" && namespace != DefaultToolNamespace {
+				alias := namespaceToolAlias(namespace, name, limit)
+				aliases[alias] = schemas.NamespaceToolAlias{Namespace: namespace, Name: name}
+				name = alias
+			}
+			set := func(field, value string) {
+				if updated, err := SetJSONField(raw, field, value); err == nil {
+					raw = updated
+				}
+			}
+			set("name", name)
+			if !member.Get("type").Exists() {
+				set("type", string(schemas.ResponsesToolTypeFunction))
+			}
+			outer, inner := tool.Get("description").String(), member.Get("description").String()
+			if description := joinNamespaceDescription(&outer, &inner); outer != "" {
+				set("description", *description)
+			}
+			out = append(out, raw)
+		}
+	}
+	return json.RawMessage("[" + string(bytes.Join(out, []byte(","))) + "]")
 }
 
 // realiasToolChoice resolves a forced or allowed tool name against the flattened

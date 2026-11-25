@@ -3700,6 +3700,15 @@ func TestToOpenAIResponsesRequest_RebuildsSignedToolSearchReplay(t *testing.T) {
 		t.Errorf("the caller's items are not modified")
 	}
 
+	// The pair is found by the id its items share, before a long one is shortened for OpenAI.
+	long := "ts_" + strings.Repeat("x", 20) + "_ts_" + strings.Repeat("s", MaxToolCallIDLength)
+	raw, _, wireInput = toolSearchWire(t, schemas.OpenAI, "gpt-6-sol", []schemas.ResponsesTool{deferredWeatherTool()}, decode(
+		`{"type":"tool_search_call","call_id":"`+long+`","execution":"server","status":"completed","arguments":{"function_names":["convert_currency"]},"encrypted_content":"c2ln"}`,
+		`{"type":"tool_search_output","call_id":"`+long+`","execution":"server","status":"completed",`+tools+`}`))
+	if outs := wireItemsOfType(wireInput, "tool_search_output"); len(outs) != 1 || outs[0].Get("call_id").Exists() {
+		t.Errorf("the output of a signed call with a long id is rebuilt too: %s", raw)
+	}
+
 	// A pair is rebuilt whole when either item is signed.
 	const callItem, outputItem = `{"type":"tool_search_call","call_id":"ts_1","execution":"server","status":"completed","arguments":{"function_names":["convert_currency"]}`, `{"type":"tool_search_output","call_id":"ts_1","execution":"server","status":"completed",` + tools
 	for _, pair := range [][]string{{callItem + `,"encrypted_content":"c2ln"}`, outputItem + `}`}, {callItem + `}`, outputItem + `,"encrypted_content":"c2ln"}`}} {

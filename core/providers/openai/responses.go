@@ -765,6 +765,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// OpenAI's limit — shorter IDs are left intact so distinct upstream IDs are preserved.
 		// Deterministic, so a call and its output still match. Clone first — the
 		// ResponsesToolMessage pointer is shared with the caller's input.
+		var searchID *string // a tool search item's id as its pair holds it, before it is shortened
+		if message.ResponsesToolMessage != nil {
+			searchID = message.ResponsesToolMessage.CallID
+		}
 		if message.ResponsesToolMessage != nil && message.ResponsesToolMessage.CallID != nil &&
 			len(*message.ResponsesToolMessage.CallID) > MaxToolCallIDLength {
 			if stripped := utils.StripThoughtSignature(*message.ResponsesToolMessage.CallID); stripped != *message.ResponsesToolMessage.CallID {
@@ -924,8 +928,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			stripped, signed := message.WithoutEncryptedContent()
 			message = stripped
 			message.ResponsesReasoning = nil
-			if !signed && message.ResponsesToolMessage != nil && message.CallID != nil {
-				_, signed = signedSearches[*message.CallID]
+			if !signed && searchID != nil {
+				_, signed = signedSearches[*searchID]
 			}
 			if signed && !message.IsClientToolSearchItem() {
 				// A signed pair is Google's, which pairs a call and its output by call_id; OpenAI's hosted

@@ -267,6 +267,49 @@ func TestPrepareResponsesClientToolSearchForGeminiGenerateContent(test *testing.
 	assert.Same(test, &interactions, hoisted, "an Interactions turn keeps Google's own loading")
 }
 
+// TestPrepareResponsesRequest_FlattensNamespacesASearchLoaded pins a namespace a client search loaded on the
+// Interactions API, where Google loads the tools from the search's result: the result lists flat functions, history
+// calls use the same names, and the aliases restore what the model calls. A search that loaded none is untouched.
+func TestPrepareResponsesRequest_FlattensNamespacesASearchLoaded(t *testing.T) {
+	request := func(tools string) *schemas.BifrostResponsesRequest {
+		var req schemas.BifrostResponsesRequest
+		require.NoError(t, schemas.Unmarshal([]byte(`{"model":"gemini-3.8-flash","provider":"gemini","input":[
+			{"type":"tool_search_call","call_id":"c","execution":"client","arguments":{"query":"fx"},"status":"completed"},
+			{"type":"tool_search_output","call_id":"c","execution":"client","status":"completed","tools":`+tools+`},
+			{"type":"function_call","call_id":"d","namespace":"fx","name":"convert_currency","arguments":"{}"},
+			{"type":"function_call_output","call_id":"d","output":"1"}]}`), &req))
+		req.Provider = schemas.Gemini
+		req.Params = &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr("v1_p"), Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch, ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: schemas.Ptr(schemas.ToolSearchExecutionClient)}}}}
+		return &req
+	}
+	prepare := func(req *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+		before, err := schemas.Marshal(req)
+		require.NoError(t, err)
+		out, bifrostErr := prepareResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, req)
+		require.Nil(t, bifrostErr)
+		after, err := schemas.Marshal(req)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(before), string(after), "the shared request was mutated")
+		return out
+	}
+	const fx = `{"type":"namespace","name":"fx","description":"Money.","tools":[{"type":"function","name":"convert_currency","description":"Convert.","parameters":{"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}}}}]}`
+	out := prepare(request(`[` + fx + `,{"type":"namespace","name":"functions","tools":[{"type":"function","name":"wait"}]},{"type":"function","name":"plain"}]`))
+	native, err := gemini.ToGeminiInteractionsRequest(out)
+	require.NoError(t, err)
+	body, err := schemas.Marshal(native)
+	require.NoError(t, err)
+	result := providerUtils.GetJSONField(body, `input.#(type=="function_result").result`)
+	assert.Equal(t, `["fx__convert_currency","wait","plain"]`, result.Get("#.name").Raw, string(body))
+	assert.Equal(t, `["function","function","function"]`, result.Get("#.type").Raw)
+	assert.Equal(t, "Money.\n\nConvert.", result.Get("0.description").String())
+	assert.Contains(t, result.Raw, `"properties":{"b":{"type":"string"},"a":{"type":"string"}}`, "schema order is kept")
+	assert.Contains(t, providerUtils.GetJSONField(body, `input.#(type=="function_call")#.name`).Raw, "fx__convert_currency")
+	assert.Equal(t, schemas.NamespaceToolAlias{Namespace: "fx", Name: "convert_currency"}, out.NamespaceToolAliases["fx__convert_currency"])
+
+	plain := request(`[{"type":"function","name":"plain"}]`)
+	assert.Nil(t, prepare(plain).NamespaceToolAliases)
+}
+
 // TestHoistClientToolSearchOutputTools covers the declaration of tools a client-run
 // tool search loaded: deferred, declared once however many searches found them, merged
 // into a namespace the request already declares, and left alone off Claude or without

@@ -353,6 +353,37 @@ func responsesToolSearchItemToGeminiInteractionSteps(item schemas.ResponsesMessa
 	return []GeminiInteractionsItem{{Type: GeminiInteractionsStepToolSearchResult, CallID: callID, Result: toolSearchOutputTools(item), Signature: signature}}
 }
 
+// hostedSearches are the hosted tool searches whose output has not come yet, in order.
+type hostedSearches []string
+
+// pair is item, or for a hosted search's output that names no call, as OpenAI's does not, a copy that answers the
+// earliest search still without one.
+func (s *hostedSearches) pair(item schemas.ResponsesMessage) schemas.ResponsesMessage {
+	if item.Type == nil || !isResponsesToolSearchItem(*item.Type) || item.IsClientToolSearchItem() {
+		return item
+	}
+	tm := item.ResponsesToolMessage
+	named := tm != nil && tm.CallID != nil && *tm.CallID != ""
+	if *item.Type == schemas.ResponsesMessageTypeToolSearchCall {
+		if !named && item.ID != nil {
+			*s = append(*s, *item.ID)
+		}
+		return item
+	}
+	if named || len(*s) == 0 {
+		return item
+	}
+	id := (*s)[0]
+	*s = (*s)[1:]
+	answered := schemas.ResponsesToolMessage{}
+	if tm != nil {
+		answered = *tm
+	}
+	answered.CallID = &id
+	item.ResponsesToolMessage = &answered
+	return item
+}
+
 func toolSearchArguments(tm *schemas.ResponsesToolMessage) json.RawMessage {
 	if tm == nil || tm.Arguments == nil {
 		return json.RawMessage("{}")
@@ -400,19 +431,19 @@ func toClientToolSearchCall(item *schemas.ResponsesMessage) {
 // geminiClientToolSearchStepToResponses renders an input step of the caller's own search as its
 // client tool_search item: a function_call named after the client search, or the function_result
 // answering one (matched by name, or by the id of an earlier call when the result omits the name).
-// It reports false for any other step. calls records the search call ids seen so far.
-func geminiClientToolSearchStepToResponses(step GeminiInteractionsItem, clientSearchName string, calls *map[string]struct{}) (schemas.ResponsesMessage, bool) {
+// It reports false for any other step. calls records the call ids seen so far, and which are searches.
+func geminiClientToolSearchStepToResponses(step GeminiInteractionsItem, clientSearchName string, calls *map[string]bool) (schemas.ResponsesMessage, bool) {
 	named := step.Name != nil && *step.Name == clientSearchName
 	switch step.Type {
 	case GeminiInteractionsStepFunctionCall:
-		if !named {
-			return schemas.ResponsesMessage{}, false
-		}
 		if step.ID != nil {
 			if *calls == nil {
-				*calls = map[string]struct{}{}
+				*calls = map[string]bool{}
 			}
-			(*calls)[*step.ID] = struct{}{}
+			(*calls)[*step.ID] = named
+		}
+		if !named {
+			return schemas.ResponsesMessage{}, false
 		}
 		arguments := "{}"
 		if trimmed := bytes.TrimSpace(step.Arguments); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
@@ -428,7 +459,8 @@ func geminiClientToolSearchStepToResponses(step GeminiInteractionsItem, clientSe
 			}
 			// A continuation may answer a call of the previous turn, which is not in this request,
 			// without naming the tool; its definitions still say it is the search's output.
-			if _, ok := (*calls)[*step.CallID]; !ok && (step.Name != nil || !isGeminiFunctionDeclarationList(step.Result)) {
+			search, known := (*calls)[*step.CallID]
+			if known && !search || !known && (step.Name != nil || !isGeminiFunctionDeclarationList(step.Result)) {
 				return schemas.ResponsesMessage{}, false
 			}
 		}

@@ -3528,6 +3528,12 @@ func TestToGeminiInteractionsMaxToolCallsRefused(t *testing.T) {
 	assert.Contains(t, err.Error(), "max_tool_calls")
 	assert.NoError(t, convert(schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("f")}))
 	assert.NoError(t, convert())
+	// Deferred functions bring a server search with them, unless the caller runs its own.
+	deferred := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("f"), DeferLoading: schemas.Ptr(true)}
+	err = convert(deferred)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_tool_calls")
+	assert.NoError(t, convert(deferred, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeToolSearch, ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: schemas.Ptr(schemas.ToolSearchExecutionClient)}}))
 }
 
 // TestGeminiInteractionsValidatesBeforeNameLookup pins that a request Google would never be sent is refused
@@ -4750,7 +4756,7 @@ func TestGeminiInteractionsDeferralWithBothSearches(t *testing.T) {
 func TestGeminiInteractionsNamedResultIsNotASearch(t *testing.T) {
 	const declarations = `[{"type":"function","name":"f","parameters":{"type":"object"}}]`
 	isSearch := func(name *string) bool {
-		calls := map[string]struct{}{}
+		calls := map[string]bool{}
 		ref := &calls
 		_, ok := geminiClientToolSearchStepToResponses(GeminiInteractionsItem{Type: GeminiInteractionsStepFunctionResult, CallID: schemas.Ptr("c"), Name: name, Result: json.RawMessage(declarations)}, "find_tools", ref)
 		return ok
@@ -5204,6 +5210,69 @@ func TestGeminiInteractionsClientSearchContinuationWithoutName(t *testing.T) {
 	assert.Contains(t, string(found.ToolSearchOutputTools), "convert_currency")
 	for _, result := range []string{`"ok"`, `[]`, `[{"type":"text","text":"42"}]`} {
 		assert.Equal(t, schemas.ResponsesMessageTypeFunctionCallOutput, *convert(result).Type, result)
+	}
+}
+
+// TestGeminiInteractionsOrdinaryCallKeepsItsResult pins that a result of a call the request holds is that call's,
+// though it lists function definitions and leaves out its name.
+func TestGeminiInteractionsOrdinaryCallKeepsItsResult(t *testing.T) {
+	var native GeminiInteractionsRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"model":"gpt-5","tools":[{"type":"tool_search","execution":"client","name":"find_tools","description":"d"}],"input":[
+		{"type":"function_call","id":"c","name":"list_tools","arguments":{}},
+		{"type":"function_result","call_id":"c","result":[{"type":"function","name":"f","parameters":{"type":"object"}}]},
+		{"type":"function_call","id":"s","name":"find_tools","arguments":{}},
+		{"type":"function_result","call_id":"s","result":[{"type":"function","name":"g","parameters":{"type":"object"}}]}]}`), &native))
+	req, err := native.ToBifrostResponsesRequest()
+	require.NoError(t, err)
+	require.Len(t, req.Input, 4)
+	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCallOutput, *req.Input[1].Type)
+	assert.Equal(t, schemas.ResponsesMessageTypeToolSearchOutput, *req.Input[3].Type)
+}
+
+// TestToGeminiInteractionHostedSearchPairs pins that a hosted search's output, which OpenAI gives an id of its own
+// and no call_id, answers the call before it, unary and streamed. Outputs that name their call keep it.
+func TestToGeminiInteractionHostedSearchPairs(t *testing.T) {
+	item := func(raw string) schemas.ResponsesMessage {
+		var m schemas.ResponsesMessage
+		require.NoError(t, sonic.Unmarshal([]byte(raw), &m))
+		return m
+	}
+	output := []schemas.ResponsesMessage{
+		item(`{"type":"tool_search_call","id":"tsc_1","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["a"]}}`),
+		item(`{"type":"tool_search_output","id":"tso_1","execution":"server","call_id":null,"status":"completed","tools":[]}`),
+		item(`{"type":"tool_search_call","id":"tsc_2","execution":"server","call_id":null,"status":"completed","arguments":{}}`),
+		item(`{"type":"tool_search_output","id":"tso_2","execution":"server","call_id":null,"status":"completed","tools":[]}`),
+		item(`{"type":"tool_search_call","id":"tsc_3","execution":"server","call_id":"x","status":"completed","arguments":{}}`),
+		item(`{"type":"tool_search_output","id":"tso_3","execution":"server","call_id":"x","status":"completed","tools":[]}`),
+	}
+	check := func(steps []GeminiInteractionsItem) {
+		t.Helper()
+		require.Len(t, steps, 6)
+		for i, id := range []string{"tsc_1", "tsc_2", "x"} {
+			require.NotNil(t, steps[2*i].ID)
+			assert.Equal(t, id, *steps[2*i].ID)
+			require.NotNil(t, steps[2*i+1].CallID)
+			assert.Equal(t, id, *steps[2*i+1].CallID)
+		}
+	}
+	final := &schemas.BifrostResponsesResponse{ID: schemas.Ptr("r"), Status: schemas.Ptr("completed"), Output: output}
+	check(ToGeminiInteraction(final).Steps)
+	assert.Nil(t, output[1].CallID, "the provider's response is not modified")
+
+	s := NewBifrostToGeminiInteractionsStreamState()
+	var live []GeminiInteractionsItem
+	for i := range output {
+		for _, typ := range []schemas.ResponsesStreamResponseType{schemas.ResponsesStreamResponseTypeOutputItemAdded, schemas.ResponsesStreamResponseTypeOutputItemDone} {
+			for _, ev := range s.ToGeminiInteractionsStreamEvents(&schemas.BifrostResponsesStreamResponse{Type: typ, OutputIndex: schemas.Ptr(i), Item: &output[i]}) {
+				if ev.EventType == GeminiInteractionsEventStepStart {
+					live = append(live, *ev.Step)
+				}
+			}
+		}
+	}
+	check(live)
+	for _, ev := range s.ToGeminiInteractionsStreamEvents(&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: final}) {
+		check(ev.Interaction.Steps)
 	}
 }
 
