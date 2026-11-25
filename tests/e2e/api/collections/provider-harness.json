@@ -315683,7 +315683,7 @@
     },
     {
       "name": "261. ElevenLabs Scribe wildcard permissions (#8467) [SERIAL]",
-      "description": "ElevenLabs Scribe models must survive partial TTS/STS discovery and wildcard virtual-key authorization (#8467). Requires an ElevenLabs provider configured with a valid STT-capable credential and models=[\"*\"]. A run-scoped virtual key is created with allowed_models=[\"*\"], key_ids=[\"*\"], and allow_all_providers=true, then deleted. Covers management-catalog discovery separately from upstream provider listing, native transcription, OpenAI-compatible transcription, and a 403 model_blocked denial for an unknown model. No provider settings or existing keys are modified. Run with PROVIDER=elevenlabs FEATURE=\"scribe wildcard\". The transcription rows make paid provider calls only when the operator explicitly runs the live harness.",
+      "description": "ElevenLabs Scribe models must survive partial TTS/STS discovery and wildcard virtual-key authorization (#8467). Requires an ElevenLabs provider configured with a valid STT-capable credential and models=[\"*\"]. A run-scoped virtual key is created with allowed_models=[\"*\"], key_ids=[\"*\"], and allow_all_providers=true, then deleted. Covers management-catalog discovery separately from upstream provider listing, native transcription, OpenAI-compatible transcription, and an unknown model that the wildcard admits so ElevenLabs itself refuses it (#8878). No provider settings or existing keys are modified. Run with PROVIDER=elevenlabs FEATURE=\"scribe wildcard\". The transcription rows make paid provider calls only when the operator explicitly runs the live harness.",
       "item": [
         {
           "name": "elevenlabs scribe_v2 scribe wildcard setup: create virtual key - #8467",
@@ -315835,15 +315835,15 @@
           }
         },
         {
-          "name": "[EXPECT-403] elevenlabs scribe wildcard unknown model denial - #8467",
+          "name": "[EXPECT-4XX] elevenlabs scribe wildcard unknown model reaches the provider - #8467 / #8878",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('scribe wildcard: expected HTTP 403', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(403); });",
-                  "pm.test('scribe wildcard: unknown model is rejected by governance', function () { var j = pm.response.json(); pm.expect(j.type, pm.response.text()).to.eql('model_blocked'); pm.expect(j.error.message, pm.response.text()).to.include('not allowed'); });"
+                  "pm.test('scribe wildcard: expected an HTTP 4xx from the provider', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(400, 499); });",
+                  "pm.test('scribe wildcard: unknown model is admitted by governance and refused by ElevenLabs', function () { var j = pm.response.json(); pm.expect(j.type, pm.response.text()).to.not.eql('model_blocked'); pm.expect(j.extra_fields && j.extra_fields.provider, pm.response.text()).to.eql('elevenlabs'); });"
                 ]
               }
             }
