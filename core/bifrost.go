@@ -7732,10 +7732,7 @@ func executeRequestWithRetries[T any](
 		// The previous failed stream has drained before reaching this retry; its
 		// stream-end markers and accumulated chunks must not leak into this one.
 		if isStreamRequest && attempts > 0 {
-			ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
-			ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
-			ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
-			providerUtils.ResetStreamTerminalHandled(ctx)
+			providerUtils.ResetStreamAttemptState(ctx)
 			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
 				tracer.ResetStreamAccumulator(traceID)
 			}

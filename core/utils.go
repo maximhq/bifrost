@@ -460,12 +460,9 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
 	ctx.ClearValue(schemas.BifrostContextKeyLoadBalancerAttempt)
-	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+	providerUtils.ResetStreamAttemptState(ctx)
 	ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
-	ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
-	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
-	providerUtils.ResetStreamTerminalHandled(ctx)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 	ctx.ClearValue(schemas.BifrostContextKeyDisableStore)
 	// A fallback model decides its own structured-output path.
