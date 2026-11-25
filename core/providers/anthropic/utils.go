@@ -3118,12 +3118,18 @@ func hasProgrammaticCaller(callers []string) bool {
 	return false
 }
 
-// StripEmptyThinkingBlocks removes thinking content blocks that would be
-// rejected by Anthropic: those with an empty "thinking" field, or those
-// with an empty "signature" field. An empty signature means the block came
-// from a non-Anthropic upstream (OpenAI never emits signatures; Anthropic
-// always does), so it is unsafe to replay to Anthropic. keepUnsigned keeps the
-// latter for upstreams that never sign their own thinking (vLLM, SGLang).
+// StripEmptyThinkingBlocks removes unsigned thinking content blocks, which
+// Anthropic would reject. An empty signature means the block came from a
+// non-Anthropic upstream (OpenAI never emits signatures; Anthropic always does),
+// so it is unsafe to replay to Anthropic. keepUnsigned keeps unsigned blocks that
+// carry thinking text, for upstreams that never sign their own thinking (vLLM,
+// SGLang); unsigned blocks with empty thinking are always stripped.
+//
+// Signed blocks are kept even with empty thinking: thinking.display "omitted"
+// (the default on Opus 4.7+ and Claude 5.x) returns "thinking": "" with the
+// reasoning only in the signature, and Anthropic expects those blocks replayed
+// unchanged. The "thinking" field must be a JSON string. Missing fields (such
+// as with a Gemini thought signature) and non-string values are stripped.
 //
 // The predicate must stay scoped to "thinking" blocks: "redacted_thinking"
 // blocks carry only an encrypted "data" payload (no thinking or signature
@@ -3155,10 +3161,13 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 		stripped := false
 		kept := make([]gjson.Result, 0, len(blocks))
 		for _, block := range blocks {
-			if block.Get("type").String() == "thinking" &&
-				(block.Get("thinking").String() == "" || (!keepUnsigned && block.Get("signature").String() == "")) {
-				stripped = true
-				continue
+			if block.Get("type").String() == "thinking" {
+				thinking := block.Get("thinking")
+				if thinking.Type != gjson.String ||
+					(block.Get("signature").String() == "" && (thinking.Str == "" || !keepUnsigned)) {
+					stripped = true
+					continue
+				}
 			}
 			kept = append(kept, block)
 		}

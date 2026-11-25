@@ -1112,10 +1112,16 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						})
 						continue
 					}
+					thinking := reasoningDetail.Text
+					// Omitted thinking streams as a signature delta with no text; send it back as Anthropic emitted it.
+					if thinking == nil && reasoningDetail.Type == schemas.BifrostReasoningDetailsTypeText &&
+						reasoningDetail.Signature != nil && *reasoningDetail.Signature != "" {
+						thinking = new("")
+					}
 					content = append(content, AnthropicContentBlock{
 						Type:      AnthropicContentBlockTypeThinking,
 						Signature: reasoningDetail.Signature,
-						Thinking:  reasoningDetail.Text,
+						Thinking:  thinking,
 					})
 				}
 			}
