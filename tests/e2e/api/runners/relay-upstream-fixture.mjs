@@ -121,6 +121,14 @@ const server = http.createServer(async (req, res) => {
 	const tag = url.searchParams.get("tag");
 	if (tag) hits.set(tag, (hits.get(tag) || 0) + 1);
 
+	// Answers only after ?ms= milliseconds (default 3000, at most 10000), for a relay timeout case.
+	if (path.startsWith("/v1/slow")) {
+		const ms = Math.min(Number(url.searchParams.get("ms")) || 3000, 10000);
+		await new Promise((resolve) => setTimeout(resolve, ms));
+		if (!res.destroyed) send(res, 200, { slow: true, ms, data: [] });
+		return;
+	}
+
 	let body = {};
 	try {
 		body = raw ? JSON.parse(raw) : {};

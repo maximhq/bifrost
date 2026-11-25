@@ -6,6 +6,7 @@ import {
   createRelayLogsJobRelayPayload,
   createRelayLogsRelayPayload,
   createRelayLogsTeamPayload,
+  createRelayLogsUntrackedJobRelayPayload,
   createUngrantedKeyPayload,
   EXTRACT_COST,
   JOB_ID,
@@ -22,6 +23,7 @@ import {
   SEARCH_QUERY_MARKER,
   startRelayUpstream,
   TEAMS_API,
+  UNTRACKED_JOB_REASON,
   VK_API,
 } from "./relay-logs.data";
 
@@ -273,6 +275,44 @@ test.describe("Relay Logs", () => {
       const rows = await fetchRows(request, jobRelay).catch(() => [] as RelayLogRow[]);
       if (rows.length) await request.delete(RELAY_LOGS_API, { data: { ids: rows.map((r) => r.id) } }).catch(() => undefined);
       await request.delete(`${RELAYS_API}/${jobRelay}`).catch(() => undefined);
+    }
+  });
+
+  test("shows why a start call's job was not tracked in its details", async ({ relayLogsPage: page, request }) => {
+    const untrackedRelay = `e2e-relay-untracked-${Date.now()}`;
+    const created = await request.post(RELAYS_API, { data: createRelayLogsUntrackedJobRelayPayload(untrackedRelay, upstream.url) });
+    expect(created.status(), await created.text()).toBe(201);
+    try {
+      const key = await request.post(VK_API, { data: createGrantedKeyPayload(`${untrackedRelay}-key`, untrackedRelay, teamId) });
+      expect(key.ok(), await key.text()).toBeTruthy();
+      const keyBody = await key.json();
+      vkIds.push(keyBody.virtual_key.id);
+      // The upstream's /v1/search reply has no JobId, so the start call is billed its fee and no job is tracked.
+      const start = await request.post(`/relay/${untrackedRelay}/v1/search`, {
+        headers: { "x-bf-vk": keyBody.virtual_key.value, "Content-Type": "application/json" },
+        data: { document: "invoice.pdf" },
+      });
+      expect(start.status(), await start.text()).toBe(200);
+
+      let startRow: RelayLogRow | undefined;
+      await expect
+        .poll(
+          async () => {
+            startRow = (await fetchRows(request, untrackedRelay))[0];
+            return startRow?.job_status;
+          },
+          { timeout: 15_000, message: "the start call's row is written as untracked" },
+        )
+        .toBe("untracked");
+
+      await page.goto({ relay_names: untrackedRelay });
+      await page.openRow(untrackedRelay, { logId: startRow!.id });
+      await page.openMoreDetails();
+      await expect(page.sheet.getByTestId("relay-log-job-untracked")).toContainText(UNTRACKED_JOB_REASON);
+    } finally {
+      const rows = await fetchRows(request, untrackedRelay).catch(() => [] as RelayLogRow[]);
+      if (rows.length) await request.delete(RELAY_LOGS_API, { data: { ids: rows.map((r) => r.id) } }).catch(() => undefined);
+      await request.delete(`${RELAYS_API}/${untrackedRelay}`).catch(() => undefined);
     }
   });
 

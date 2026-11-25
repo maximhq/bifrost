@@ -128,6 +128,34 @@ export function createRelayLogsJobRelayPayload(name: string, baseUrl: string) {
   };
 }
 
+/** Why a start call whose reply has no JobId tracks no job, as the Relay Logs row records it. */
+export const UNTRACKED_JOB_REASON = "the reply has no job id at JobId";
+
+/** A relay whose job route reads JobId from /v1/search, whose reply has none, so no job is tracked. */
+export function createRelayLogsUntrackedJobRelayPayload(name: string, baseUrl: string) {
+  return {
+    name,
+    description: "E2E relay logs untracked job",
+    base_url: baseUrl,
+    auth: { type: "bearer" },
+    credential: { value: { value: UPSTREAM_KEY } },
+    routes: [
+      {
+        method: "POST",
+        path: "/v1/search",
+        usage: { cost_per_request: FEE_PER_REQUEST },
+        job: {
+          id_path: "JobId",
+          poll: { method: "GET", path: "/v1/jobs/{{job.id}}" },
+          status_path: "status",
+          succeeded: ["SUCCEEDED"],
+          interval_seconds: 1,
+        },
+      },
+    ],
+  };
+}
+
 /** A unique relay name; relays are keyed by name, so it doubles as the cleanup handle. */
 export function relayLogsRelayName(): string {
   return `e2e-relay-logs-${Date.now()}`;
@@ -205,7 +233,8 @@ export interface RelayLogRow {
   relay_name: string;
   kind: "call" | "job";
   job_id?: string;
-  job_debug?: { polls: number; last_status?: string; settled_at: string };
+  job_status?: string;
+  job_debug?: { polls: number; outcome?: string; last_status?: string; last_error?: string; settled_at: string };
   method: string;
   path: string;
   route_path?: string;
