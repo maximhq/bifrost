@@ -386,6 +386,23 @@ func TestUpstreamHealthRefusedWalkReplacesRunningCooldown(t *testing.T) {
 // Chains take their time before locking the pair, so an older walk can be recorded after a newer
 // one. It still counts as a failure, but it must not replace the newer walk's cooldown, class,
 // status code or failure time.
+// A failure older than the pair's last success still counts, but it must not bring back the
+// cooldown that newer success cleared.
+func TestUpstreamHealthFailureOlderThanSuccessKeepsPairAvailable(t *testing.T) {
+	var tracker upstreamHealthTracker
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	tracker.recordFailure(schemas.OpenAI, "gpt-x", schemas.FailureClassRateLimit, schemas.Ptr(429), 60_000, cooldownStart, t0)
+	tracker.recordSuccess(schemas.OpenAI, "gpt-x", t0.Add(2*time.Second))
+	tracker.recordFailure(schemas.OpenAI, "gpt-x", schemas.FailureClassRateLimit, schemas.Ptr(429), 60_000, cooldownStart, t0.Add(time.Second))
+	h := findUpstreamHealth(t, tracker.snapshot(t0.Add(3*time.Second)), schemas.OpenAI, "gpt-x")
+	if !h.Available || h.CooldownUntil != nil {
+		t.Fatalf("expected the newer success to keep the pair available, got %+v", h)
+	}
+	if h.ConsecutiveFailures != 1 || h.RecentFailures != 2 {
+		t.Fatalf("expected the older failure still counted, got %+v", h)
+	}
+}
+
 func TestUpstreamHealthOlderWalkDoesNotReplaceNewerCooldown(t *testing.T) {
 	var tracker upstreamHealthTracker
 	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)

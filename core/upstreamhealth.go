@@ -250,9 +250,9 @@ func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, mo
 	defer st.mu.Unlock()
 	st.consecutiveFailures++
 	// Chains take now before locking the pair, so two finishing together can arrive out of order.
-	// An older answer still counts as a failure, but the newer one already set the pair's state and
-	// cooldown, so the older one must not replace them.
-	stale := now.Before(st.lastFailureAt)
+	// An older answer still counts as a failure, but a newer failure already set the pair's state
+	// and cooldown, and a newer success already cleared it, so the older one must not replace them.
+	stale := now.Before(st.lastFailureAt) || now.Before(st.lastSuccessAt)
 	if !stale {
 		st.failureClass = class
 		if statusCode != nil {
