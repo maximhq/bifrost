@@ -348835,6 +348835,64 @@
           }
         }
       ]
+    },
+    {
+      "name": "380. Virtual key quota reports upstream health (vk-quota-upstream-health)",
+      "description": "GET /api/governance/virtual-keys/quota adds upstream_health (per provider/model pairs the key can reach that the gateway has recently seen fail upstream) and upstream_health_window_seconds. Pairs that have only succeeded are absent, so the list may be empty on a healthy gateway; each entry it does carry must agree with itself: available is false exactly while cooling down, and a cooling-down pair reports 0 remaining and a cooldown_until.",
+      "item": [
+        {
+          "name": "GET /api/governance/virtual-keys/quota x-bf-vk upstream_health fields - vk-quota-upstream-health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk quota upstream health: quota route answers for the virtual key', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var j = pm.response.json();",
+                  "pm.test('vk quota upstream health: upstream_health is a list and the window is reported', function () {",
+                  "  pm.expect(j.upstream_health, 'upstream_health missing: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(j.upstream_health_window_seconds).to.be.a('number').above(0);",
+                  "});",
+                  "pm.test('vk quota upstream health: every entry carries a consistent state', function () {",
+                  "  (j.upstream_health || []).forEach(function (e) {",
+                  "    pm.expect(e.provider, JSON.stringify(e)).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(e.model, JSON.stringify(e)).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(['available', 'degraded', 'cooling_down']).to.include(e.status);",
+                  "    pm.expect(e.available, JSON.stringify(e)).to.eql(e.status !== 'cooling_down');",
+                  "    pm.expect(e.effective_remaining_fraction, JSON.stringify(e)).to.be.within(0, 1);",
+                  "    if (!e.available) { pm.expect(e.effective_remaining_fraction, JSON.stringify(e)).to.eql(0); pm.expect(e.cooldown_until, JSON.stringify(e)).to.be.a('string'); }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-test-key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/quota",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "quota"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
