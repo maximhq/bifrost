@@ -335,7 +335,7 @@ func TestPreRequestHookDecisionWithSeveralProviders(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			catalog := testCatalog()
+			catalog := testCatalog(t)
 			if tc.alsoServedBy != "" {
 				catalog.UpsertLive(tc.alsoServedBy, string(tc.alsoServedBy)+"-key", false, []string{"shared-model"})
 			}
