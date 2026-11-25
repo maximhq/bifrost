@@ -1580,7 +1580,12 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 	bodyMode := pluginRequestBodyMode(ctx)
 	// Apply headers
 	for key, value := range req.Headers {
-		ctx.Request.Header.Del(key)
+		// Set replaces only the first ordinary header value. Remove all existing values
+		// when conversion combined repeated fields, but preserve the single-value path:
+		// some fasthttp-managed headers (notably Transfer-Encoding) cannot be restored by Set.
+		if len(ctx.Request.Header.PeekAll(key)) > 1 {
+			ctx.Request.Header.Del(key)
+		}
 		ctx.Request.Header.Set(key, value)
 	}
 	// Apply query params

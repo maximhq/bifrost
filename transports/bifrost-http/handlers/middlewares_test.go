@@ -2170,6 +2170,25 @@ func TestHTTPRequestHeaderRoundTripPreservesRepeatedHeaders(t *testing.T) {
 	assert.Equal(t, "first, second", roundTripReq.Headers["X-Repeated-Header"])
 }
 
+func TestHTTPRequestHeaderRoundTripPreservesTransferEncoding(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentLength(-1)
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	fasthttpToHTTPRequest(ctx, req)
+
+	assert.Equal(t, "chunked", req.Headers[fasthttp.HeaderTransferEncoding])
+	assert.True(t, applyHTTPRequestToCtx(ctx, req))
+	assert.Equal(t, "chunked", string(ctx.Request.Header.Peek(fasthttp.HeaderTransferEncoding)))
+	assert.Equal(t, -1, ctx.Request.Header.ContentLength())
+
+	roundTripReq := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(roundTripReq)
+	fasthttpToHTTPRequest(ctx, roundTripReq)
+	assert.Equal(t, "chunked", roundTripReq.Headers[fasthttp.HeaderTransferEncoding])
+}
+
 func BenchmarkFasthttpToHTTPRequestHeaders(b *testing.B) {
 	for _, tc := range []struct {
 		name    string
@@ -2204,6 +2223,55 @@ func BenchmarkFasthttpToHTTPRequestHeaders(b *testing.B) {
 			for b.Loop() {
 				clear(req.Headers)
 				fasthttpToHTTPRequest(&ctx, req)
+			}
+		})
+	}
+}
+
+func BenchmarkApplyHTTPRequestHeaders(b *testing.B) {
+	for _, tc := range []struct {
+		name    string
+		headers [][2]string
+	}{
+		{
+			name: "single value",
+			headers: [][2]string{
+				{"X-Test-Header", "value"},
+			},
+		},
+		{
+			name: "repeated values",
+			headers: [][2]string{
+				{"X-Test-Header", "first"},
+				{"X-Test-Header", "second"},
+			},
+		},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+			ctx.Request.SetRequestURI("/")
+			req := schemas.AcquireHTTPRequest()
+			defer schemas.ReleaseHTTPRequest(req)
+			req.Method = fasthttp.MethodGet
+			req.Path = "/"
+			for _, header := range tc.headers {
+				ctx.Request.Header.Add(header[0], header[1])
+				req.Headers[header[0]] = header[1]
+			}
+			if len(tc.headers) > 1 {
+				req.Headers[tc.headers[0][0]] = "first, second"
+			}
+
+			b.ReportAllocs()
+			for b.Loop() {
+				if len(tc.headers) > 1 {
+					ctx.Request.Header.Del(tc.headers[0][0])
+					for _, header := range tc.headers {
+						ctx.Request.Header.Add(header[0], header[1])
+					}
+				}
+				applyHTTPRequestToCtx(ctx, req)
 			}
 		})
 	}
