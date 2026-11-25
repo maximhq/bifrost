@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -166,5 +167,35 @@ func TestTopKConversionLeavesCallerExtraParams(t *testing.T) {
 			require.Contains(t, extra, "top_k", "conversion %d deleted top_k from the caller's map", i+1)
 			require.Contains(t, extra, "stop", "conversion %d deleted stop from the caller's map", i+1)
 		}
+	})
+}
+
+// Keys the converters do not consume (here a Llama model's own field) need no copy: the caller's
+// map goes through as is, and the copy is made only when a key is about to be removed.
+func TestConverseExtraParamsCopyOnlyWhenConsuming(t *testing.T) {
+	model := "meta.llama3-70b-instruct-v1:0"
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, model)
+
+	t.Run("nothing consumed", func(t *testing.T) {
+		extra := map[string]interface{}{"max_gen_len": 64}
+		req := &BedrockConverseRequest{}
+		require.NoError(t, convertChatParameters(nil, &schemas.BifrostChatRequest{
+			Model:  model,
+			Params: &schemas.ChatParameters{ExtraParams: extra},
+		}, req, caps))
+		require.Equal(t, reflect.ValueOf(extra).Pointer(), reflect.ValueOf(req.ExtraParams).Pointer(),
+			"ExtraParams was copied although no key was removed")
+	})
+
+	t.Run("key consumed", func(t *testing.T) {
+		extra := map[string]interface{}{"max_gen_len": 64, "requestMetadata": map[string]string{"a": "b"}}
+		req := &BedrockConverseRequest{}
+		require.NoError(t, convertChatParameters(nil, &schemas.BifrostChatRequest{
+			Model:  model,
+			Params: &schemas.ChatParameters{ExtraParams: extra},
+		}, req, caps))
+		require.Equal(t, map[string]interface{}{"max_gen_len": 64}, req.ExtraParams)
+		require.Contains(t, extra, "requestMetadata", "the caller's map lost a key")
+		require.Equal(t, map[string]string{"a": "b"}, req.RequestMetadata)
 	})
 }
