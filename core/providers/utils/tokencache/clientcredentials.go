@@ -75,13 +75,13 @@ func ClientCredentialsMinter(cfg ClientCredentialsConfig, hc *http.Client) Minte
 		if err != nil {
 			return nil, tokenRequestError(cfg.TokenURL, err, submittedValues(cfg.ClientID, cfg.ClientSecret, cfg.ExtraParams))
 		}
-		return entryFor(token.AccessToken, token.Expiry, margin), nil
+		return EntryFor(token.AccessToken, token.Expiry, margin), nil
 	}
 }
 
-// entryFor builds the cache entry for a minted token. A zero expiry means the endpoint sent
+// EntryFor builds the cache entry for a minted token. A zero expiry means the endpoint sent
 // no expires_in, so the fallback lifetime applies.
-func entryFor(token string, expiry time.Time, margin time.Duration) *Entry[string] {
+func EntryFor(token string, expiry time.Time, margin time.Duration) *Entry[string] {
 	if expiry.IsZero() {
 		expiry = time.Now().Add(fallbackTokenLifetime)
 	}
