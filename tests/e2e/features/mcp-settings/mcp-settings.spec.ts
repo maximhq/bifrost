@@ -335,6 +335,82 @@ test.describe('MCP Settings', () => {
       expect(JSON.stringify(saved?.browser_base_url ?? '')).not.toContain('bifrost.corp.e2e.test')
     })
 
+    test('should add, remove and save additional issuer URLs under Security', async ({ mcpSettingsPage, page, request }) => {
+      await mcpSettingsPage.gotoSecurity()
+
+      for (let i = 0; i < 3; i++) await mcpSettingsPage.securityAdditionalIssuerAddBtn.click()
+      await mcpSettingsPage.securityAdditionalIssuerInputs.nth(0).fill('https://bifrost-tunnel-a.e2e.test')
+      await mcpSettingsPage.securityAdditionalIssuerInputs.nth(1).fill('https://bifrost-tunnel-b.e2e.test')
+      // The third row stays blank and is dropped on save.
+      await mcpSettingsPage.securityAdditionalIssuerRemoveBtns.nth(0).click()
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs).toHaveCount(2)
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs.nth(0)).toHaveValue('https://bifrost-tunnel-b.e2e.test')
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('success')).toBeVisible()
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { additional_issuer_urls?: unknown[] } | undefined
+      expect(saved?.additional_issuer_urls ?? []).toHaveLength(1)
+      expect(JSON.stringify(saved?.additional_issuer_urls)).toContain('https://bifrost-tunnel-b.e2e.test')
+
+      await page.reload()
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs).toHaveCount(1)
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs.nth(0)).toHaveValue('https://bifrost-tunnel-b.e2e.test')
+
+      // Saving only a blank row stores nothing new, and the editor still drops the row.
+      await mcpSettingsPage.securityAdditionalIssuerAddBtn.click()
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('success')).toBeVisible()
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs).toHaveCount(1)
+      await expect(mcpSettingsPage.securitySaveBtn).toBeDisabled()
+
+      // An edit made while a save is in flight survives it.
+      let release!: () => void
+      const released = new Promise<void>(resolve => { release = resolve })
+      await page.route('**/api/config*', async route => {
+        if (route.request().method() !== 'PUT') return route.fallback()
+        await released
+        await route.fallback()
+      })
+      await mcpSettingsPage.securityAdditionalIssuerAddBtn.click()
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.securitySaveBtn).toBeDisabled()
+      await mcpSettingsPage.securityAdditionalIssuerInputs.nth(0).fill('https://bifrost-tunnel-c.e2e.test')
+      release()
+      // Save stays disabled while the request runs, so enabled means it finished with the edit kept.
+      await expect(mcpSettingsPage.securitySaveBtn).toBeEnabled()
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs.nth(0)).toHaveValue('https://bifrost-tunnel-c.e2e.test')
+      await page.unroute('**/api/config*')
+    })
+
+    test('should warn on removing a saved additional issuer and reject one on the primary hostname', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, {
+        mcp_server_auth_mode: 'both',
+        oauth2_server_config: {
+          issuer_url: 'https://bifrost.e2e.test',
+          additional_issuer_urls: ['https://bifrost-tunnel.e2e.test'],
+          auth_code_ttl: 300,
+          access_token_ttl: 600,
+          allowed_redirect_uris: [],
+        },
+      })
+      const before = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { additional_issuer_urls?: unknown[] } | undefined
+      expect(JSON.stringify(before?.additional_issuer_urls)).toContain('https://bifrost-tunnel.e2e.test')
+      await mcpSettingsPage.gotoSecurity()
+
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs.nth(0)).toHaveValue('https://bifrost-tunnel.e2e.test')
+      await expect(mcpSettingsPage.securityAdditionalIssuerRemovedWarning).toBeHidden()
+      await mcpSettingsPage.securityAdditionalIssuerRemoveBtns.nth(0).click()
+      await expect(mcpSettingsPage.securityAdditionalIssuerRemovedWarning).toBeVisible()
+
+      await mcpSettingsPage.securityAdditionalIssuerAddBtn.click()
+      await mcpSettingsPage.securityAdditionalIssuerInputs.nth(0).fill('https://bifrost.e2e.test/other')
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/repeats the hostname of another issuer/i)
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { additional_issuer_urls?: unknown[] } | undefined
+      expect(saved?.additional_issuer_urls).toEqual(before?.additional_issuer_urls)
+    })
+
     test('should reject a non-https remote redirect URI without saving', async ({ mcpSettingsPage, request }) => {
       await mcpSettingsPage.goto()
       await mcpSettingsPage.advancedTrigger.click()

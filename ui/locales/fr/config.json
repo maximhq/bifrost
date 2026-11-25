@@ -263,6 +263,13 @@
 		"oauthBrowserUrl": "URL du navigateur",
 		"oauthBrowserUrlHelp": "Adresse par laquelle les navigateurs des utilisateurs atteignent Bifrost pour se connecter et approuver l'accès, lorsque les clients MCP l'atteignent par un nom d'hôte que les navigateurs ne peuvent pas résoudre, comme un tunnel privé. Le point de terminaison d'autorisation, la page de consentement et la connexion des appareils l'utilisent ; l'émetteur et tous les points de terminaison appelés par les clients MCP restent sur l'URL de l'émetteur. Laissez vide pour utiliser l'URL de l'émetteur. Incluez le chemin de base si Bifrost est servi sous l'un d'eux. Prend en charge la syntaxe des variables d'environnement (par ex. <code0>env.BIFROST_BROWSER_URL</code0>).",
 		"oauthBrowserUrlPlaceholder": "https://bifrost.corp.example.com ou env.BIFROST_BROWSER_URL",
+		"oauthAdditionalIssuers": "URL d’émetteurs supplémentaires",
+		"oauthAdditionalIssuersHelp": "Émetteurs pour les clients MCP qui ne peuvent pas joindre l’URL de l’émetteur, comme un client hébergé passant par un tunnel privé. Chacun doit avoir son propre nom d’hôte : une requête qui arrive sur l’un de ces noms d’hôte reçoit cet émetteur, et toute autre requête reçoit l’URL de l’émetteur. Les jetons de chacun de ces émetteurs fonctionnent sur tous les noms d’hôte. Incluez le chemin de base si Bifrost est servi sous un chemin. Prend en charge la syntaxe des variables d’environnement (par ex. <code0>env.BIFROST_TUNNEL_URL</code0>).",
+		"oauthAdditionalIssuerLabel": "URL d’émetteur supplémentaire {{number}}",
+		"oauthAdditionalIssuerPlaceholder": "https://bifrost-tunnel.example.com ou env.BIFROST_TUNNEL_URL",
+		"addAdditionalIssuer": "Ajouter une URL d’émetteur",
+		"removeAdditionalIssuer": "Supprimer l’URL d’émetteur supplémentaire {{number}}",
+		"additionalIssuerRemovedWarning": "Supprimer un émetteur invalide les jetons d’accès émis par son intermédiaire. Les clients MCP connectés via ce nom d’hôte devront se reconnecter.",
 		"toastIssuerUrlRequired": "L’URL de l’émetteur est obligatoire tant que le mode d’authentification MCP est OAuth ou Both. Passez l’authentification MCP sur En-têtes dans les paramètres MCP pour l’effacer."
 	},
 	"logging": {

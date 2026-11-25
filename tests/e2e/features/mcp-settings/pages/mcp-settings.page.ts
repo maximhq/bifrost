@@ -20,6 +20,10 @@ export class MCPSettingsPage extends BasePage {
   readonly securityIssuerUrlInput: Locator
   readonly securityIssuerUrlChangeWarning: Locator
   readonly securityBrowserBaseUrlInput: Locator
+  readonly securityAdditionalIssuerInputs: Locator
+  readonly securityAdditionalIssuerRemoveBtns: Locator
+  readonly securityAdditionalIssuerAddBtn: Locator
+  readonly securityAdditionalIssuerRemovedWarning: Locator
   readonly securitySaveBtn: Locator
   readonly maxProtocolVersionSelect: Locator
   readonly serverMaxProtocolVersionSelect: Locator
@@ -45,6 +49,10 @@ export class MCPSettingsPage extends BasePage {
     this.securityIssuerUrlInput = page.getByTestId('oauth2-issuer-url-input')
     this.securityIssuerUrlChangeWarning = page.getByTestId('oauth2-issuer-url-change-warning')
     this.securityBrowserBaseUrlInput = page.getByTestId('oauth2-browser-base-url-input')
+    this.securityAdditionalIssuerInputs = page.getByTestId('oauth2-additional-issuer-input')
+    this.securityAdditionalIssuerRemoveBtns = page.getByTestId('oauth2-additional-issuer-remove-btn')
+    this.securityAdditionalIssuerAddBtn = page.getByTestId('oauth2-additional-issuer-add-btn')
+    this.securityAdditionalIssuerRemovedWarning = page.getByTestId('oauth2-additional-issuer-removed-warning')
     this.securitySaveBtn = page.getByTestId('security-save-btn')
     this.maxProtocolVersionSelect = page.getByTestId('mcp-max-protocol-version-select')
     // Under Advanced Settings: the cap on what Bifrost's own /mcp serves.
