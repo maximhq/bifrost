@@ -349467,6 +349467,289 @@
           }
         }
       ]
+    },
+    {
+      "name": "380. A caller-declared code mode tool is not run by agent mode (codemode-declared) [SERIAL]",
+      "description": "Agent mode auto-executes the code mode meta-tools only when Bifrost added them to the request. A caller can declare a tool named executeToolCode (or listToolFiles, readToolFile, getToolDocs) in its own request; that call must come back to the caller instead of being run. The second case pins that a tool Bifrost injected still runs. SERIAL because it provisions its own code mode client against the SSE fixture and deletes it afterwards. The models run at temperature 0 with explicit instructions; the exact auto-execution of an injected tool is pinned by the Go tests in core/mcp.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai codemode-declared provision a code-mode client on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run name: two runs against one gateway must not contend for the same client, and the",
+                  "// sweep below keys off this shared prefix to reap anything an interrupted run left behind.",
+                  "pm.collectionVariables.set('codeModeDeclaredClient', 'harness_codemode_decl_' + Date.now());",
+                  "pm.collectionVariables.set('codeModeDeclaredQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeDeclaredSweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeDeclaredClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\",\n    \"add\",\n    \"greet\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\",\n    \"add\",\n    \"greet\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai codemode-declared a caller-declared executeToolCode is returned to the caller, not run",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a caller-declared executeToolCode is handed back instead of being auto-executed', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "    var body = pm.response.json();",
+                  "    var choice = (body.choices || [])[0] || {};",
+                  "    var calls = (choice.message || {}).tool_calls || [];",
+                  "    pm.expect(choice.finish_reason, 'agent mode ran the caller-declared tool and kept going: ' + pm.response.text()).to.equal('tool_calls');",
+                  "    pm.expect(calls.length, 'tool calls handed back').to.equal(1);",
+                  "    pm.expect(calls[0].function.name).to.equal('executeToolCode');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "{{codeModeDeclaredClient}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 100,\n  \"temperature\": 0,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the executeToolCode tool with the code `return 1`. Do not answer in text.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"executeToolCode\",\n        \"description\": \"Run a snippet of code and return its result.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"code\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"code\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai codemode-declared an executeToolCode Bifrost injected is still run by the agent loop",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a tool Bifrost injected is run by the agent loop and the turn completes', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "    var body = pm.response.json();",
+                  "    var choice = (body.choices || [])[0] || {};",
+                  "    var calls = (choice.message || {}).tool_calls || [];",
+                  "    var raw = JSON.stringify((body.extra_fields || {}).raw_request || {});",
+                  "    pm.expect(raw, 'Bifrost sends its own executeToolCode upstream').to.include('executeToolCode');",
+                  "    pm.expect(choice.finish_reason, 'the agent loop completed: ' + pm.response.text()).to.equal('stop');",
+                  "    pm.expect(calls.length, 'no tool call left for the caller').to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "{{codeModeDeclaredClient}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 100,\n  \"temperature\": 0,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use the executeToolCode tool to run the code `return 1`, then reply with the single word done.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai codemode-declared queue this run's client, plus any stale leftovers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeDeclaredClient');",
+                  "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be reading stubs: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = null, stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf('harness_codemode_decl_') !== 0) { continue; }",
+                  "    if (cfg.name === client) { mine = cfg.client_id; continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(22), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
+                  "  }",
+                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
+                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeDeclaredQueue', JSON.stringify([mine].concat(stale)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai codemode-declared remove every queued code-mode client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeDeclaredQueue') || '[]');",
+                  "pm.collectionVariables.set('codeModeDeclaredClientId', queue.length ? queue[0] : 'none-queued');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeDeclaredQueue') || '[]');",
+                  "queue.shift();",
+                  "pm.collectionVariables.set('codeModeDeclaredQueue', JSON.stringify(queue));",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeDeclaredSweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeDeclaredSweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeDeclaredClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeDeclaredClientId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
