@@ -64,6 +64,9 @@ type MCPManager struct {
 	pluginPipelineProvider func() PluginPipeline
 	releasePluginPipeline  func(pipeline PluginPipeline)
 
+	// responseCostEnabled is core's send-back-cost check for a request; nil means off.
+	responseCostEnabled func(ctx *schemas.BifrostContext) bool
+
 	// stateChangeCallback, if set, is invoked whenever a client's live
 	// connection state changes via a path with no admin-API call site of its
 	// own for a caller to observe the change through: reactive connect-
@@ -294,6 +297,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, account schema
 		checkerManager:         NewConnectionCheckerManager(config.ToolSyncInterval),
 		credStore:              credStore,
 		inProcessServerFactory: config.InProcessServerFactory,
+		responseCostEnabled:    config.ResponseCostEnabled,
 	}
 	manager.maxProtocolVersion.Store(config.MaxProtocolVersion)
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
