@@ -102,7 +102,7 @@ func TestBudgetsFindHolderAndCalendarFlag(t *testing.T) {
 	var walked []*Budget
 	after := ""
 	for {
-		rows, next, err := BudgetsPage(ctx, db, after, 2)
+		rows, next, err := LimitReads{}.BudgetsPage(ctx, db, after, 2)
 		require.NoError(t, err)
 		walked = append(walked, rows...)
 		if next == "" {
@@ -140,27 +140,27 @@ func TestBudgetsFindHolderAndCalendarFlag(t *testing.T) {
 	}
 	require.Equal(t, pcID, *byID["b-pc"].ProviderConfigID, "a provider config's budget keeps its config row")
 
-	rows, err := BudgetsByID(ctx, db, []string{"b-key", "b-bu", "b-orphan", "missing"})
+	rows, err := LimitReads{}.BudgetsByID(ctx, db, []string{"b-key", "b-bu", "b-orphan", "missing"})
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"b-bu", "b-key", "b-orphan"}, budgetIDsOf(rows), "a missing budget is left out; unheld ones are read")
 
-	rows, err = BudgetsByKeys(ctx, db, []string{"vk-a"})
+	rows, err = LimitReads{}.BudgetsByKeys(ctx, db, []string{"vk-a"})
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"b-key", "b-pc"}, budgetIDsOf(rows), "a key's budgets include its provider configs'")
-	rows, err = BudgetsByTeams(ctx, db, []string{"team-a"})
+	rows, err = LimitReads{}.BudgetsByTeams(ctx, db, []string{"team-a"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"b-team"}, budgetIDsOf(rows))
-	rows, err = BudgetsByCustomers(ctx, db, []string{"cust-a"})
+	rows, err = LimitReads{}.BudgetsByCustomers(ctx, db, []string{"cust-a"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"b-cust"}, budgetIDsOf(rows))
-	rows, err = BudgetsByModelConfigs(ctx, db, []string{"mc-a"})
+	rows, err = LimitReads{}.BudgetsByModelConfigs(ctx, db, []string{"mc-a"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"b-mc"}, budgetIDsOf(rows))
-	rows, err = BudgetsByProviders(ctx, db, []string{"openai"})
+	rows, err = LimitReads{}.BudgetsByProviders(ctx, db, []string{"openai"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"b-prov"}, budgetIDsOf(rows))
 	require.Equal(t, "openai", rows[0].Provider)
-	rows, err = BudgetsByKeys(ctx, db, []string{"missing"})
+	rows, err = LimitReads{}.BudgetsByKeys(ctx, db, []string{"missing"})
 	require.NoError(t, err)
 	require.Empty(t, rows)
 }
@@ -177,7 +177,7 @@ func TestRateLimitsFindHolderAndCalendarFlag(t *testing.T) {
 	var walked []*RateLimit
 	after := ""
 	for {
-		rows, next, err := RateLimitsPage(ctx, db, after, 2)
+		rows, next, err := LimitReads{}.RateLimitsPage(ctx, db, after, 2)
 		require.NoError(t, err)
 		walked = append(walked, rows...)
 		if next == "" {
@@ -207,26 +207,26 @@ func TestRateLimitsFindHolderAndCalendarFlag(t *testing.T) {
 		require.Equal(t, w, got, r.ID)
 	}
 
-	rows, err := RateLimitsByID(ctx, db, []string{"rl-team", "rl-orphan", "missing"})
+	rows, err := LimitReads{}.RateLimitsByID(ctx, db, []string{"rl-team", "rl-orphan", "missing"})
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"rl-orphan", "rl-team"}, rateLimitIDsOf(rows), "a missing rate limit is left out; an unreferenced one is read")
 
-	rows, err = RateLimitsByKeys(ctx, db, []string{"vk-a"})
+	rows, err = LimitReads{}.RateLimitsByKeys(ctx, db, []string{"vk-a"})
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"rl-key", "rl-pc"}, rateLimitIDsOf(rows), "a key's rate limits include its provider configs'")
-	rows, err = RateLimitsByTeams(ctx, db, []string{"team-a"})
+	rows, err = LimitReads{}.RateLimitsByTeams(ctx, db, []string{"team-a"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"rl-team"}, rateLimitIDsOf(rows))
-	rows, err = RateLimitsByCustomers(ctx, db, []string{"cust-a"})
+	rows, err = LimitReads{}.RateLimitsByCustomers(ctx, db, []string{"cust-a"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"rl-cust"}, rateLimitIDsOf(rows))
-	rows, err = RateLimitsByModelConfigs(ctx, db, []string{"mc-a"})
+	rows, err = LimitReads{}.RateLimitsByModelConfigs(ctx, db, []string{"mc-a"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"rl-mc"}, rateLimitIDsOf(rows))
-	rows, err = RateLimitsByProviders(ctx, db, []string{"openai"})
+	rows, err = LimitReads{}.RateLimitsByProviders(ctx, db, []string{"openai"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"rl-prov"}, rateLimitIDsOf(rows))
-	rows, err = RateLimitsByKeys(ctx, db, []string{"vk-b"})
+	rows, err = LimitReads{}.RateLimitsByKeys(ctx, db, []string{"vk-b"})
 	require.NoError(t, err)
 	require.Empty(t, rows, "a key with no rate limit has none")
 }
@@ -319,10 +319,10 @@ func TestKeyLimitReadsUseIndexesOnPostgres(t *testing.T) {
 
 	rec := &sqlRecorder{Interface: logger.Default.LogMode(logger.Silent)}
 	traced := db.Session(&gorm.Session{Logger: rec})
-	gotBudgets, err := BudgetsByKeys(ctx, traced, []string{"vk-a"})
+	gotBudgets, err := LimitReads{}.BudgetsByKeys(ctx, traced, []string{"vk-a"})
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"b-key", "b-pc"}, budgetIDsOf(gotBudgets))
-	gotRateLimits, err := RateLimitsByKeys(ctx, traced, []string{"vk-a"})
+	gotRateLimits, err := LimitReads{}.RateLimitsByKeys(ctx, traced, []string{"vk-a"})
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"rl-key", "rl-pc"}, rateLimitIDsOf(gotRateLimits))
 
