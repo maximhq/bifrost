@@ -351595,11 +351595,11 @@
       ]
     },
     {
-      "name": "380. Datasheet modalities on retrieved models (datasheet modalities)",
+      "name": "380. Datasheet modalities on retrieved models (datasheet modalities) (#9337 / PR #10262)",
       "description": "The pricing datasheet has no architecture block; it describes modalities through supports_vision / supports_audio_input / supports_video_input / supports_pdf_input / supports_audio_output and the supported_modalities / supported_input_modalities / supported_output_modalities lists. Entry.UnmarshalJSON now derives architecture.input_modalities and output_modalities from them, and EnrichModelRetrieveResponse / EnrichListModelsResponse (shared enrichModel) copy them onto models the provider returns without an architecture. Before the fix each row below came back with no architecture. Cases: (1) gpt-4o-mini has only supports_vision + supports_pdf_input, so input is text+image+file and output comes from its chat mode (text); (2) gpt-4.1 has explicit supported_modalities / supported_output_modalities plus flags; (3) gpt-audio-mini sets supports_audio_output, so output is text+audio. The /openai drop-in returns the OpenAI Model shape (object, id, created, owned_by) without architecture, so it is not covered; the Go SDK does not run catalog enrichment.",
       "item": [
         {
-          "name": "openai/gpt-4o-mini native /v1/models retrieve: flags-only row gets input from flags and output from its mode - datasheet modalities",
+          "name": "openai/gpt-4o-mini native /v1/models retrieve: flags-only row gets input from flags and output from its mode (datasheet modalities) - #9337",
           "event": [
             {
               "listen": "test",
@@ -351640,7 +351640,7 @@
           }
         },
         {
-          "name": "openai/gpt-4.1 native /v1/models retrieve: explicit modality lists plus pdf flag - datasheet modalities",
+          "name": "openai/gpt-4.1 native /v1/models retrieve: explicit modality lists plus pdf flag (datasheet modalities) - #9337",
           "event": [
             {
               "listen": "test",
@@ -351681,7 +351681,7 @@
           }
         },
         {
-          "name": "openai/gpt-audio-mini native /v1/models retrieve: supports_audio_output adds audio output - datasheet modalities",
+          "name": "openai/gpt-audio-mini native /v1/models retrieve: supports_audio_output adds audio output (datasheet modalities) - #9337",
           "event": [
             {
               "listen": "test",
