@@ -574,6 +574,103 @@ func TestExecuteAgentForResponsesRequest_WithNonAutoExecutableTools(t *testing.T
 	}
 }
 
+// collidingCodeModeClientManager serves one code mode client, crm, whose raw
+// tool names get-user and get_user normalize to one identifier.
+type collidingCodeModeClientManager struct {
+	MockClientManager
+	autoExecute schemas.WhiteList
+}
+
+func (m *collidingCodeModeClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
+	if clientName != "crm" {
+		return nil
+	}
+	return &schemas.MCPClientState{Name: "crm", ExecutionConfig: &schemas.MCPClientConfig{
+		Name:               "crm",
+		IsCodeModeClient:   true,
+		ToolsToExecute:     []string{"*"},
+		ToolsToAutoExecute: m.autoExecute,
+	}}
+}
+
+func (m *collidingCodeModeClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
+	return map[string][]schemas.ChatTool{"crm": {
+		{Function: &schemas.ChatToolFunction{Name: "crm-get_user"}},
+		{Function: &schemas.ChatToolFunction{Name: "crm-get-user"}},
+	}}
+}
+
+// The auto-execute check accepts exactly the identifiers executeToolCode binds
+// to an allowed tool. get-user and get_user share the identifier get_user:
+// get_user keeps it and get-user is bound as get_user_2, so allowing get-user
+// must allow get_user_2 and not get_user.
+func TestAutoExecuteAllowListResolvesCollidingCallableNames(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, tc := range []struct {
+		allowed      schemas.WhiteList
+		allow, block []string
+	}{
+		{allowed: []string{"get-user"}, allow: []string{"get_user_2"}, block: []string{"get_user"}},
+		{allowed: []string{"get_user"}, allow: []string{"get_user"}, block: []string{"get_user_2"}},
+		{allowed: []string{"get-user", "get_user"}, allow: []string{"get_user", "get_user_2"}},
+	} {
+		clientNames, allowed := buildAllowedAutoExecutionTools(ctx, &collidingCodeModeClientManager{autoExecute: tc.allowed})
+		for _, name := range tc.allow {
+			if !isToolCallAllowedForCodeMode("crm", name, clientNames, allowed) {
+				t.Errorf("tools_to_auto_execute %v: crm.%s was not auto-executable (allowed: %v)", tc.allowed, name, allowed)
+			}
+		}
+		for _, name := range tc.block {
+			if isToolCallAllowedForCodeMode("crm", name, clientNames, allowed) {
+				t.Errorf("tools_to_auto_execute %v: crm.%s was auto-executable (allowed: %v)", tc.allowed, name, allowed)
+			}
+		}
+	}
+
+	// Through the agent loop: an executeToolCode call to the allowed tool runs
+	// without approval, and one to the other tool is returned for approval.
+	for _, tc := range []struct {
+		code string
+		runs bool
+	}{{code: "result = crm.get_user_2()", runs: true}, {code: "result = crm.get_user()", runs: false}} {
+		executed := false
+		executeTool := func(_ *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+			executed = true
+			return &schemas.BifrostMCPResponse{ChatMessage: &schemas.ChatMessage{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: req.ChatAssistantMessageToolCall.ID},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("ok")},
+			}}, nil
+		}
+		finish := func(*schemas.BifrostContext, *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+			return &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{
+				FinishReason:                schemas.Ptr("stop"),
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("done")}}},
+			}}}, nil
+		}
+		arguments, _ := json.Marshal(map[string]string{"code": tc.code})
+		response := &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{
+			FinishReason: schemas.Ptr("tool_calls"),
+			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					ID:       schemas.Ptr("call_code"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr(ToolTypeExecuteToolCode), Arguments: string(arguments)},
+				}}},
+			}},
+		}}}
+		request := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("look up a user")}}}}
+		executor := &AgentModeExecutor{logger: &MockLogger{}}
+		if _, err := executor.ExecuteAgentForChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), 10, request, response, finish, nil, executeTool,
+			&collidingCodeModeClientManager{autoExecute: []string{"get-user"}}); err != nil {
+			t.Fatalf("%s: agent loop failed: %v", tc.code, err)
+		}
+		if executed != tc.runs {
+			t.Errorf("%s with tools_to_auto_execute [get-user]: executed = %v, want %v", tc.code, executed, tc.runs)
+		}
+	}
+}
+
 // MockAutoClientManager returns a client state that marks all tools as auto-executable.
 type MockAutoClientManager struct{}
 

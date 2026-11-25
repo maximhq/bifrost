@@ -486,44 +486,9 @@ func getCanonicalToolName(clientName, originalToolName string) string {
 
 // callableToolNames maps each raw tool name of one server to the exact
 // identifier it is called by in executeToolCode, which is also its file name
-// and its def name. Raw names such as get-user and get_user normalize to one
-// canonical name. A tool whose raw name is that canonical name keeps it, and
-// otherwise the first in raw-name order does. The others get the canonical
-// name with the smallest suffix _2, _3, ... that is no tool's canonical name
-// and not yet given out, so every callable name names exactly one tool,
-// whatever order the tools are listed in.
+// and its def name (see codemcp.CodeModeCallableNames).
 func callableToolNames(clientName string, rawNames []string) map[string]string {
-	sorted := slices.Clone(rawNames)
-	slices.Sort(sorted)
-	sorted = slices.Compact(sorted)
-	canonical := make(map[string]string, len(sorted))
-	taken := make(map[string]bool, len(sorted))
-	for _, raw := range sorted {
-		canonical[raw] = getCanonicalToolName(clientName, raw)
-		taken[canonical[raw]] = true
-	}
-	names := make(map[string]string, len(sorted))
-	claimed := make(map[string]bool, len(sorted))
-	for _, raw := range sorted {
-		if c := canonical[raw]; stripClientPrefix(raw, clientName) == c && !claimed[c] {
-			names[raw] = c
-			claimed[c] = true
-		}
-	}
-	for _, raw := range sorted {
-		if _, done := names[raw]; done {
-			continue
-		}
-		name := canonical[raw]
-		for n := 2; claimed[name]; n++ {
-			if candidate := fmt.Sprintf("%s_%d", canonical[raw], n); !taken[candidate] {
-				name = candidate
-			}
-		}
-		names[raw] = name
-		claimed[name] = true
-	}
-	return names
+	return codemcp.CodeModeCallableNames(clientName, rawNames)
 }
 
 // callableChatToolNames is callableToolNames for a server's tool definitions.
@@ -592,27 +557,6 @@ func findToolReference(tools []schemas.ChatTool, requestedToolName, clientName s
 		return raw
 	}
 	return loose
-}
-
-// isValidStarlarkIdentifier reports whether name can be used directly in Starlark code.
-func isValidStarlarkIdentifier(name string) bool {
-	if name == "" {
-		return false
-	}
-
-	runes := []rune(name)
-	first := runes[0]
-	if !unicode.IsLetter(first) && first != '_' && first != '$' {
-		return false
-	}
-
-	for _, r := range runes[1:] {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '$' {
-			return false
-		}
-	}
-
-	return true
 }
 
 // validateNormalizedToolName validates a normalized tool name to prevent path traversal.

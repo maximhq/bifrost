@@ -2056,6 +2056,79 @@ func StripClientPrefix(prefixedToolName, clientName string) string {
 	return prefixedToolName
 }
 
+// CodeModeCallableNames maps each raw tool name of one server to the exact
+// identifier code mode calls it by, which is also its file name and its def
+// name. Raw names such as get-user and get_user normalize to one canonical
+// name. A tool whose raw name is that canonical name keeps it, and otherwise
+// the first in raw-name order does. The others get the canonical name with the
+// smallest suffix _2, _3, ... that is no tool's canonical name and not yet
+// given out, so every callable name names exactly one tool, whatever order the
+// tools are listed in.
+func CodeModeCallableNames(clientName string, rawNames []string) map[string]string {
+	sorted := slices.Clone(rawNames)
+	slices.Sort(sorted)
+	sorted = slices.Compact(sorted)
+	canonical := make(map[string]string, len(sorted))
+	taken := make(map[string]bool, len(sorted))
+	for _, raw := range sorted {
+		canonical[raw] = parseToolName(StripClientPrefix(raw, clientName))
+		taken[canonical[raw]] = true
+	}
+	names := make(map[string]string, len(sorted))
+	claimed := make(map[string]bool, len(sorted))
+	for _, raw := range sorted {
+		if c := canonical[raw]; StripClientPrefix(raw, clientName) == c && !claimed[c] {
+			names[raw] = c
+			claimed[c] = true
+		}
+	}
+	for _, raw := range sorted {
+		if _, done := names[raw]; done {
+			continue
+		}
+		name := canonical[raw]
+		for n := 2; claimed[name]; n++ {
+			if candidate := fmt.Sprintf("%s_%d", canonical[raw], n); !taken[candidate] {
+				name = candidate
+			}
+		}
+		names[raw] = name
+		claimed[name] = true
+	}
+	return names
+}
+
+// CodeModeBindings maps every identifier executeToolCode binds on one server
+// to the raw name of the tool it calls: each tool's callable name (see
+// CodeModeCallableNames), plus the compatibility alias of its raw name (the
+// raw name with '-' as '_', case kept) when that is a valid identifier that no
+// callable name takes. Raw-name order picks between tools sharing an alias.
+func CodeModeBindings(clientName string, rawNames []string) map[string]string {
+	names := CodeModeCallableNames(clientName, rawNames)
+	bindings := make(map[string]string, 2*len(names))
+	for raw, name := range names {
+		bindings[name] = raw
+	}
+	sorted := slices.Sorted(maps.Keys(names))
+	for _, raw := range sorted {
+		alias := strings.ReplaceAll(StripClientPrefix(raw, clientName), "-", "_")
+		if _, bound := bindings[alias]; !bound && isCodeModeIdentifier(alias) {
+			bindings[alias] = raw
+		}
+	}
+	return bindings
+}
+
+// isCodeModeIdentifier reports whether name can be used directly in code mode scripts.
+func isCodeModeIdentifier(name string) bool {
+	for i, r := range name {
+		if !unicode.IsLetter(r) && r != '_' && r != '$' && (i == 0 || !unicode.IsDigit(r)) {
+			return false
+		}
+	}
+	return name != ""
+}
+
 // FixArraySchemas recursively fixes array schemas by ensuring they have an 'items' field.
 // This prevents validation errors like "array schema missing items" when tools are registered.
 // It handles nested arrays (array-of-array) and recurses into items regardless of type.

@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/canonical/starlark/starlark"
 	"github.com/canonical/starlark/starlarkstruct"
 	"github.com/canonical/starlark/syntax"
+	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -108,14 +108,14 @@ func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code stri
 	calls := 0
 	for client, tools := range bindings {
 		members := starlark.StringDict{}
-		// Each tool is bound under its own callable name first, so a
-		// compatibility alias never takes the name of another tool. Raw-name
-		// order picks between tools that share an alias.
+		// The same bindings the agent's auto-execute check reads: each tool's
+		// callable name, plus compatibility aliases no callable name takes.
 		names := callableToolNames(client, tools)
-		aliases := map[string]*starlark.Builtin{}
-		ordered := slices.Clone(tools)
-		slices.Sort(ordered)
-		for _, tool := range ordered {
+		builtins := make(map[string]*starlark.Builtin, len(tools))
+		for _, tool := range tools {
+			if _, done := builtins[tool]; done {
+				continue
+			}
 			if err := thread.AddAllocs(starlark.SafeInt(512 + len(client) + 3*len(tool))); err != nil {
 				return sandboxFailure(err.Error())
 			}
@@ -157,16 +157,10 @@ func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code stri
 					}
 					return newValueConversion(thread).fromGo(result, 0)
 				})
-			members[name] = fn
-			alias := getCompatibilityToolAlias(client, tool)
-			if _, exists := aliases[alias]; !exists && alias != name && isValidStarlarkIdentifier(alias) {
-				aliases[alias] = fn
-			}
+			builtins[tool] = fn
 		}
-		for alias, fn := range aliases {
-			if _, exists := members[alias]; !exists {
-				members[alias] = fn
-			}
+		for identifier, tool := range codemcp.CodeModeBindings(client, tools) {
+			members[identifier] = builtins[tool]
 		}
 		predeclared[client] = starlarkstruct.FromStringDict(starlark.String(client), members)
 		servers = append(servers, client)
