@@ -156,3 +156,44 @@ func TestRecordRelayUpstreamAndNoLLMOverhead(t *testing.T) {
 		t.Fatal("a relay trace was recorded in the LLM overhead histogram")
 	}
 }
+
+// A settled async job's span adds its charge to relay cost but is never counted as a relay call: no
+// operation duration, upstream time or overhead.
+func TestRecordRelaySettlementCountsCostOnly(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m := &MetricsExporter{provider: provider, meter: provider.Meter("test")}
+	m.initMetrics()
+	now := time.Now()
+	trace := &schemas.Trace{TraceID: "settlement", Spans: []*schemas.Span{{
+		SpanID: "s", Name: "relay.textract", Kind: schemas.SpanKindRelay, StartTime: now, EndTime: now.Add(time.Second),
+		Attributes: map[string]any{
+			schemas.AttrBifrostRelayName: "textract", schemas.AttrBifrostRelayJobSettlement: true, schemas.AttrBifrostRelayCost: 0.3,
+		},
+	}}}
+	(&OtelPlugin{}).recordRelayMetricsFromTrace(context.Background(), m, trace)
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	var cost float64
+	for _, scope := range rm.ScopeMetrics {
+		for _, metric := range scope.Metrics {
+			switch metric.Name {
+			case "bifrost.relay.operation.duration", "bifrost.relay.upstream_socket.duration", "bifrost.relay.overhead_latency":
+				t.Fatalf("a settlement is no call, but it recorded %s", metric.Name)
+			case "bifrost.relay.cost":
+				sum, ok := metric.Data.(metricdata.Sum[float64])
+				if !ok {
+					t.Fatalf("cost data = %T, want a float64 sum", metric.Data)
+				}
+				for _, dp := range sum.DataPoints {
+					cost += dp.Value
+				}
+			}
+		}
+	}
+	if cost != 0.3 {
+		t.Fatalf("relay cost = %v, want the job's 0.3", cost)
+	}
+}

@@ -1419,6 +1419,13 @@ func (p *OtelPlugin) recordRelayMetricsFromTrace(ctx context.Context, exporter *
 			continue
 		}
 		relayAttrs := buildRelaySpanAttrs(span)
+		// A settled job's charge counts toward relay cost, but it is no call: no duration or overhead.
+		if settled, _ := span.Attributes[schemas.AttrBifrostRelayJobSettlement].(bool); settled {
+			if cost, ok := schemas.GetFloat64AttrOK(span.Attributes, schemas.AttrBifrostRelayCost); ok && cost > 0 {
+				exporter.RecordRelayCost(ctx, cost, relayAttrs...)
+			}
+			continue
+		}
 		if span.Status == schemas.SpanStatusError {
 			errorType := schemas.GetStringAttr(span.Attributes, schemas.AttrErrorTypeSpec)
 			if errorType == "" {

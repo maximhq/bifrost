@@ -131,7 +131,7 @@ func makeDue(job *cstables.TableProviderJob) {
 }
 
 func relaySweeper(store SweepStore, poller RelayJobPoller, logs RelayJobLogStore, reporter RelayUsageReporter) *Sweeper {
-	return NewRelayJobSweeper(store, poller, logs, reporter, SweeperConfig{ClaimedBy: "node-1"})
+	return NewRelayJobSweeper(store, poller, logs, reporter, nil, SweeperConfig{ClaimedBy: "node-1"})
 }
 
 func TestEndpointJobSweeperSettlesOnce(t *testing.T) {
@@ -978,8 +978,9 @@ func TestRelayJobRowFallsBackToTheDetailsStoredAtStart(t *testing.T) {
 	job := seedEndpointJob(t, store)
 	start := &logstore.RelayLog{ID: "req-1", RoutePath: "/v1/textract", App: schemas.Ptr("curl"),
 		UserAgent: schemas.Ptr("curl/8.7.1"), VirtualKeyName: schemas.Ptr("team-key")}
-	params := WithRelayJobStart(*job.Params, start)
+	params := WithRelayJobStart(*job.Params, start, map[string]string{"region": "eu-west"})
 	job.Params = &params
+	assert.Equal(t, map[string]string{"region": "eu-west"}, relayJobStartOf(job).Dimensions, "the call's dimensions travel with the job")
 	_, err := relay.ParseJobSnapshot(params)
 	require.NoError(t, err, "the snapshot still reads with the details beside it")
 	logs := newFakeEndpointLogs()
@@ -1010,4 +1011,70 @@ func TestRelayJobRowFallsBackToTheDetailsStoredAtStart(t *testing.T) {
 	relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}, logs, &fakeEndpointReporter{}).SweepOnce(ctx)
 	require.NotNil(t, logs.rows[relayRowID(found)])
 	assert.Equal(t, "/v1/from-row", logs.rows[relayRowID(found)].RoutePath)
+}
+
+type recordingRelayEmitter struct {
+	rows []*logstore.RelayLog
+	dims []map[string]string
+}
+
+func (r *recordingRelayEmitter) EmitRelaySettlement(_ context.Context, entry *logstore.RelayLog, dims map[string]string) {
+	r.rows = append(r.rows, entry)
+	r.dims = append(r.dims, dims)
+}
+
+// The row was saved but its marker failed, so that attempt never emitted. The retry that finds the
+// row emits it once, with the start call's dimensions.
+func TestRelaySettlementEmittedAfterMarkerFailure(t *testing.T) {
+	inner := newFakeAccountingStore()
+	job := seedEndpointJob(t, inner)
+	params := WithRelayJobStart(*job.Params, &logstore.RelayLog{ID: "req-1"}, map[string]string{"region": "eu-west"})
+	job.Params = &params
+	store := &failMarkOnceStore{fakeAccountingStore: inner}
+	logs := newFakeEndpointLogs()
+	emitter := &recordingRelayEmitter{}
+	sweeper := NewRelayJobSweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}, logs, &fakeEndpointReporter{}, emitter, SweeperConfig{ClaimedBy: "node-1"})
+
+	sweeper.SweepOnce(context.Background())
+	require.Len(t, logs.rows, 1)
+	require.Empty(t, emitter.rows, "nothing is emitted before the marker is saved")
+
+	makeDue(job)
+	sweeper.SweepOnce(context.Background())
+	sweeper.SweepOnce(context.Background())
+	require.Len(t, emitter.rows, 1)
+	require.NotNil(t, emitter.rows[0].Cost)
+	assert.InDelta(t, 3*0.05, *emitter.rows[0].Cost, 1e-12)
+	assert.Equal(t, map[string]string{"region": "eu-west"}, emitter.dims[0])
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+}
+
+// A settled job is reported to the trace-fed connectors once, with the row it wrote, on the sweeper
+// path and on a caller's check alike; settling again does not report it twice.
+func TestRelaySettlementIsEmittedOnce(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	logs := newFakeEndpointLogs()
+	emitter := &recordingRelayEmitter{}
+	sweeper := NewRelayJobSweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}, logs, &fakeEndpointReporter{}, emitter, SweeperConfig{ClaimedBy: "node-1"})
+	sweeper.SweepOnce(ctx)
+	sweeper.SweepOnce(ctx)
+	require.Len(t, emitter.rows, 1)
+	assert.Equal(t, relayRowID(job), emitter.rows[0].ID)
+	require.NotNil(t, emitter.rows[0].Cost)
+	assert.InDelta(t, 3*0.05, *emitter.rows[0].Cost, 1e-12)
+
+	// A caller's check that settles a job reports it through the emitter it carries.
+	store = newFakeAccountingStore()
+	seedRelayJobGeneration(t, store, 1)
+	caller := &recordingRelayEmitter{}
+	req := statusCheck(200, `{"status":"SUCCEEDED","pages":3}`)
+	load := req.Payload.(RelayStatusCheckPayload)
+	load.Emitter = caller
+	req.Payload = load
+	out, err := AccountRelayJob(ctx, store, newFakeEndpointLogs(), &fakeEndpointReporter{}, donePoller(3), req)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.Len(t, caller.rows, 1)
 }

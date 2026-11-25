@@ -71,12 +71,12 @@ type RelayUsageReporter interface {
 }
 
 // NewRelayJobSweeper runs relay jobs on the shared sweeper. reporter may be nil when governance is off.
-func NewRelayJobSweeper(store SweepStore, poller RelayJobPoller, logs RelayJobLogStore, reporter RelayUsageReporter, config SweeperConfig) *Sweeper {
+func NewRelayJobSweeper(store SweepStore, poller RelayJobPoller, logs RelayJobLogStore, reporter RelayUsageReporter, emitter RelaySettlementEmitter, config SweeperConfig) *Sweeper {
 	if config.ClaimedBy == "" {
 		config.ClaimedBy = RunnerID("relay-sweeper", "")
 	}
 	settler := &RelaySettler{store: store, poller: poller, logs: logs, hasReporter: reporter != nil, logger: config.Logger}
-	return newSweeper(store, relayLogsRecorder{logs: logs, reporter: reporter}, nil, settler, nil, nil, config)
+	return newSweeper(store, relayLogsRecorder{logs: logs, reporter: reporter, emitter: emitter}, nil, settler, nil, nil, config)
 }
 
 // MaxRelayJobGenerations bounds how many times one upstream job id is reused after settlement
@@ -107,7 +107,8 @@ type RelayStatusCheckPayload struct {
 	// only from its own route and template, so another job's check with the same id, or one from a
 	// template changed since the start, does not.
 	Matches []schemas.RelayJobMatch
-	Logger  schemas.Logger // optional; where a settlement problem is reported
+	Logger  schemas.Logger         // optional; where a settlement problem is reported
+	Emitter RelaySettlementEmitter // optional; reports the settled job to trace-fed metrics
 }
 
 // AccountRelayJob settles a relay job a caller's status check found finished, as AccountVideoJob
@@ -158,7 +159,7 @@ func AccountRelayJob(ctx context.Context, stateStore JobStore, logs RelayJobLogS
 		req.Job = polled.Job
 		req.ProviderJobID = polled.Job.JobID
 		req.Payload = polled.Payload
-		return accountJob(ctx, stateStore, relayLogsRecorder{logs: logs, reporter: reporter}, nil, settler, req)
+		return accountJob(ctx, stateStore, relayLogsRecorder{logs: logs, reporter: reporter, emitter: load.Emitter}, nil, settler, req)
 	}
 	return nil, nil
 }
@@ -223,7 +224,7 @@ type relayVerdict struct {
 	settledBy   string // the caller's request whose status check settled the job, "" for a poll
 
 	usage   *schemas.RelayUsage // the priced usage, set by Settle
-	written bool                // the settlement row already exists
+	written *logstore.RelayLog  // the settlement row, when it already exists
 }
 
 // RelaySettler polls a relay job with its route's request and prices it with its route's usage.
@@ -407,7 +408,7 @@ func (s *RelaySettler) Settle(ctx context.Context, _ PricingManager, req JobRequ
 	row, err := s.logs.FindRelayLog(ctx, relayRowID(job))
 	switch {
 	case err == nil:
-		v.written = true
+		v.written = row
 		if row.Cost == nil {
 			// A row with no cost records a job that ended unpriced; a retry keeps that ending.
 			reason, reasonErr := relayRowReason(row)
@@ -468,10 +469,18 @@ func relayRowID(job *cstables.TableProviderJob) string {
 	return AccountingLogID(ProviderJobKindRelay, schemas.ModelProvider(job.Provider), job.JobID)
 }
 
+// RelaySettlementEmitter reports a settled relay job's row to the trace-fed connectors (OTel,
+// Prometheus), as a batch or video settlement is: the sweeper runs outside the request pipeline,
+// so this is the only way a job's charge reaches them.
+type RelaySettlementEmitter interface {
+	EmitRelaySettlement(ctx context.Context, entry *logstore.RelayLog, dims map[string]string)
+}
+
 // relayLogsRecorder logs a settled job in the Relay Logs and bills it through the relay reporter.
 type relayLogsRecorder struct {
 	logs     RelayJobLogStore
 	reporter RelayUsageReporter
+	emitter  RelaySettlementEmitter
 }
 
 func (l relayLogsRecorder) Ready() bool { return l.logs != nil }
@@ -484,15 +493,17 @@ func (l relayLogsRecorder) MirrorSettled(context.Context, Settler, *Outcome) {}
 
 func (l relayLogsRecorder) Entry(req JobRequest, _ *Settlement, _ *Outcome, _ time.Time, _ string) LogsRecord {
 	v, _ := req.Payload.(*relayVerdict)
-	return &relayLogsRecord{logs: l.logs, reporter: l.reporter, job: req.Job, verdict: v}
+	return &relayLogsRecord{logs: l.logs, reporter: l.reporter, emitter: l.emitter, job: req.Job, verdict: v}
 }
 
 type relayLogsRecord struct {
 	logs     RelayJobLogStore
 	reporter RelayUsageReporter
+	emitter  RelaySettlementEmitter
 	job      *cstables.TableProviderJob
 	verdict  *relayVerdict
 	unpriced bool
+	written  *logstore.RelayLog // the row Write recorded, for Emit
 }
 
 // ClearCost leaves the row's cost blank: the job ended without a price, which is not $0.
@@ -504,7 +515,10 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 	if e.verdict == nil {
 		return fmt.Errorf("relay job %s has no poll verdict", e.job.ID)
 	}
-	if e.verdict.written {
+	if e.verdict.written != nil {
+		// An earlier attempt saved the row but not its marker, so it never emitted; this attempt
+		// emits that row. Emit runs only after the marker is saved, so it cannot emit twice.
+		e.written = e.verdict.written
 		return nil
 	}
 	usage := e.verdict.usage
@@ -579,8 +593,11 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 	if !copied {
 		relayJobStartOf(job).applyTo(entry)
 	}
-	_, err := e.logs.BatchCreateRelayLogsIfNotExists(ctx, []*logstore.RelayLog{entry})
-	return err
+	if _, err := e.logs.BatchCreateRelayLogsIfNotExists(ctx, []*logstore.RelayLog{entry}); err != nil {
+		return err
+	}
+	e.written = entry
+	return nil
 }
 
 // copyStartAttribution gives a job row what its start call's row resolved at request time, as an
@@ -595,28 +612,29 @@ const relayJobStartKey = "start"
 // RelayJobStart is what a job row copies from its start call. It is stored with the job when the job
 // starts, so a job settled before the start call's row is written still shows its route, app and names.
 type RelayJobStart struct {
-	Model              string   `json:"model,omitempty"`
-	RoutePath          string   `json:"route_path,omitempty"`
-	UserName           *string  `json:"user_name,omitempty"`
-	UserEmail          *string  `json:"user_email,omitempty"`
-	VirtualKeyName     *string  `json:"virtual_key_name,omitempty"`
-	TeamName           *string  `json:"team_name,omitempty"`
-	CustomerName       *string  `json:"customer_name,omitempty"`
-	BusinessUnitID     *string  `json:"business_unit_id,omitempty"`
-	BusinessUnitName   *string  `json:"business_unit_name,omitempty"`
-	ProjectID          *string  `json:"project_id,omitempty"`
-	ProjectName        *string  `json:"project_name,omitempty"`
-	SessionID          *string  `json:"session_id,omitempty"`
-	AgentCorrelationID *string  `json:"agent_correlation_id,omitempty"`
-	ParentRequestID    *string  `json:"parent_request_id,omitempty"`
-	UserAgent          *string  `json:"user_agent,omitempty"`
-	App                *string  `json:"app,omitempty"`
-	TeamIDs            []string `json:"team_ids,omitempty"`
-	TeamNames          []string `json:"team_names,omitempty"`
-	CustomerIDs        []string `json:"customer_ids,omitempty"`
-	CustomerNames      []string `json:"customer_names,omitempty"`
-	BusinessUnitIDs    []string `json:"business_unit_ids,omitempty"`
-	BusinessUnitNames  []string `json:"business_unit_names,omitempty"`
+	Model              string            `json:"model,omitempty"`
+	RoutePath          string            `json:"route_path,omitempty"`
+	UserName           *string           `json:"user_name,omitempty"`
+	UserEmail          *string           `json:"user_email,omitempty"`
+	VirtualKeyName     *string           `json:"virtual_key_name,omitempty"`
+	TeamName           *string           `json:"team_name,omitempty"`
+	CustomerName       *string           `json:"customer_name,omitempty"`
+	BusinessUnitID     *string           `json:"business_unit_id,omitempty"`
+	BusinessUnitName   *string           `json:"business_unit_name,omitempty"`
+	ProjectID          *string           `json:"project_id,omitempty"`
+	ProjectName        *string           `json:"project_name,omitempty"`
+	SessionID          *string           `json:"session_id,omitempty"`
+	AgentCorrelationID *string           `json:"agent_correlation_id,omitempty"`
+	ParentRequestID    *string           `json:"parent_request_id,omitempty"`
+	UserAgent          *string           `json:"user_agent,omitempty"`
+	App                *string           `json:"app,omitempty"`
+	TeamIDs            []string          `json:"team_ids,omitempty"`
+	TeamNames          []string          `json:"team_names,omitempty"`
+	CustomerIDs        []string          `json:"customer_ids,omitempty"`
+	CustomerNames      []string          `json:"customer_names,omitempty"`
+	BusinessUnitIDs    []string          `json:"business_unit_ids,omitempty"`
+	BusinessUnitNames  []string          `json:"business_unit_names,omitempty"`
+	Dimensions         map[string]string `json:"dimensions,omitempty"` // the start call's x-bf-dim-* values, for the settlement's metrics labels
 }
 
 // RelayJobStartOf reads what a job row copies from its start call's row.
@@ -650,16 +668,21 @@ func (s RelayJobStart) applyTo(entry *logstore.RelayLog) {
 }
 
 // WithRelayJobStart returns a job's params with its start call's details added beside the relay's
-// snapshot; the snapshot reader ignores the extra key. On failure the params are returned unchanged.
-func WithRelayJobStart(params string, start *logstore.RelayLog) string {
+// snapshot; the snapshot reader ignores the extra key. dims are the call's x-bf-dim-* values, which
+// its row keeps only mixed into metadata. On failure the params are returned unchanged.
+func WithRelayJobStart(params string, start *logstore.RelayLog, dims map[string]string) string {
 	if start == nil {
 		return params
 	}
-	details, err := sonic.Marshal(RelayJobStartOf(start))
+	details := RelayJobStartOf(start)
+	if len(dims) > 0 {
+		details.Dimensions = dims
+	}
+	raw, err := providerUtils.MarshalSorted(details)
 	if err != nil {
 		return params
 	}
-	out, err := providerUtils.SetRawJSONField([]byte(params), relayJobStartKey, details)
+	out, err := providerUtils.SetRawJSONField([]byte(params), relayJobStartKey, raw)
 	if err != nil {
 		return params
 	}
@@ -681,7 +704,13 @@ func relayJobStartOf(job *cstables.TableProviderJob) RelayJobStart {
 	return start
 }
 
-func (e *relayLogsRecord) Emit(context.Context) {}
+// Emit reports the settled row to the trace-fed connectors. It runs once, after the row and its
+// marker are saved, with the start call's dimensions so the cost keeps its custom labels.
+func (e *relayLogsRecord) Emit(ctx context.Context) {
+	if e.emitter != nil && e.written != nil {
+		e.emitter.EmitRelaySettlement(ctx, e.written, relayJobStartOf(e.job).Dimensions)
+	}
+}
 
 func (e *relayLogsRecord) CanReport() bool { return e.reporter != nil }
 

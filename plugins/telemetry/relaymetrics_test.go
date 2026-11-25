@@ -232,3 +232,41 @@ func TestRelayMetricsCarryCustomLabelsAndUpstream(t *testing.T) {
 		t.Fatalf("overhead = %v, want the root span's 3ms in microseconds", got)
 	}
 }
+
+// A settled async job's span adds its charge to bifrost_relay_cost_total but is never counted as a
+// relay call.
+func TestRelaySettlementCountsCostOnly(t *testing.T) {
+	p := newTestPlugin(t)
+	now := time.Now()
+	trace := &schemas.Trace{TraceID: "settlement", Spans: []*schemas.Span{{
+		SpanID: "s", Name: "relay.textract", Kind: schemas.SpanKindRelay, StartTime: now, EndTime: now.Add(time.Second),
+		Attributes: map[string]any{
+			schemas.AttrBifrostRelayName: "textract", schemas.AttrBifrostRelayJobSettlement: true, schemas.AttrBifrostRelayCost: 0.3,
+			// Timings a call would record, so the test fails if a settlement stops skipping them.
+			schemas.AttrBifrostRelayUpstreamDurationMs: 500.0,
+		},
+	}}, RootSpan: &schemas.Span{SpanID: "root", Attributes: map[string]any{schemas.AttrBifrostOverheadDurationMs: 3.0}}}
+	if err := p.Inject(context.Background(), trace); err != nil {
+		t.Fatal(err)
+	}
+	families, err := p.registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cost float64
+	for _, family := range families {
+		switch family.GetName() {
+		case "bifrost_relay_operation_duration_seconds", "bifrost_relay_upstream_socket_duration_seconds", "bifrost_relay_overhead_latency_microseconds":
+			if len(family.GetMetric()) > 0 {
+				t.Fatalf("a settlement is no call, but it recorded %s", family.GetName())
+			}
+		case "bifrost_relay_cost_total":
+			for _, m := range family.GetMetric() {
+				cost += m.GetCounter().GetValue()
+			}
+		}
+	}
+	if cost != 0.3 {
+		t.Fatalf("relay cost = %v, want the job's 0.3", cost)
+	}
+}

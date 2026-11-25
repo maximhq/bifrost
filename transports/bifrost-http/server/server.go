@@ -4022,6 +4022,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.TracingMiddleware = handlers.NewTracingMiddleware(tracer)
 	// Wire the settlement tracer now that it exists (WireBatchAccountingSweeper ran earlier, before it did).
 	s.setSettlementTracer()
+	// The relay sweeper waits for the tracer, so a job settled at boot still reports its cost.
+	s.startEndpointJobSweeper(s.endpointUsageReporter())
 	// TransportInterceptor runs AFTER the auth middlewares so HTTPTransportPreHook observes an
 	// authenticated request, and inside TracingMiddleware so the tracing defer runs AFTER
 	// transport post-hooks (capturing HTTPTransportPostHook plugin logs).
