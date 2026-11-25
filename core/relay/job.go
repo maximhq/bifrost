@@ -124,7 +124,7 @@ func (s *JobSnapshot) Interval() int {
 	if s.Job.IntervalSeconds > 0 {
 		return s.Job.IntervalSeconds
 	}
-	return 30
+	return schemas.DefaultRelayJobIntervalSeconds
 }
 
 // Timeout is how long a job may run before polling stops, an hour when unset.
@@ -259,8 +259,10 @@ func validRelayJobID(id string) bool {
 			return false
 		}
 	}
+	// A ;param does not stop some servers (Tomcat) reading "..;x" as "..", so it is stripped first,
+	// as gapSegmentOK does for a ** segment.
 	for _, segment := range strings.Split(id, "/") {
-		if segment == "." || segment == ".." {
+		if name, _, _ := strings.Cut(segment, ";"); name == "." || name == ".." {
 			return false
 		}
 	}

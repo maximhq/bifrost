@@ -5188,6 +5188,38 @@ func TestConfigSchemaSuggestionsScheduleMatchesParser(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_RelayJob pins that a route's job block loads from config.json, and that
+// a malformed one is refused when the file loads.
+func TestValidateConfigSchema_RelayJob(t *testing.T) {
+	relay := func(job string) string {
+		return `{"relays": [{"name": "textract", "base_url": "https://textract.us-east-1.amazonaws.com", "auth": {"type": "aws_sigv4", "aws": {"service": "textract"}},
+			"credential": {"aws": {"region": "us-east-1"}}, "routes": [{"method": "POST", "path": "/", "headers": {"X-Amz-Target": "Textract.Start*"}, "job": ` + job + `}]}]}`
+	}
+	textract := `{"id_path": "JobId", "poll": {"method": "POST", "path": "/", "headers": {"X-Amz-Target": "Textract.GetDocumentAnalysis"}, "body": "{\"JobId\":\"{{job.id}}\"}", "content_type": "application/x-amz-json-1.1"},
+		"status_path": "JobStatus", "succeeded": ["SUCCEEDED", "PARTIAL_SUCCESS"], "failed": ["FAILED"], "interval_seconds": 15, "timeout_seconds": 21600,
+		"usage": {"units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.0015}}`
+	for _, tc := range []struct {
+		name  string
+		job   string
+		valid bool
+	}{
+		{"textract job", textract, true},
+		{"no succeeded status", `{"id_path": "JobId", "poll": {"path": "/"}, "status_path": "s", "succeeded": []}`, false},
+		{"unknown poll field", `{"id_path": "JobId", "poll": {"path": "/", "url": "https://x"}, "status_path": "s", "succeeded": ["x"]}`, false},
+		{"timeout over 7 days", `{"id_path": "JobId", "poll": {"path": "/"}, "status_path": "s", "succeeded": ["x"], "timeout_seconds": 604801}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(relay(tc.job)), loadLocalSchema(t))
+			if tc.valid && err != nil {
+				t.Fatalf("expected the job to pass validation: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Fatal("expected the job to fail validation")
+			}
+		})
+	}
+}
+
 // TestValidateConfigSchema_RelayInheritBodyOverrides pins the route switch that turns the relay's
 // body_overrides off.
 func TestValidateConfigSchema_RelayInheritBodyOverrides(t *testing.T) {
