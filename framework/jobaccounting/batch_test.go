@@ -272,6 +272,14 @@ func (fakePricing) CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimen
 // Interaction rates for the settler tests: one agent priced per token at the standard (not batch)
 // rate, and nothing for anything else. It prices only what a passthrough read would have carried.
 func (fakePricing) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *modelcatalog.PricingLookupScopes) *schemas.BifrostCost {
+	// A background response is priced as the Responses response its final read returned.
+	if result != nil && result.ResponsesResponse != nil {
+		usage := result.ResponsesResponse.Usage
+		if usage == nil || result.ResponsesResponse.ExtraFields.RoutingInfo.Model != backgroundModel {
+			return nil
+		}
+		return &schemas.BifrostCost{TotalCost: responseCost(usage.InputTokens, usage.OutputTokens)}
+	}
 	if result == nil || result.PassthroughResponse == nil || result.PassthroughResponse.PassthroughUsage == nil {
 		return nil
 	}

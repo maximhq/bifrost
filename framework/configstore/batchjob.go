@@ -71,11 +71,12 @@ func (s *RDBConfigStore) UpsertProviderJob(ctx context.Context, job *tables.Tabl
 	if job.PollAttempts > 0 {
 		updates["poll_attempts"] = job.PollAttempts
 	}
-	// Relay and interaction statuses are the upstream's own word, so "failed" or "cancelled"
-	// there is no batch state: a failed run can still owe for the work it did, so the sweeper
-	// settles it and retries a failed settlement at next_check_at.
+	// Relay, interaction and background response statuses are the upstream's own word, so
+	// "failed" or "cancelled" there is no batch state: a failed run can still owe for the work
+	// it did, so the sweeper settles it and retries a failed settlement at next_check_at.
 	if job.Kind != tables.ProviderJobKindRelay &&
 		job.Kind != tables.ProviderJobKindInteraction &&
+		job.Kind != tables.ProviderJobKindResponse &&
 		tables.IsTerminalBatchProviderStatus(job.ProviderStatus) &&
 		job.ProviderStatus != string(schemas.BatchStatusCompleted) &&
 		job.ProviderStatus != string(schemas.BatchStatusEnded) {
@@ -83,9 +84,10 @@ func (s *RDBConfigStore) UpsertProviderJob(ctx context.Context, job *tables.Tabl
 	}
 
 	update := db.Model(&tables.TableProviderJob{}).Where("id = ?", job.ID)
-	if job.Kind == tables.ProviderJobKindInteraction {
-		// A read can load an interaction while it is pending and land its upsert after the run was
-		// settled; the condition sits in the UPDATE so no interleaving rewrites a settled row.
+	if job.Kind == tables.ProviderJobKindInteraction || job.Kind == tables.ProviderJobKindResponse {
+		// A read can load an interaction or a background response while it is pending and land its
+		// upsert after the run was settled; the condition sits in the UPDATE so no interleaving
+		// rewrites a settled row.
 		update = update.Where("accounting_status NOT IN ?", []string{
 			tables.ProviderJobAccountingStatusAccounted,
 			tables.ProviderJobAccountingStatusUnpriceable,

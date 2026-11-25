@@ -125,6 +125,9 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	// Stored interactions (Gemini Deep Research runs) settle once, from their final read; this
 	// sweeper reads the runs no client read to the end.
 	loggerPlugin.StartInteractionAccountingSweeper(&bifrostInteractionPoller{client: s.Client}, time.Minute, s.Config.Shared.InteractionPollLeases)
+	// Background Responses API responses settle once, from the first retrieve that finds them
+	// finished; this sweeper reads the ones no client polled to the end.
+	loggerPlugin.StartResponseAccountingSweeper(&bifrostResponsePoller{client: s.Client}, time.Minute, s.Config.Shared.ResponsePollLeases)
 	// Relay jobs settle on their own sweeper: they bill to the Relay Logs and
 	// the overall budgets, not through the model catalog.
 	s.startEndpointJobSweeper(s.endpointUsageReporter())
@@ -201,6 +204,41 @@ func (f *bifrostInteractionPoller) PollInteraction(ctx context.Context, job *cst
 			StatusCode: resp.StatusCode,
 			Message:    fmt.Sprintf("interaction poll returned status %d: %s", resp.StatusCode, truncateForError(resp.Body)),
 		}
+	}
+	return resp, nil
+}
+
+type bifrostResponsePoller struct {
+	client *bifrost.Bifrost
+}
+
+// unsupportedOperationCode is the error code core answers with when a provider has no
+// implementation for a request type.
+const unsupportedOperationCode = "unsupported_operation"
+
+// RetrieveResponse reads a background response through the Responses retrieve call, pinned to the
+// key that created it: a stored response belongs to the account of the key that created it, so
+// another key would be told it does not exist.
+//
+// A provider that has no retrieve for stored responses answers before any upstream call, with no
+// status. That answer never changes, so it is reported as a refused request for the settler to
+// park, instead of a failure worth retrying until the attempts run out.
+func (f *bifrostResponsePoller) RetrieveResponse(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostResponsesResponse, error) {
+	if f == nil || f.client == nil {
+		return nil, fmt.Errorf("bifrost client is nil")
+	}
+	if job == nil || job.JobID == "" {
+		return nil, fmt.Errorf("response job has no response id")
+	}
+	resp, bifrostErr := f.client.ResponsesRetrieveRequest(internalJobContext(ctx, job.SelectedKeyID), &schemas.BifrostResponsesRetrieveRequest{
+		Provider:   schemas.ModelProvider(job.Provider),
+		ResponseID: job.JobID,
+	})
+	if bifrostErr != nil {
+		if bifrostErr.StatusCode == nil && bifrostErr.Error != nil && bifrostErr.Error.Code != nil && *bifrostErr.Error.Code == unsupportedOperationCode {
+			return nil, &jobaccounting.ProviderCallError{StatusCode: http.StatusMethodNotAllowed, Message: bifrostErr.GetErrorString()}
+		}
+		return nil, jobaccounting.NewProviderCallError(bifrostErr)
 	}
 	return resp, nil
 }

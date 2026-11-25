@@ -543,6 +543,14 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	if requestType == schemas.VideoRetrieveRequest {
 		return nil
 	}
+	// A stored Responses response repeats its usage on every read once it has finished,
+	// including what its server tools used, and a tool is priced at its own model, so it would
+	// price here even though the read names no model. The work was charged when it ran: from
+	// the create, or for a background response from its settlement, which prices it as a create.
+	switch requestType {
+	case schemas.ResponsesRetrieveRequest, schemas.ResponsesRetrieveStreamRequest, schemas.ResponsesCancelRequest:
+		return nil
+	}
 
 	// Extract usage data from the response (passthrough and native paths unified)
 	input := extractCostInput(result)

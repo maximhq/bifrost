@@ -3895,6 +3895,50 @@ func TestCalculateCost_VideoRetrieveIsNotBilled(t *testing.T) {
 	assert.Zero(t, s.CalculateCost(resp, nil))
 }
 
+// A stored Responses response repeats its full usage on every read once it has finished. The
+// work was charged when it ran: from the create, or for a background response from its
+// settlement. A retrieve, a streamed replay or a cancel is a read and is not billed again.
+func TestCalculateCost_ResponsesReadIsNotBilled(t *testing.T) {
+	row := chatPricing(0.000002, 0.000008)
+	row.Provider, row.Model = "openai", "gpt-4o-mini"
+	store := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized(row.Model, row.Provider, row.Mode): row,
+	})
+	finished := func(requestType schemas.RequestType) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: requestType,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o-mini"),
+			},
+		}}
+	}
+	require.InDelta(t, 1000*0.000002+100*0.000008, store.CalculateCost(finished(schemas.ResponsesRequest), nil), 1e-12, "the create is priced")
+	for _, read := range []schemas.RequestType{schemas.ResponsesRetrieveRequest, schemas.ResponsesRetrieveStreamRequest, schemas.ResponsesCancelRequest} {
+		assert.Zero(t, store.CalculateCost(finished(read), nil), "%s is a read", read)
+		assert.Nil(t, store.CalculateCostBreakdown(finished(read), nil), "%s is a read", read)
+	}
+
+	// A server tool is priced at its own model, so it prices even on a read that names no model
+	// for the response itself. It is still a read.
+	tools := imageGenToolTestStore(t)
+	withImage := func(requestType schemas.RequestType, model string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ToolUsage: &schemas.ToolUsage{ImageGen: &schemas.ImageGenToolUsage{
+				InputTokens: 100, OutputTokens: 5000, TotalTokens: 5100,
+				InputTokensDetails:  &schemas.ImageGenTokenDetails{TextTokens: 100},
+				OutputTokensDetails: &schemas.ImageGenTokenDetails{ImageTokens: 5000},
+			}}},
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: requestType, RoutingInfo: routingInfoFor(schemas.OpenAI, model)},
+		}}
+	}
+	require.Positive(t, tools.CalculateCost(withImage(schemas.ResponsesRequest, "gpt-6.1-sol"), nil), "the create is charged for the images")
+	for _, read := range []schemas.RequestType{schemas.ResponsesRetrieveRequest, schemas.ResponsesRetrieveStreamRequest, schemas.ResponsesCancelRequest} {
+		assert.Zero(t, tools.CalculateCost(withImage(read, ""), nil), "%s repeats the image usage and is not charged for it", read)
+		assert.Zero(t, tools.CalculateCost(withImage(read, "gpt-6.1-sol"), nil), "%s repeats the image usage and is not charged for it", read)
+	}
+}
+
 // A Gemini Interactions poll names no model on the request: the agent that ran comes back on the
 // response as ServedModel, and the run is priced at that agent's rates. Without it the record has
 // no model to look up and is left unpriced.

@@ -305,6 +305,64 @@ func TestUpsertProviderJobLeavesASettledInteractionAlone(t *testing.T) {
 	}
 }
 
+// TestUpsertProviderJobKeepsAFailedBackgroundResponseDue pins that a failed or cancelled background
+// response stays due, the same as an interaction: it can still owe for the tokens it used, so the
+// sweeper must still settle it if no read did, and a failed settlement must stay retryable.
+func TestUpsertProviderJobKeepsAFailedBackgroundResponseDue(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+	next := time.Now().UTC().Add(time.Hour).UTC()
+	for _, status := range []string{"failed", "cancelled"} {
+		id := tables.ProviderJobID(tables.ProviderJobKindResponse, "openai", "resp_"+status)
+		require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+			ID:               id,
+			Kind:             tables.ProviderJobKindResponse,
+			Provider:         "openai",
+			JobID:            "resp_" + status,
+			AccountingStatus: tables.ProviderJobAccountingStatusPending,
+			NextCheckAt:      &next,
+			ProviderStatus:   status,
+		}))
+		assert.NotNil(t, getBatchJob(t, store, id).NextCheckAt, "a %s background response keeps next_check_at", status)
+	}
+}
+
+// TestUpsertProviderJobLeavesASettledBackgroundResponseAlone pins that a poll which read a response
+// while it was running, and lands its upsert after another read settled it, rewrites nothing.
+func TestUpsertProviderJobLeavesASettledBackgroundResponseAlone(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+	for _, status := range []string{tables.ProviderJobAccountingStatusAccounted, tables.ProviderJobAccountingStatusUnpriceable} {
+		id := tables.ProviderJobID(tables.ProviderJobKindResponse, "openai", "resp_race_"+status)
+		require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+			ID:               id,
+			Kind:             tables.ProviderJobKindResponse,
+			Provider:         "openai",
+			JobID:            "resp_race_" + status,
+			Model:            "gpt-4o",
+			ProviderStatus:   "completed",
+			AccountingStatus: status,
+		}))
+
+		later := time.Now().UTC().Add(time.Hour)
+		require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+			ID:             id,
+			Kind:           tables.ProviderJobKindResponse,
+			Provider:       "openai",
+			JobID:          "resp_race_" + status,
+			ProviderStatus: "in_progress",
+			PollAttempts:   3,
+			NextCheckAt:    &later,
+		}))
+
+		persisted := getBatchJob(t, store, id)
+		assert.Equal(t, "completed", persisted.ProviderStatus, "a stale poll must not rewrite a %s response's status", status)
+		assert.Nil(t, persisted.NextCheckAt, "a stale poll must not make a %s response due again", status)
+		assert.Zero(t, persisted.PollAttempts)
+		assert.Equal(t, status, persisted.AccountingStatus)
+	}
+}
+
 func TestListDueProviderJobsFiltersByDueAndStatus(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()

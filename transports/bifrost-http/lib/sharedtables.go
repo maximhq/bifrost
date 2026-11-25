@@ -31,11 +31,12 @@ type SharedTables struct {
 	Sessions *livestore.Table[string, string]
 	// Warm holds the routing plugin's semantic exemplar warm claims and results.
 	Warm *livestore.Table[string, string]
-	// BatchPollLeases, VideoPollLeases and InteractionPollLeases hold each job's poll lease, so
-	// one poller works a job at a time, one table per job kind.
+	// BatchPollLeases, VideoPollLeases, InteractionPollLeases and ResponsePollLeases hold each
+	// job's poll lease, so one poller works a job at a time, one table per job kind.
 	BatchPollLeases       *livestore.Table[string, jobaccounting.PollLease]
 	VideoPollLeases       *livestore.Table[string, jobaccounting.PollLease]
 	InteractionPollLeases *livestore.Table[string, jobaccounting.PollLease]
+	ResponsePollLeases    *livestore.Table[string, jobaccounting.PollLease]
 	// GenAIUploads holds a GenAI resumable upload between its start and its data, keyed by the
 	// upload ID.
 	GenAIUploads *livestore.Table[string, *gemini.GeminiResumableUploadSession]
@@ -99,6 +100,9 @@ func newSharedTables(ctx context.Context, live *livestore.Store) (*SharedTables,
 		return nil, err
 	}
 	if t.InteractionPollLeases, err = live.NewTable[string, jobaccounting.PollLease](ctx, jobaccounting.PollLeaseTable(jobaccounting.ProviderJobKindInteraction), livestore.WithWriteTimes()); err != nil {
+		return nil, err
+	}
+	if t.ResponsePollLeases, err = live.NewTable[string, jobaccounting.PollLease](ctx, jobaccounting.PollLeaseTable(jobaccounting.ProviderJobKindResponse), livestore.WithWriteTimes()); err != nil {
 		return nil, err
 	}
 	if t.GenAIUploads, err = live.NewTable[string, *gemini.GeminiResumableUploadSession](ctx, genaiUploadSessionsTable, livestore.WithWriteTimes()); err != nil {

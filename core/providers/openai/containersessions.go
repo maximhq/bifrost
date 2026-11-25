@@ -43,6 +43,122 @@ func recordResponsesServerToolUsage(response *schemas.BifrostResponsesResponse, 
 	recordImageGenToolModel(response.Usage.ToolUsage, reqBody)
 }
 
+// RecordResponsesServerToolUsage is recordResponsesServerToolUsage for a response priced away
+// from its create: a background response is settled from a later read, which carries no request.
+// reqBody is the create's request, or the part of it ResponsesToolPricingContext kept.
+func RecordResponsesServerToolUsage(response *schemas.BifrostResponsesResponse, reqBody []byte) {
+	recordResponsesServerToolUsage(response, reqBody)
+}
+
+// ResponsesToolPricingContext returns the part of a Responses request that pricing reads: the
+// code, shell and image tools with their container and model settings, the container ids
+// already present in the input, and whether the request continues stored context. A background
+// create keeps it so the response can be priced when a later read finds it finished; passed to
+// RecordResponsesServerToolUsage it prices that response as the whole request would. It holds
+// no message content. Nil when the request has no tool whose price depends on the request.
+func ResponsesToolPricingContext(reqBody []byte) []byte {
+	if len(reqBody) == 0 {
+		return nil
+	}
+	var req struct {
+		PreviousResponseID *string         `json:"previous_response_id"`
+		Conversation       json.RawMessage `json:"conversation"`
+		Input              json.RawMessage `json:"input"`
+		Tools              []struct {
+			Type        string          `json:"type"`
+			Model       string          `json:"model"`
+			Container   json.RawMessage `json:"container"`
+			Environment json.RawMessage `json:"environment"`
+		} `json:"tools"`
+	}
+	if err := sonic.Unmarshal(reqBody, &req); err != nil {
+		return nil
+	}
+	// keptContainer is all pricing reads of a code container or a shell environment: its kind
+	// and its memory tier. The rest of those objects can hold credentials (a shell environment's
+	// domain secrets), inline skills and file ids, and none of it is kept.
+	type keptContainer struct {
+		Type        string `json:"type,omitempty"`
+		MemoryLimit string `json:"memory_limit,omitempty"`
+	}
+	type keptTool struct {
+		Type        string         `json:"type"`
+		Model       string         `json:"model,omitempty"`
+		Container   *keptContainer `json:"container,omitempty"`
+		Environment *keptContainer `json:"environment,omitempty"`
+	}
+	// A container given by id (a string) is explicit, was billed at its create, and keeps nothing.
+	reduce := func(raw json.RawMessage) *keptContainer {
+		var kept keptContainer
+		if len(raw) == 0 || sonic.Unmarshal(raw, &kept) != nil || (kept.Type == "" && kept.MemoryLimit == "") {
+			return nil
+		}
+		return &kept
+	}
+	type keptCall struct {
+		Type        string `json:"type"`
+		ContainerID string `json:"container_id,omitempty"`
+		Environment *struct {
+			ContainerID string `json:"container_id"`
+		} `json:"environment,omitempty"`
+	}
+	kept := struct {
+		PreviousResponseID *string    `json:"previous_response_id,omitempty"`
+		Conversation       *bool      `json:"conversation,omitempty"`
+		Input              []keptCall `json:"input,omitempty"`
+		Tools              []keptTool `json:"tools"`
+	}{}
+	containers := false
+	for i := range req.Tools {
+		tool := &req.Tools[i]
+		switch tool.Type {
+		case string(schemas.ResponsesToolTypeCodeInterpreter):
+			containers = true
+			kept.Tools = append(kept.Tools, keptTool{Type: tool.Type, Container: reduce(tool.Container)})
+		case string(schemas.ResponsesToolTypeShell):
+			containers = true
+			kept.Tools = append(kept.Tools, keptTool{Type: tool.Type, Environment: reduce(tool.Environment)})
+		case string(schemas.ResponsesToolTypeImageGeneration):
+			kept.Tools = append(kept.Tools, keptTool{Type: tool.Type, Model: tool.Model})
+		}
+	}
+	if len(kept.Tools) == 0 {
+		return nil
+	}
+	if containers {
+		if req.PreviousResponseID != nil && *req.PreviousResponseID != "" {
+			kept.PreviousResponseID = req.PreviousResponseID
+		}
+		if len(req.Conversation) > 0 && !bytes.Equal(req.Conversation, []byte("null")) {
+			kept.Conversation = new(true)
+		}
+		// Earlier tool calls replayed in the input name containers that are not new.
+		var input []containerSessionsInputItem
+		if sonic.Unmarshal(req.Input, &input) == nil {
+			for i := range input {
+				item := &input[i]
+				switch item.Type {
+				case string(schemas.ResponsesMessageTypeCodeInterpreterCall):
+					kept.Input = append(kept.Input, keptCall{Type: item.Type, ContainerID: item.ContainerID})
+				case string(schemas.ResponsesMessageTypeShellCall):
+					call := keptCall{Type: item.Type}
+					if item.Environment != nil {
+						call.Environment = &struct {
+							ContainerID string `json:"container_id"`
+						}{ContainerID: item.Environment.ContainerID}
+					}
+					kept.Input = append(kept.Input, call)
+				}
+			}
+		}
+	}
+	out, err := sonic.Marshal(kept)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
 // recordImageGenToolModel saves the image tool's model for pricing. Absent means the API's default model.
 func recordImageGenToolModel(toolUsage *schemas.ToolUsage, reqBody []byte) {
 	if toolUsage == nil || !toolUsage.ImageGen.HasTokens() || len(reqBody) == 0 {
