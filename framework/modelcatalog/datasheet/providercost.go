@@ -10,12 +10,9 @@ func (s *Store) SetIgnoreProviderCost(provider schemas.ModelProvider, ignore boo
 	s.ignoreProviderCostMu.Lock()
 	defer s.ignoreProviderCostMu.Unlock()
 	if ignore {
-		if s.ignoreProviderCost == nil {
-			s.ignoreProviderCost = make(map[schemas.ModelProvider]struct{})
-		}
-		s.ignoreProviderCost[provider] = struct{}{}
+		s.ignoreProviderCost.Put(provider, struct{}{})
 	} else {
-		delete(s.ignoreProviderCost, provider)
+		s.ignoreProviderCost.Delete(provider)
 	}
 }
 
@@ -26,7 +23,7 @@ func (s *Store) ReplaceIgnoreProviderCost(providers []schemas.ModelProvider) {
 		next[p] = struct{}{}
 	}
 	s.ignoreProviderCostMu.Lock()
-	s.ignoreProviderCost = next
+	fillTable(s.ignoreProviderCost, next)
 	s.ignoreProviderCostMu.Unlock()
 }
 
@@ -37,7 +34,7 @@ func (s *Store) IsProviderCostIgnored(provider schemas.ModelProvider) bool {
 	}
 	s.ignoreProviderCostMu.RLock()
 	defer s.ignoreProviderCostMu.RUnlock()
-	_, ok := s.ignoreProviderCost[provider]
+	_, ok := s.ignoreProviderCost.Get(provider)
 	return ok
 }
 

@@ -912,6 +912,53 @@ func TestRecalculateLogCostsRejectsUnknownPeriod(t *testing.T) {
 	}
 }
 
+// TestRecalculateCostRoutesRefuseWithoutConfigStore registers the logging routes with the config
+// store disabled and sends each request through the router. The recalculate-cost routes keep
+// their job in the config store, so they answer 503 from RequireConfigStoreMiddleware even with
+// a job runner wired, and enqueue nothing; a log store route stays open.
+func TestRecalculateCostRoutesRefuseWithoutConfigStore(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := newFakeSidekiqStore()
+	h := &LoggingHandler{logManager: &dashboardLogManager{}, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	h.SetSidekiqBackend(sidekiq.New(store, &mockLogger{}, 1, ""), store)
+	r := router.New()
+	h.RegisterRoutes(r)
+
+	tests := []struct {
+		method  string
+		path    string
+		refused bool
+	}{
+		{fasthttp.MethodPost, "/api/logs/recalculate-cost", true},
+		{fasthttp.MethodGet, "/api/logs/recalculate-cost/status", true},
+		{fasthttp.MethodPost, "/api/logs/recalculate-cost/cancel", true},
+		{fasthttp.MethodGet, "/api/logs/search", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			var req fasthttp.Request
+			req.Header.SetMethod(tt.method)
+			req.SetRequestURI(tt.path)
+			req.Header.SetContentType("application/json")
+			req.SetBodyString(`{"filters":{"period":"1h"}}`)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+			r.Handler(ctx)
+
+			status, body := ctx.Response.StatusCode(), string(ctx.Response.Body())
+			refused := status == fasthttp.StatusServiceUnavailable && strings.Contains(body, "config store not available")
+			if refused != tt.refused {
+				t.Fatalf("refused = %v, want %v: status %d, body %s", refused, tt.refused, status, body)
+			}
+		})
+	}
+	if store.createdCount() != 0 {
+		t.Fatalf("expected no job to be enqueued, got %d", store.createdCount())
+	}
+}
+
 // TestParseHistogramFiltersResolvesCalendarPeriodInTimezone verifies the
 // timezone query param reaches calendar period resolution on query-string
 // endpoints.
@@ -2435,4 +2482,59 @@ func BenchmarkSearchLogs(b *testing.B) {
 		ctx := initCtx(&req)
 		h.searchLogs(ctx)
 	}
+}
+
+// withFilterDataCaches gives a hand-built logging handler the filter-data caches NewLoggingHandler
+// builds, over a new live store.
+func withFilterDataCaches(t testing.TB, h *LoggingHandler) *LoggingHandler {
+	t.Helper()
+	live := liveStoreForTest(t)
+	var err error
+	h.filterDataCache, err = newFilterDataCache(live, logsFilterDataTable)
+	require.NoError(t, err)
+	h.mcpFilterDataCache, err = newFilterDataCache(live, mcpLogsFilterDataTable)
+	require.NoError(t, err)
+	return h
+}
+
+// TestFilterDataCacheSingleFlightKeepsNothingIdle pins the cache's behaviour: a request that misses
+// holds the key until it stores or releases, a request waiting on it is then served the stored
+// response, and once nobody holds a key its lock is gone (it used to stay for the life of the
+// process).
+func TestFilterDataCacheSingleFlightKeepsNothingIdle(t *testing.T) {
+	cache, err := newFilterDataCache(liveStoreForTest(t), logsFilterDataTable)
+	require.NoError(t, err)
+
+	leader, _, hit := cache.load("k")
+	require.False(t, hit)
+	served := make(chan map[string]interface{})
+	go func() {
+		_, payload, ok := cache.load("k")
+		if !ok {
+			served <- nil
+			return
+		}
+		served <- payload
+	}()
+	// Store only once the second caller holds the key too, so it is waiting on
+	// the leader's lock rather than arriving after the store.
+	require.Eventually(t, func() bool {
+		cache.mu.Lock()
+		defer cache.mu.Unlock()
+		build := cache.builds["k"]
+		return build != nil && build.refs == 2
+	}, 5*time.Second, time.Millisecond, "the second caller never waited on the key")
+	cache.store(leader, map[string]interface{}{"models": []string{"m"}})
+	got := <-served
+	require.Equal(t, map[string]interface{}{"models": []string{"m"}}, got, "the waiter must be served the leader's response")
+
+	failed, _, hit := cache.load("other")
+	require.False(t, hit)
+	cache.release(failed)
+	_, _, hit = cache.load("other")
+	require.False(t, hit, "a released miss stores nothing")
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	require.Len(t, cache.builds, 1, "only the key still held keeps a lock")
 }

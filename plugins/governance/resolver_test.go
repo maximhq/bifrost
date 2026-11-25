@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,12 +28,12 @@ func TestBudgetResolver_EvaluateRequest_AllowedRequest(t *testing.T) {
 		buildProviderConfig("openai", []string{"*"}),
 	}
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
@@ -54,24 +55,25 @@ func TestBudgetResolver_EvaluateRequest_GracePeriodValue(t *testing.T) {
 	vk.PreviousValueExpiresAt = &exp
 	vk.RotatedAt = &now
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	h := newLiveHarness(t, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, nil)
-	require.NoError(t, err)
+	}, nil)
+	store := h.mustGovernanceStore(logger, nil)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-rotated-out")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-rotated-out", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionAllow, result)
 
 	// Deterministically expire the grace window: expiry is evaluated lazily at
-	// lookup time on the stored object, so aging the shared pointer replaces
-	// the previous short-sleep pattern without any timing dependence.
-	stored, found := store.GetVirtualKey(context.Background(), "sk-bf-current")
+	// lookup time on the stored record, so aging the row's expiry and refreshing
+	// the key replaces the previous short-sleep pattern without any timing dependence.
+	_, found := store.GetVirtualKey(context.Background(), "sk-bf-current")
 	require.True(t, found)
 	past := now.Add(-time.Millisecond)
-	stored.PreviousValueExpiresAt = &past
+	require.NoError(t, h.db.Model(&configstoreTables.TableVirtualKey{}).Where("id = ?", vk.ID).UpdateColumn("previous_value_expires_at", past).Error)
+	h.refresh(livestore.Ref{Kind: livestore.KindVirtualKey, ID: vk.ID})
 
 	// resolverCtx resolves access once, at call time, from whatever the store
 	// currently reports for the presented value - so the expired grace window
@@ -94,12 +96,12 @@ func TestBudgetResolver_EvaluateRequest_ProviderBlocked(t *testing.T) {
 	}
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	// Try to use OpenAI (not allowed)
@@ -121,12 +123,12 @@ func TestBudgetResolver_EvaluateRequest_ListModelsBypassesProviderBlock(t *testi
 	}
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	// OpenAI is not in the allowlist, but ListModelsRequest must not be provider-blocked.
@@ -152,12 +154,12 @@ func TestBudgetResolver_EvaluateRequest_ModelBlocked(t *testing.T) {
 	}
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	// Try to use gpt-4o-mini (not in allowed list)
@@ -182,12 +184,12 @@ func TestBudgetResolver_EvaluateRequest_SkipProviderCheckAllowsUnconfiguredProvi
 	}
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	// Baseline: without the flag this is a provider block.
@@ -219,12 +221,12 @@ func TestBudgetResolver_EvaluateRequest_SkipProviderCheckKeepsModelAllowlist(t *
 	}
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	// openai IS configured, so gpt-4o-mini stays blocked even with the flag set.
@@ -239,13 +241,13 @@ func TestBudgetResolver_EvaluateRequest_SkipProviderCheckKeepsModelAllowlist(t *
 // TestGovernancePlugin_Evaluate_DirectKeySatisfiesMandatoryAuth verifies direct provider keys satisfy mandatory auth after transport validation.
 func TestGovernancePlugin_Evaluate_DirectKeySatisfiesMandatoryAuth(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	mandatory := true
 	plugin := &GovernancePlugin{
 		store:         store,
-		resolver:      NewBudgetResolver(store, nil, logger, nil),
+		resolver:      budgetResolverForTest(t, store, nil, logger),
 		isVkMandatory: &mandatory,
 		isEnterprise:  true,
 	}
@@ -269,13 +271,13 @@ func TestGovernancePlugin_Evaluate_DirectKeySatisfiesMandatoryAuth(t *testing.T)
 // TestGovernancePlugin_Evaluate_HeaderWithoutContextDoesNotSatisfyMandatoryAuth verifies callers cannot spoof direct-key auth with only a request header.
 func TestGovernancePlugin_Evaluate_HeaderWithoutContextDoesNotSatisfyMandatoryAuth(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	mandatory := true
 	plugin := &GovernancePlugin{
 		store:         store,
-		resolver:      NewBudgetResolver(store, nil, logger, nil),
+		resolver:      budgetResolverForTest(t, store, nil, logger),
 		isVkMandatory: &mandatory,
 		isEnterprise:  true,
 	}
@@ -314,13 +316,13 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExceeded_TokenLimit(t *testing.
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
@@ -336,13 +338,13 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExceeded_RequestLimit(t *testin
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 100, 100) // Requests at max
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
@@ -369,18 +371,18 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExpired(t *testing.T) {
 	}
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
 	// Reset expired rate limits (simulating ticker behavior)
-	expiredRateLimits := store.ResetExpiredRateLimitsInMemory(context.Background(), true)
+	expiredRateLimits := store.ResetExpiredRateLimitsInMemory(context.Background())
 	err = store.ResetExpiredRateLimits(context.Background(), expiredRateLimits)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
@@ -396,13 +398,13 @@ func TestBudgetResolver_EvaluateRequest_BudgetExceeded(t *testing.T) {
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1d") // At limit
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
@@ -423,13 +425,13 @@ func TestBudgetResolver_EvaluateRequest_BudgetExpired(t *testing.T) {
 	}
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
@@ -455,7 +457,7 @@ func TestBudgetResolver_EvaluateRequest_MultiLevelBudgetHierarchy(t *testing.T) 
 	vk.TeamID = &team.ID
 	vk.Team = team
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*vkBudget, *teamBudget, *customerBudget},
 		Teams:       []configstoreTables.TableTeam{*team},
@@ -463,7 +465,7 @@ func TestBudgetResolver_EvaluateRequest_MultiLevelBudgetHierarchy(t *testing.T) 
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	// Test: All under limit should pass
@@ -476,7 +478,7 @@ func TestBudgetResolver_EvaluateRequest_MultiLevelBudgetHierarchy(t *testing.T) 
 	vkBudgetToUpdate := governanceData.Budgets["vk-budget"]
 	if vkBudgetToUpdate != nil {
 		vkBudgetToUpdate.CurrentUsage = 100.0
-		store.budgets.Store("vk-budget", vkBudgetToUpdate)
+		putBudget(t, store, "vk-budget", vkBudgetToUpdate)
 	}
 	result = evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionBudgetExceeded, result)
@@ -491,13 +493,13 @@ func TestBudgetResolver_EvaluateRequest_ProviderLevelRateLimit(t *testing.T) {
 	providerConfig := buildProviderConfigWithRateLimit("openai", []string{"gpt-4"}, providerRL)
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{providerConfig})
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*providerRL},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
@@ -513,13 +515,13 @@ func TestBudgetResolver_CheckRateLimits_BothExceeded(t *testing.T) {
 	rateLimit := buildRateLimitWithUsage("rl1", 1000, 1000, 100, 100)
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
@@ -543,14 +545,14 @@ func TestBudgetResolver_ContextPopulation(t *testing.T) {
 	vk.Team = team
 	vk.CustomerID = &customer.ID
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Teams:       []configstoreTables.TableTeam{*team},
 		Customers:   []configstoreTables.TableCustomer{*customer},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
@@ -601,12 +603,12 @@ func TestBudgetResolver_EvaluateRequest_PassthroughModelFiltering(t *testing.T) 
 			}
 			vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
 
-			store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 			}, nil, nil)
 			require.NoError(t, err)
 
-			resolver := NewBudgetResolver(store, nil, logger, nil)
+			resolver := budgetResolverForTest(t, store, nil, logger)
 			ctx := resolverCtx(store, "sk-bf-test")
 
 			result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, tt.model, tt.requestType, false, false)
@@ -647,12 +649,12 @@ func TestBudgetResolver_EvaluateRequest_FileBatchWithoutModel(t *testing.T) {
 			providerConfig.BlacklistedModels = tt.blacklisted
 			vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", []configstoreTables.TableVirtualKeyProviderConfig{providerConfig})
 
-			store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 			}, nil, nil)
 			require.NoError(t, err)
 
-			resolver := NewBudgetResolver(store, nil, logger, nil)
+			resolver := budgetResolverForTest(t, store, nil, logger)
 			ctx := resolverCtx(store, "sk-bf-test")
 
 			result := evaluateOpaqueBatch(resolver, ctx, tt.provider, tt.model)
@@ -757,12 +759,12 @@ func assertShortCircuitDecision(t *testing.T, want Decision, sc *schemas.LLMPlug
 func newCustomProviderTestPlugin(t *testing.T, vk *configstoreTables.TableVirtualKey, providers map[schemas.ModelProvider]configstore.ProviderConfig) *GovernancePlugin {
 	t.Helper()
 	logger := NewMockLogger()
-	inMemory := &mockInMemoryStore{configuredProviders: providers}
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	inMemory := &liveFixture{configuredProviders: providers}
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, inMemory)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, inMemory)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin
@@ -1028,13 +1030,13 @@ func TestPreLLMHookRefusesServerToolModelsWithTheirOwnLimits(t *testing.T) {
 	})
 	limited := buildRateLimit("rl-opus", 1000, 1000)
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
 		ModelConfigs: []configstoreTables.TableModelConfig{*buildModelConfig("mc-opus", "claude-opus-4-8", nil, nil, limited)},
 		RateLimits:   []configstoreTables.TableRateLimit{*limited},
 	}, nil, nil)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1100,11 +1102,11 @@ func TestPreLLMHookChecksInteractionsAgentAgainstAllowlist(t *testing.T) {
 		buildProviderConfig("gemini", []string{allowed}),
 	})
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1162,11 +1164,11 @@ func TestPreLLMHookRefusesMixedPassthroughModelsWithTheirOwnLimits(t *testing.T)
 			buildProviderConfig("runware", []string{"*"}),
 		})
 		logger := NewMockLogger()
-		store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 			VirtualKeys: []configstoreTables.TableVirtualKey{*vk}, ModelConfigs: modelConfigs, RateLimits: rateLimits,
 		}, nil, nil)
 		require.NoError(t, err)
-		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 		return plugin
@@ -1207,6 +1209,7 @@ func TestPreLLMHookRefusesMixedPassthroughModelsWithTheirOwnLimits(t *testing.T)
 	assertShortCircuitDecision(t, DecisionModelLimitsUnattributable, shortCircuit)
 }
 
+// TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry checks that an active key with no expiry is allowed.
 func TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry(t *testing.T) {
 	logger := NewMockLogger()
 	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
@@ -1214,12 +1217,12 @@ func TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry(t *testing.T) {
 		buildProviderConfig("openai", []string{"*"}),
 	}
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
@@ -1237,12 +1240,12 @@ func TestBudgetResolver_EvaluateVirtualKey_FutureExpiry(t *testing.T) {
 		buildProviderConfig("openai", []string{"*"}),
 	}
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := resolverCtx(store, "sk-bf-test")
 
 	result := evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
@@ -1274,12 +1277,12 @@ func TestBudgetResolver_EvaluateAnswersFromTheAccessOnTheContext(t *testing.T) {
 		buildProviderConfig("anthropic", []string{"*"}),
 	}
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*first, *second},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 
 	// The context carries the second key, which grants anthropic and not openai.
 	ctx := resolverCtx(store, "sk-bf-second")
@@ -1307,9 +1310,9 @@ func keylessAccessCtx(base schemas.Permit) *schemas.BifrostContext {
 // keyed request goes through, so access cannot be gained by choosing a different way in.
 func TestBudgetResolver_evaluateAccessWithoutAKey(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 
 	granted := grant.NewPermit("other", "h1", "Holder", true, false, []schemas.ProviderPermit{{
 		Provider:      "openai",
@@ -1368,12 +1371,12 @@ func TestBudgetResolver_EvaluateRequest_SkipModelCheckAllowsBlockedModel(t *test
 	}
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 
 	// Baseline: without the flag the configured provider's model allowlist blocks.
 	plain := resolverCtx(store, "sk-bf-test")
@@ -1395,12 +1398,13 @@ func TestBudgetResolver_EvaluateRequest_SkipModelCheckAllowsBlockedModel(t *test
 func TestEvaluateLimitsEnforcesAnUnfamiliarHolderKind(t *testing.T) {
 	logger := NewMockLogger()
 	exhausted := buildBudgetWithUsage("b-somewhere-else", 100.0, 100.0, "1d")
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-		Budgets: []configstoreTables.TableBudget{*exhausted},
-	}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
+	// The live store loads only the limits a holder it knows names; a deployment's own holder
+	// installs its limits into the store directly.
+	reloadBudget(t, store, exhausted.ID, exhausted)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	// Limits funded by a holder kind declared nowhere in this package: what a deployment resolving
@@ -1427,12 +1431,15 @@ func TestEvaluateLimitsEnforcesAnUnfamiliarHolderKind(t *testing.T) {
 func TestEvaluateLimitsEnforcesTheSettledLimitsWhicheverCredentialProducedThem(t *testing.T) {
 	logger := NewMockLogger()
 	exhausted := buildBudgetWithUsage("b-holder", 100.0, 100.0, "1d")
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-		Budgets: []configstoreTables.TableBudget{*exhausted},
+	// The key the settled limit names holds the budget, so the live store loads it.
+	holder := buildVirtualKeyWithBudget("vk1", "sk-bf-holder", "holder", exhausted)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*holder},
+		Budgets:     []configstoreTables.TableBudget{*exhausted},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	held := []schemas.Limit{{ID: exhausted.ID, HolderKind: string(grant.LimitHolderVirtualKey), HolderID: "vk1"}}
 
 	evaluate := func(t *testing.T, stamp func(ctx *schemas.BifrostContext)) *EvaluationResult {
@@ -1469,67 +1476,41 @@ func TestEvaluateLimitsEnforcesTheSettledLimitsWhicheverCredentialProducedThem(t
 	})
 }
 
-// BenchmarkPreLLMHookBatchCreate measures the governance pre-hook for batch creates under a
-// virtual key: a file-based batch, whose models are not visible on the request, and an inline
-// batch whose items are each evaluated.
-// providerLookupCountingStore counts how a model check reads the configured providers: the whole
-// map, or the one provider it needs.
-type providerLookupCountingStore struct {
-	mockInMemoryStore
-	wholeMap, single int
-}
-
-func (s *providerLookupCountingStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
-	s.wholeMap++
-	return s.mockInMemoryStore.GetConfiguredProviders()
-}
-
-func (s *providerLookupCountingStore) GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
-	s.single++
-	config, ok := s.configuredProviders[provider]
-	return config, ok
-}
-
 // A model check runs on every request a virtual key with an allowed-models list makes, and needs
-// one provider's configuration. A store that can hand back that one provider is asked for it, so
-// the check never copies the whole provider map.
+// one provider's configuration, which the live store hands back as one record.
 func TestModelMatcherReadsOnlyTheProviderItChecks(t *testing.T) {
-	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+	h := newLiveHarness(t, &configstore.GovernanceConfig{}, &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: {}, schemas.Anthropic: {}, schemas.Gemini: {},
-	}}}
-	plugin := &GovernancePlugin{modelCatalog: modelcatalog.NewTestCatalog(nil), inMemoryStore: store}
+	}})
+	plugin := &GovernancePlugin{modelCatalog: catalogForTest(t, nil), live: h.live}
 
 	matcher := plugin.modelMatcher(emptyCtx())
 	require.NotNil(t, matcher)
 	assert.True(t, matcher("openai", "gpt-4o", []string{"gpt-4o"}, []string{"*"}))
-	assert.Zero(t, store.wholeMap, "a model check does not read the whole provider map")
-	assert.Equal(t, 1, store.single, "a model check reads the one provider it checks")
 
 	// Asking whether a provider is built on Vertex needs that provider's base type only.
 	assert.False(t, plugin.builtOnVertex("openai"))
-	assert.Zero(t, store.wholeMap, "the Vertex check does not read the whole provider map")
 
 	// So does asking whether a passthrough body names models by resource name.
 	assert.True(t, plugin.namesModelsAsResources(schemas.Gemini))
-	assert.Zero(t, store.wholeMap, "the resource-name check does not read the whole provider map")
 }
 
 // A chat request is the common case the provider snapshot must not tax. Through the whole hook
 // chain, with a model catalog and a key whose allowed-models list makes the model check run, the
-// configured providers are read one at a time and the whole map is never copied.
+// configured provider is read as one record.
 func TestChatRequestNeverCopiesTheProviderMap(t *testing.T) {
-	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+	fixture := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: {}, schemas.Anthropic: {}, schemas.Gemini: {},
-	}}}
+	}}
 	vk := buildVirtualKeyWithProviders("vk-chat", mcpTestVKValue, "chat-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		buildProviderConfig("openai", []string{"gpt-4o"}),
 	})
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, store)
+	}, nil, fixture)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1543,9 +1524,6 @@ func TestChatRequestNeverCopiesTheProviderMap(t *testing.T) {
 		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI},
 	}}, nil)
 	require.NoError(t, err)
-
-	assert.Positive(t, store.single, "the model check read the provider it checks")
-	assert.Zero(t, store.wholeMap, "a chat request never copies the whole provider map")
 }
 
 // A request that names a model by a key alias is admitted when the virtual key's allowed-models
@@ -1553,23 +1531,23 @@ func TestChatRequestNeverCopiesTheProviderMap(t *testing.T) {
 // keys, with their aliases, reach the model check from the configured provider. A name that is
 // neither allowed nor an alias of an allowed model is still refused.
 func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
-	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
 		// k2 is restricted to other models, so key selection never picks it for these names and
 		// its missing alias must not veto the request.
-		schemas.OpenAI: {Keys: []schemas.Key{
+		schemas.OpenAI: {
 			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
 			{ID: "k2", Models: schemas.WhiteList{"embedding-*"}},
-		}},
-	}}}
+		},
+	}}
 	vk := buildVirtualKeyWithProviders("vk-alias", mcpTestVKValue, "alias-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		withAllKeys(buildProviderConfig("openai", []string{"gpt-4o"})),
 	})
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1633,23 +1611,23 @@ func withAllKeys(pc configstoreTables.TableVirtualKeyProviderConfig) configstore
 // best-gpt request within the limit is charged against it.
 func TestModelLimitOnAliasTargetGovernsTheAliasThroughTheHookChain(t *testing.T) {
 	newPlugin := func(t *testing.T, modelRL *configstoreTables.TableRateLimit) (*GovernancePlugin, *LocalGovernanceStore) {
-		store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+		store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
 				"best-gpt":  {ModelID: "gpt-4o"},
 				"cheap-gpt": {ModelID: "gpt-4o-mini"},
-			}}}},
+			}}},
 		}}
 		vk := buildVirtualKeyWithProviders("vk-alias-limit", mcpTestVKValue, "alias-limit-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 			withAllKeys(buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})),
 		})
 		logger := NewMockLogger()
-		local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 			VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
 			ModelConfigs: []configstoreTables.TableModelConfig{*buildModelConfig("mc-gpt-4o", "gpt-4o", nil, nil, modelRL)},
 			RateLimits:   []configstoreTables.TableRateLimit{*modelRL},
 		}, nil, store)
 		require.NoError(t, err)
-		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 		return plugin, local
@@ -1710,11 +1688,11 @@ func TestModelLimitOnAliasTargetGovernsTheAliasThroughTheHookChain(t *testing.T)
 // every target's limits, since key selection has not happened yet, but charged only against the
 // target of the key that ran: the other model never ran (#6620 review).
 func TestAliasRequestIsChargedOnlyAgainstTheTargetThatRan(t *testing.T) {
-	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {
 			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
 			{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o-mini"}}},
-		}},
+		},
 	}}
 	vk := buildVirtualKeyWithProviders("vk-alias-charge", mcpTestVKValue, "alias-charge-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		withAllKeys(buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})),
@@ -1723,7 +1701,7 @@ func TestAliasRequestIsChargedOnlyAgainstTheTargetThatRan(t *testing.T) {
 	rlMini := buildRateLimitWithUsage("rl-gpt-4o-mini", 1_000_000, 0, 100, 0)
 	newPlugin := func(t *testing.T) (*GovernancePlugin, *LocalGovernanceStore) {
 		logger := NewMockLogger()
-		local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 			VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 			ModelConfigs: []configstoreTables.TableModelConfig{
 				*buildModelConfig("mc-gpt-4o", "gpt-4o", nil, nil, rlLarge),
@@ -1732,7 +1710,7 @@ func TestAliasRequestIsChargedOnlyAgainstTheTargetThatRan(t *testing.T) {
 			RateLimits: []configstoreTables.TableRateLimit{*rlLarge, *rlMini},
 		}, nil, store)
 		require.NoError(t, err)
-		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 		return plugin, local
@@ -1813,11 +1791,11 @@ func TestLiteralAccessKeepsTheLevelsThatCapTheAccess(t *testing.T) {
 	team := grant.NewPermit(grant.PermitTeamAccessProfile, "t1", "Team", true, false, []schemas.ProviderPermit{{
 		Provider: "openai", AllowedModels: []string{"gpt-4o-mini"}, KeyIDs: []string{"*"},
 	}}, nil, grant.WithLevel(1))
-	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}}
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}}
 	access := grant.NewAccess([]schemas.Permit{caller, team}, grant.Intersect, nil, "", nil)
 	require.False(t, access.IsModelAllowed("openai", "gpt-4o"), "the team level caps gpt-4o")
 
-	literal := literalAccessFor(access, modelcatalog.NewTestCatalog(nil), store)
+	literal := literalAccessFor(access, catalogForTest(t, nil), newLiveHarness(t, &configstore.GovernanceConfig{}, store).live)
 
 	assert.True(t, literal.IsModelAllowed("openai", "gpt-4o-mini"))
 	assert.False(t, literal.IsModelAllowed("openai", "gpt-4o"), "the literal access must stay capped by the team level")
@@ -1827,19 +1805,19 @@ func TestLiteralAccessKeepsTheLevelsThatCapTheAccess(t *testing.T) {
 // that named no alias (one context read); "keys_agree" is an alias every key maps to one model, which
 // the key that ran did; "keys_disagree" re-gathers the limits for the key that ran.
 func BenchmarkLimitsForKeyThatRan(b *testing.B) {
-	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {
 			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}, "top-gpt": {ModelID: "gpt-4o"}}},
 			{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o-mini"}, "top-gpt": {ModelID: "gpt-4o"}}},
-		}},
+		},
 	}}
 	vk := buildVirtualKeyWithProviders("vk-alias-bench", mcpTestVKValue, "alias-bench-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		withAllKeys(buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})),
 	})
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{*vk}}, nil, store)
+	local, err := newTestGovernanceStore(b, logger, &configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{*vk}}, nil, store)
 	require.NoError(b, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(b, nil), nil, local.live)
 	require.NoError(b, err)
 	b.Cleanup(func() { _ = plugin.Cleanup() })
 	for _, bc := range []struct{ name, model, ran string }{{"no_alias", "gpt-4o", ""}, {"keys_agree", "top-gpt", "gpt-4o"}, {"keys_disagree", "best-gpt", "gpt-4o"}} {
@@ -1897,11 +1875,11 @@ func TestAliasRulesFollowTheKeysThatCanServeTheRequest(t *testing.T) {
 	for name, pc := range vks {
 		tables = append(tables, *buildVirtualKeyWithProviders("vk-"+name, "sk-bf-"+name, name, []configstoreTables.TableVirtualKeyProviderConfig{pc}))
 	}
-	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: keys}}}
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: keys}}
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{VirtualKeys: tables}, nil, store)
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{VirtualKeys: tables}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1980,9 +1958,9 @@ func TestAliasTargetLimitsFollowTheVirtualKeysKeys(t *testing.T) {
 	onlyK2 := buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"})
 	onlyK2.Keys = []configstoreTables.TableKey{{KeyID: "k2", Provider: "openai"}}
 	exhausted := buildRateLimitWithUsage("rl-gpt-4o", 1_000_000, 0, 1, 1)
-	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: keys}}}
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: keys}}
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{
 			*buildVirtualKeyWithProviders("vk-all", "sk-bf-all", "all", []configstoreTables.TableVirtualKeyProviderConfig{withAllKeys(buildProviderConfig("openai", []string{"gpt-4o", "gpt-4o-mini"}))}),
 			*buildVirtualKeyWithProviders("vk-k2", "sk-bf-k2", "k2", []configstoreTables.TableVirtualKeyProviderConfig{onlyK2}),
@@ -1991,7 +1969,7 @@ func TestAliasTargetLimitsFollowTheVirtualKeysKeys(t *testing.T) {
 		RateLimits:   []configstoreTables.TableRateLimit{*exhausted},
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -2024,12 +2002,12 @@ func TestAliasTargetLimitsFollowTheVirtualKeysKeys(t *testing.T) {
 // before the alias targets were consulted.
 func TestBlacklistHoldsAliasTargetsThroughTheHookChain(t *testing.T) {
 	const plainVKValue = "sk-bf-plain-alias-vk"
-	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
 			"best-model": {ModelID: "claude-opus-4-6"},
 			"good-model": {ModelID: "claude-sonnet-4-6"},
-		}}}},
-	}}}
+		}}},
+	}}
 	blocking := withAllKeys(buildProviderConfig("anthropic", []string{"regex:^claude-.*"}))
 	blocking.BlacklistedModels = schemas.BlackList{"claude-opus-4-6"}
 	vk := buildVirtualKeyWithProviders("vk-blocking", mcpTestVKValue, "blocking-vk", []configstoreTables.TableVirtualKeyProviderConfig{blocking})
@@ -2037,22 +2015,21 @@ func TestBlacklistHoldsAliasTargetsThroughTheHookChain(t *testing.T) {
 		withAllKeys(buildProviderConfig("anthropic", []string{"regex:^claude-.*"})),
 	})
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk, *plain},
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
-	run := func(vkValue, model string) (blocked bool, lookups int) {
+	run := func(vkValue, model string) (blocked bool) {
 		ctx := presentCtx(vkValue)
 		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: model}}
-		before := store.single
 		require.NoError(t, plugin.PreRequestHook(ctx, req))
 		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
 		require.NoError(t, err)
-		return shortCircuit != nil, store.single - before
+		return shortCircuit != nil
 	}
 	for _, tc := range []struct {
 		model   string
@@ -2063,17 +2040,13 @@ func TestBlacklistHoldsAliasTargetsThroughTheHookChain(t *testing.T) {
 		{"good-model", false},        // an alias of a model the key does not block
 		{"claude-sonnet-4-6", false}, // an ordinary allowed model
 	} {
-		blocked, _ := run(mcpTestVKValue, tc.model)
-		assert.Equal(t, tc.blocked, blocked, tc.model)
+		assert.Equal(t, tc.blocked, run(mcpTestVKValue, tc.model), tc.model)
 	}
 
-	// The key without a blacklist admits the alias of opus, and reads the provider for its model
-	// check no more often than a request that names no alias at all.
-	blocked, aliasLookups := run(plainVKValue, "best-model")
-	assert.False(t, blocked)
-	_, literalLookups := run(plainVKValue, "claude-opus-4-6")
-	t.Logf("provider lookups, no blacklist: alias request %d, literal request %d", aliasLookups, literalLookups)
-	assert.Equal(t, literalLookups, aliasLookups)
+	// The key without a blacklist admits the alias of opus and opus itself. The provider is read as
+	// one live-store record, a lock-free lookup, so how many reads a check makes is not observable.
+	assert.False(t, run(plainVKValue, "best-model"))
+	assert.False(t, run(plainVKValue, "claude-opus-4-6"))
 }
 
 // A request that runs its model as written (a direct key, or a skip-key-selection credential) is
@@ -2081,15 +2054,15 @@ func TestBlacklistHoldsAliasTargetsThroughTheHookChain(t *testing.T) {
 // one drops a permit whose blacklist names the alias target, and with it the permit's provider rate
 // limit, so an exhausted limit stopped applying to exactly the requests the literal check admits.
 func TestLiteralRequestsKeepProviderLimitsWhenAnAliasTargetIsBlacklisted(t *testing.T) {
-	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-mini"}}}}},
-	}}}
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-mini"}}}},
+	}}
 	exhausted := buildRateLimitWithUsage("rl-openai-exhausted", 1_000_000, 0, 1, 1)
 	pc := buildProviderConfigWithRateLimit("openai", []string{"gpt-4o"}, exhausted)
 	pc.BlacklistedModels = schemas.BlackList{"gpt-4o-mini"}
 	vk := buildVirtualKeyWithProviders("vk-literal", mcpTestVKValue, "literal-vk", []configstoreTables.TableVirtualKeyProviderConfig{pc})
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*exhausted},
 	}, nil, store)
@@ -2098,8 +2071,8 @@ func TestLiteralRequestsKeepProviderLimitsWhenAnAliasTargetIsBlacklisted(t *test
 	for _, catalog := range []struct {
 		name    string
 		catalog *modelcatalog.ModelCatalog
-	}{{"with catalog", modelcatalog.NewTestCatalog(nil)}, {"without catalog", nil}} {
-		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalog.catalog, nil, store)
+	}{{"with catalog", catalogForTest(t, nil)}, {"without catalog", nil}} {
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalog.catalog, nil, local.live)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 		for _, cred := range []struct {
@@ -2136,13 +2109,13 @@ func BenchmarkLiteralAccessFor(b *testing.B) {
 	vk := buildVirtualKeyWithProviders("vk-bench", mcpTestVKValue, "bench-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		buildProviderConfig("openai", []string{"gpt-4o"}),
 	})
-	local, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(b, NewMockLogger(), &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, &mockInMemoryStore{})
+	}, nil, &liveFixture{})
 	if err != nil {
 		b.Fatal(err)
 	}
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, NewMockLogger(), local, nil, modelcatalog.NewTestCatalog(nil), nil, &mockInMemoryStore{})
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, NewMockLogger(), local, nil, catalogForTest(b, nil), nil, local.live)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -2154,7 +2127,7 @@ func BenchmarkLiteralAccessFor(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = literalAccessFor(access, plugin.modelCatalog, plugin.inMemoryStore)
+		_ = literalAccessFor(access, plugin.modelCatalog, plugin.live)
 	}
 }
 
@@ -2162,18 +2135,18 @@ func BenchmarkLiteralAccessFor(b *testing.B) {
 // own model, never an item's. An item is therefore held to its literal name, so an alias of an
 // allowed model that is also a real upstream model cannot slip through as the allowed one.
 func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
-	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
-	}}}
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}},
+	}}
 	vk := buildVirtualKeyWithProviders("vk-batch", mcpTestVKValue, "batch-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		withAllKeys(buildProviderConfig("anthropic", []string{"claude-sonnet-4-6"})),
 	})
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -2221,22 +2194,22 @@ func TestBatchItemModelsAreCheckedByLiteralName(t *testing.T) {
 // and an exhausted limit on that target must not block it; the batch request's own model is the one
 // pass that is resolved through the alias, and the literal marking must not outlive the item passes.
 func TestBatchItemLiteralModelTakesNoAliasTargetLimits(t *testing.T) {
-	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Anthropic: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
-	}}}
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}},
+	}}
 	vk := buildVirtualKeyWithProviders("vk-batch", mcpTestVKValue, "batch-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		withAllKeys(buildProviderConfig("anthropic", []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"})),
 	})
 	provider := "anthropic"
 	exhausted := buildModelConfig("sonnet-exhausted", "claude-sonnet-4-6", &provider, buildBudgetWithUsage("b-sonnet-exhausted", 10.0, 10.0, "1d"), nil)
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
 		ModelConfigs: []configstoreTables.TableModelConfig{*exhausted},
 		Budgets:      exhausted.Budgets,
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -2271,18 +2244,18 @@ func TestBatchItemLiteralModelTakesNoAliasTargetLimits(t *testing.T) {
 // A literal check still honours the custom-provider exemption: an unrestricted allowlist on a
 // custom provider that cannot list models admits any name, since the catalog cannot know them.
 func TestBatchItemLiteralCheckKeepsCustomProviderExemption(t *testing.T) {
-	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
 		"acme": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic, AllowedRequests: &schemas.AllowedRequests{ChatCompletion: true}}},
-	}}}
+	}}
 	vk := buildVirtualKeyWithProviders("vk-custom", mcpTestVKValue, "custom-vk", []configstoreTables.TableVirtualKeyProviderConfig{
 		buildProviderConfig("acme", []string{"*"}),
 	})
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, store)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(t, nil), nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -2298,6 +2271,9 @@ func TestBatchItemLiteralCheckKeepsCustomProviderExemption(t *testing.T) {
 	require.Nil(t, shortCircuit, "an item on a custom provider that cannot list models must be admitted")
 }
 
+// BenchmarkPreLLMHookBatchCreate measures the governance pre-hook for batch creates under a
+// virtual key: a file-based batch, whose models are not visible on the request, and an inline
+// batch whose items are each evaluated.
 func BenchmarkPreLLMHookBatchCreate(b *testing.B) {
 	plugin := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
 	model := "gpt-4o"
@@ -2336,9 +2312,9 @@ func BenchmarkPreLLMHookKeyAliases(b *testing.B) {
 		{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
 		{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}},
 	}
-	store := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI:    {Keys: aliased},
-		schemas.Anthropic: {Keys: []schemas.Key{{ID: "a1", Models: schemas.WhiteList{"*"}}}},
+	store := &liveFixture{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}, schemas.Anthropic: {}}, providerKeys: map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI:    aliased,
+		schemas.Anthropic: {{ID: "a1", Models: schemas.WhiteList{"*"}}},
 	}}
 	onK1 := buildProviderConfig("openai", []string{"gpt-4o"})
 	onK1.Keys = []configstoreTables.TableKey{{KeyID: "k1", Provider: "openai"}}
@@ -2350,11 +2326,11 @@ func BenchmarkPreLLMHookKeyAliases(b *testing.B) {
 		*buildVirtualKeyWithProviders("vk-k1", "sk-bf-k1", "k1", []configstoreTables.TableVirtualKeyProviderConfig{onK1}),
 	}
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{VirtualKeys: vks}, nil, store)
+	local, err := newTestGovernanceStore(b, logger, &configstore.GovernanceConfig{VirtualKeys: vks}, nil, store)
 	if err != nil {
 		b.Fatal(err)
 	}
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, catalogForTest(b, nil), nil, local.live)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -2454,4 +2430,20 @@ func TestBatchItemModels(t *testing.T) {
 			require.Equal(t, tc.want, BatchItemModels(tc.req))
 		})
 	}
+}
+
+// budgetResolverForTest returns a resolver over a new, empty live store closed when the test ends;
+// with no providers configured it answers as a resolver without one did.
+func budgetResolverForTest(t testing.TB, store GovernanceStore, modelCatalog *modelcatalog.ModelCatalog, logger schemas.Logger) *BudgetResolver {
+	t.Helper()
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(live.Close)
+	resolver, err := NewBudgetResolver(store, modelCatalog, live, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolver
 }

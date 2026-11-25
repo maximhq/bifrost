@@ -1329,6 +1329,8 @@
 		"rotateGraceNote": "以前のキーは {{date}} まで有効です。",
 		"rotatedBulkPartial": "{{count}} 件の仮想キーをローテーションしました。{{failed}} 件は失敗しました。{{graceNote}}",
 		"rotatedBulk": "{{count}} 件の仮想キーをローテーションしました。{{graceNote}}",
+		"rotatedBulkNotLoaded": "保存済みで読み込まれていない可能性のあるキー: {{notLoaded}} 件。各キーを再度保存するか Bifrost を再起動するまで、以前の値が引き続き使える場合があります。",
+		"rotatedNotLoaded": "仮想キーをローテーションしましたが、新しい値が読み込まれていない可能性があります。キーを再度保存するか Bifrost を再起動するまで、以前の値が引き続き使える場合があります。",
 		"filtersApplied": "適用中のフィルター：",
 		"filterSearch": "検索「{{query}}」",
 		"filterCustomer": "顧客フィルター",

@@ -44,7 +44,7 @@ func newIssuanceHandler(t *testing.T) (*OAuth2IssuanceHandler, configstore.Confi
 	t.Helper()
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeBoth, false)
 	return NewOAuth2IssuanceHandler(cfg, nil, nil), store, cfg
 }
 
@@ -728,7 +728,7 @@ func TestHandleToken_RefreshVKIdentityDisabled(t *testing.T) {
 
 	t.Run("vk refresh rejected when disabled and user mode available", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false)
 		cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity = true
 		h := NewOAuth2IssuanceHandler(cfg, nil, &fakeResolver{userModeAvailable: true})
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
@@ -744,7 +744,7 @@ func TestHandleToken_RefreshVKIdentityDisabled(t *testing.T) {
 
 	t.Run("vk refresh not blocked by flag when user mode unavailable", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false)
 		cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity = true
 		// nil resolver → user mode unavailable → the flag is ignored and the flow
 		// falls through to the VK liveness check, which rejects the (unseeded) VK
@@ -788,7 +788,7 @@ func TestHandleToken_RefreshVKLiveness(t *testing.T) {
 
 	t.Run("an expired, active key is refused", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
 		past := time.Now().UTC().Add(-time.Second)
 		seed(t, store, &past)
@@ -802,7 +802,7 @@ func TestHandleToken_RefreshVKLiveness(t *testing.T) {
 
 	t.Run("control: a key that has not expired passes the check", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
 		future := time.Now().UTC().Add(time.Hour)
 		seed(t, store, &future)
@@ -826,7 +826,7 @@ func TestHandleToken_RefreshAfterIssuerChange(t *testing.T) {
 	refresh := func(t *testing.T, resource string) *fasthttp.RequestCtx {
 		t.Helper()
 		store := newRealOAuth2Store(t)
-		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
 		require.NoError(t, store.CreateVirtualKey(context.Background(), &configtables.TableVirtualKey{
 			ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: new(true),
@@ -859,7 +859,7 @@ func TestHandleToken_RefreshAfterIssuerChange(t *testing.T) {
 // existing grant of such a client from refreshing on upgrade.
 func TestHandleToken_RefreshByAClientRegisteredWithoutTheRefreshGrant(t *testing.T) {
 	store := newRealOAuth2Store(t)
-	h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+	h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 	require.NoError(t, store.CreateOAuth2Client(context.Background(), &configtables.TableOAuth2Client{
 		ID: "client-row-1", ClientID: "client-1", ClientName: "Code only", RedirectURIs: []string{"http://127.0.0.1/cb"},
 		GrantTypes: []string{"authorization_code"}, Scope: "mcp", CreatedAt: time.Now(),
@@ -889,7 +889,7 @@ func TestHandleToken_RefreshByAClientRegisteredWithoutTheRefreshGrant(t *testing
 // refused but the grant it came from kept refreshing.
 func TestHandleToken_CodeReplayRevokesItsTokens(t *testing.T) {
 	store := newRealOAuth2Store(t)
-	h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+	h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 	seedClient(t, store, []string{"http://127.0.0.1/cb"})
 	require.NoError(t, store.CreateVirtualKey(context.Background(), &configtables.TableVirtualKey{
 		ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: new(true),
@@ -943,7 +943,7 @@ func TestHandleToken_RefreshUserLiveness(t *testing.T) {
 
 	t.Run("user refresh rejected when the user is no longer active", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false)
 		// Resolver reports the user as gone: refresh must be denied rather than
 		// minting a new access token, mirroring the VK-mode liveness check.
 		h := NewOAuth2IssuanceHandler(cfg, nil, &fakeResolver{userModeAvailable: true, userInactive: true})
@@ -960,7 +960,7 @@ func TestHandleToken_RefreshUserLiveness(t *testing.T) {
 
 	t.Run("user refresh succeeds when the user is active", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false)
 		// Active user (default resolver) must pass the liveness check and rotate.
 		h := NewOAuth2IssuanceHandler(cfg, nil, &fakeResolver{userModeAvailable: true})
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
@@ -996,7 +996,7 @@ func TestUpdateConfig_RejectsAuthCodeTTLAboveMax(t *testing.T) {
 		t.Run(string(mode), func(t *testing.T) {
 			SetLogger(&mockLogger{})
 			store := newRealOAuth2Store(t)
-			cfg := newTestOAuth2Config(store, mode, false)
+			cfg := newTestOAuth2Config(t, store, mode, false)
 			h := &ConfigHandler{store: cfg}
 
 			// issuer_url is set so oauth/both modes clear the (separate) issuer_url-required
@@ -1189,7 +1189,7 @@ func TestIssuance_GatedOnAuthMode(t *testing.T) {
 	}
 
 	t.Run("headers mode returns 404 on all issuance endpoints", func(t *testing.T) {
-		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false), nil, nil)
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false), nil, nil)
 		ctxs := requests()
 		for i, fn := range []func(*fasthttp.RequestCtx){h.handleRegister, h.handleAuthorize, h.handleToken} {
 			fn(ctxs[i])
@@ -1199,7 +1199,7 @@ func TestIssuance_GatedOnAuthMode(t *testing.T) {
 
 	t.Run("oauth and both modes serve issuance", func(t *testing.T) {
 		for _, mode := range []configtables.MCPServerAuthMode{configtables.MCPServerAuthModeBoth, configtables.MCPServerAuthModeOAuth} {
-			h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, mode, false), nil, nil)
+			h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, mode, false), nil, nil)
 			ctxs := requests()
 			for i, fn := range []func(*fasthttp.RequestCtx){h.handleRegister, h.handleAuthorize, h.handleToken} {
 				fn(ctxs[i])
