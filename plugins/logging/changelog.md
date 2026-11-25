@@ -1,3 +1,4 @@
+- feat: logs record the provider's response ID as `provider_response_id`
 - feat: speech sessions are logged with their full input text
 - feat: streamed multipart passthrough uploads are summarized with each part's content type
 - fix: log previews for agent-loop requests use the latest tool call or result

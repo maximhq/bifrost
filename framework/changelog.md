@@ -1,3 +1,4 @@
+- feat: logstore - `provider_response_id` column and index on `logs` for the provider's response ID
 - feat: model routers - `model_routers` and `model_router_targets` tables with config.json support, and the log-store tables and columns for phrase suggestions and routed requests
 - feat: client gateways - `oauth2_server_config.gateways` and device-code columns on `oauth2_authorize_requests` for Claude Code gateway sign-in
 - feat: datasheet overrides - `governance_datasheet_overrides` table merged over the synced datasheet, surviving upstream sync

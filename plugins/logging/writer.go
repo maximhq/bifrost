@@ -1400,6 +1400,7 @@ const (
 	maxPersistedUserAgentLen          = 512
 	maxPersistedAppLen                = 128
 	maxPersistedAgentCorrelationIDLen = 255
+	maxPersistedProviderResponseIDLen = 255 // provider_response_id; longer values are not recorded
 	maxPersistedMCPToolNameLen        = 255 // mcp_tool_logs.tool_name; a resource read's URI is unbounded
 	maxPersistedClientIPLen           = 45  // client_ip; longest IPv6 text form
 	maxPersistedUserEmailLen          = 255 // user_email
@@ -1487,6 +1488,30 @@ func applyServedModel(entry *logstore.Log, result *schemas.BifrostResponse) {
 		return
 	}
 	entry.ServedModel = &served
+}
+
+// applyProviderResponseID records the response identifier the provider put on the response
+// body. On a stream it is read from the final chunk, which carries the completed response.
+func applyProviderResponseID(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if entry == nil || result == nil {
+		return
+	}
+	var id string
+	switch {
+	case result.ChatResponse != nil:
+		id = result.ChatResponse.ID
+	case result.ResponsesResponse != nil && result.ResponsesResponse.ID != nil:
+		id = *result.ResponsesResponse.ID
+	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil &&
+		result.ResponsesStreamResponse.Response.ID != nil:
+		id = *result.ResponsesStreamResponse.Response.ID
+	case result.TextCompletionResponse != nil:
+		id = result.TextCompletionResponse.ID
+	}
+	if id == "" || len(id) > maxPersistedProviderResponseIDLen {
+		return
+	}
+	entry.ProviderResponseID = &id
 }
 
 // applyUserEmail records the governance-stamped user email on an LLM row when the context carries one.

@@ -358,6 +358,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_model_routing_suggestion_tables"}, run: migrationAddComplexitySuggestionTables},
 	{IDs: []string{"logs_add_model_routing_columns"}, run: migrationAddModelRoutingColumns},
 	{IDs: []string{"logs_tune_retention_autovacuum"}, run: migrationTuneRetentionAutovacuum},
+	{IDs: []string{"logs_add_provider_response_id_column"}, run: migrationAddProviderResponseIDColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3033,6 +3034,13 @@ var performanceIndexes = []performanceIndexDef{
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_agent_correlation_id ON logs(agent_correlation_id) WHERE agent_correlation_id IS NOT NULL",
 	},
 	{
+		table: "logs",
+		// Looks up the one row a provider response belongs to, by the identifier a
+		// harness transcript also records.
+		name: "idx_logs_provider_response_id",
+		sql:  "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_provider_response_id ON logs(provider_response_id) WHERE provider_response_id IS NOT NULL",
+	},
+	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_session_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_session_id ON mcp_tool_logs(session_id) WHERE session_id IS NOT NULL",
@@ -5312,6 +5320,45 @@ func migrationAddBillingFidelityColumns(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding billing fidelity columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddProviderResponseIDColumn adds provider_response_id to the logs table: the
+// response identifier the provider put on the response body. A coding harness records the
+// same identifier in its own transcript, so it joins one log row to one response.
+//
+// It needs a real column because the identifier otherwise survives only inside logged
+// response content, which is blank whenever content logging is off. There is no backfill:
+// earlier rows never captured it outside that content. As agent_logs_init does, Postgres
+// takes its index from performanceIndexes instead.
+func migrationAddProviderResponseIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_provider_response_id_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	const indexName = "idx_logs_provider_response_id"
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "provider_response_id"); err != nil {
+				return fmt.Errorf("failed to add provider_response_id column: %w", err)
+			}
+			if tx.Dialector.Name() != "postgres" && !tx.Migrator().HasIndex(&Log{}, indexName) {
+				if err := tx.Migrator().CreateIndex(&Log{}, indexName); err != nil {
+					return fmt.Errorf("create %s index: %w", indexName, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &Log{}, "provider_response_id")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding provider_response_id column: %s", err.Error())
 	}
 	return nil
 }
