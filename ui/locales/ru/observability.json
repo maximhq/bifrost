@@ -986,7 +986,6 @@
 			"tokensNotPricedValue": "{{input}} вход / {{output}} выход",
 			"matchedRoute": "Совпавший маршрут",
 			"parentLog": "Родительский журнал",
-			"jobPolls": "Попытки проверки статуса",
 			"jobLastStatus": "Последний статус задания",
 			"jobLastHttpStatus": "HTTP-статус последнего опроса",
 			"jobSettledAt": "Время расчёта",

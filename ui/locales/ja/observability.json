@@ -930,7 +930,6 @@
 			"tokensNotPricedValue": "入力 {{input}} / 出力 {{output}}",
 			"matchedRoute": "一致したルート",
 			"parentLog": "親ログ",
-			"jobPolls": "ステータス確認の試行回数",
 			"jobLastStatus": "最後のジョブステータス",
 			"jobLastHttpStatus": "最後のポーリングの HTTP ステータス",
 			"jobSettledAt": "精算日時",

@@ -936,7 +936,6 @@
 			"tokensNotPricedValue": "{{input}} in / {{output}} out",
 			"matchedRoute": "Matched route",
 			"parentLog": "Parent log",
-			"jobPolls": "Status check attempts",
 			"jobLastStatus": "Last job status",
 			"jobLastHttpStatus": "Last poll HTTP status",
 			"jobSettledAt": "Settled at",
