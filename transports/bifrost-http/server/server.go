@@ -3744,7 +3744,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	handlers.SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
 	// Ensure app directory exists
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
+	if err := ensureConfigDir(configDir); err != nil {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
 	}
 	// Initialize high-performance configuration store with dedicated database

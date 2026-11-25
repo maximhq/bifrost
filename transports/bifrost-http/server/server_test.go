@@ -3914,3 +3914,41 @@ func TestRemoveProviderStoreErrors(t *testing.T) {
 		})
 	}
 }
+
+// The app directory holds the config and log databases, so a directory Bootstrap
+// creates is accessible to the process owner only. An existing directory keeps
+// the mode its operator gave it.
+func TestEnsureConfigDirCreatesOwnerOnlyDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits")
+	}
+	created := filepath.Join(t.TempDir(), "nested", "bifrost")
+	if err := ensureConfigDir(created); err != nil {
+		t.Fatalf("ensureConfigDir: %v", err)
+	}
+	info, err := os.Stat(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got&0o077 != 0 {
+		t.Fatalf("created directory mode = %o, want no group or other access", got)
+	}
+
+	existing := filepath.Join(t.TempDir(), "shared")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureConfigDir(existing); err != nil {
+		t.Fatalf("ensureConfigDir on an existing directory: %v", err)
+	}
+	info, err = os.Stat(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("existing directory mode = %o, want it left at 755", got)
+	}
+}

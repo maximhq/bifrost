@@ -15,6 +15,17 @@ import (
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
+// ensureConfigDir makes sure the app directory exists. The directory holds the
+// config and log databases, so one created here is accessible to the process
+// owner only. That holds on POSIX systems. Windows ignores the mode bits: a new
+// directory there inherits its parent's access control list, which for the
+// default location under the user profile is the user's own. A directory that
+// already exists is left as it is: its mode is the operator's choice (a shared
+// volume, a group that reads backups).
+func ensureConfigDir(dir string) error {
+	return os.MkdirAll(dir, 0o700)
+}
+
 // GetDefaultConfigDir returns the OS-specific default configuration directory for Bifrost.
 // This follows standard conventions:
 // - Linux/macOS: ~/.config/bifrost
