@@ -205353,6 +205353,307 @@
       ]
     },
     {
+      "name": "Browser origins on inference routes while no credential is required (open-inference-origin) [SERIAL]",
+      "description": "With enforce_auth_on_inference off the gateway answers anyone who can route to it. A web page open in a browser on that network has the same position, and allowed_origins of \"*\" would let any site call the gateway from the visitor's browser. So while no credential is required, a request carrying an Origin header reaches an inference route only from the gateway's own origin, a localhost origin, or an origin the operator listed by name; the bare \"*\" does not count. The folder saves the client config, turns enforce_auth_on_inference off with allowed_origins [\"*\"], and calls GET /v1/models (no provider spend): another site's origin is refused with 403 and a message naming the setting; the same call with no Origin header (an SDK, CLI or server) and with a localhost origin is not refused. It then restores the saved config and checks both settings are back. Deployments that require a credential are unaffected and are covered by the existing CORS folders. The rule is the same for every provider; the case names carry the openai keyword so a PROVIDER=openai run keeps the folder, like the other gateway-level rows.",
+      "item": [
+        {
+          "name": "openai setup: read current config and save enforce_auth_on_inference and allowed_origins - open-inference-origin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('open-inference-origin: read the stored client config', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  // The folder sends this config back unchanged, and PUT /api/config refuses log_retention_days below 1.",
+                  "  // A row an older build left at 0 is reported here; the folder never writes a retention the profile did not have.",
+                  "  pm.expect(cc.log_retention_days >= 1, 'the saved log_retention_days is ' + cc.log_retention_days + ', which PUT /api/config refuses, so this folder cannot send the config back. Set log_retention_days to 1 or more on this profile and run again').to.equal(true);",
+                  "  pm.collectionVariables.set('openInferenceOriginClientConfig', JSON.stringify(cc));",
+                  "  pm.collectionVariables.set('openInferenceOriginOriginal', JSON.stringify({ enforce_auth_on_inference: cc.enforce_auth_on_inference === true, allowed_origins: cc.allowed_origins || [] }));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai setup: turn inference auth off and allow every origin - open-inference-origin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('openInferenceOriginClientConfig') || '{}');",
+                  "cc.enforce_auth_on_inference = false;",
+                  "cc.allowed_origins = ['*'];",
+                  "pm.variables.set('openInferenceOriginBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('open-inference-origin: inference auth off and allowed_origins set to the wildcard', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{openInferenceOriginBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai list models from another site's origin is refused while no credential is required - open-inference-origin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('another site exact response status - open-inference-origin', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('another site is told why and how to allow the origin - open-inference-origin', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('enforce_auth_on_inference is off');",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('allowed_origins');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "https://bifrost-harness-other-site.example"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/models"
+          }
+        },
+        {
+          "name": "openai list models with no Origin header is unaffected - open-inference-origin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a request with no Origin header is not refused by the origin rule - open-inference-origin', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.not.equal(403);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.not.include('enforce_auth_on_inference is off');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/models"
+          }
+        },
+        {
+          "name": "openai list models from a localhost origin is allowed - open-inference-origin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a localhost origin is not refused by the origin rule - open-inference-origin', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.not.equal(403);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.not.include('enforce_auth_on_inference is off');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "http://localhost:3000"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/models"
+          }
+        },
+        {
+          "name": "openai cleanup: restore the original config - open-inference-origin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('openInferenceOriginClientConfig') || '{}');",
+                  "pm.variables.set('openInferenceOriginBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('open-inference-origin: original client config restored', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{openInferenceOriginBody}}"
+            }
+          }
+        },
+        {
+          "name": "openai cleanup: enforce_auth_on_inference and allowed_origins are back to what they were - open-inference-origin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('open-inference-origin: enforce_auth_on_inference and allowed_origins are back to what they were', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config || {};",
+                  "  pm.expect({ enforce_auth_on_inference: cc.enforce_auth_on_inference === true, allowed_origins: cc.allowed_origins || [] }, pm.response.text()).to.eql(JSON.parse(pm.collectionVariables.get('openInferenceOriginOriginal') || '{}'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "Code mode value boundaries",
       "description": "Bounds conversion of cyclic, repeated, and oversized values in the in-process interpreter. Local computations only; no provider requests.",
       "item": [
