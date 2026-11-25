@@ -602,6 +602,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusForbidden, "changing browser_base_url requires an authenticated admin session")
 			return
 		}
+		// Each one is an issuer every MCP client trusts.
+		var previousIssuers []*schemas.SecretVar
+		if currentConfig.OAuth2ServerConfig != nil {
+			previousIssuers = currentConfig.OAuth2ServerConfig.AdditionalIssuerURLs
+		}
+		if isAuthBypassed(ctx) && !slices.Equal(secretVarValues(previousIssuers), secretVarValues(effectiveOAuth2Config.AdditionalIssuerURLs)) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing additional_issuer_urls requires an authenticated admin session")
+			return
+		}
 		if isAuthBypassed(ctx) && clientGatewayTelemetryDestinationsChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
 			SendError(ctx, fasthttp.StatusForbidden, "changing client gateway telemetry destinations requires an authenticated admin session")
 			return
@@ -673,6 +682,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	if err := configstore.ValidateOAuth2BrowserBaseURL(effectiveOAuth2Config); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	if err := configstore.ValidateOAuth2AdditionalIssuers(effectiveOAuth2Config); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}

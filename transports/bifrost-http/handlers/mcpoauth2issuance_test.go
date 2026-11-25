@@ -104,6 +104,12 @@ func seedClient(t *testing.T, store configstore.ConfigStore, redirectURIs []stri
 // identity, with a code hash and PKCE challenge, returning the plaintext code.
 func seedConsentedRequest(t *testing.T, store configstore.ConfigStore, id, clientID, code, challenge, bfMode, bfSub string, expires time.Time) {
 	t.Helper()
+	seedConsentedRequestFor(t, store, testMCPResource, id, clientID, code, challenge, bfMode, bfSub, expires)
+}
+
+// seedConsentedRequestFor is seedConsentedRequest for a grant bound to resource.
+func seedConsentedRequestFor(t *testing.T, store configstore.ConfigStore, resource, id, clientID, code, challenge, bfMode, bfSub string, expires time.Time) {
+	t.Helper()
 	h := hashSHA256Hex(code)
 	req := &configtables.TableOAuth2AuthorizeRequest{
 		ID:                  id,
@@ -111,7 +117,7 @@ func seedConsentedRequest(t *testing.T, store configstore.ConfigStore, id, clien
 		RedirectURI:         "http://127.0.0.1/cb",
 		State:               "state",
 		Scope:               "mcp",
-		Resource:            testMCPResource,
+		Resource:            resource,
 		CodeChallenge:       challenge,
 		CodeChallengeMethod: "S256",
 		Status:              configtables.OAuth2AuthorizeRequestStatusConsented,
@@ -282,6 +288,26 @@ func TestHandleAuthorize(t *testing.T) {
 		h.handleAuthorize(ctx)
 		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), string(ctx.Response.Header.Peek("Location")))
 		assert.True(t, strings.HasPrefix(string(ctx.Response.Header.Peek("Location")), testBrowserBase+"/oauth/consent?flow="))
+	})
+
+	t.Run("an additional issuer's resource is accepted on another hostname", func(t *testing.T) {
+		h, store, cfg := newIssuanceHandler(t)
+		withTunnelIssuer(cfg)
+		cid := seedClient(t, store, []string{"http://127.0.0.1:1234/cb"})
+		for resource, stored := range map[string]string{testTunnelIssuer + "/mcp": testTunnelIssuer + "/mcp", "": testMCPResource} {
+			v := base(cid, "http://127.0.0.1:1234/cb")
+			v.Set("resource", resource)
+			// No Host: the request arrives on the primary's (browser's) hostname.
+			ctx := getCtx("/oauth2/authorize?" + v.Encode())
+			h.handleAuthorize(ctx)
+			require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
+			loc, err := url.Parse(string(ctx.Response.Header.Peek("Location")))
+			require.NoError(t, err)
+			require.Contains(t, loc.Path, "/oauth/consent", loc.String())
+			req, err := store.GetOAuth2AuthorizeRequestByID(context.Background(), loc.Query().Get("flow"))
+			require.NoError(t, err)
+			assert.Equal(t, stored, req.Resource, "resource %q", resource)
+		}
 	})
 
 	t.Run("loopback redirect matches on any port", func(t *testing.T) {
@@ -834,6 +860,68 @@ func TestHandleToken_RefreshVKLiveness(t *testing.T) {
 // TestHandleToken_RefreshAfterIssuerChange pins that a grant bound to a resource this server no longer
 // serves cannot refresh. Changing issuer_url moves the /mcp resource, and the refresh carried the old one
 // forward, minting access tokens that /mcp then rejected for their audience.
+// TestHandleToken_AdditionalIssuer pins that a grant bound to an additional
+// issuer's /mcp gets tokens naming that issuer whichever hostname the token
+// request arrives on, that they refresh on any hostname, and that removing the
+// issuer ends the grant.
+func TestHandleToken_AdditionalIssuer(t *testing.T) {
+	const verifier = "test-verifier-string-of-sufficient-length-1234567890"
+	h, store, cfg := newIssuanceHandler(t)
+	withTunnelIssuer(cfg)
+	cid := seedClient(t, store, []string{"http://127.0.0.1/cb"})
+	seedConsentedRequestFor(t, store, testTunnelIssuer+"/mcp", "req-tunnel", cid, "code-tunnel", pkceChallenge(verifier), "session", "sess-1", time.Now().Add(time.Minute))
+	seedConsentedRequestFor(t, store, testTunnelIssuer+"/mcp", "req-removed", cid, "code-removed", pkceChallenge(verifier), "session", "sess-1", time.Now().Add(time.Minute))
+	signingKey, err := cfg.ConfigStore.GetOAuth2SigningKey(bgCtx())
+	require.NoError(t, err)
+
+	tokens := func(ctx *fasthttp.RequestCtx) (access, refresh string) {
+		t.Helper()
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		access, _ = resp["access_token"].(string)
+		refresh, _ = resp["refresh_token"].(string)
+		claims := jwt.MapClaims{}
+		_, _, err := jwt.NewParser().ParseUnverified(access, claims)
+		require.NoError(t, err)
+		assert.Equal(t, testTunnelIssuer, claims["iss"])
+		assert.Equal(t, []any{testTunnelIssuer + "/mcp"}, claims["aud"])
+		for _, host := range []string{"bifrost-tunnel.test", "bifrost.test"} {
+			_, err := verifyMCPJWT(hostCtx(host), access, cfg, signingKey)
+			assert.NoError(t, err, "accepted on %s", host)
+		}
+		return access, refresh
+	}
+
+	// The exchange arrives on the primary's hostname, not the tunnel's.
+	exchange := formPostCtx(url.Values{
+		"grant_type": {"authorization_code"}, "code": {"code-tunnel"}, "code_verifier": {verifier},
+		"client_id": {cid}, "redirect_uri": {"http://127.0.0.1/cb"},
+	}.Encode())
+	h.handleToken(exchange)
+	_, refresh := tokens(exchange)
+
+	renewed := formPostCtx(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "client_id": {cid}}.Encode())
+	h.handleToken(renewed)
+	_, refresh = tokens(renewed)
+
+	cfg.ClientConfig.OAuth2ServerConfig.AdditionalIssuerURLs = nil
+	ended := formPostCtx(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "client_id": {cid}}.Encode())
+	h.handleToken(ended)
+	assert.Equal(t, fasthttp.StatusBadRequest, ended.Response.StatusCode())
+	assert.Contains(t, string(ended.Response.Body()), "no longer serves")
+
+	// A code consented through the removed issuer is refused rather than exchanged for an unusable token.
+	orphaned := formPostCtx(url.Values{
+		"grant_type": {"authorization_code"}, "code": {"code-removed"}, "code_verifier": {verifier},
+		"client_id": {cid}, "redirect_uri": {"http://127.0.0.1/cb"},
+	}.Encode())
+	h.handleToken(orphaned)
+	assert.Equal(t, fasthttp.StatusBadRequest, orphaned.Response.StatusCode(), string(orphaned.Response.Body()))
+	assert.Contains(t, string(orphaned.Response.Body()), "invalid_grant")
+	assert.Contains(t, string(orphaned.Response.Body()), "no longer serves")
+}
+
 func TestHandleToken_RefreshAfterIssuerChange(t *testing.T) {
 	refresh := func(t *testing.T, resource string) *fasthttp.RequestCtx {
 		t.Helper()

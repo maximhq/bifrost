@@ -683,6 +683,33 @@
               ],
               "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth', or any client gateway is enabled (config load and PUT /api/config reject an unset value then); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
             },
+            "additional_issuer_urls": {
+              "type": "array",
+              "maxItems": 10,
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "value": {
+                        "type": "string"
+                      },
+                      "env_var": {
+                        "type": "string"
+                      },
+                      "from_env": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "description": "Further issuers, each on its own hostname, for MCP clients that cannot reach issuer_url (for example a hosted client through a private tunnel). A request whose Host is one of these hostnames sees that issuer in discovery, and a sign-in started there gets tokens naming it; any other request gets issuer_url, which stays the primary. Tokens from every configured issuer are accepted on every hostname. Requires issuer_url; each entry is an absolute http(s) URL, no two issuers may share a hostname, and each must include server.base_path when Bifrost is mounted under one. Supports env var syntax: \"env.MY_VAR\"."
+            },
             "browser_base_url": {
               "anyOf": [
                 {

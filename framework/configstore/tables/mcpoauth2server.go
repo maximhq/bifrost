@@ -65,6 +65,11 @@ type OAuth2ServerConfig struct {
 	// server-to-server endpoint stay on IssuerURL. Unset means IssuerURL.
 	BrowserBaseURL *schemas.SecretVar `json:"browser_base_url,omitempty"`
 
+	// AdditionalIssuerURLs are further issuers for hostnames that cannot reach
+	// IssuerURL, such as a private tunnel. A request whose host matches one is
+	// served that issuer; any other request gets IssuerURL, which stays the primary.
+	AdditionalIssuerURLs []*schemas.SecretVar `json:"additional_issuer_urls,omitempty"`
+
 	// AuthCodeTTL is the lifetime of the one-time authorization code issued by
 	// /oauth2/authorize and exchanged at /oauth2/token (seconds, default 300).
 	// The code is single-use — it is invalidated the moment it is exchanged or
@@ -251,8 +256,8 @@ func (d ClientGatewayTelemetryDestination) endpointKey() (string, bool) {
 	return strings.TrimSpace(d.Endpoint.GetValue()), true
 }
 
-// StorageJSON is the oauth2_server_config_json written for c. Its secret fields (the issuer and
-// browser URLs, and each telemetry endpoint and header value) keep only an env. or vault. reference, never its
+// StorageJSON is the oauth2_server_config_json written for c. Its secret fields (the issuer,
+// browser and additional issuer URLs, and each telemetry endpoint and header value) keep only an env. or vault. reference, never its
 // resolved value, as MCP client headers are stored; the reference is resolved again on load.
 // Everything else, managed settings included, is written as is.
 func (c *OAuth2ServerConfig) StorageJSON() (string, error) {
@@ -271,6 +276,10 @@ func (c *OAuth2ServerConfig) StorageJSON() (string, error) {
 	}
 	stripResolvedSecretValue(doc["issuer_url"])
 	stripResolvedSecretValue(doc["browser_base_url"])
+	issuers, _ := doc["additional_issuer_urls"].([]any)
+	for _, issuer := range issuers {
+		stripResolvedSecretValue(issuer)
+	}
 	for _, d := range telemetryDestinationsOf(doc) {
 		dest, _ := d.(map[string]any)
 		stripResolvedSecretValue(dest["endpoint"])

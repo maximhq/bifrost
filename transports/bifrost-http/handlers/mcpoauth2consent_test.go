@@ -268,6 +268,25 @@ func TestConsentFlowSubmit_VK(t *testing.T) {
 		assert.Equal(t, testIssuer, redirect.Query().Get("iss"))
 	})
 
+	t.Run("iss is the grant's issuer, not the consent page's host", func(t *testing.T) {
+		store := newConsentStore()
+		store.vksByValue["sk-bf-active"] = activeVK
+		seedPendingFlow(store, "flow-1", time.Now().Add(time.Minute))
+		store.authReqs["flow-1"].Resource = testTunnelIssuer + "/mcp"
+		h := newConsentHandler(store, nil, false)
+		withTunnelIssuer(h.store)
+		ctx := consentCtx("flow-1", `{"mode":"vk","value":"sk-bf-active"}`)
+		ctx.Request.Header.SetHost("bifrost.test")
+		h.flowSubmit(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+		var resp consentFlowSubmitResponse
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		redirect, err := url.Parse(resp.RedirectURL)
+		require.NoError(t, err)
+		assert.Equal(t, testTunnelIssuer, redirect.Query().Get("iss"))
+	})
+
 	t.Run("inactive VK is rejected", func(t *testing.T) {
 		store := newConsentStore()
 		store.vksByValue[inactiveVK.Value.GetValue()] = inactiveVK

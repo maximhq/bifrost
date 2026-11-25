@@ -1520,6 +1520,35 @@ func TestUpdateConfig_BrowserBaseURLChangeNeedsAdminSession(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusOK, same.Response.StatusCode(), string(same.Response.Body()))
 }
 
+// TestUpdateConfig_AdditionalIssuers pins the save side: a hostname clash is
+// refused with 400, and with dashboard auth off the list cannot change, since
+// every MCP client trusts each issuer on it; resending it unchanged is allowed.
+func TestUpdateConfig_AdditionalIssuers(t *testing.T) {
+	SetLogger(&mockLogger{})
+	cfg := withTunnelIssuer(newTestOAuth2Config(newRealOAuth2Store(t), configtables.MCPServerAuthModeOAuth, false))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	put := func(issuers string, bypassed bool) *fasthttp.RequestCtx {
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"` + testIssuer + `","additional_issuer_urls":` + issuers + `}}}`)
+		if bypassed {
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		}
+		h.updateConfig(ctx)
+		return ctx
+	}
+
+	clash := put(`["https://BIFROST.test/other"]`, false)
+	require.Equal(t, fasthttp.StatusBadRequest, clash.Response.StatusCode(), string(clash.Response.Body()))
+	assert.Contains(t, string(clash.Response.Body()), "repeats the hostname")
+
+	changed := put(`["https://attacker.example"]`, true)
+	require.Equal(t, fasthttp.StatusForbidden, changed.Response.StatusCode(), string(changed.Response.Body()))
+	assert.Contains(t, string(changed.Response.Body()), "additional_issuer_urls")
+	assert.Equal(t, testTunnelIssuer, cfg.ClientConfig.OAuth2ServerConfig.AdditionalIssuerURLs[0].GetValue())
+
+	same := put(`["`+testTunnelIssuer+`"]`, true)
+	assert.Equal(t, fasthttp.StatusOK, same.Response.StatusCode(), string(same.Response.Body()))
+}
+
 // TestUpdateConfig_RejectsFileURLsOverAPI pins the API-side rule for all three
 // catalog URLs: PUT /api/config answers 400 and persists nothing.
 func TestUpdateConfig_RejectsFileURLsOverAPI(t *testing.T) {

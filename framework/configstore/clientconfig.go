@@ -630,10 +630,13 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 				hash.Write([]byte("oauth2IssuerURL:val:" + oc.IssuerURL.GetValue()))
 			}
 		}
-		// Hashed only when set, so configs without it keep their hash. The NUL ends the
-		// unframed issuer URL, which cannot hold control characters.
+		// Each is hashed only when set, so configs without them keep their hash. The NUL
+		// ends the unframed issuer URL, which cannot hold control characters.
 		if oc.BrowserBaseURL.IsSet() {
 			writeLengthPrefixed(hash, "\x00oauth2BrowserBaseURL:", secretVarHashForm(oc.BrowserBaseURL))
+		}
+		for _, issuer := range oc.AdditionalIssuerURLs {
+			writeLengthPrefixed(hash, "\x00oauth2AdditionalIssuerURL:", secretVarHashForm(issuer))
 		}
 		hash.Write([]byte("oauth2AuthCodeTTL:" + strconv.Itoa(oc.AuthCodeTTL)))
 		hash.Write([]byte("oauth2AccessTokenTTL:" + strconv.Itoa(oc.AccessTokenTTL)))
@@ -3088,6 +3091,69 @@ func ValidatePublicBaseURL(value string) error {
 		return fmt.Errorf("must not contain userinfo, query, or fragment components")
 	}
 	return nil
+}
+
+// MaxAdditionalIssuerURLs caps oauth2_server_config.additional_issuer_urls.
+const MaxAdditionalIssuerURLs = 10
+
+// ValidateOAuth2AdditionalIssuers checks oauth2_server_config.additional_issuer_urls:
+// they need issuer_url, each is an absolute HTTP(S) base URL, and no two issuers,
+// the primary included, share a hostname, since the hostname picks the issuer.
+func ValidateOAuth2AdditionalIssuers(oc *tables.OAuth2ServerConfig) error {
+	if oc == nil || len(oc.AdditionalIssuerURLs) == 0 {
+		return nil
+	}
+	if len(oc.AdditionalIssuerURLs) > MaxAdditionalIssuerURLs {
+		return fmt.Errorf("oauth2_server_config.additional_issuer_urls allows at most %d entries", MaxAdditionalIssuerURLs)
+	}
+	primary := oc.IssuerURL.GetValue()
+	if primary == "" {
+		return fmt.Errorf("oauth2_server_config.additional_issuer_urls requires issuer_url")
+	}
+	hosts := map[string]bool{IssuerHost(primary): true}
+	for i, issuer := range oc.AdditionalIssuerURLs {
+		value := issuer.GetValue()
+		if value == "" && issuer.IsFromSecret() {
+			return fmt.Errorf("oauth2_server_config.additional_issuer_urls[%d] references %s, which resolves to an empty value", i, issuer.GetRawRef())
+		}
+		if value == "" {
+			return fmt.Errorf("oauth2_server_config.additional_issuer_urls[%d] is empty", i)
+		}
+		if err := ValidatePublicBaseURL(value); err != nil {
+			return fmt.Errorf("oauth2_server_config.additional_issuer_urls[%d] %w", i, err)
+		}
+		// Requests are matched on the host as written, so an escape (an IPv6 zone identifier,
+		// the only one url.Parse lets through) would never match.
+		if _, rest, _ := strings.Cut(value, "://"); strings.Contains(strings.SplitN(rest, "/", 2)[0], "%") {
+			return fmt.Errorf("oauth2_server_config.additional_issuer_urls[%d] host must not be percent-encoded", i)
+		}
+		host := IssuerHost(value)
+		if hosts[host] {
+			return fmt.Errorf("oauth2_server_config.additional_issuer_urls[%d] repeats the hostname of another issuer", i)
+		}
+		hosts[host] = true
+	}
+	return nil
+}
+
+// IssuerHost is the lowercased host of an issuer URL, without a default port, so
+// it compares equal to the Host a request for that issuer arrives with.
+func IssuerHost(issuer string) string {
+	u, err := url.Parse(strings.TrimSpace(issuer))
+	if err != nil {
+		return ""
+	}
+	return NormalizeHost(u.Host)
+}
+
+// NormalizeHost lowercases host and drops a default port (443 or 80). The scheme
+// is left out on purpose: behind a proxy a request's scheme is not reliable.
+func NormalizeHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if strings.HasSuffix(host, ":443") || strings.HasSuffix(host, ":80") {
+		host = host[:strings.LastIndexByte(host, ':')]
+	}
+	return host
 }
 
 // ValidateOAuth2BrowserBaseURL checks oauth2_server_config.browser_base_url, which

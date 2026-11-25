@@ -342,10 +342,12 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 	// audience to it. A client that omits resource (e.g. one that doesn't fetch
 	// the protected-resource metadata) defaults to the canonical /mcp resource
 	// since there is exactly one; a client that does send it must match.
-	canonicalResource := oauth2MCPResourceURL(ctx, h.store)
+	// With several issuers the browser may reach this on another hostname than the
+	// client discovered, so any configured issuer's /mcp is accepted; an omitted
+	// resource binds the grant to the primary issuer.
 	if resource == "" {
-		resource = canonicalResource
-	} else if resource != canonicalResource {
+		resource = oauth2AcceptedIssuers(ctx, h.store)[0] + "/mcp"
+	} else if !oauth2ResourceServed(ctx, h.store, resource, oauth2MCPResourceURL(ctx, h.store)) {
 		redirectError("invalid_target", "resource does not identify this MCP server")
 		return
 	}
@@ -502,6 +504,11 @@ func (h *OAuth2IssuanceHandler) handleTokenAuthCode(ctx *fasthttp.RequestCtx) {
 	}
 	if resource != "" && req.Resource != resource {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "resource mismatch")
+		return
+	}
+	// As on refresh: a grant whose issuer was removed or changed since consent would mint a token its audience refuses.
+	if !oauth2ResourceServed(ctx, h.store, req.Resource, oauth2MCPResourceURL(ctx, h.store)) {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "the grant was issued for a resource this server no longer serves; authorize again")
 		return
 	}
 
@@ -669,7 +676,7 @@ func (h *OAuth2IssuanceHandler) refreshGrant(ctx *fasthttp.RequestCtx, refreshTo
 	// moves that resource, and a token minted for the old one is refused by the resource for its
 	// audience, so the grant cannot refresh; the client authorizes again against the server's current
 	// address. A grant for a different resource (a /gateway/claude-code grant at /oauth2/token) is refused too.
-	if resource != servedResource {
+	if !oauth2ResourceServed(ctx, h.store, resource, servedResource) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "the grant was issued for a resource this server no longer serves; authorize again")
 		return
 	}
@@ -717,6 +724,7 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 	cfg := oauth2ServerCfg(h.store)
 	accessToken, err = h.signAccessToken(ctx, AccessTokenSpec{
 		Mode: bfMode, Subject: bfSub, Scope: scope, Audience: []string{resource}, TTL: cfg.AccessTokenTTL,
+		issuer: oauth2IssuerForResource(ctx, h.store, resource),
 	})
 	if err != nil {
 		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", err.Error())

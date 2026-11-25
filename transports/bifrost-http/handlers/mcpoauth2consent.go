@@ -323,7 +323,7 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 	redirectURL, err := buildRedirectURL(req.RedirectURI, map[string]string{
 		"code":  code,
 		"state": req.State,
-		"iss":   oauth2IssuerURL(ctx, h.store), // RFC 9207: the issuer, never the browser base URL
+		"iss":   oauth2IssuerForResource(ctx, h.store, req.Resource), // RFC 9207: the grant's issuer, never the browser's host
 	})
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to build redirect URL: %v", err))

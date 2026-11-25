@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -51,12 +52,160 @@ func oauth2IssuerURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
 	oauthEnabled := store.ClientConfig.IsMCPOAuthDiscoveryEnabled()
 	store.Mu.RUnlock()
 	if cfg != nil && cfg.IssuerURL.IsSet() {
+		if issuer, ok := additionalIssuerForHost(cfg, ctx); ok {
+			return issuer
+		}
 		return strings.TrimRight(cfg.IssuerURL.GetValue(), "/")
 	}
 	if oauthEnabled {
 		return ""
 	}
 	return lib.BuildBaseURL(ctx, "")
+}
+
+// additionalIssuerForHost returns the additional issuer whose hostname is the
+// request's Host. The Host only chooses among issuers the operator configured,
+// so a forged one falls back to the primary rather than naming its own issuer.
+func additionalIssuerForHost(cfg *configtables.OAuth2ServerConfig, ctx *fasthttp.RequestCtx) (string, bool) {
+	if len(cfg.AdditionalIssuerURLs) == 0 || ctx == nil {
+		return "", false
+	}
+	host := trimDefaultPort(ctx.Host())
+	for _, issuer := range cfg.AdditionalIssuerURLs {
+		if value := issuer.GetValue(); value != "" && issuerHostIs(value, host) {
+			return strings.TrimRight(value, "/"), true
+		}
+	}
+	return "", false
+}
+
+// issuerHostIs reports whether issuer's host is host, ignoring case and a default
+// port, as configstore.IssuerHost compares them. It slices the (validated) URL
+// rather than parsing it, so picking an issuer allocates nothing per request.
+func issuerHostIs(issuer string, host []byte) bool {
+	_, rest, ok := strings.Cut(issuer, "://")
+	if !ok {
+		return false
+	}
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		rest = rest[:i]
+	}
+	rest = strings.TrimSuffix(strings.TrimSuffix(rest, ":443"), ":80")
+	if len(rest) != len(host) {
+		return false
+	}
+	for i := 0; i < len(host); i++ {
+		if lowerASCII(rest[i]) != lowerASCII(host[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// trimDefaultPort drops a trailing :443 or :80 from host.
+func trimDefaultPort(host []byte) []byte {
+	for _, port := range []string{":443", ":80"} {
+		if len(host) > len(port) && string(host[len(host)-len(port):]) == port {
+			return host[:len(host)-len(port)]
+		}
+	}
+	return host
+}
+
+func lowerASCII(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+	return c
+}
+
+// oauth2AcceptedIssuers are the issuers a Bifrost-issued token may name: the
+// primary and every additional issuer, or the request's issuer when none is
+// configured (header mode).
+func oauth2AcceptedIssuers(ctx *fasthttp.RequestCtx, store *lib.Config) []string {
+	store.Mu.RLock()
+	cfg := store.ClientConfig.OAuth2ServerConfig
+	store.Mu.RUnlock()
+	if cfg == nil || !cfg.IssuerURL.IsSet() || len(cfg.AdditionalIssuerURLs) == 0 {
+		return []string{oauth2IssuerURL(ctx, store)}
+	}
+	issuers := make([]string, 0, 1+len(cfg.AdditionalIssuerURLs))
+	issuers = append(issuers, strings.TrimRight(cfg.IssuerURL.GetValue(), "/"))
+	for _, issuer := range cfg.AdditionalIssuerURLs {
+		if value := issuer.GetValue(); value != "" {
+			issuers = append(issuers, strings.TrimRight(value, "/"))
+		}
+	}
+	return issuers
+}
+
+// oauth2IssuerAccepted reports whether iss is an issuer a token may name: the
+// request's issuer (selected), or any configured issuer. It allocates nothing,
+// since every authenticated /mcp request runs it.
+func oauth2IssuerAccepted(store *lib.Config, selected, iss string) bool {
+	if iss == "" {
+		return false
+	}
+	if iss == selected {
+		return true
+	}
+	store.Mu.RLock()
+	cfg := store.ClientConfig.OAuth2ServerConfig
+	store.Mu.RUnlock()
+	if cfg == nil || !cfg.IssuerURL.IsSet() {
+		return false
+	}
+	if iss == strings.TrimRight(cfg.IssuerURL.GetValue(), "/") {
+		return true
+	}
+	for _, issuer := range cfg.AdditionalIssuerURLs {
+		if v := issuer.GetValue(); v != "" && iss == strings.TrimRight(v, "/") {
+			return true
+		}
+	}
+	return false
+}
+
+// oauth2IssuerForResource is the issuer a grant for resource belongs to: the
+// configured issuer resource sits under. Tokens and the consent redirect take
+// their issuer from the grant, not from whichever host a step of the sign-in
+// arrived on. Falls back to the request's issuer.
+func oauth2IssuerForResource(ctx *fasthttp.RequestCtx, store *lib.Config, resource string) string {
+	for _, issuer := range oauth2AcceptedIssuers(ctx, store) {
+		if resource == issuer || strings.HasPrefix(resource, issuer+"/") {
+			return issuer
+		}
+	}
+	return oauth2IssuerURL(ctx, store)
+}
+
+// oauth2ResourceServed reports whether resource is served where served is the
+// request's resource: served itself, or the same path under another configured
+// issuer, so a grant from one hostname is honoured on the others.
+func oauth2ResourceServed(ctx *fasthttp.RequestCtx, store *lib.Config, resource, served string) bool {
+	if resource == served {
+		return true
+	}
+	selected := oauth2IssuerURL(ctx, store)
+	suffix, ok := strings.CutPrefix(served, selected)
+	if selected == "" || !ok {
+		return false
+	}
+	for _, issuer := range oauth2AcceptedIssuers(ctx, store) {
+		if resource == issuer+suffix {
+			return true
+		}
+	}
+	return false
+}
+
+// secretVarValues lists the resolved values of vars, for comparing two lists.
+func secretVarValues(vars []*schemas.SecretVar) []string {
+	values := make([]string, len(vars))
+	for i, v := range vars {
+		values[i] = v.GetValue()
+	}
+	return values
 }
 
 // oauth2BrowserBaseURL is the base of URLs a user's browser opens in the OAuth
