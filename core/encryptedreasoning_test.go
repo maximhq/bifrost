@@ -2819,6 +2819,71 @@ func TestExecuteRequestWithRetries_HealsThinkingSignatureOnRawAnthropicChat(t *t
 	}
 }
 
+// TestExecuteRequestWithRetries_HealsRedactedThinkingOnRawAnthropicResponses pins the Claude
+// Code passthrough route: /anthropic/v1/messages is typed as a Responses request but its raw
+// body is an Anthropic messages array, which the Responses `input` stripper never finds.
+func TestExecuteRequestWithRetries_HealsRedactedThinkingOnRawAnthropicResponses(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	req := &schemas.BifrostRequest{
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-sonnet-5-5",
+			Input: []schemas.ResponsesMessage{{
+				Role:    new(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: new("continue")},
+			}},
+		},
+	}
+	req.ResponsesRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5-5","messages":[` +
+		`{"role":"user","content":"run the tests"},` +
+		`{"role":"assistant","content":[` +
+		`{"type":"redacted_thinking","data":"brid_rs_abc|gAAAAABforeign"},` +
+		`{"type":"text","text":"On it."}` +
+		`]},` +
+		`{"role":"user","content":"continue"}` +
+		`],"max_tokens":1024,"stream":true}`)
+
+	status := 400
+	callCount := 0
+	var secondAttemptBody string
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount == 1 {
+			return "", &schemas.BifrostError{
+				StatusCode: &status,
+				Error:      &schemas.ErrorField{Message: "messages.1.content.0: Invalid `data` in `redacted_thinking` block"},
+			}
+		}
+		secondAttemptBody = string(req.ResponsesRequest.RawRequestBody)
+		return "success", nil
+	}
+
+	result, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ResponsesStreamRequest, schemas.Anthropic, "claude-sonnet-5-5", req, logger)
+
+	if err != nil {
+		t.Fatalf("expected the stripped retry to succeed, got %v", err)
+	}
+	if result != "success" {
+		t.Fatalf("expected 'success', got %q", result)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 attempts (original + stripped retry), got %d", callCount)
+	}
+	if strings.Contains(secondAttemptBody, "redacted_thinking") || strings.Contains(secondAttemptBody, "gAAAAABforeign") {
+		t.Errorf("the retry still carried the refused redacted_thinking block: %s", secondAttemptBody)
+	}
+	if !strings.Contains(secondAttemptBody, `"On it."`) || !strings.Contains(secondAttemptBody, `"stream":true`) {
+		t.Errorf("expected the rest of the body to survive into the retry, got %s", secondAttemptBody)
+	}
+}
+
 // TestExecuteRequestWithRetries_HealsThinkingSignatureOnChatShape is the consequence
 // test: the predicate answering correctly only matters if the retry it gates actually
 // reaches the upstream with the signature removed.

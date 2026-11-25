@@ -711,6 +711,10 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 			return false
 		}
 		if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
+			// /anthropic/v1/messages is typed as Responses but its raw body is an Anthropic messages array.
+			if integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string); integrationType == "anthropic" {
+				return stripRawAnthropicChatThinking(rawBodyRef)
+			}
 			return stripRawResponsesEncryptedContent(rawBodyRef, dropItemIDs, clearIDs)
 		}
 	}

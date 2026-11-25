@@ -353799,6 +353799,112 @@
           }
         }
       ]
+    },
+    {
+      "name": "381. Claude Code passthrough heals a foreign redacted_thinking block (foreign redacted thinking)",
+      "description": "A Claude Code session that a routing rule splits between Claude and an OpenAI model carries GPT reasoning in its history: Bifrost returns OpenAI encrypted reasoning to the Anthropic client as a redacted_thinking block whose data is \"brid_<item id>:<ciphertext>\", and Claude Code replays it on later turns. When a later turn goes to Claude, Anthropic refuses it with 400 \"messages.N.content.M: Invalid `data` in `redacted_thinking` block\".\n\nThe fail-soft strip-and-retry recognised that 400 but never fired on this route. The claude-cli User-Agent puts /anthropic/v1/messages on raw-body passthrough, and the route is typed as a Responses request, so the strip looked for a Responses `input` array in a body that only has `messages`, found nothing, and granted no retry. The strip now uses the Anthropic messages rewriter on that path, so the retry drops the refused block and the turn succeeds.\n\nBoth cases replay a fabricated foreign redacted_thinking block with the claude-cli User-Agent (raw passthrough) and assert a native Anthropic reply with no extra_fields, which proves the passthrough path served it. Without the fix both return the 400. The typed path (no claude-cli User-Agent) already healed this request and is not repeated here.",
+      "item": [
+        {
+          "name": "claude-opus-4-7 /anthropic/v1/messages Claude Code passthrough retries without a foreign redacted_thinking block - foreign redacted thinking",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Claude Code passthrough heals the foreign redacted_thinking refusal', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'the foreign redacted_thinking block reached the client as a 400: ' + raw).to.not.include('redacted_thinking');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.type, 'expected a native Anthropic message: ' + raw).to.equal('message');",
+                  "  pm.expect(body.extra_fields, 'expected the raw Claude Code passthrough response: ' + raw).to.equal(undefined);",
+                  "  var text = (body.content || []).filter(function (b) { return b.type === 'text'; }).map(function (b) { return b.text; }).join('');",
+                  "  pm.expect(text, 'expected an answer after the retry: ' + raw).to.include('8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-opus-4-7\",\"max_tokens\":1024,\"stream\":false,\"thinking\":{\"type\":\"adaptive\"},\"messages\":[{\"role\":\"user\",\"content\":\"What is two plus two?\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"redacted_thinking\",\"data\":\"brid_rs_bfharness_foreign01:gAAAAABpForeignOpenAIEncryptedReasoningPayloadNotMintedByAnthropic\"},{\"type\":\"text\",\"text\":\"Four.\"}]},{\"role\":\"user\",\"content\":\"Now double it. Reply with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "claude-opus-4-7 /anthropic/v1/messages streaming Claude Code passthrough retries without a foreign redacted_thinking block - foreign redacted thinking",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed Claude Code passthrough heals the foreign redacted_thinking refusal', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'the foreign redacted_thinking block reached the client as a 400: ' + raw).to.not.include('Invalid `data`');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + raw).to.equal(200);",
+                  "  pm.expect(raw, 'stream carried an error event: ' + raw).to.not.include('event: error');",
+                  "  pm.expect(raw, 'stream never started a message: ' + raw).to.include('message_start');",
+                  "  pm.expect(raw, 'stream never finished: ' + raw).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/1.0"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-opus-4-7\",\"max_tokens\":1024,\"stream\":true,\"thinking\":{\"type\":\"adaptive\"},\"messages\":[{\"role\":\"user\",\"content\":\"What is two plus two?\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"redacted_thinking\",\"data\":\"brid_rs_bfharness_foreign01:gAAAAABpForeignOpenAIEncryptedReasoningPayloadNotMintedByAnthropic\"},{\"type\":\"text\",\"text\":\"Four.\"}]},{\"role\":\"user\",\"content\":\"Now double it. Reply with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
