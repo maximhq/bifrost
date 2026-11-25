@@ -785,7 +785,7 @@ func HandleOpenAITextCompletionStreaming(
 					if usage.TotalTokens == 0 {
 						logger.Warn("provider %s ended the stream on heartbeats after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
 					}
-				} else {
+				} else if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
 					// The body is fully consumed, so the deferred release must not drain it again.
 					ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
 				}
@@ -1585,7 +1585,7 @@ func HandleOpenAIChatCompletionStreaming(
 					if usage.TotalTokens == 0 {
 						logger.Warn("provider %s ended the stream on heartbeats after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
 					}
-				} else {
+				} else if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
 					// The body is fully consumed, so the deferred release must not drain it again.
 					ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
 				}

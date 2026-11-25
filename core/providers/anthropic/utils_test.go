@@ -5316,7 +5316,7 @@ func TestHandleAnthropicResponsesStream_PreservesEncodedPath(t *testing.T) {
 	}
 	requestURL := server.URL + "/model/" + url.PathEscape(encodedARNModel) + "/invoke-with-response-stream"
 
-	stream, bifrostErr := HandleAnthropicResponsesStream(ctx, &fasthttp.Client{DisablePathNormalizing: true}, requestURL, jsonData,
+	stream, bifrostErr := HandleAnthropicResponsesStream(ctx, providerUtils.BuildStreamingClient(&fasthttp.Client{DisablePathNormalizing: true}), requestURL, jsonData,
 		map[string]string{}, nil, 30, nil, false, false, schemas.Bedrock,
 		truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
 	if bifrostErr != nil {
@@ -5345,7 +5345,7 @@ func TestHandleAnthropicChatCompletionStreaming_PreservesEncodedPath(t *testing.
 	}
 	requestURL := server.URL + "/model/" + url.PathEscape(encodedARNModel) + "/invoke-with-response-stream"
 
-	stream, bifrostErr := HandleAnthropicChatCompletionStreaming(ctx, &fasthttp.Client{DisablePathNormalizing: true}, requestURL, jsonData,
+	stream, bifrostErr := HandleAnthropicChatCompletionStreaming(ctx, providerUtils.BuildStreamingClient(&fasthttp.Client{DisablePathNormalizing: true}), requestURL, jsonData,
 		map[string]string{}, nil, 30, nil, false, false, schemas.Bedrock,
 		truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
 	if bifrostErr != nil {
@@ -5417,7 +5417,7 @@ func TestSafeguardsStreamHandler(t *testing.T) {
 		if buildErr != nil {
 			t.Fatal(buildErr)
 		}
-		stream, err := HandleAnthropicResponsesStream(ctx, &fasthttp.Client{}, server.URL, body, nil, nil, 30, nil, false, raw, schemas.Anthropic, truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
+		stream, err := HandleAnthropicResponsesStream(ctx, providerUtils.BuildStreamingClient(&fasthttp.Client{}), server.URL, body, nil, nil, 30, nil, false, raw, schemas.Anthropic, truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -6159,7 +6159,7 @@ func TestHandleAnthropicResponsesStream_KeepsBedrockInvokeGuardrailOutcome(t *te
 		if bifrostErr != nil {
 			t.Fatalf("build: %s", bifrostErr.Error.Message)
 		}
-		stream, bifrostErr := HandleAnthropicResponsesStream(ctx, &fasthttp.Client{}, server.URL+"/model/m/invoke-with-response-stream"+plain, jsonData,
+		stream, bifrostErr := HandleAnthropicResponsesStream(ctx, providerUtils.BuildStreamingClient(&fasthttp.Client{}), server.URL+"/model/m/invoke-with-response-stream"+plain, jsonData,
 			map[string]string{}, nil, 30, nil, false, false, schemas.Bedrock,
 			truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
 		if bifrostErr != nil {

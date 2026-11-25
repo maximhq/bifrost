@@ -1075,23 +1075,9 @@ func HandleAnthropicChatCompletionStreaming(
 		}
 	}
 
-	// Close the connection after this streaming response instead of returning it to
-	// the keep-alive pool. fasthttp can otherwise reuse a streaming connection whose
-	// reader is still in a torn state (body not fully drained, or the idle-timeout/
-	// consumer goroutine still attached), corrupting the next request's RoundTrip and
-	// panicking with "slice bounds out of range" in mustPeekBuffered. Mirrors the
-	// mitigation already used on Gemini/Azure/OpenAI streaming and anthropic.go:2716.
-	req.Header.Set("Connection", "close")
-
-	// Use a fresh streaming client per request so fasthttp's internal readerPool
-	// cannot be poisoned across concurrent Anthropic streams by a non-idempotent
-	// streaming-body close path. The cloned client preserves dialer/TLS/proxy
-	// config but starts with empty reader/writer pools.
-	requestClient := providerUtils.BuildStreamingClient(client)
-
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, requestClient, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	startTime := time.Now()
 	// Make the request
@@ -1757,23 +1743,9 @@ func HandleAnthropicResponsesStream(
 		}
 	}
 
-	// Close the connection after this streaming response instead of returning it to
-	// the keep-alive pool. fasthttp can otherwise reuse a streaming connection whose
-	// reader is still in a torn state (body not fully drained, or the idle-timeout/
-	// consumer goroutine still attached), corrupting the next request's RoundTrip and
-	// panicking with "slice bounds out of range" in mustPeekBuffered. Mirrors the
-	// mitigation already used on Gemini/Azure/OpenAI streaming and anthropic.go:2716.
-	req.Header.Set("Connection", "close")
-
-	// Use a fresh streaming client per request so fasthttp's internal readerPool
-	// cannot be poisoned across concurrent Anthropic streams by a non-idempotent
-	// streaming-body close path. The cloned client preserves dialer/TLS/proxy
-	// config but starts with empty reader/writer pools.
-	requestClient := providerUtils.BuildStreamingClient(client)
-
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, requestClient, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	startTime := time.Now()
 	// Make the request

@@ -2,15 +2,24 @@ package anthropic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
+	"github.com/valyala/fasthttp"
 )
 
 // Anthropic's Messages stream carries no [DONE] sentinel: message_stop is the
@@ -735,4 +744,527 @@ func TestAnthropicStreamMarksProvisionalUsage(t *testing.T) {
 			})
 		}
 	}
+}
+
+// anthropicConnCounter tracks dialed and closed upstream TCP sockets, matching
+// the connCounter / countedConn pattern in core/providers/utils/streampoison_test.go.
+type anthropicConnCounter struct {
+	mu     sync.Mutex
+	dialed int
+	closed int
+}
+
+func (c *anthropicConnCounter) open() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dialed - c.closed
+}
+
+func (c *anthropicConnCounter) totalDialed() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dialed
+}
+
+type anthropicCountedConn struct {
+	net.Conn
+	counter *anthropicConnCounter
+	once    sync.Once
+}
+
+func (c *anthropicCountedConn) Close() error {
+	c.once.Do(func() {
+		c.counter.mu.Lock()
+		c.counter.closed++
+		c.counter.mu.Unlock()
+	})
+	return c.Conn.Close()
+}
+
+func newAnthropicTestStreamingClient(maxConnsPerHost int, idleDuration time.Duration) (*fasthttp.Client, *anthropicConnCounter) {
+	base := &fasthttp.Client{
+		ReadTimeout:         30 * time.Second,
+		WriteTimeout:        30 * time.Second,
+		MaxConnsPerHost:     maxConnsPerHost,
+		MaxIdleConnDuration: idleDuration,
+		MaxConnWaitTimeout:  30 * time.Second,
+		MaxConnDuration:     300 * time.Second,
+		ConnPoolStrategy:    fasthttp.FIFO,
+	}
+	base = providerUtils.ConfigureDialer(base, true)
+
+	counter := &anthropicConnCounter{}
+	inner := base.Dial
+	base.Dial = func(addr string) (net.Conn, error) {
+		conn, err := inner(addr)
+		if err != nil {
+			return nil, err
+		}
+		counter.mu.Lock()
+		counter.dialed++
+		counter.mu.Unlock()
+		return &anthropicCountedConn{Conn: conn, counter: counter}, nil
+	}
+	return providerUtils.BuildStreamingClient(base), counter
+}
+
+// TestAnthropicStreamingSequentialConnectionReuse verifies that sequential SSE
+// streams through HandleAnthropicChatCompletionStreaming and
+// HandleAnthropicResponsesStream reuse a single pooled keep-alive connection
+// and never send "Connection: close".
+func TestAnthropicStreamingSequentialConnectionReuse(t *testing.T) {
+	const iterations = 15
+
+	newServer := func(t *testing.T, connCloseSeen *atomic.Int32, reqCount *atomic.Int32) *httptest.Server {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := reqCount.Add(1)
+			if r.Close || strings.EqualFold(r.Header.Get("Connection"), "close") {
+				connCloseSeen.Add(1)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Error("ResponseWriter does not implement http.Flusher")
+				return
+			}
+			flusher.Flush()
+
+			events := []string{
+				"event: message_start\n" +
+					`data: {"type":"message_start","message":{"id":"msg_reuse","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"usage":{"input_tokens":5,"output_tokens":0}}}` + "\n\n",
+				"event: content_block_start\n" +
+					`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n",
+				fmt.Sprintf("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"turn-%d\"}}\n\n", n),
+				"event: content_block_stop\n" +
+					`data: {"type":"content_block_stop","index":0}` + "\n\n",
+				"event: message_delta\n" +
+					`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}` + "\n\n",
+				"event: message_stop\n" +
+					`data: {"type":"message_stop"}` + "\n\n",
+			}
+			for _, ev := range events {
+				if _, err := w.Write([]byte(ev)); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+
+	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	headers := map[string]string{
+		"Accept":        "text/event-stream",
+		"Cache-Control": "no-cache",
+	}
+
+	t.Run("HandleAnthropicChatCompletionStreaming", func(t *testing.T) {
+		var connCloseSeen, reqCount atomic.Int32
+		srv := newServer(t, &connCloseSeen, &reqCount)
+		client, counter := newAnthropicTestStreamingClient(8, 30*time.Second)
+
+		for i := 1; i <= iterations; i++ {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			stream, bifrostErr := HandleAnthropicChatCompletionStreaming(
+				ctx, client, srv.URL, body, headers, nil, 30, nil,
+				false, false, schemas.Anthropic, truncationPassthroughPostHook,
+				nil, nil, truncationTestLogger{}, nil,
+			)
+			if bifrostErr != nil {
+				t.Fatalf("iteration %d setup failed: %v", i, bifrostErr)
+			}
+			chunks := collectTruncationChunks(t, stream)
+			for idx, c := range chunks {
+				if c.BifrostError != nil {
+					t.Fatalf("iteration %d chunk %d error: %+v", i, idx, c.BifrostError)
+				}
+			}
+			wantText := fmt.Sprintf("turn-%d", i)
+			if !chunksContainContent(chunks, wantText) {
+				t.Fatalf("iteration %d missing expected delta %q in %d chunks", i, wantText, len(chunks))
+			}
+			final := chunks[len(chunks)-1].BifrostChatResponse
+			if final == nil || final.Usage == nil || final.Usage.TotalTokens != 8 {
+				t.Fatalf("iteration %d unexpected terminal chunk: %+v", i, final)
+			}
+		}
+
+		if got := reqCount.Load(); got != iterations {
+			t.Fatalf("server received %d requests, want %d", got, iterations)
+		}
+		if got := connCloseSeen.Load(); got != 0 {
+			t.Fatalf("server observed Connection: close on %d requests, want 0", got)
+		}
+		if got := counter.totalDialed(); got != 1 {
+			t.Fatalf("totalDialed = %d across %d sequential streams, want 1", got, iterations)
+		}
+		if got := counter.open(); got != 1 {
+			t.Fatalf("open pooled connections = %d, want 1", got)
+		}
+	})
+
+	t.Run("HandleAnthropicResponsesStream", func(t *testing.T) {
+		var connCloseSeen, reqCount atomic.Int32
+		srv := newServer(t, &connCloseSeen, &reqCount)
+		client, counter := newAnthropicTestStreamingClient(8, 30*time.Second)
+
+		for i := 1; i <= iterations; i++ {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			stream, bifrostErr := HandleAnthropicResponsesStream(
+				ctx, client, srv.URL, body, headers, nil, 30, nil,
+				false, false, schemas.Anthropic, truncationPassthroughPostHook,
+				nil, nil, truncationTestLogger{}, nil,
+			)
+			if bifrostErr != nil {
+				t.Fatalf("iteration %d setup failed: %v", i, bifrostErr)
+			}
+			chunks := collectTruncationChunks(t, stream)
+			var gotDelta strings.Builder
+			sawCompleted := false
+			for idx, c := range chunks {
+				if c.BifrostError != nil {
+					t.Fatalf("iteration %d chunk %d error: %+v", i, idx, c.BifrostError)
+				}
+				resp := c.BifrostResponsesStreamResponse
+				if resp == nil {
+					continue
+				}
+				if resp.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && resp.Delta != nil {
+					gotDelta.WriteString(*resp.Delta)
+				}
+				if resp.Type == schemas.ResponsesStreamResponseTypeCompleted {
+					sawCompleted = true
+					if resp.Response == nil || resp.Response.Usage == nil || resp.Response.Usage.TotalTokens != 8 {
+						t.Fatalf("iteration %d unexpected completed response usage: %+v", i, resp.Response)
+					}
+				}
+			}
+			wantText := fmt.Sprintf("turn-%d", i)
+			if gotDelta.String() != wantText {
+				t.Fatalf("iteration %d delta = %q, want %q", i, gotDelta.String(), wantText)
+			}
+			if !sawCompleted {
+				t.Fatalf("iteration %d missing response.completed event", i)
+			}
+		}
+
+		if got := reqCount.Load(); got != iterations {
+			t.Fatalf("server received %d requests, want %d", got, iterations)
+		}
+		if got := connCloseSeen.Load(); got != 0 {
+			t.Fatalf("server observed Connection: close on %d requests, want 0", got)
+		}
+		if got := counter.totalDialed(); got != 1 {
+			t.Fatalf("totalDialed = %d across %d sequential streams, want 1", got, iterations)
+		}
+		if got := counter.open(); got != 1 {
+			t.Fatalf("open pooled connections = %d, want 1", got)
+		}
+	})
+}
+
+func newAnthropicMultiChunkSSEServer(t *testing.T, deltaCount int, interval time.Duration) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		if _, err := w.Write([]byte(anthropicMessageStart)); err != nil {
+			return
+		}
+		flusher.Flush()
+
+		for i := range deltaCount {
+			frame := fmt.Sprintf("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"[%d]\"}}\n\n", i)
+			if _, err := w.Write([]byte(frame)); err != nil {
+				return
+			}
+			flusher.Flush()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(interval):
+			}
+		}
+
+		if _, err := w.Write([]byte(anthropicMessageStop)); err != nil {
+			return
+		}
+		flusher.Flush()
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func anthropicFixtureSaturated(bErr *schemas.BifrostError) bool {
+	if bErr == nil || bErr.Error == nil || bErr.Error.Error == nil {
+		return false
+	}
+	err := bErr.Error.Error
+	if errors.Is(err, fasthttp.ErrConnectionClosed) {
+		return true
+	}
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || (opErr.Op != "dial" && opErr.Op != "write") {
+		return false
+	}
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.EADDRNOTAVAIL) ||
+		(opErr.Op == "dial" && opErr.Timeout())
+}
+
+var errRetrySaturated = errors.New("loopback fixture saturated")
+
+// TestAnthropicStreamingConcurrentCancellationStress shares one streamingClient
+// across concurrent HandleAnthropicChatCompletionStreaming and
+// HandleAnthropicResponsesStream workers while cancelling a parallel stream load
+// mid-body, confirming #6143 stays fixed (no reader-pool double-put panic or
+// stream corruption) and open connections stay bounded.
+func TestAnthropicStreamingConcurrentCancellationStress(t *testing.T) {
+	const (
+		deltaCount    = 24
+		chunkGap      = 1 * time.Millisecond
+		streamBudget  = 5 * time.Second
+		maxConns      = 64
+		cleanWorkers  = 8
+		cleanPerWork  = 20
+		cancelStreams = 240
+		cancelConc    = 24
+	)
+
+	var wantBuilder strings.Builder
+	for i := range deltaCount {
+		fmt.Fprintf(&wantBuilder, "[%d]", i)
+	}
+	wantText := wantBuilder.String()
+
+	srv := newAnthropicMultiChunkSSEServer(t, deltaCount, chunkGap)
+	client, counter := newAnthropicTestStreamingClient(maxConns, 300*time.Millisecond)
+
+	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	headers := map[string]string{
+		"Accept":        "text/event-stream",
+		"Cache-Control": "no-cache",
+	}
+
+	runCleanOnce := func(useResponses bool) (err error) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		done := make(chan error, 1)
+		go func() {
+			if !useResponses {
+				stream, bErr := HandleAnthropicChatCompletionStreaming(
+					ctx, client, srv.URL, body, headers, nil, 30, nil,
+					false, false, schemas.Anthropic, truncationPassthroughPostHook,
+					nil, nil, truncationTestLogger{}, nil,
+				)
+				if bErr != nil {
+					if anthropicFixtureSaturated(bErr) {
+						done <- errRetrySaturated
+						return
+					}
+					done <- fmt.Errorf("chat setup error: %v", bErr.Error)
+					return
+				}
+				var got strings.Builder
+				var sawFinal bool
+				for c := range stream {
+					if c == nil {
+						continue
+					}
+					if c.BifrostError != nil {
+						done <- fmt.Errorf("chat chunk error: %+v", c.BifrostError.Error)
+						return
+					}
+					if c.BifrostChatResponse != nil {
+						for _, choice := range c.BifrostChatResponse.Choices {
+							if choice.ChatStreamResponseChoice != nil && choice.Delta != nil && choice.Delta.Content != nil {
+								got.WriteString(*choice.Delta.Content)
+							}
+						}
+						if c.BifrostChatResponse.Usage != nil && c.BifrostChatResponse.Usage.TotalTokens == 8 {
+							sawFinal = true
+						}
+					}
+				}
+				if got.String() != wantText {
+					done <- fmt.Errorf("chat corrupted text: got %q, want %q", got.String(), wantText)
+					return
+				}
+				if !sawFinal {
+					done <- errors.New("chat missing terminal usage chunk")
+					return
+				}
+				done <- nil
+				return
+			}
+
+			stream, bErr := HandleAnthropicResponsesStream(
+				ctx, client, srv.URL, body, headers, nil, 30, nil,
+				false, false, schemas.Anthropic, truncationPassthroughPostHook,
+				nil, nil, truncationTestLogger{}, nil,
+			)
+			if bErr != nil {
+				if anthropicFixtureSaturated(bErr) {
+					done <- errRetrySaturated
+					return
+				}
+				done <- fmt.Errorf("responses setup error: %v", bErr.Error)
+				return
+			}
+			var got strings.Builder
+			var sawCompleted bool
+			for c := range stream {
+				if c == nil {
+					continue
+				}
+				if c.BifrostError != nil {
+					done <- fmt.Errorf("responses chunk error: %+v", c.BifrostError.Error)
+					return
+				}
+				resp := c.BifrostResponsesStreamResponse
+				if resp == nil {
+					continue
+				}
+				if resp.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && resp.Delta != nil {
+					got.WriteString(*resp.Delta)
+				}
+				if resp.Type == schemas.ResponsesStreamResponseTypeCompleted && resp.Response != nil &&
+					resp.Response.Usage != nil && resp.Response.Usage.TotalTokens == 8 {
+					sawCompleted = true
+				}
+			}
+			if got.String() != wantText {
+				done <- fmt.Errorf("responses corrupted text: got %q, want %q", got.String(), wantText)
+				return
+			}
+			if !sawCompleted {
+				done <- errors.New("responses missing completed chunk with usage")
+				return
+			}
+			done <- nil
+		}()
+
+		select {
+		case resErr := <-done:
+			return resErr
+		case <-time.After(streamBudget):
+			cancel()
+			return errors.New("clean stream timed out (stuck)")
+		}
+	}
+
+	runClean := func(useResponses bool) error {
+		for retry := range 50 {
+			err := runCleanOnce(useResponses)
+			if !errors.Is(err, errRetrySaturated) || retry == 49 {
+				return err
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return nil
+	}
+
+	var cancelWG sync.WaitGroup
+	cancelWG.Add(1)
+	go func() {
+		defer cancelWG.Done()
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, cancelConc)
+		for i := range cancelStreams {
+			wg.Add(1)
+			sem <- struct{}{}
+			useResponses := i%2 == 1
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				drained := make(chan struct{})
+				go func() {
+					defer close(drained)
+					var stream chan *schemas.BifrostStreamChunk
+					var bErr *schemas.BifrostError
+					if useResponses {
+						stream, bErr = HandleAnthropicResponsesStream(
+							ctx, client, srv.URL, body, headers, nil, 30, nil,
+							false, false, schemas.Anthropic, truncationPassthroughPostHook,
+							nil, nil, truncationTestLogger{}, nil,
+						)
+					} else {
+						stream, bErr = HandleAnthropicChatCompletionStreaming(
+							ctx, client, srv.URL, body, headers, nil, 30, nil,
+							false, false, schemas.Anthropic, truncationPassthroughPostHook,
+							nil, nil, truncationTestLogger{}, nil,
+						)
+					}
+					if bErr != nil {
+						return
+					}
+					for range stream {
+					}
+				}()
+				time.Sleep(2*time.Millisecond + time.Duration(rand.Int64N(int64(8*time.Millisecond))))
+				cancel()
+				<-drained
+			}()
+		}
+		wg.Wait()
+	}()
+
+	var (
+		mu       sync.Mutex
+		failures []string
+		cleanWG  sync.WaitGroup
+	)
+	for w := range cleanWorkers {
+		cleanWG.Add(1)
+		workerIdx := w
+		go func() {
+			defer cleanWG.Done()
+			for i := range cleanPerWork {
+				useResponses := (workerIdx+i)%2 == 1
+				if err := runClean(useResponses); err != nil {
+					mu.Lock()
+					failures = append(failures, err.Error())
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
+	cleanWG.Wait()
+	cancelWG.Wait()
+
+	if len(failures) > 0 {
+		t.Fatalf("%d concurrent clean streams failed alongside cancellations; first few: %v",
+			len(failures), failures[:min(len(failures), 5)])
+	}
+
+	for i := range 20 {
+		if err := runClean(i%2 == 1); err != nil {
+			t.Fatalf("post-load clean stream %d failed: %v", i, err)
+		}
+	}
+
+	if open := counter.open(); open < 0 || open > maxConns {
+		t.Fatalf("open connections = %d after workers finished, want within [0, %d]", open, maxConns)
+	}
+	client.CloseIdleConnections()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if counter.open() == 0 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("%d of %d dialed connections still open after idle cleanup", counter.open(), counter.totalDialed())
 }

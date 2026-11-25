@@ -14,9 +14,15 @@ package openai
 //	go test ./core/providers/openai/ -bench ChatRequest -benchmem
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // A payload representative of what an SDK sends: a short multi-turn
@@ -225,6 +231,101 @@ func BenchmarkOpenAIChatRequestRoundTrip(b *testing.B) {
 		}
 		if len(payload) == 0 {
 			b.Fatal("empty payload")
+		}
+	}
+}
+
+func newBenchOpenAIStreamingClient() *fasthttp.Client {
+	base := &fasthttp.Client{
+		ReadTimeout:         30 * time.Second,
+		WriteTimeout:        30 * time.Second,
+		MaxConnsPerHost:     64,
+		MaxIdleConnDuration: 30 * time.Second,
+		MaxConnWaitTimeout:  30 * time.Second,
+		MaxConnDuration:     300 * time.Second,
+		ConnPoolStrategy:    fasthttp.FIFO,
+	}
+	base = providerUtils.ConfigureDialer(base, true)
+	return providerUtils.BuildStreamingClient(base)
+}
+
+// BenchmarkHandleOpenAIChatCompletionStreaming measures sequential chat SSE
+// streams ending with data: [DONE] over a shared streaming client.
+func BenchmarkHandleOpenAIChatCompletionStreaming(b *testing.B) {
+	stop := "stop"
+	frame := []byte(chatChunk("hello", nil) + chatChunk("", &stop))
+	doneFrame := []byte("data: [DONE]\n\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		_, _ = w.Write(frame)
+		flusher.Flush()
+		_, _ = w.Write(doneFrame)
+		flusher.Flush()
+	}))
+	b.Cleanup(srv.Close)
+
+	client := newBenchOpenAIStreamingClient()
+	req := basicChatRequest()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := HandleOpenAIChatCompletionStreaming(
+			ctx, client, srv.URL, req, nil, nil, 30,
+			false, false, schemas.OpenAI, passthroughPostHook,
+			nil, nil, nil, nil, nil, nil, testNoopLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			b.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		for chunk := range stream {
+			if chunk != nil && chunk.BifrostError != nil {
+				b.Fatalf("stream chunk error: %v", chunk.BifrostError)
+			}
+		}
+	}
+}
+
+// BenchmarkHandleOpenAITextCompletionStreaming measures sequential text-completion
+// SSE streams ending with data: [DONE] over a shared streaming client.
+func BenchmarkHandleOpenAITextCompletionStreaming(b *testing.B) {
+	frame := []byte(`data: {"id":"cmpl-bench","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":"stop"}]}` + "\n\n")
+	doneFrame := []byte("data: [DONE]\n\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		_, _ = w.Write(frame)
+		flusher.Flush()
+		_, _ = w.Write(doneFrame)
+		flusher.Flush()
+	}))
+	b.Cleanup(srv.Close)
+
+	client := newBenchOpenAIStreamingClient()
+	req := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := HandleOpenAITextCompletionStreaming(
+			ctx, client, srv.URL, req, nil, nil, 30,
+			false, false, schemas.OpenAI, nil, passthroughPostHook,
+			nil, nil, testNoopLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			b.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		for chunk := range stream {
+			if chunk != nil && chunk.BifrostError != nil {
+				b.Fatalf("stream chunk error: %v", chunk.BifrostError)
+			}
 		}
 	}
 }
