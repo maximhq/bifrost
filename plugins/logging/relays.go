@@ -702,7 +702,9 @@ func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, relayName str
 		}
 	}
 	next := time.Now().UTC().Add(time.Duration(max(job.IntervalSeconds, 1)) * time.Second)
-	params := job.Params
+	// The start call's details travel with the job, so a job settled before this row is written
+	// still shows its route, app and names.
+	params := jobaccounting.WithRelayJobStart(job.Params, entry)
 	row := &tables.TableProviderJob{
 		ID:             id,
 		Kind:           kind,

@@ -6741,6 +6741,30 @@ func TestRelayJobRowTakesTheRelayFromTheReply(t *testing.T) {
 	}
 }
 
+// The start call's route, app and names are stored with the job, beside the relay's snapshot, so a job
+// settled before this row is written still shows them.
+func TestRelayJobRecordCarriesTheStartDetails(t *testing.T) {
+	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.batchStore = store
+	start := &logstore.RelayLog{ID: "req-1", RequestID: "req-1", RelayName: "textract", RoutePath: "/v1/textract",
+		App: schemas.Ptr("curl"), UserAgent: schemas.Ptr("curl/8.7.1"), VirtualKeyName: schemas.Ptr("team-key")}
+	plugin.recordEndpointJob(start, "textract", &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{"status_path":"s"}}`})
+	require.Len(t, store.jobs, 1)
+	for _, row := range store.jobs {
+		require.NotNil(t, row.Params)
+		var params struct {
+			Job   map[string]any    `json:"job"`
+			Start map[string]string `json:"start"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(*row.Params), &params))
+		require.Equal(t, map[string]any{"status_path": "s"}, params.Job, "the relay's snapshot is kept as it was")
+		require.Equal(t, "/v1/textract", params.Start["route_path"])
+		require.Equal(t, "curl/8.7.1", params.Start["user_agent"])
+		require.Equal(t, "team-key", params.Start["virtual_key_name"])
+	}
+}
+
 func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
 	plugin := policyTestPlugin(nil, nil, true)
