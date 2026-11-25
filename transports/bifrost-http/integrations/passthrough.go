@@ -115,25 +115,22 @@ func isAnthropicDeploymentsPath(_, path string) bool {
 	return rest == "" || rest[0] == '/'
 }
 
-// isAnthropicDeploymentModelFree reports whether a deployments request starts no run: a GET of the
-// collection or of one deployment, or a pause or archive of one deployment.
+// isAnthropicDeploymentModelFree reports whether a deployments request starts no run: a GET or HEAD,
+// or a pause or archive of one deployment.
 func isAnthropicDeploymentModelFree(method, path string) bool {
 	if !isAnthropicDeploymentsPath(method, path) {
 		return false
 	}
-	rest := strings.TrimPrefix(path[len(anthropicDeploymentsPath):], "/")
-	id, action, hasAction := strings.Cut(rest, "/")
-	switch {
-	case method == fasthttp.MethodGet:
-		return !hasAction
-	case method == fasthttp.MethodPost && id != "" && hasAction:
-		return action == "pause" || action == "archive"
+	if method == fasthttp.MethodGet || method == fasthttp.MethodHead {
+		return true
 	}
-	return false
+	id, action, _ := strings.Cut(strings.TrimPrefix(path[len(anthropicDeploymentsPath):], "/"), "/")
+	return method == fasthttp.MethodPost && id != "" && (action == "pause" || action == "archive")
 }
 
 // isAnthropicDeploymentStart reports whether a deployments request can start runs of an agent:
-// any deployments request other than a read, pause or archive (create, update, run, unpause).
+// any deployments request other than a read, pause or archive: create, update, run, unpause, and a
+// method or action the API does not list, so an unknown one fails closed.
 func isAnthropicDeploymentStart(method, path string) bool {
 	return isAnthropicDeploymentsPath(method, path) && !isAnthropicDeploymentModelFree(method, path)
 }

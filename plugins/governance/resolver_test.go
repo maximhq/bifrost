@@ -1204,10 +1204,14 @@ func TestPreLLMHookAnthropicDeploymentsUnderModelAllowlists(t *testing.T) {
 		require.NoError(t, err)
 		assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
 	}
-	for _, req := range starts {
+	streamedRun := deployment("POST", "/v1/deployments/depl_1/run", "", "")
+	streamedRun.RequestType = schemas.PassthroughStreamRequest
+	for _, req := range append(append([]*schemas.BifrostRequest{}, starts...), streamedRun) {
 		_, shortCircuit, err := plugin.PreLLMHook(runsUnseen("sk-bf-depl"), req)
 		require.NoError(t, err)
 		assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+		// The reason names the all-models rule, not the unseen-model one, which would ask for a model.
+		require.Contains(t, shortCircuit.Error.Error.Message, "requires an access that allows every model")
 	}
 	// The bug in #10373: a key that allows every Anthropic model reaches every deployments request.
 	for _, req := range reads {

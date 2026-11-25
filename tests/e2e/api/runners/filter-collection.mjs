@@ -389,7 +389,8 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // Anthropic Managed Agents deployments live at /anthropic_passthrough/v1/deployments, so their rows
   // contain "deployments", an azure keyword. They call Anthropic, so an azure run would need an
   // Anthropic key with Managed Agents access. Keep /anthropic_passthrough rows out of the azure partition.
-  if (provider === "azure" && haystack.includes("/anthropic_passthrough")) return false;
+  // A row is known by its URL, name or folder; prose in a request body is not identity.
+  if (provider === "azure" && buildHaystack({ ...item, request: { ...item.request, body: undefined } }, ancestorNames).includes("/anthropic_passthrough")) return false;
   return keywords.some((k) => haystack.includes(k));
 };
 
