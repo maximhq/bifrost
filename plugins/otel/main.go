@@ -1140,24 +1140,40 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	customerIDs, customerNames := entitySet(e, attrs, entityCustomer)
 	buIDs, buNames := entitySet(e, attrs, entityBusinessUnit)
 
-	return BuildBifrostAttributes(
-		provider,
-		schemas.NormalizeModelName(model),
-		method,
-		enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyID, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyID }),
-		enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyName, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyName }),
-		enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyID, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyID }),
-		enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyName, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyName }),
-		fallbackIndex(e, attrs),
-		teamIDs,
-		teamNames,
-		customerIDs,
-		customerNames,
-		buIDs,
-		buNames,
-		enrichedStr(e, attrs, schemas.AttrBifrostProjectID, func(e *schemas.SpanEnrichment) string { return e.ProjectID }),
-		enrichedStr(e, attrs, schemas.AttrBifrostProjectName, func(e *schemas.SpanEnrichment) string { return e.ProjectName }),
-	)
+	alias := schemas.GetStringAttr(attrs, schemas.AttrBifrostAlias)
+	if span.LLM != nil && span.LLM.Alias != "" {
+		alias = span.LLM.Alias
+	}
+	routingEngineUsed := schemas.GetStringAttr(attrs, schemas.AttrBifrostRoutingEngineUsed)
+	if e != nil && len(e.RoutingEnginesUsed) > 0 {
+		routingEngineUsed = strings.Join(e.RoutingEnginesUsed, ",")
+	}
+
+	return BuildBifrostAttributes(BifrostMetricLabels{
+		Provider:            provider,
+		Model:               schemas.NormalizeModelName(model),
+		Method:              method,
+		Alias:               alias,
+		App:                 enrichedStr(e, attrs, schemas.AttrBifrostApp, func(e *schemas.SpanEnrichment) string { return e.App }),
+		RoutingEngineUsed:   routingEngineUsed,
+		VirtualKeyID:        enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyID, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyID }),
+		VirtualKeyName:      enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyName, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyName }),
+		SelectedKeyID:       enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyID, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyID }),
+		SelectedKeyName:     enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyName, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyName }),
+		RoutingRuleID:       enrichedStr(e, attrs, schemas.AttrBifrostRoutingRuleID, func(e *schemas.SpanEnrichment) string { return e.RoutingRuleID }),
+		RoutingRuleName:     enrichedStr(e, attrs, schemas.AttrBifrostRoutingRuleName, func(e *schemas.SpanEnrichment) string { return e.RoutingRuleName }),
+		ComplexityTier:      enrichedStr(e, attrs, schemas.AttrBifrostComplexityTier, func(e *schemas.SpanEnrichment) string { return e.ComplexityTier }),
+		ComplexityMechanism: enrichedStr(e, attrs, schemas.AttrBifrostComplexityMechanism, func(e *schemas.SpanEnrichment) string { return e.ComplexityMechanism }),
+		TeamIDs:             teamIDs,
+		TeamNames:           teamNames,
+		CustomerIDs:         customerIDs,
+		CustomerNames:       customerNames,
+		BusinessUnitIDs:     buIDs,
+		BusinessUnitNames:   buNames,
+		ProjectID:           enrichedStr(e, attrs, schemas.AttrBifrostProjectID, func(e *schemas.SpanEnrichment) string { return e.ProjectID }),
+		ProjectName:         enrichedStr(e, attrs, schemas.AttrBifrostProjectName, func(e *schemas.SpanEnrichment) string { return e.ProjectName }),
+		FallbackIndex:       fallbackIndex(e, attrs),
+	})
 }
 
 // enrichedStr prefers the typed dimension, falling back to the attribute key.
@@ -1226,31 +1242,44 @@ func entitySet(e *schemas.SpanEnrichment, attrs map[string]any, kind entityKind)
 // metrics (e.g. cache hits) that fire without a provider-attempt span to read from.
 func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) []attribute.KeyValue {
 	requestType, provider, originalModel, resolvedModel := bifrost.GetResponseFields(resp, bifrostErr)
+	// alias keeps the raw requested name, as the span path and Prometheus do.
 	model := originalModel
+	alias := ""
 	if resolvedModel != "" {
 		model = resolvedModel
+		if resolvedModel != originalModel {
+			alias = originalModel
+		}
 	}
+	routingEngines, _ := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
 	teamIDs, teamNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamIDs, schemas.BifrostContextKeyGovernanceTeamNames, schemas.BifrostContextKeyGovernanceTeamID, schemas.BifrostContextKeyGovernanceTeamName)
 	customerIDs, customerNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerNames, schemas.BifrostContextKeyGovernanceCustomerID, schemas.BifrostContextKeyGovernanceCustomerName)
 	buIDs, buNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitIDs, schemas.BifrostContextKeyGovernanceBusinessUnitNames, schemas.BifrostContextKeyGovernanceBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitName)
-	return BuildBifrostAttributes(
-		string(provider),
-		schemas.NormalizeModelName(model),
-		string(requestType),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName),
-		bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex),
-		teamIDs,
-		teamNames,
-		customerIDs,
-		customerNames,
-		buIDs,
-		buNames,
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName),
-	)
+	return BuildBifrostAttributes(BifrostMetricLabels{
+		Provider:            string(provider),
+		Model:               schemas.NormalizeModelName(model),
+		Method:              string(requestType),
+		Alias:               alias,
+		App:                 schemas.DetectAppFromUserAgent(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserAgent)),
+		RoutingEngineUsed:   strings.Join(routingEngines, ","),
+		VirtualKeyID:        bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
+		VirtualKeyName:      bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName),
+		SelectedKeyID:       bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID),
+		SelectedKeyName:     bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName),
+		RoutingRuleID:       bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID),
+		RoutingRuleName:     bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName),
+		ComplexityTier:      bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier),
+		ComplexityMechanism: bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism),
+		TeamIDs:             teamIDs,
+		TeamNames:           teamNames,
+		CustomerIDs:         customerIDs,
+		CustomerNames:       customerNames,
+		BusinessUnitIDs:     buIDs,
+		BusinessUnitNames:   buNames,
+		ProjectID:           bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID),
+		ProjectName:         bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName),
+		FallbackIndex:       bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex),
+	})
 }
 
 // buildMCPSpanAttrs builds the duration-metric dimensions: semconv attrs + governance

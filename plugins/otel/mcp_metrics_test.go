@@ -286,7 +286,7 @@ func TestRecordErrorRequestCarriesStatusAndErrorType(t *testing.T) {
 // service_instance_id, and a datapoint label of that name would duplicate it and make
 // the Prometheus exporter drop the whole metric.
 func TestReplicaIDLabelCannotCollideWithTheConvertedResourceAttribute(t *testing.T) {
-	attrs := BuildBifrostAttributes("openai", "gpt-4o", "chat", "", "", "", "", 0, "", "", "", "", "", "", "", "")
+	attrs := BuildBifrostAttributes(BifrostMetricLabels{Provider: "openai", Model: "gpt-4o", Method: "chat"})
 
 	var replicaLabel string
 	for _, kv := range attrs {
