@@ -10654,8 +10654,10 @@ func TestExecuteRequestWithRetries_DisableRetriesMakesOneAttempt(t *testing.T) {
 }
 
 // BenchmarkExecuteRequestWithRetries_PlainRequest measures the retry loop for an
-// ordinary request that succeeds on its first attempt with retries enabled, the
-// path BifrostContextKeyDisableRetries adds one context lookup to.
+// ordinary request that succeeds on its first attempt with retries enabled. It is
+// the success-path control: the handler returns before the loop reads
+// BifrostContextKeyDisableRetries, so it performs no lookup (see
+// BenchmarkExecuteRequestWithRetries_TerminalFailure for the path that does).
 func BenchmarkExecuteRequestWithRetries_PlainRequest(b *testing.B) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	defer ctx.Cancel()
@@ -10669,6 +10671,27 @@ func BenchmarkExecuteRequestWithRetries_PlainRequest(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		_, _ = executeRequestWithRetries(ctx, config, handler, keyProvider, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, logger)
+	}
+}
+
+// BenchmarkExecuteRequestWithRetries_TerminalFailure measures the path the
+// BifrostContextKeyDisableRetries lookup was added to: an attempt that fails with
+// a status nothing retries (a plain 400), so the loop reads the flag once and
+// returns that error without backoff or a second dispatch.
+func BenchmarkExecuteRequestWithRetries_TerminalFailure(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	key := schemas.Key{ID: "k1", Value: *schemas.NewSecretVar("sk-1")}
+	keyProvider := func(map[string]bool, map[string]bool) (schemas.Key, error) { return key, nil }
+	failure := createBifrostError("invalid request", Ptr(400), nil, false)
+	handler := func(schemas.Key) (string, *schemas.BifrostError) { return "", failure }
+	config := createTestConfig(3, time.Millisecond, time.Millisecond)
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	b.ReportAllocs()
+	for b.Loop() {
 		_, _ = executeRequestWithRetries(ctx, config, handler, keyProvider, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, logger)
 	}
 }

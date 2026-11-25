@@ -382,15 +382,21 @@ func decisionProbeSecrets(config *configstore.ProviderConfig, keys []schemas.Key
 // that does not, which that helper returns unchanged, keeps only its scheme:
 // a malformed URL has no reliable boundary between userinfo, host, and path (a
 // password can hold '@' and '/', and so can a path), so everything after the
-// scheme is replaced rather than guessed at.
+// scheme is replaced rather than guessed at. So is a match holding a second
+// "://": URLs joined without whitespace ("https://a/p,https://user:pw@b") are
+// one match, and url.Parse reads the second URL's userinfo as part of the
+// first one's path, where lib.RedactURLCredentials does not look.
 func redactDecisionProbeURL(raw string) string {
-	if _, err := url.Parse(raw); err == nil {
-		return lib.RedactURLCredentials(raw)
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok {
+		return "redacted"
 	}
-	if scheme, _, ok := strings.Cut(raw, "://"); ok {
-		return scheme + "://redacted"
+	if !strings.Contains(rest, "://") {
+		if _, err := url.Parse(raw); err == nil {
+			return lib.RedactURLCredentials(raw)
+		}
 	}
-	return "redacted"
+	return scheme + "://redacted"
 }
 
 // redactContainingToken replaces each occurrence of token in text, together

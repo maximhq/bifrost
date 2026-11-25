@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -26,17 +27,28 @@ const (
 )
 
 // decisionProbeUpstream is a fake OpenAI-compatible decisions server that
-// records the requests it receives.
+// records the requests it receives: the decoded decision requests, and the
+// method and path of every request, whatever endpoint it reached.
 type decisionProbeUpstream struct {
 	mu       sync.Mutex
 	requests []map[string]any
 	auth     []string
+	calls    []string
 }
 
 func (u *decisionProbeUpstream) recorded() ([]map[string]any, []string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return append([]map[string]any(nil), u.requests...), append([]string(nil), u.auth...)
+}
+
+// probeCalls returns "METHOD /path" for every request the fake upstream received
+// except the model listing the Bifrost client fetches on its own when it starts,
+// which no probe sends.
+func (u *decisionProbeUpstream) probeCalls() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.DeleteFunc(slices.Clone(u.calls), func(call string) bool { return call == "GET /v1/models" })
 }
 
 // probeUpstreamReply is one canned upstream answer. With hold set, the
@@ -81,6 +93,7 @@ func newDecisionProbeHandlerWithConfig(t *testing.T, configure func(map[schemas.
 		_ = json.Unmarshal(raw, &decoded)
 		upstream.mu.Lock()
 		reply := replies[min(len(upstream.requests), len(replies)-1)]
+		upstream.calls = append(upstream.calls, r.Method+" "+r.URL.Path)
 		if r.URL.Path == "/v1/decisions" {
 			upstream.requests = append(upstream.requests, decoded)
 			upstream.auth = append(upstream.auth, r.Header.Get("Authorization"))
@@ -296,8 +309,8 @@ func TestProbeDecision_RejectsRoutesItCannotProbe(t *testing.T) {
 			}
 		})
 	}
-	if requests, _ := upstream.recorded(); len(requests) != 0 {
-		t.Fatalf("upstream got %d decision requests, want none", len(requests))
+	if calls := upstream.probeCalls(); len(calls) != 0 {
+		t.Fatalf("upstream got %v, want no request", calls)
 	}
 }
 
@@ -319,8 +332,8 @@ func TestProbeDecision_MakesOneUpstreamCall(t *testing.T) {
 	if err := json.Unmarshal(body, &result); err != nil {
 		t.Fatalf("failed to decode response: %v; body=%s", err, body)
 	}
-	if requests, _ := upstream.recorded(); len(requests) != 1 {
-		t.Fatalf("upstream got %d decision requests, want exactly 1", len(requests))
+	if calls := upstream.probeCalls(); !slices.Equal(calls, []string{"POST /v1/decisions"}) {
+		t.Fatalf("upstream got %v, want exactly one POST /v1/decisions", calls)
 	}
 	if result.OK || result.Error == nil || result.Error.StatusCode != fasthttp.StatusServiceUnavailable {
 		t.Fatalf("expected the first attempt's 503, got %s", body)
@@ -595,6 +608,35 @@ func TestDecisionProbeErrorFrom_MasksURLsBeforeShortCredentials(t *testing.T) {
 		}
 		if !strings.Contains(value, "example.invalid/path") {
 			t.Fatalf("%s lost the host and path: %q", field, value)
+		}
+	}
+}
+
+// TestDecisionProbeErrorFrom_RedactsAdjacentURLs pins that two URLs joined
+// without whitespace, which the URL pattern finds as one match, do not leak the
+// second URL's userinfo or query: url.Parse reads them as the first URL's path,
+// so the match is redacted after its scheme in the message, type, and code. A
+// standalone URL beside them keeps its host and path.
+func TestDecisionProbeErrorFrom_RedactsAdjacentURLs(t *testing.T) {
+	text := "tried https://first.example/p,https://bob:adjacent-pass@second.example/q?sig=adjacent-sig then https://third.example/r?sig=third-sig"
+	got := decisionProbeErrorFrom(&schemas.BifrostError{
+		StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
+		Error:      &schemas.ErrorField{Message: text, Type: schemas.Ptr(text), Code: schemas.Ptr(text)},
+	}, nil)
+	if got.Type == nil || got.Code == nil {
+		t.Fatalf("type %v, code %v; want both set", got.Type, got.Code)
+	}
+	for field, value := range map[string]string{"message": got.Message, "type": *got.Type, "code": *got.Code} {
+		for _, leaked := range []string{"bob", "adjacent-pass", "adjacent-sig", "third-sig"} {
+			if strings.Contains(value, leaked) {
+				t.Fatalf("%s leaks %q: %q", field, leaked, value)
+			}
+		}
+		if !strings.HasPrefix(value, "tried https://redacted then ") {
+			t.Fatalf("%s did not redact the joined URLs: %q", field, value)
+		}
+		if !strings.Contains(value, "third.example/r") {
+			t.Fatalf("%s lost the standalone URL's host and path: %q", field, value)
 		}
 	}
 }
