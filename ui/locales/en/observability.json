@@ -826,6 +826,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "The settlement row was deleted before it was charged",
+			"relay_job_relay_deleted": "The relay was deleted before the job finished",
 			"relay_job_no_usage": "The final reply had no usage to price",
 			"relay_job_rejected": "The upstream refused the job id",
 			"relay_job_access_denied": "The upstream denied access to the job",

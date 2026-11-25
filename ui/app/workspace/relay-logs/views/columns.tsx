@@ -7,7 +7,14 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { Status, StatusBarColors, Statuses } from "@/lib/constants/logs";
 import type { RelayLog } from "@/lib/types/relays";
-import { RELAY_JOB_OUTCOME_BAR, relayJobOutcome, relayJobReason, relayJobSettledAt, relayJobUntracked } from "../relayJob";
+import {
+	RELAY_JOB_OUTCOME_BAR,
+	relayJobOutcome,
+	relayJobReason,
+	relayJobSettledAt,
+	relayJobStatusLabel,
+	relayJobUntracked,
+} from "../relayJob";
 import { getLocale } from "@/lib/i18n";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { format } from "date-fns";
@@ -139,8 +146,8 @@ export const createRelayColumns = (
 				outcome === "unpriced"
 					? t("relayLogs.columns.jobUnpriced", { reason: relayJobReason(log) })
 					: outcome === "failed"
-						? t("relayLogs.columns.jobFailed", { status: log.job_status ?? "-" })
-						: t("relayLogs.columns.settled", { status: log.job_status ?? "-" });
+						? t("relayLogs.columns.jobFailed", { status: relayJobStatusLabel(log.job_status) || "-" })
+						: t("relayLogs.columns.settled", { status: relayJobStatusLabel(log.job_status) || "-" });
 			// A job row is listed at its start; the line says when it actually ended.
 			const secondary = outcome
 				? [jobLine, settledAt ? format(settledAt, "MMM d, HH:mm:ss", { locale: dateFnsLocale(getLocale()) }) : ""]

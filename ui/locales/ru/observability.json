@@ -874,6 +874,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "Строка расчёта удалена до списания",
+			"relay_job_relay_deleted": "Ретранслятор был удалён до завершения задания",
 			"relay_job_no_usage": "В последнем ответе нет данных об использовании",
 			"relay_job_rejected": "Upstream отклонил идентификатор задания",
 			"relay_job_access_denied": "Upstream отказал в доступе к заданию",

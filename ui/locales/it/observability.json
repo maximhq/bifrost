@@ -826,6 +826,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "La riga di regolazione è stata eliminata prima dell'addebito",
+			"relay_job_relay_deleted": "Il relay è stato eliminato prima che il job terminasse",
 			"relay_job_no_usage": "La risposta finale non conteneva un utilizzo da prezzare",
 			"relay_job_rejected": "L'upstream ha rifiutato l'ID del job",
 			"relay_job_access_denied": "L'upstream ha negato l'accesso al job",

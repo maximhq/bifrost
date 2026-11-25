@@ -821,6 +821,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "結算列在扣款前已被刪除",
+			"relay_job_relay_deleted": "作業完成前中繼已被刪除",
 			"relay_job_no_usage": "最終回覆中沒有可計價的用量",
 			"relay_job_rejected": "上游拒絕了作業 ID",
 			"relay_job_access_denied": "上游拒絕存取該作業",

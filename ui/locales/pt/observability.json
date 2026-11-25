@@ -826,6 +826,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "A linha de liquidação foi excluída antes da cobrança",
+			"relay_job_relay_deleted": "O relay foi excluído antes de o job terminar",
 			"relay_job_no_usage": "A resposta final não tinha uso para cobrar",
 			"relay_job_rejected": "O upstream recusou o id da tarefa",
 			"relay_job_access_denied": "O upstream negou acesso à tarefa",

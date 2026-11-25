@@ -826,6 +826,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "Die Abrechnungszeile wurde vor der Belastung gelöscht",
+			"relay_job_relay_deleted": "Das Relay wurde gelöscht, bevor der Job fertig war",
 			"relay_job_no_usage": "Die letzte Antwort enthielt keine Nutzung",
 			"relay_job_rejected": "Der Upstream hat die Job-ID abgelehnt",
 			"relay_job_access_denied": "Der Upstream hat den Zugriff verweigert",

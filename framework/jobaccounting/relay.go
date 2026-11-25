@@ -29,6 +29,8 @@ const (
 	UnpriceableReasonRelayJobRefused    = "relay_job_rejected"
 	UnpriceableReasonRelayJobNoUsage    = "relay_job_no_usage"
 	UnpriceableReasonRelayJobRowMissing = "relay_job_row_missing"
+	// UnpriceableReasonRelayDeleted ends a job whose relay was deleted before it finished.
+	UnpriceableReasonRelayDeleted = "relay_job_relay_deleted"
 )
 
 // endpointJobLogNamespace is the UUIDv5 namespace for relay settlement row ids.
@@ -80,6 +82,9 @@ func NewRelayJobSweeper(store SweepStore, poller RelayJobPoller, logs RelayJobLo
 // MaxRelayJobGenerations bounds how many times one upstream job id is reused after settlement
 // before a start is keyed by its own request instead (reused_id_is_new_job).
 const MaxRelayJobGenerations = 64
+
+// RelayJobStartedStatus is the status a relay job row is recorded with, before the upstream reports one.
+const RelayJobStartedStatus = "started"
 
 // RelayJobRowID is the coordination row id of a relay job, and its scoped job id, for generation
 // gen of an upstream id: the first start takes generation 1, a reused id after settlement the next.
@@ -373,8 +378,9 @@ func relayJobBusyOrDone(job *cstables.TableProviderJob) bool {
 // relayPollFailure names why a job's last poll failed.
 func relayPollFailure(bErr *schemas.BifrostError) (string, error) {
 	if bErr.Error != nil && errors.Is(bErr.Error.Error, relay.ErrRelayNotFound) {
-		// A relay missing from the live set (mid reload, or pruned) is not the upstream forgetting the job.
-		return UnpriceableReasonRelayJobTimeout, bErr.Error.Error
+		// The job was retried until its timeout (a relay can be missing for a moment mid reload), so a
+		// relay still missing then was deleted, which is not the upstream forgetting the job.
+		return UnpriceableReasonRelayDeleted, bErr.Error.Error
 	}
 	err := NewProviderCallError(bErr)
 	switch ClassifyProviderCall(err) {
@@ -552,7 +558,12 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 		OutputTokens:       usage.OutputTokens,
 		TotalTokens:        usage.TotalTokens,
 	}
-	entry.JobDebugParsed = &logstore.RelayJobDebug{Polls: job.PollAttempts, LastStatus: job.ProviderStatus, LastHTTPStatus: e.verdict.httpStatus,
+	// "started" is the status the job row is recorded with, not one the upstream reported.
+	lastStatus := job.ProviderStatus
+	if lastStatus == RelayJobStartedStatus {
+		lastStatus = ""
+	}
+	entry.JobDebugParsed = &logstore.RelayJobDebug{Polls: job.PollAttempts, LastStatus: lastStatus, LastHTTPStatus: e.verdict.httpStatus,
 		SettledByRequestID: e.verdict.settledBy, SettledAt: time.Now().UTC()}
 	if e.verdict.status != "" {
 		entry.JobDebugParsed.LastStatus = e.verdict.status

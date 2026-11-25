@@ -821,6 +821,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "課金前に精算行が削除されました",
+			"relay_job_relay_deleted": "ジョブの完了前にリレーが削除されました",
 			"relay_job_no_usage": "最終応答に課金できる使用量がありません",
 			"relay_job_rejected": "アップストリームがジョブ ID を拒否しました",
 			"relay_job_access_denied": "アップストリームがアクセスを拒否しました",

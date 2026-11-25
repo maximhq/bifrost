@@ -821,6 +821,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "과금 전에 정산 행이 삭제됨",
+			"relay_job_relay_deleted": "작업이 끝나기 전에 릴레이가 삭제되었습니다",
 			"relay_job_no_usage": "최종 응답에 과금할 사용량이 없음",
 			"relay_job_rejected": "업스트림이 작업 ID를 거부함",
 			"relay_job_access_denied": "업스트림이 작업 접근을 거부함",

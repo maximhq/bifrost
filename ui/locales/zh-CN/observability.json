@@ -821,6 +821,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "结算行在扣费前已被删除",
+			"relay_job_relay_deleted": "作业完成前中继已被删除",
 			"relay_job_no_usage": "最终回复中没有可计价的用量",
 			"relay_job_rejected": "上游拒绝了作业 ID",
 			"relay_job_access_denied": "上游拒绝访问该作业",

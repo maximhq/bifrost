@@ -718,7 +718,7 @@ func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, relayName str
 		JobID:          scoped,
 		Endpoint:       entry.RoutePath,
 		Params:         &params,
-		ProviderStatus: "started",
+		ProviderStatus: jobaccounting.RelayJobStartedStatus,
 		NextCheckAt:    &next,
 		VirtualKeyID:   entry.VirtualKeyID,
 		UserID:         entry.UserID,

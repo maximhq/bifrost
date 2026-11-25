@@ -381,6 +381,19 @@ func TestRelayJobEndingWithAMissingRelayRecordsNoCheck(t *testing.T) {
 	require.NotNil(t, row.JobDebugParsed)
 	assert.Equal(t, 0, row.JobDebugParsed.Polls)
 	assert.Zero(t, row.JobDebugParsed.LastHTTPStatus)
+	require.NotNil(t, job.UnpriceableReason)
+	assert.Equal(t, UnpriceableReasonRelayDeleted, *job.UnpriceableReason, "a relay still missing at the timeout was deleted, not a timeout")
+	assert.Empty(t, row.JobDebugParsed.LastStatus, "the upstream never reported a status, so none is shown")
+}
+
+// Before its timeout a job whose relay is missing is retried, since a relay can be missing for a
+// moment during a reload.
+func TestRelayJobWithAMissingRelayIsRetriedBeforeItsTimeout(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	relaySweeper(store, &fakeEndpointPoller{err: relay.RelayNotFoundError("textract")}, newFakeEndpointLogs(), &fakeEndpointReporter{}).SweepOnce(context.Background())
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
+	assert.Nil(t, job.UnpriceableReason)
 }
 
 // A succeeded job whose reply carries no units cannot be priced, so it is not recorded as a free success.
