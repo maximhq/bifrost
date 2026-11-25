@@ -79,6 +79,30 @@ func TestConvertToolFunctionParametersToMCPInputSchemaPreservesLegacyDefinitions
 	assert.Contains(t, string(data), `"$defs"`)
 }
 
+// A tool whose arguments are a root-level union must be re-listed on /mcp as its server declared
+// it, or clients connected through Bifrost see a tool with no parameters.
+func TestConvertToolFunctionParametersToMCPInputSchemaPreservesRootComposition(t *testing.T) {
+	const branches = `[
+		{"type":"object","properties":{"kind":{"type":"string","const":"sales"},"region":{"type":"string"}},"required":["kind"]},
+		{"type":"object","properties":{"kind":{"type":"string","const":"inventory"},"warehouse":{"type":"string"}},"required":["kind"]}
+	]`
+	var want []any
+	require.NoError(t, json.Unmarshal([]byte(branches), &want))
+
+	for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+		t.Run(keyword, func(t *testing.T) {
+			var params schemas.ToolFunctionParameters
+			require.NoError(t, schemas.Unmarshal([]byte(`{"type":"object","properties":{},"`+keyword+`":`+branches+`}`), &params))
+
+			data, err := json.Marshal(convertToolFunctionParametersToMCPInputSchema(&params))
+			require.NoError(t, err)
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, want, got[keyword], "the %s branches must be re-listed unchanged", keyword)
+		})
+	}
+}
+
 // Forwarding upstream MCP `instructions` on the gateway's own initialize response.
 
 // fakeInstructionsToolManager reports a fixed aggregate and records the context it was asked
