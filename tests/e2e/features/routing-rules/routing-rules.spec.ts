@@ -314,6 +314,61 @@ test.describe("Routing Rules", () => {
       await routingRulesPage.cancelRule();
     });
 
+    test("should suggest a key alias as a fallback model", async ({
+      page,
+      routingRulesPage,
+    }) => {
+      const suffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+      const alias = `fallback-alias-${suffix}`;
+      // The target is no listed model, so only the alias itself can put the name in the list.
+      const created = await page.request.post("/api/providers/openai/keys", {
+        data: {
+          name: `Fallback alias ${suffix}`,
+          value: "sk-e2e-fallback-alias",
+          models: [alias],
+          weight: 0,
+          aliases: { [alias]: { model_id: `unlisted-${suffix}` } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      const { id: keyId } = await created.json();
+
+      try {
+        const ruleData = createRoutingRuleData({
+          name: `Alias Fallback Rule ${suffix}`,
+          enabled: false,
+          provider: "openai",
+        });
+        createdRules.push(ruleData.name);
+        await routingRulesPage.createRoutingRule(ruleData);
+        await routingRulesPage.openEditSheet(ruleData.name);
+
+        const index = await routingRulesPage.addFallbackProvider("openai");
+        const modelTrigger = routingRulesPage.sheet
+          .getByTestId(`routing-fallback-${index}-model-select`)
+          .getByRole("combobox");
+        await modelTrigger.click();
+        await page.getByPlaceholder("Search models").fill(alias);
+        // An exact name: the row for a typed custom model reads "Use ...", so it cannot match.
+        const option = page.getByRole("option", { name: alias, exact: true });
+        await option.click();
+        // The sheet locator also matches the list until it has finished closing.
+        await expect(option).toHaveCount(0);
+        await expect(modelTrigger).toContainText(alias);
+
+        await routingRulesPage.saveBtn.click();
+        await expect(routingRulesPage.sheet).not.toBeVisible();
+        await routingRulesPage.openEditSheet(ruleData.name);
+        await expect(modelTrigger).toContainText(alias);
+        await routingRulesPage.cancelRule();
+      } finally {
+        const deleted = await page.request.delete(
+          `/api/providers/openai/keys/${keyId}`,
+        );
+        expect(deleted.ok(), await deleted.text()).toBe(true);
+      }
+    });
+
     test("should set, edit and clear the TTFT cutoff", async ({
       routingRulesPage,
     }) => {

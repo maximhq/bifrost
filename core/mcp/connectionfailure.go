@@ -59,7 +59,7 @@ func connectionFailureMessage(err error) string {
 // markClientHealthy is the one way State becomes Healthy: the failure record
 // is cleared in the same write, so a Healthy client never carries a stale
 // explanation. Caller holds m.mu.
-func markClientHealthy(cs *schemas.MCPClientState) {
+func markClientHealthy(cs *clientConn) {
 	cs.State = schemas.MCPConnectionStateHealthy
 	cs.LastFailure = nil
 }
@@ -69,6 +69,6 @@ func markClientHealthy(cs *schemas.MCPClientState) {
 // run. It does not touch State: every caller decides that separately, since
 // the same failure lands in Unstable or NeedsReauth depending on its
 // classification. Caller holds m.mu.
-func recordClientFailure(cs *schemas.MCPClientState, stage schemas.MCPConnectionFailureStage, err error) {
+func recordClientFailure(cs *clientConn, stage schemas.MCPConnectionFailureStage, err error) {
 	cs.LastFailure = newConnectionFailure(stage, err, cs.LastFailure)
 }

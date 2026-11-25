@@ -15,6 +15,9 @@ import (
 
 // UsageUpdate contains data for VK-level usage tracking
 type UsageUpdate struct {
+	// RequestStartedAt is the timestamp used to attribute the request in logs.
+	RequestStartedAt time.Time `json:"-"`
+
 	Success    bool    `json:"success"`
 	TokensUsed int64   `json:"tokens_used"`
 	Cost       float64 `json:"cost"` // Cost in dollars
@@ -122,6 +125,10 @@ func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *Budge
 	return tracker
 }
 
+type usageContextKey uint8
+
+const usageRequestStartKey usageContextKey = iota
+
 // UpdateUsage applies request usage to its resolved budgets and rate limits.
 func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// Bill for tokens the provider actually processed, even when the
@@ -162,6 +169,9 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	//
 	// The list already names the deployment's provider limits, the model configs that apply in every
 	// scope, and whatever funds the holder. Nothing here asks which of those a limit is.
+	if !update.RequestStartedAt.IsZero() {
+		ctx = context.WithValue(ctx, usageRequestStartKey, update.RequestStartedAt)
+	}
 	if len(update.RateLimits) > 0 && (shouldUpdateTokens || shouldUpdateRequests) {
 		if err := t.store.ChargeRateLimits(ctx, update.RateLimits, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
 			t.logger.Error("failed to count request %s against its rate limits: %v", update.RequestID, err)
@@ -222,7 +232,7 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	start := time.Now()
 
 	// ==== PART 1: Reset Rate Limits ====
-	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx, true)
+	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx)
 	if err := t.store.ResetExpiredRateLimits(ctx, resetRateLimits); err != nil {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return
@@ -234,7 +244,7 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	}
 
 	// ==== PART 2: Reset Budgets ====
-	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx, true)
+	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx)
 	if err := t.store.ResetExpiredBudgets(ctx, resetBudgets); err != nil {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return
@@ -246,7 +256,8 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	}
 
 	// ==== PART 3: Dump all rate limits and budgets to database ====
-	if err := t.store.DumpRateLimits(ctx, nil, nil); err != nil {
+	dumper := t.store.GetRateLimitDumper(ctx, nil, nil)
+	if err := dumper(ctx); err != nil {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return
 		}
@@ -255,7 +266,8 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	if err := t.store.DumpBudgets(ctx, nil); err != nil {
+	dumper = t.store.GetBudgetDumper(ctx, nil)
+	if err := dumper(ctx); err != nil {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return
 		}
@@ -364,7 +376,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 	// Reuse the shared in-memory reset path so startup, ticker, and request-time
 	// resets all apply the same LastDB baseline and reset-hook side effects.
 	rateLimitResetStart := time.Now()
-	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx, true)
+	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx)
 	t.logger.Info("[startup-timing] PerformStartupResets in-memory reset of %d rate limits took %v", len(resetRateLimits), time.Since(rateLimitResetStart))
 	if err := t.store.ResetExpiredRateLimits(ctx, resetRateLimits); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reset expired rate limits: %s", err.Error()))
@@ -372,7 +384,7 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 
 	// DB reset is also handled by this function
 	budgetResetStart := time.Now()
-	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx, true)
+	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx)
 	t.logger.Info("[startup-timing] PerformStartupResets in-memory reset of %d budgets took %v", len(resetBudgets), time.Since(budgetResetStart))
 	if err := t.store.ResetExpiredBudgets(ctx, resetBudgets); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reset expired budgets: %s", err.Error()))
@@ -438,10 +450,12 @@ func (t *UsageTracker) Cleanup() error {
 	// Flush all in-memory state after the worker has fully stopped. The plugin
 	// waits for its asynchronous accounting goroutines before calling Cleanup,
 	// so these snapshots include every accepted update since the last tick.
-	if err := t.store.DumpBudgets(context.Background(), nil); err != nil {
+	dumper := t.store.GetBudgetDumper(context.Background(), nil)
+	if err := dumper(context.Background()); err != nil {
 		t.logger.Error("final budget dump on shutdown failed: %v", err)
 	}
-	if err := t.store.DumpRateLimits(context.Background(), nil, nil); err != nil {
+	dumper = t.store.GetRateLimitDumper(context.Background(), nil, nil)
+	if err := dumper(context.Background()); err != nil {
 		t.logger.Error("final rate-limit dump on shutdown failed: %v", err)
 	}
 

@@ -248,8 +248,8 @@ func (h *WSSpeechSessionHandler) noIncrementalSpeechMessage(providerKey schemas.
 // dialer opens a provider connection through the pool, which counts it and applies the provider's proxy.
 func (h *WSSpeechSessionHandler) dialer(providerKey schemas.ModelProvider, key schemas.Key) schemas.SpeechSessionDialer {
 	var proxyConfig *schemas.ProxyConfig
-	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(providerKey); cfgErr == nil && providerCfg != nil {
-		proxyConfig = providerCfg.ProxyConfig
+	if stored, ok := h.config.LiveStore.Collections.Providers.Get(string(providerKey)); ok {
+		proxyConfig = stored.Config.ProxyConfig
 	}
 	return func(_ *schemas.BifrostContext, url string, headers map[string]string) (schemas.RealtimeUpstream, *schemas.BifrostError) {
 		upstream, err := h.pool.Get(bfws.PoolKey{Provider: providerKey, KeyID: key.ID, Endpoint: url}, mapToHTTPHeader(headers), proxyConfig)
