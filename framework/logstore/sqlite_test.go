@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -105,6 +106,43 @@ func TestSQLiteReclaimFreeSpaceDrainsFreelist(t *testing.T) {
 	assert.Zero(t, sqlitePragma(t, store, "freelist_count"))
 	assert.LessOrEqual(t, sqlitePragma(t, store, "page_count"), pages-free, "every free page leaves the file")
 	assert.Equal(t, free*sqlitePragma(t, store, "page_size"), reclaimed)
+}
+
+// A reader that holds a snapshot stops the passive checkpoint after a reclaim, so
+// logs.db keeps its size. The next reclaim finds no free pages and must still
+// complete the checkpoint, or logs.db waits for a later automatic checkpoint.
+func TestSQLiteReclaimFreeSpaceCompletesCheckpointAReaderBlocked(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "logs.db")
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: path}, testLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+	db, err := store.db.DB()
+	require.NoError(t, err)
+	leaveFreePages(t, db, 3*incrementalVacuumPages)
+	fileSize := func() int64 {
+		t.Helper()
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		return info.Size()
+	}
+
+	reader, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reader.Rollback() })
+	var rows int64
+	require.NoError(t, reader.QueryRow("SELECT count(*) FROM filler").Scan(&rows), "the read starts the snapshot")
+	_, err = store.ReclaimFreeSpace(ctx)
+	require.NoError(t, err)
+	require.Zero(t, sqlitePragma(t, store, "freelist_count"))
+	liveSize := sqlitePragma(t, store, "page_count") * sqlitePragma(t, store, "page_size")
+	require.Greater(t, fileSize(), liveSize, "the reader must stop the checkpoint from truncating logs.db")
+	require.NoError(t, reader.Rollback())
+
+	reclaimed, err := store.ReclaimFreeSpace(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, reclaimed, "the freelist is already empty")
+	assert.Equal(t, liveSize, fileSize(), "logs.db must shrink to its live size once the reader is gone")
 }
 
 // Only SQLite keeps freed pages inside its file. On any other dialect

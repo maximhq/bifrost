@@ -110,10 +110,12 @@ func (s *RDBLogStore) ReclaimFreeSpace(ctx context.Context) (int64, error) {
 		}
 		freed += pages
 	}
-	if freed > 0 && ctx.Err() == nil {
+	if ctx.Err() == nil {
 		// In WAL mode the vacuum truncates the logical database. logs.db shrinks only
 		// when a checkpoint writes that truncation back. PASSIVE does not block writers
 		// or wait for readers, so busy readers can leave part of the WAL for later.
+		// It runs even when this pass freed no pages, so a checkpoint that readers
+		// stopped on an earlier pass completes now.
 		var busy, walFrames, checkpointed int64
 		if err := db.Raw("PRAGMA wal_checkpoint(PASSIVE)").Row().Scan(&busy, &walFrames, &checkpointed); err != nil {
 			return freed * pageSize, err
