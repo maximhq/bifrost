@@ -8637,6 +8637,19 @@ func (s *RDBConfigStore) RecordOAuthFlowIssuer(ctx context.Context, id, state, i
 	return result.RowsAffected > 0, nil
 }
 
+// RecordOAuthFlowBrowserBinding writes only the hash that ties a per-user flow to the browser that
+// started it, while the flow is still pending with state, so a sign-in renewed meanwhile keeps its
+// new state and verifier. Starting the flow again replaces the hash: the latest browser finishes it.
+func (s *RDBConfigStore) RecordOAuthFlowBrowserBinding(ctx context.Context, id, state, bindingHash string) (bool, error) {
+	result := s.DB().WithContext(ctx).Model(&tables.TableMCPOauthFlow{}).
+		Where("id = ? AND state = ? AND status = ?", id, state, "pending").
+		Update("browser_binding_hash", bindingHash)
+	if result.Error != nil {
+		return false, fmt.Errorf("failed to record the browser binding on oauth flow %s: %w", id, result.Error)
+	}
+	return result.RowsAffected > 0, nil
+}
+
 // ---------- Per-User OAuth Token CRUD ----------
 
 // perUserOauthAuthModes is the set of TableMCPOauthToken.AuthMode values that

@@ -1154,6 +1154,9 @@ func (h *MCPSessionsHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 // user completes upstream auth; upstream redirects back to /api/oauth/callback
 // which calls CompleteUserOAuthFlow.
 func (h *MCPSessionsHandler) flowStart(ctx *fasthttp.RequestCtx) {
+	if h.refuseSteeredFlowStart(ctx) {
+		return
+	}
 	flowID, ok := ctx.UserValue("id").(string)
 	if !ok || flowID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid flow id")
@@ -1189,7 +1192,61 @@ func (h *MCPSessionsHandler) flowStart(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to build upstream authorize URL")
 		return
 	}
+	if err := bindOAuthFlowToBrowser(ctx, h.store.ConfigStore, flowID, upstreamURL, flow.ExpiresAt); err != nil {
+		if errors.Is(err, schemas.ErrOAuth2FlowNotPending) {
+			logger.Debug("[mcp/sessions] flow start refused (no longer pending): flow=%s", flowID)
+			SendError(ctx, fasthttp.StatusGone, "OAuth flow is no longer pending; restart authentication")
+			return
+		}
+		// Without the binding the callback would refuse this browser, so no URL is handed out.
+		logger.Error("[mcp/sessions] flow start failed, the browser could not be bound: flow=%s err=%v", flowID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to start authentication")
+		return
+	}
 	SendJSON(ctx, map[string]any{"authorize_url": upstreamURL})
+}
+
+// flowStartNotFromPageMessage is what a flow start is told when it did not come from the
+// authentication page.
+const flowStartNotFromPageMessage = "Authentication can only be started from the Bifrost authentication page. Open the authentication link and start again."
+
+// refuseSteeredFlowStart turns away a flow start that Bifrost's authentication page did not make.
+// Starting a flow sets the cookie the callback asks for, which marks this browser as the one
+// that chose to sign in. The dashboard cookie is SameSite=Lax, so a link or a form on another
+// site carries it here on a top-level navigation; without this check the owner of a flow could
+// plant the cookie in a signed-in user's browser and then have them finish the sign-in for the
+// owner's virtual key or session.
+//
+// The page calls this route with fetch, never by navigating, so a navigation is refused from
+// anywhere. A fetch that names its origin is taken from the gateway's own origin, a localhost
+// origin (the development UI runs on its own port) or an origin the operator listed by name in
+// allowed_origins; the bare "*" names nobody. A request from another site that names no origin
+// (an image, a script) is refused. A same-origin fetch, and a client that sends no fetch
+// metadata at all, go through. Returns true when the request was refused and answered.
+func (h *MCPSessionsHandler) refuseSteeredFlowStart(ctx *fasthttp.RequestCtx) bool {
+	refuse := func() bool {
+		SendError(ctx, fasthttp.StatusForbidden, flowStartNotFromPageMessage)
+		return true
+	}
+	if string(ctx.Request.Header.Peek("Sec-Fetch-Mode")) == "navigate" {
+		return refuse()
+	}
+	if origin := string(ctx.Request.Header.Peek("Origin")); origin != "" {
+		var allowed []string
+		h.store.Mu.RLock()
+		if h.store.ClientConfig != nil {
+			allowed = h.store.ClientConfig.AllowedOrigins
+		}
+		h.store.Mu.RUnlock()
+		if originExplicitlyAllowed(origin, allowed) || isOwnOrigin(ctx, origin) {
+			return false
+		}
+		return refuse()
+	}
+	if site := string(ctx.Request.Header.Peek("Sec-Fetch-Site")); site != "" && site != "same-origin" {
+		return refuse()
+	}
+	return false
 }
 
 // loadAuthorizedFlow looks up the pending flow row. Visibility is enforced

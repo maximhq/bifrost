@@ -183,6 +183,71 @@ func TestFlowStart_ExpiredOAuthFlowIsGone(t *testing.T) {
 	assert.Contains(t, body, "OAuth flow is no longer pending; restart authentication")
 }
 
+// TestFlowStart_OnlyTheAuthenticationPageMayStartAFlow: starting a flow sets the cookie the
+// callback later asks for, so it marks the browser as the one that chose to sign in. A link or a
+// form on another site can send a signed-in browser to this route with its dashboard cookie
+// (the cookie is SameSite=Lax, which a top-level navigation carries). If that were enough, the
+// owner of a flow could plant the cookie in someone else's browser and then have them finish the
+// sign-in for the owner's virtual key or session. The route is called by Bifrost's own page with
+// fetch, so a navigation is refused wherever it comes from, and a fetch is taken only from the
+// gateway's own origin, a localhost origin (the development UI runs on its own port), or an
+// origin the operator listed by name. A client that sends no fetch metadata is not a browser
+// being steered.
+func TestFlowStart_OnlyTheAuthenticationPageMayStartAFlow(t *testing.T) {
+	h, _ := newOpenAPITestHandler(t)
+	vk := "vk-1"
+	expired := time.Now().Add(-time.Minute)
+	require.NoError(t, h.store.ConfigStore.CreateOauthUserSession(context.Background(), &tables.TableMCPOauthFlow{
+		ID: "flow-expired", MCPClientID: "client-1", OauthConfigID: "oauth-config-1", State: "state-expired",
+		VirtualKeyID: &vk, FlowMode: "vk", Status: "pending",
+		ExpiresAt: expired, CreatedAt: expired.Add(-15 * time.Minute), UpdatedAt: expired,
+	}))
+	h.store.OAuthProvider = newTestOAuthProvider(t, h.store.ConfigStore, &mockLogger{})
+	h.store.Mu.Lock()
+	if h.store.ClientConfig == nil {
+		h.store.ClientConfig = &configstore.ClientConfig{}
+	}
+	// The bare "*" is the default and names nobody, so it does not make an origin trusted here.
+	h.store.ClientConfig.AllowedOrigins = []string{"*", "https://console.example.com"}
+	h.store.Mu.Unlock()
+	sessions := NewMCPSessionsHandler(h.store, nil, nil)
+	start := func(headers map[string]string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodGet)
+		for name, value := range headers {
+			req.Header.Set(name, value)
+		}
+		ctx := initCtx(&req)
+		ctx.SetUserValue("id", "flow-expired")
+		sessions.flowStart(ctx)
+		return ctx
+	}
+
+	for name, headers := range map[string]map[string]string{
+		"a link on another site":               {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"},
+		"the address typed or bookmarked":      {"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate"},
+		"a navigation from Bifrost's own page": {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "navigate"},
+		"a form posted from a named origin":    {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Origin": "https://console.example.com"},
+		"a fetch from an origin nobody named":  {"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "cors", "Origin": "https://evil.example.com"},
+		"an image or script on another site":   {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"},
+		"a sibling site without an origin":     {"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "no-cors"},
+	} {
+		ctx := start(headers)
+		assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), "%s: %s", name, ctx.Response.Body())
+		assert.Empty(t, ctx.Response.Header.Peek("Set-Cookie"), "%s: no cookie is set", name)
+	}
+	// The flow in this test is past its expiry, so a request that gets past the check answers 410.
+	for name, headers := range map[string]map[string]string{
+		"the authentication page's fetch":  {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors"},
+		"the development UI on its port":   {"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "cors", "Origin": "http://localhost:3000"},
+		"a UI on an origin listed by name": {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors", "Origin": "https://console.example.com"},
+		"a client with no fetch metadata":  {},
+	} {
+		ctx := start(headers)
+		assert.Equal(t, fasthttp.StatusGone, ctx.Response.StatusCode(), "%s: %s", name, ctx.Response.Body())
+	}
+}
+
 // evictionLog records every cache eviction a handler asks for, one line per call.
 type evictionLog struct {
 	mu    sync.Mutex

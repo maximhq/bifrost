@@ -334,6 +334,11 @@ type TableMCPOauthFlow struct {
 	Issuer                string `gorm:"type:text" json:"-"`     // Issuer the authorization response must name; "" when unknown
 	IssParameterSupported bool   `gorm:"default:false" json:"-"` // The response must carry iss (RFC 9207)
 
+	// BrowserBindingHash is the SHA-256 (hex) of the random value given, as a cookie, to the
+	// browser that started a per-user sign-in. The callback redeems the code only when that
+	// value comes back with it. Only the hash is stored; "" means no browser has started the flow.
+	BrowserBindingHash string `gorm:"type:varchar(64)" json:"-"`
+
 	// Display-only relations (no DB-level FK constraint; preloaded for
 	// sessions/admin UI). "-:migration" is load-bearing, not decorative — see
 	// the matching comment on TableMCPOauthToken.MCPClient/VirtualKey above

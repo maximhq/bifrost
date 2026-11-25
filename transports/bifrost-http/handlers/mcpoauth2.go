@@ -4,6 +4,10 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -114,6 +118,11 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// A per-user flow is finished in the browser that started it; see bindOAuthFlowToBrowser.
+	if h.refuseCallbackFromAnotherBrowser(ctx, state) {
+		return
+	}
+
 	// Per-user runtime flow (state lives in oauth_user_sessions).
 	completion, perUserErr := h.oauthProvider.CompleteUserOAuthFlow(ctx, state, code)
 	if perUserErr != nil && !errors.Is(perUserErr, schemas.ErrOAuth2NotPerUserSession) {
@@ -141,6 +150,117 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	ctx.Redirect(lib.WithBasePath("/workspace/mcp-registry/oauth-callback?status=success"), fasthttp.StatusFound)
+}
+
+// oauthFlowCookiePrefix names the cookie that ties a per-user sign-in to the browser that
+// started it. The rest of the name derives from the flow's state, so several sign-ins can be
+// open in one browser at once.
+const oauthFlowCookiePrefix = "bf_oauth_flow_"
+
+// oauthFlowCookieName returns the cookie name for a flow state: the prefix and the first 12 hex
+// characters of the state's SHA-256. The name only finds the cookie. It proves nothing, because
+// the state is in the authorize URL and in the callback URL.
+func oauthFlowCookieName(state string) string {
+	sum := sha256.Sum256([]byte(state))
+	return oauthFlowCookiePrefix + hex.EncodeToString(sum[:])[:12]
+}
+
+// oauthFlowBindingHash is what the flow row stores for a browser secret.
+func oauthFlowBindingHash(secret []byte) string {
+	sum := sha256.Sum256(secret)
+	return hex.EncodeToString(sum[:])
+}
+
+// bindOAuthFlowToBrowser ties the sign-in that upstreamURL starts to the browser receiving this
+// response. The authentication page asks for the upstream authorize URL and then sends the
+// browser there; the identity provider sends that browser back to the callback. A random value
+// is set as a cookie here and its hash is stored on the flow; the callback asks for the value
+// back, so the sign-in can only be finished where it was started. Without it, the upstream URL
+// alone is enough: whoever opens it signs in, and the resulting credential is stored for the
+// flow's virtual key, user or session, not for them. The value is random rather than worked out
+// from the state because the state is in both URLs.
+//
+// The cookie is HttpOnly and SameSite=Lax (the callback is a top-level navigation back from the
+// identity provider, which Lax allows) and expires with the flow. Starting the flow again
+// replaces the stored hash, so the browser that started it last is the one that finishes it.
+// An error means nothing was bound and the authorize URL must not be handed out.
+func bindOAuthFlowToBrowser(ctx *fasthttp.RequestCtx, store configstore.ConfigStore, flowID, upstreamURL string, expires time.Time) error {
+	parsed, err := url.Parse(upstreamURL)
+	if err != nil {
+		return fmt.Errorf("upstream authorize URL does not parse: %w", err)
+	}
+	state := parsed.Query().Get("state")
+	if state == "" {
+		return errors.New("upstream authorize URL carries no state")
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return fmt.Errorf("failed to generate the browser value: %w", err)
+	}
+	secret := hex.EncodeToString(raw)
+	recorded, err := store.RecordOAuthFlowBrowserBinding(ctx, flowID, state, oauthFlowBindingHash([]byte(secret)))
+	if err != nil {
+		return err
+	}
+	if !recorded {
+		return schemas.ErrOAuth2FlowNotPending
+	}
+	cookie := fasthttp.AcquireCookie()
+	defer fasthttp.ReleaseCookie(cookie)
+	cookie.SetKey(oauthFlowCookieName(state))
+	cookie.SetValue(secret)
+	cookie.SetExpire(expires)
+	cookie.SetPath("/")
+	cookie.SetHTTPOnly(true)
+	cookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
+	if lib.RequestIsHTTPS(ctx) {
+		cookie.SetSecure(true)
+	}
+	ctx.Response.Header.SetCookie(cookie)
+	return nil
+}
+
+// oauthFlowOtherBrowserMessage is shown when a per-user callback arrives without the flow's cookie.
+const oauthFlowOtherBrowserMessage = "This sign-in was started in a different browser. Open the authentication link again and finish in the same browser."
+
+// refuseCallbackFromAnotherBrowser turns away a per-user callback that did not come back to the
+// browser that started the flow, leaving the flow pending so the user can start again. Admin
+// flows are exempt: they are driven through the API as well as the dashboard, so their authorize
+// URL is legitimately opened in a browser that never called Bifrost. A state that names no
+// per-user flow is left to the rest of the callback. Returns true if the request was answered.
+// A flow that cannot be read is answered too: the check fails closed.
+func (h *OAuthHandler) refuseCallbackFromAnotherBrowser(ctx *fasthttp.RequestCtx, state string) bool {
+	if h.store == nil || h.store.ConfigStore == nil {
+		return false
+	}
+	flow, err := h.store.ConfigStore.GetOauthUserSessionByState(ctx, state)
+	if err != nil {
+		// Whose browser this is cannot be told, so the code is not redeemed. The flow is left
+		// pending: the same browser can come back once the store answers again.
+		logger.Error("[oauth] per-user callback stopped, the flow could not be read: err=%v", err)
+		ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, "Authentication could not be completed. Please try again.", false), fasthttp.StatusFound)
+		return true
+	}
+	if flow == nil || flow.FlowMode == string(schemas.MCPAuthModeAdmin) {
+		return false
+	}
+	name := oauthFlowCookieName(state)
+	got := ctx.Request.Header.Cookie(name)
+	// A flow no browser started has no hash, and no value matches it.
+	if flow.BrowserBindingHash != "" && len(got) > 0 &&
+		subtle.ConstantTimeCompare([]byte(oauthFlowBindingHash(got)), []byte(flow.BrowserBindingHash)) == 1 {
+		// One use: the flow is about to be completed or failed.
+		expired := fasthttp.AcquireCookie()
+		defer fasthttp.ReleaseCookie(expired)
+		expired.SetKey(name)
+		expired.SetPath("/")
+		expired.SetExpire(fasthttp.CookieExpireDelete)
+		ctx.Response.Header.SetCookie(expired)
+		return false
+	}
+	logger.Warn("[oauth] per-user callback arrived without its flow cookie: flow=%s", flow.ID)
+	ctx.Redirect(perUserCallbackRedirect(ctx, h.store.ConfigStore, oauthFlowOtherBrowserMessage, false), fasthttp.StatusFound)
+	return true
 }
 
 // discoverAfterOAuthSignIn stores the discovery a caller's new OAuth token makes,
