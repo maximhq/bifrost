@@ -35,6 +35,8 @@
 		"disableDbPingsHelp": "Wenn aktiviert, wird der /health-Endpoint die Datenbankverbindungsüberprüfungen überspringen und sofort OK zurückgeben.",
 		"dumpErrors": "Fehler in der Konsole dumpen",
 		"dumpErrorsHelp": "Wenn aktiviert, werden vollständige Fehlerdetails in den Server-Konsoleprotokollen geschrieben. Nutzbar für Debugging, aber kann im Produktivumgebung lautlos sein.",
+		"sendBackCost": "Kosten zurücksenden",
+		"sendBackCostHelp": "Gibt die von Bifrost berechneten Kosten jeder Anfrage an den Aufrufer zurück, für Modellanfragen und bepreiste MCP-Tool-Aufrufe, in <b>extra_fields.cost</b> und im Antwort-Header <b>x-bifrost-cost</b>. Eine Anfrage kann dies mit dem Header <b>x-bf-send-back-cost</b> für sich selbst ein- oder ausschalten.",
 		"asyncJobTtl": "Async-Aufgaben Ergebnis TTL (Sekunden)",
 		"asyncJobTtlHelp": "Standardzeit zum Automatischen Löschen von async-Aufgabenergebnissen in Sekunden. Ergebnisse werden nach Expire-Zeit automatisch gelöscht.",
 		"bifrostUrl": "Bifrost-URL",

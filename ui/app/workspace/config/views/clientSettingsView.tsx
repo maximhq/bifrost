@@ -125,6 +125,7 @@ export default function ClientSettingsView() {
 			localConfig.drop_excess_requests !== config.drop_excess_requests ||
 			localConfig.disable_db_pings_in_health !== config.disable_db_pings_in_health ||
 			localConfig.dump_errors_in_console_logs !== config.dump_errors_in_console_logs ||
+			localConfig.send_back_cost !== config.send_back_cost ||
 			localConfig.async_job_result_ttl !== config.async_job_result_ttl ||
 			(localConfig.extra_fields_placement ?? "body") !== (config.extra_fields_placement ?? "body") ||
 			!secretVarEquals(localConfig.bifrost_url, config.bifrost_url) ||
@@ -407,6 +408,26 @@ export default function ClientSettingsView() {
 						size="md"
 						checked={localConfig.dump_errors_in_console_logs}
 						onCheckedChange={(checked) => handleConfigChange("dump_errors_in_console_logs", checked)}
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				{/* Send Back Cost */}
+				<div className="flex items-center justify-between space-x-2">
+					<div className="space-y-0.5">
+						<label htmlFor="send-back-cost" className="text-sm font-medium">
+							{t("clientSettings.sendBackCost")}
+						</label>
+						<p className="text-muted-foreground text-sm">
+							<Trans t={t} i18nKey="clientSettings.sendBackCostHelp" components={{ b: <b /> }} />
+						</p>
+					</div>
+					<Switch
+						id="send-back-cost"
+						data-testid="client-settings-send-back-cost-switch"
+						size="md"
+						checked={localConfig.send_back_cost}
+						onCheckedChange={(checked) => handleConfigChange("send_back_cost", checked)}
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>

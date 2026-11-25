@@ -35,6 +35,8 @@
 		"disableDbPingsHelp": "啟用後，/health 端點將跳過資料庫連通性檢查並立即返回 OK。",
 		"dumpErrors": "在控制台日誌中輸出錯誤",
 		"dumpErrorsHelp": "啟用後，完整錯誤詳情會寫入伺服器控制台日誌。便於除錯，但在生產環境可能噪音較大。",
+		"sendBackCost": "回傳費用",
+		"sendBackCostHelp": "將 Bifrost 計算出的每個請求的費用回傳給呼叫方，適用於模型請求和已定價的 MCP 工具呼叫，透過 <b>extra_fields.cost</b> 和 <b>x-bifrost-cost</b> 回應標頭回傳。單一請求可以使用 <b>x-bf-send-back-cost</b> 請求標頭為自身開啟或關閉此功能。",
 		"asyncJobTtl": "非同步任務結果 TTL（秒）",
 		"asyncJobTtlHelp": "非同步任務結果的預設存活時間（秒）。過期後結果會自動清理。",
 		"bifrostUrl": "Bifrost URL",

@@ -35,6 +35,8 @@
 		"disableDbPingsHelp": "Se abilitato, l'endpoint /health salterà i controlli di connettività al database e restituirà immediatamente OK.",
 		"dumpErrors": "Esegui il dump degli errori nei log della console",
 		"dumpErrorsHelp": "Se abilitato, i dettagli completi degli errori vengono scritti nei log della console del server. Utile per il debug, ma può risultare rumoroso in produzione.",
+		"sendBackCost": "Restituisci il costo",
+		"sendBackCostHelp": "Restituisce al chiamante il costo di ogni richiesta calcolato da Bifrost, per le richieste ai modelli e le chiamate a strumenti MCP con prezzo, in <b>extra_fields.cost</b> e nell'intestazione di risposta <b>x-bifrost-cost</b>. Una richiesta può attivarlo o disattivarlo per sé con l'intestazione <b>x-bf-send-back-cost</b>.",
 		"asyncJobTtl": "TTL dei risultati dei job asincroni (secondi)",
 		"asyncJobTtlHelp": "Time-to-live predefinito per i risultati dei job asincroni in secondi. I risultati vengono rimossi automaticamente dopo la scadenza.",
 		"bifrostUrl": "URL di Bifrost",

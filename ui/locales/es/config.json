@@ -35,6 +35,8 @@
 		"disableDbPingsHelp": "Si está habilitado, el punto final /salud evitará las comprobaciones de conectividad de la base de datos y devolverá OK inmediatamente.",
 		"dumpErrors": "Errores de bomba en los registros de consola",
 		"dumpErrorsHelp": "Si está habilitado, los detalles completos de error se escriben en los registros de consolas del servidor. Útil para depurar, pero puede ser ruidoso en la producción.",
+		"sendBackCost": "Devolver el costo",
+		"sendBackCostHelp": "Devuelve al llamante el costo de cada solicitud calculado por Bifrost, para solicitudes de modelo y llamadas a herramientas MCP con precio, en <b>extra_fields.cost</b> y en el encabezado de respuesta <b>x-bifrost-cost</b>. Una solicitud puede activarlo o desactivarlo para sí misma con el encabezado <b>x-bf-send-back-cost</b>.",
 		"asyncJobTtl": "Resultado del trabajo de Async TTL (segundos)",
 		"asyncJobTtlHelp": "Tiempo a vida predeterminado para resultados de trabajo asinc en segundos. Los resultados se limpian automáticamente después de la expiración.",
 		"bifrostUrl": "URL de Bifrost",
