@@ -326,7 +326,7 @@ func buildCustomPricingData(overrides []Override) *customPricingData {
 // mapped to a known pricing mode.
 func (s *Store) applyPricingOverrides(model string, requestType schemas.RequestType, pricing configstoreTables.TableModelPricing, scopes LookupScopes) (configstoreTables.TableModelPricing, bool) {
 	s.overridesMu.RLock()
-	custom := s.customPricing
+	custom := s.customPricing.load()
 	s.overridesMu.RUnlock()
 
 	if custom == nil {
@@ -412,8 +412,8 @@ type CatalogPricingOverrides struct {
 // still returned in Matching so the UI can show them as informational.
 func (s *Store) CatalogPricingOverrides(model string, provider schemas.ModelProvider, mode string) CatalogPricingOverrides {
 	s.overridesMu.RLock()
-	custom := s.customPricing
-	raw := s.rawOverrides
+	custom := s.customPricing.load()
+	raw := s.rawOverrides.load()
 	s.overridesMu.RUnlock()
 
 	if custom == nil || len(raw) == 0 {
@@ -647,8 +647,8 @@ func (s *Store) SetOverrides(rows []configstoreTables.TablePricingOverride) erro
 		}
 	}
 	s.overridesMu.Lock()
-	s.rawOverrides = overrides
-	s.customPricing = buildCustomPricingData(overrides)
+	s.rawOverrides.store(overrides)
+	s.customPricing.store(buildCustomPricingData(overrides))
 	s.overridesMu.Unlock()
 	return nil
 }

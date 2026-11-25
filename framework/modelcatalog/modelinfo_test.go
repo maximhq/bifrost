@@ -54,7 +54,7 @@ func modelInfoCatalog(t testing.TB) *ModelCatalog {
 
 	// Pricing resolution logs at debug level, so the store needs a real (no-op)
 	// logger once a test prices a response rather than only reading metadata.
-	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{
+	ds := datasheetForTest(t, nil, bifrost.NewNoOpLogger(), datasheet.Config{
 		URL:                "file://" + pricingPath,
 		ModelParametersURL: "file://" + paramsPath,
 	})

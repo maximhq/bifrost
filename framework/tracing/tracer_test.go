@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet/datasheettest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1647,7 +1648,7 @@ func TestTracer_CancelledStreamEstimatedFromAccumulator(t *testing.T) {
 func TestPopulateLLMResponseAttributes_PricesEstimatedCancelledUsage(t *testing.T) {
 	abs, err := filepath.Abs("../modelcatalog/datasheet/testdata/pricing.json")
 	require.NoError(t, err)
-	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
+	ds := datasheetForTest(t, nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
 	tracer := NewTracer(NewTraceStore(time.Hour, nil), catalogWithDatasheetForTest(t, ds), bifrost.NewNoOpLogger())
 	defer tracer.Stop()
@@ -1696,3 +1697,6 @@ func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalo
 	t.Cleanup(func() { _ = catalog.Cleanup() })
 	return catalog
 }
+
+// datasheetForTest returns a datasheet over a new live store closed when the test ends.
+var datasheetForTest = datasheettest.New

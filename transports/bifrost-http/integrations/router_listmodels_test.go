@@ -241,7 +241,7 @@ func TestIntegrationModelRoutesEnrichFromTheCatalog(t *testing.T) {
 		"claude-test": {"provider":"anthropic","mode":"chat","base_model":"claude-test","max_input_tokens":200000,"max_output_tokens":64000},
 		"gpt-test": {"provider":"openai","mode":"chat","base_model":"gpt-test","max_input_tokens":128000,"max_output_tokens":16384}
 	}`), 0o600))
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	require.NoError(t, ds.LoadFromURLIntoMemory(t.Context()))
 	store := &mockHandlerStore{
 		availableProviders: []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic},

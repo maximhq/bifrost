@@ -129,14 +129,16 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		configStore:            configStore,
 		logger:                 logger,
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
-		datasheet: datasheet.New(configStore, logger, datasheet.Config{
-			URL:                pricingURL,
-			ModelParametersURL: modelParametersURL,
-			SyncInterval:       syncInterval,
-		}),
-		done: make(chan struct{}),
+		done:                   make(chan struct{}),
 	}
 	var err error
+	if mc.datasheet, err = datasheet.New(configStore, live, logger, datasheet.Config{
+		URL:                pricingURL,
+		ModelParametersURL: modelParametersURL,
+		SyncInterval:       syncInterval,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to create the datasheet: %w", err)
+	}
 	if mc.live, err = livemodels.New(live, logger); err != nil {
 		return nil, fmt.Errorf("failed to create the live models store: %w", err)
 	}
@@ -471,6 +473,7 @@ func (mc *ModelCatalog) Cleanup() error {
 		if mc.cancelOverrides != nil {
 			mc.cancelOverrides()
 		}
+		mc.datasheet.Close()
 		if mc.ownedStore != nil {
 			mc.ownedStore.Close()
 		}
@@ -743,7 +746,11 @@ func (mc *ModelCatalog) knownProviders() []schemas.ModelProvider {
 // store of its own, with the same caches Init builds. Does not start background
 // workers or hit external services.
 func NewTestCatalog(baseModelIndex map[string]string) (*ModelCatalog, error) {
-	return newTestCatalog(datasheet.NewTestStore(baseModelIndex))
+	ds, err := datasheet.NewTestStore(baseModelIndex)
+	if err != nil {
+		return nil, err
+	}
+	return newTestCatalog(ds)
 }
 
 // NewTestCatalogWithDatasheet wraps a caller-provided datasheet.Store (e.g. one

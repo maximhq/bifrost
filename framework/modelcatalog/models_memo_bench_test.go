@@ -46,7 +46,7 @@ func benchCatalog(tb testing.TB, nProviders, nModels int) (*ModelCatalog, []stri
 	if err := os.WriteFile(path, []byte(sb.String()), 0o600); err != nil {
 		tb.Fatalf("write pricing: %v", err)
 	}
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + path})
+	ds := datasheetForTest(tb, nil, nil, datasheet.Config{URL: "file://" + path})
 	if err := ds.LoadFromURLIntoMemory(tb.Context()); err != nil {
 		tb.Fatalf("load pricing: %v", err)
 	}

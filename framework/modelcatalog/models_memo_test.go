@@ -9,7 +9,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
-	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
 // TestProviderMemoInvalidatesOnWrite pins the correctness of the generation
@@ -21,7 +20,7 @@ func TestProviderMemoInvalidatesOnWrite(t *testing.T) {
 		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
 	mc := &ModelCatalog{
-		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
+		datasheet: testDatasheet(t, map[string]string{"gpt-4o": "gpt-4o"}),
 		live:      liveModels,
 		keyconf:   kc,
 		done:      make(chan struct{}),
@@ -58,7 +57,7 @@ func TestProviderMemoSkipsEmptyResults(t *testing.T) {
 		schemas.OpenAI: {{ID: "k1", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
 	mc := &ModelCatalog{
-		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
+		datasheet: testDatasheet(t, map[string]string{"gpt-4o": "gpt-4o"}),
 		live:      liveModels,
 		keyconf:   kc,
 		done:      make(chan struct{}),
@@ -82,7 +81,7 @@ func TestProviderMemoReturnsClone(t *testing.T) {
 		schemas.Anthropic: {{ID: "k2", Enabled: ptrBool(true), Models: schemas.WhiteList{"gpt-4o"}}},
 	})
 	mc := &ModelCatalog{
-		datasheet: datasheet.NewTestStore(map[string]string{"gpt-4o": "gpt-4o"}),
+		datasheet: testDatasheet(t, map[string]string{"gpt-4o": "gpt-4o"}),
 		live:      liveModels,
 		keyconf:   kc,
 		done:      make(chan struct{}),
@@ -111,7 +110,7 @@ func TestProviderMemoReturnsClone(t *testing.T) {
 // repeat per request), and a datasheet write drops every entry so a sync that
 // adds or changes a cap is seen on the next request.
 func TestMaxOutputTokensMemo(t *testing.T) {
-	ds := datasheet.NewTestStore(nil)
+	ds := testDatasheet(t, nil)
 	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "gemini-test-flash", Provider: string(schemas.Gemini), Mode: "chat", MaxOutputTokens: new(65536)},
 	})
@@ -149,7 +148,7 @@ func TestMaxOutputTokensMemo(t *testing.T) {
 // catalogNegativeTTL, while gpt-4o, which the catalog lists, keeps its answers with no expiry, and
 // every spelling still gets the same answers.
 func TestCatalogMemosKeepUnlistedSpellingsBriefly(t *testing.T) {
-	ds := datasheet.NewTestStore(nil)
+	ds := testDatasheet(t, nil)
 	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "gpt-4o", BaseModel: "gpt-4o", Provider: string(schemas.OpenAI), Mode: "chat", MaxOutputTokens: new(16384)},
 	})

@@ -914,7 +914,7 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve testdata path: %v", err)
 	}
-	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + abs})
+	ds := datasheetForTest(t, nil, testLogger{}, datasheet.Config{URL: "file://" + abs})
 	if err := ds.LoadFromURLIntoMemory(context.Background()); err != nil {
 		t.Fatalf("load pricing datasheet: %v", err)
 	}
@@ -1297,7 +1297,7 @@ func newTestPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
 	if err != nil {
 		t.Fatalf("resolve testdata path: %v", err)
 	}
-	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + abs})
+	ds := datasheetForTest(t, nil, testLogger{}, datasheet.Config{URL: "file://" + abs})
 	if err := ds.LoadFromURLIntoMemory(context.Background()); err != nil {
 		t.Fatalf("load pricing datasheet: %v", err)
 	}

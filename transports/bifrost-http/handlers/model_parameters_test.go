@@ -31,7 +31,7 @@ func TestGetModelParameters_ResolvesQualifiedAndBareIDs(t *testing.T) {
 		{Model: "openrouter/moonshotai/kimi-k2.5", Data: `{"model_parameters":[{"id":"temperature"}]}`},
 	}))
 
-	ds := datasheet.New(store, &mockLogger{}, datasheet.Config{})
+	ds := datasheetForTest(t, store, &mockLogger{}, datasheet.Config{})
 	rows, err := ds.LoadModelParamsFromDB(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 2, rows)

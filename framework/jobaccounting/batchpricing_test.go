@@ -12,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet/datasheettest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +21,7 @@ func loadPricingFromFile(t *testing.T) *modelcatalog.ModelCatalog {
 	t.Helper()
 	abs, err := filepath.Abs("testdata/pricing.json")
 	require.NoError(t, err, "resolve testdata/pricing.json path")
-	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
+	ds := datasheetForTest(t, nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()), "failed to load pricing datasheet")
 	return catalogWithDatasheetForTest(t, ds)
 }
@@ -300,3 +301,6 @@ func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalo
 	t.Cleanup(func() { _ = catalog.Cleanup() })
 	return catalog
 }
+
+// datasheetForTest returns a datasheet over a new live store closed when the test ends.
+var datasheetForTest = datasheettest.New

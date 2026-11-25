@@ -414,7 +414,7 @@ func TestLiveSessionAbortedRowKeepsItsSessionFacts(t *testing.T) {
 func TestLiveSessionSetupFailureKeepsBilledUsage(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pricing.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"gpt-live-1":{"provider":"openai","mode":"live","input_cost_per_second":0.001}}`), 0o600))
-	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
+	ds := datasheetForTest(t, nil, testLogger{}, datasheet.Config{URL: "file://" + path})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, catalogWithDatasheetForTest(t, ds), nil)

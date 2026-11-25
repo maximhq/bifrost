@@ -122,7 +122,7 @@ func TestAzureDeepSeekResponsesRouting(t *testing.T) {
 func TestAzureDeepSeekResponsesRoutingDisabled(t *testing.T) {
 	const model = "DeepSeek-V3.1"
 
-	ds := datasheet.NewTestStore(nil)
+	ds := testDatasheet(t, nil)
 	ds.SetSupportedParamsForTest(map[string][]string{model: {"reasoning", "temperature"}})
 	p, err := Init(
 		Config{ShouldDropParams: true, AzureDeepseek: false},
@@ -158,7 +158,7 @@ func TestAzureDeepSeekResponsesRoutingDisabled(t *testing.T) {
 func TestAzureDeepSeekResponsesRoutingHeaderOverride(t *testing.T) {
 	const model = "DeepSeek-V3.1"
 
-	ds := datasheet.NewTestStore(nil)
+	ds := testDatasheet(t, nil)
 	ds.SetSupportedParamsForTest(map[string][]string{model: {"reasoning", "temperature"}})
 	p, err := Init(
 		Config{ShouldDropParams: true, AzureDeepseek: false},
@@ -193,4 +193,15 @@ func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalo
 	}
 	t.Cleanup(func() { _ = catalog.Cleanup() })
 	return catalog
+}
+
+// testDatasheet returns a test datasheet over a live store of its own, closed when the test ends.
+func testDatasheet(t testing.TB, baseModelIndex map[string]string) *datasheet.Store {
+	t.Helper()
+	ds, err := datasheet.NewTestStore(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(ds.Close)
+	return ds
 }
