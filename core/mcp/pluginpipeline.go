@@ -170,6 +170,10 @@ func (m *MCPManager) RunWithPluginPipeline(
 		}
 	}()
 
+	// Send back cost: executeToolCode collects its nested calls' costs while its code runs.
+	costSum, endCostSum := m.startCodeModeCostSum(ctx, req)
+	defer endCostSum()
+
 	// Attribution for the errors and short-circuit responses below, so PostHooks and observers
 	// see ClientName/ToolName; the PreHooks may retarget it.
 	var clientName, toolName string
@@ -194,7 +198,7 @@ func (m *MCPManager) RunWithPluginPipeline(
 			}
 			return resp, bErr
 		}
-		return resp, nil
+		return m.withToolCost(ctx, mcpReqType, resp, costSum), nil
 	}
 	defer m.ReleasePluginPipeline(pipeline)
 
@@ -274,7 +278,8 @@ func (m *MCPManager) RunWithPluginPipeline(
 	if finalErr != nil {
 		return finalResp, finalErr
 	}
-	return finalResp, nil
+	// Priced after the PostHooks, on a copy: plugins may still hold finalResp.
+	return m.withToolCost(ctx, mcpReqType, finalResp, costSum), nil
 }
 
 // MCPConnectOpFunc is the closure each Connect call site provides to
