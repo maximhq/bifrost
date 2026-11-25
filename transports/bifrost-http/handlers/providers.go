@@ -1225,17 +1225,23 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // request path checks it; on Azure the alias is the model name and its target a
 // deployment name of the user's choosing, so the alias name is checked too.
 func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
+	return h.supportsDecisionsAs(provider, model, h.aliasTarget(provider, model))
+}
+
+// supportsDecisionsAs is supportsDecisions with the alias already resolved:
+// listed is the name the caller asked for and model the one the request sends
+// for it, so a caller that knows which key serves the request can check that
+// key's alias rather than the catalog's.
+func (h *ProviderHandler) supportsDecisionsAs(provider schemas.ModelProvider, listed, model string) bool {
 	if custom := h.customProviderConfig(provider); custom != nil {
 		return custom.IsOperationAllowed(schemas.DecisionRequest) &&
 			(custom.BaseProviderType == schemas.Typesafe || custom.BaseProviderType == schemas.OpenAI ||
 				custom.BaseProviderType == schemas.VLLM || custom.BaseProviderType == schemas.SGL ||
-				(custom.BaseProviderType == schemas.Gemini && schemas.IsGeminiDecisionModel(h.aliasTarget(provider, model))))
+				(custom.BaseProviderType == schemas.Gemini && schemas.IsGeminiDecisionModel(model)))
 	}
 	if provider == schemas.Typesafe || provider == schemas.VLLM || provider == schemas.SGL {
 		return true
 	}
-	listed := model
-	model = h.aliasTarget(provider, model)
 	var fallback bool
 	switch {
 	case provider == schemas.OpenAI:

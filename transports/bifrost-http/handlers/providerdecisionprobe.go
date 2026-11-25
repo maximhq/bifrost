@@ -99,20 +99,29 @@ func (h *ProviderHandler) probeDecision(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "model is required")
 		return
 	}
-	if !h.supportsDecisions(provider, model) {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("model %q is not served on the decisions endpoint of provider %q", model, provider))
-		return
-	}
+	// A probe pinned to a key sends that key's alias target; two keys can map
+	// the same alias to different models, and the catalog keeps only one of them.
 	keyID := strings.TrimSpace(payload.KeyID)
-	if keyID != "" && !slices.ContainsFunc(config.Keys, func(key schemas.Key) bool { return key.ID == keyID }) {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("key %q is not configured for provider %q", keyID, provider))
+	var target string
+	if keyID != "" {
+		i := slices.IndexFunc(config.Keys, func(key schemas.Key) bool { return key.ID == keyID })
+		if i < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("key %q is not configured for provider %q", keyID, provider))
+			return
+		}
+		target = keyAliasTarget(config.Keys[i], model)
+	} else {
+		target = h.aliasTarget(provider, model)
+	}
+	if !h.supportsDecisionsAs(provider, model, target) {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("model %q is not served on the decisions endpoint of provider %q", model, provider))
 		return
 	}
 
 	// A fresh context, so nothing the management request carried (a virtual key,
-	// key pins, headers) reaches the probe; the provider's own request timeout
-	// bounds it.
-	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// key pins, headers) reaches the probe. Its deadline is the provider's request
+	// timeout and covers the wait for queue space as well as the upstream call.
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), time.Now().Add(decisionProbeTimeout(config)))
 	defer bifrostCtx.Cancel()
 	bifrost.PrepareContextForInternalRequest(bifrostCtx)
 	// One upstream call: a retry would bill again and replace the error being probed.
@@ -154,6 +163,31 @@ func (h *ProviderHandler) probeDecision(ctx *fasthttp.RequestCtx) {
 	}
 	result.OK = true
 	SendJSON(ctx, result)
+}
+
+// decisionProbeTimeout is the deadline of a whole probe: the provider's
+// configured request timeout, or Bifrost's default when it sets none.
+func decisionProbeTimeout(config *configstore.ProviderConfig) time.Duration {
+	seconds := schemas.DefaultRequestTimeoutInSeconds
+	if config.NetworkConfig != nil && config.NetworkConfig.DefaultRequestTimeoutInSeconds > 0 {
+		seconds = config.NetworkConfig.DefaultRequestTimeoutInSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// keyAliasTarget returns the model key sends for model, in the order
+// aliasTarget resolves it: the key's own alias's ModelName, then its ModelID,
+// or model itself when the key defines no alias for it.
+func keyAliasTarget(key schemas.Key, model string) string {
+	if alias := key.Aliases.ResolveConfig(model); alias != nil {
+		if alias.ModelName != nil && *alias.ModelName != "" {
+			return *alias.ModelName
+		}
+		if alias.ModelID != "" {
+			return alias.ModelID
+		}
+	}
+	return model
 }
 
 // decisionProbeAnswerProbabilityTolerance is how far a probability

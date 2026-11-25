@@ -14,6 +14,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -37,10 +38,12 @@ func (u *decisionProbeUpstream) recorded() ([]map[string]any, []string) {
 	return append([]map[string]any(nil), u.requests...), append([]string(nil), u.auth...)
 }
 
-// probeUpstreamReply is one canned upstream answer.
+// probeUpstreamReply is one canned upstream answer. With hold set, the
+// upstream answers only once hold is closed or the caller gives up.
 type probeUpstreamReply struct {
 	status int
 	body   string
+	hold   <-chan struct{}
 }
 
 // newDecisionProbeHandler serves status and body from a fake upstream behind
@@ -57,6 +60,14 @@ func newDecisionProbeHandler(t *testing.T, status int, body string) (*ProviderHa
 // more than one call would reach the later replies.
 func newDecisionProbeHandlerWithReplies(t *testing.T, replies ...probeUpstreamReply) (*ProviderHandler, *decisionProbeUpstream) {
 	t.Helper()
+	return newDecisionProbeHandlerWithConfig(t, nil, replies...)
+}
+
+// newDecisionProbeHandlerWithConfig is newDecisionProbeHandlerWithReplies with
+// configure applied to the provider configs, every one pointed at the fake
+// upstream, before the Bifrost client starts.
+func newDecisionProbeHandlerWithConfig(t *testing.T, configure func(map[schemas.ModelProvider]configstore.ProviderConfig), replies ...probeUpstreamReply) (*ProviderHandler, *decisionProbeUpstream) {
+	t.Helper()
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
 
@@ -72,6 +83,13 @@ func newDecisionProbeHandlerWithReplies(t *testing.T, replies ...probeUpstreamRe
 			upstream.auth = append(upstream.auth, r.Header.Get("Authorization"))
 		}
 		upstream.mu.Unlock()
+		if reply.hold != nil {
+			select {
+			case <-reply.hold:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(reply.status)
 		_, _ = w.Write([]byte(reply.body))
@@ -95,9 +113,13 @@ func newDecisionProbeHandlerWithReplies(t *testing.T, replies ...probeUpstreamRe
 			},
 			schemas.OpenAI: {
 				Keys:                     []schemas.Key{{ID: "openai-key", Value: *schemas.NewSecretVar("sk-openai"), Models: schemas.WhiteList{"*"}, Weight: 1}},
+				NetworkConfig:            &schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 10},
 				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 			},
 		},
+	}
+	if configure != nil {
+		configure(store.Providers)
 	}
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: lib.NewBaseAccount(store),
@@ -292,6 +314,116 @@ func TestProbeDecision_MakesOneUpstreamCall(t *testing.T) {
 	}
 	if result.OK || result.Error == nil || result.Error.StatusCode != fasthttp.StatusServiceUnavailable {
 		t.Fatalf("expected the first attempt's 503, got %s", body)
+	}
+}
+
+// TestProbeDecision_ChecksThePinnedKeysAlias pins that a probe pinned to a key
+// checks decision support against that key's alias. Two keys map judge to
+// different models and the catalog keeps the other key's chat model, yet the
+// probe through the decision key is sent, as gpt-6-luna, on that key.
+func TestProbeDecision_ChecksThePinnedKeysAlias(t *testing.T) {
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	keys := []schemas.Key{
+		{ID: "decision-key", Value: *schemas.NewSecretVar("sk-decision-key"), Models: schemas.WhiteList{"*"}, Weight: 1, Aliases: schemas.KeyAliases{"judge": {ModelID: "gpt-6-luna"}}},
+		{ID: "chat-key", Value: *schemas.NewSecretVar("sk-chat-key"), Models: schemas.WhiteList{"*"}, Weight: 1, Aliases: schemas.KeyAliases{"judge": {ModelID: "gpt-4o"}}},
+	}
+	h, upstream := newDecisionProbeHandlerWithConfig(t, func(providers map[schemas.ModelProvider]configstore.ProviderConfig) {
+		openai := providers[schemas.OpenAI]
+		openai.Keys = keys
+		providers[schemas.OpenAI] = openai
+	}, probeUpstreamReply{status: http.StatusOK, body: `{"model":"gpt-6-luna","answers":[{"type":"predicate","name":"probe","probability":0.9}]}`})
+	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog.SetKeyConfigForProvider(schemas.OpenAI, keys)
+	h.inMemoryStore.ModelCatalog = catalog
+	if target := h.aliasTarget(schemas.OpenAI, "judge"); target != "gpt-4o" {
+		t.Fatalf("catalog alias target got %q, want the chat key's gpt-4o", target)
+	}
+
+	status, body := probeDecisionForTest(h, schemas.OpenAI, `{"model":"judge","key_id":"decision-key"}`)
+	if status != fasthttp.StatusOK {
+		t.Fatalf("status got %d, want 200; body=%s", status, body)
+	}
+	var result DecisionProbeResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("failed to decode response: %v; body=%s", err, body)
+	}
+	if !result.OK {
+		t.Fatalf("expected ok probe, got %s", body)
+	}
+	requests, auth := upstream.recorded()
+	if len(requests) != 1 || requests[0]["model"] != "gpt-6-luna" || auth[0] != "Bearer sk-decision-key" {
+		t.Fatalf("upstream got %v with %v, want one gpt-6-luna request on the decision key", requests, auth)
+	}
+
+	status, body = probeDecisionForTest(h, schemas.OpenAI, `{"model":"judge","key_id":"chat-key"}`)
+	if status != fasthttp.StatusBadRequest || !strings.Contains(string(body), "not served on the decisions endpoint") {
+		t.Fatalf("probe through the chat key got %d %s, want 400 not served", status, body)
+	}
+}
+
+// TestProbeDecision_DeadlineCoversQueueWait pins that the provider's request
+// timeout bounds the whole probe, including the wait for queue space: with the
+// one worker and the one queue slot taken by held requests, the probe gives up
+// waiting for space when its deadline passes instead of queueing behind them.
+// The held requests run under the 10 second timeout the provider started with;
+// the probe reads the 1 second timeout configured after them.
+func TestProbeDecision_DeadlineCoversQueueWait(t *testing.T) {
+	release := make(chan struct{})
+	h, _ := newDecisionProbeHandlerWithConfig(t, func(providers map[schemas.ModelProvider]configstore.ProviderConfig) {
+		probe := providers[probeTestProvider]
+		probe.ConcurrencyAndBufferSize = &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1}
+		providers[probeTestProvider] = probe
+	}, probeUpstreamReply{status: http.StatusOK, body: `{"model":"decider","answers":[{"type":"predicate","name":"probe","probability":0.9}]}`, hold: release})
+	t.Cleanup(func() { close(release) })
+
+	held := &schemas.BifrostDecisionRequest{
+		Provider:  probeTestProvider,
+		Model:     "decider",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("held")},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("held")}},
+	}
+	for range 4 {
+		go func() {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			_, _ = h.client.DecisionRequest(ctx, held)
+		}()
+	}
+	time.Sleep(200 * time.Millisecond)
+	h.inMemoryStore.Mu.Lock()
+	probe := h.inMemoryStore.Providers[probeTestProvider]
+	network := *probe.NetworkConfig
+	network.DefaultRequestTimeoutInSeconds = 1
+	probe.NetworkConfig = &network
+	h.inMemoryStore.Providers[probeTestProvider] = probe
+	h.inMemoryStore.Mu.Unlock()
+
+	type probeReply struct {
+		status int
+		body   []byte
+	}
+	done := make(chan probeReply, 1)
+	go func() {
+		status, body := probeDecisionForTest(h, probeTestProvider, `{"model":"decider"}`)
+		done <- probeReply{status, body}
+	}()
+	var reply probeReply
+	select {
+	case reply = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe still waiting for queue space after 5s, want it bounded by its 1 second timeout")
+	}
+	status, body := reply.status, reply.body
+	if status != fasthttp.StatusOK {
+		t.Fatalf("status got %d, want 200; body=%s", status, body)
+	}
+	var result DecisionProbeResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("failed to decode response: %v; body=%s", err, body)
+	}
+	if result.OK || result.Error == nil || result.Error.StatusCode != fasthttp.StatusGatewayTimeout || !strings.Contains(result.Error.Message, "waiting for queue space") {
+		t.Fatalf("expected the probe to time out waiting for queue space, got %s", body)
 	}
 }
 
