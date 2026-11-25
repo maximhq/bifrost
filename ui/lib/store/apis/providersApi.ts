@@ -189,6 +189,8 @@ export interface GetModelsRequest {
 	limit?: number;
 	offset?: number;
 	unfiltered?: boolean;
+	/** Adds key alias names to an unfiltered listing. */
+	includeAliases?: boolean;
 	/** Lists only models that serve decisions natively. */
 	decisions?: boolean;
 }
@@ -353,6 +355,8 @@ export const providersApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: key,
 			}),
+			// A model listing carries its keys' models and aliases.
+			invalidatesTags: ["Models"],
 			async onQueryStarted({ provider }, { dispatch, queryFulfilled }) {
 				try {
 					const { data: newKey } = await queryFulfilled;
@@ -388,6 +392,7 @@ export const providersApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: key,
 			}),
+			invalidatesTags: ["Models"],
 			async onQueryStarted({ provider, keyId }, { dispatch, queryFulfilled }) {
 				try {
 					const { data: updatedKey } = await queryFulfilled;
@@ -426,6 +431,7 @@ export const providersApi = baseApi.injectEndpoints({
 				url: `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
 				method: "DELETE",
 			}),
+			invalidatesTags: ["Models"],
 			async onQueryStarted({ provider, keyId }, { dispatch, queryFulfilled }) {
 				try {
 					await queryFulfilled;
@@ -541,7 +547,7 @@ export const providersApi = baseApi.injectEndpoints({
 
 		// Get models with optional filtering
 		getModels: builder.query<ListModelsResponse, GetModelsRequest>({
-			query: ({ query, provider, keys, vks, limit, offset, unfiltered, decisions }) => {
+			query: ({ query, provider, keys, vks, limit, offset, unfiltered, includeAliases, decisions }) => {
 				const params = new URLSearchParams();
 				if (query) params.append("query", query);
 				if (provider) params.append("provider", provider);
@@ -550,6 +556,7 @@ export const providersApi = baseApi.injectEndpoints({
 				if (limit !== undefined) params.append("limit", limit.toString());
 				if (offset !== undefined) params.append("offset", offset.toString());
 				if (unfiltered !== undefined) params.append("unfiltered", unfiltered.toString());
+				if (includeAliases) params.append("include_aliases", "true");
 				if (decisions) params.append("decisions", "true");
 				return `/models?${params.toString()}`;
 			},
