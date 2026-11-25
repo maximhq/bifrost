@@ -312,9 +312,9 @@ func TestProbedRoute_ReportsKeyAliasTarget(t *testing.T) {
 }
 
 // TestDecisionProbeErrorFrom_RedactsShortCredentials pins that a key or header
-// value shorter than decisionProbeMinSecretLength is still removed from every
-// returned field where it stands as a token, while longer words that merely
-// contain it are left alone.
+// value shorter than decisionProbeMinSecretLength is removed from every
+// returned field, together with any longer token it sits inside, while words
+// that do not contain it are left alone.
 func TestDecisionProbeErrorFrom_RedactsShortCredentials(t *testing.T) {
 	config := &configstore.ProviderConfig{
 		Keys: []schemas.Key{
@@ -326,13 +326,13 @@ func TestDecisionProbeErrorFrom_RedactsShortCredentials(t *testing.T) {
 	got := decisionProbeErrorFrom(&schemas.BifrostError{
 		StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
 		Error: &schemas.ErrorField{
-			Message: "key tok1234 for team t-42 rejected; stok12345 and t-421 are other ids",
+			Message: "key tok1234 for team t-42 rejected; stok12345 and t-421 are other ids, t-4 is not",
 			Type:    schemas.Ptr("auth_error tok1234"),
 			Code:    schemas.Ptr("bad_key:tok1234"),
 		},
 	}, decisionProbeSecrets(config))
 
-	if want := "key [redacted] for team [redacted] rejected; stok12345 and t-421 are other ids"; got.Message != want {
+	if want := "key [redacted] for team [redacted] rejected; [redacted] and [redacted] are other ids, t-4 is not"; got.Message != want {
 		t.Fatalf("message got %q, want %q", got.Message, want)
 	}
 	if got.Type == nil || *got.Type != "auth_error [redacted]" {

@@ -29,9 +29,10 @@ const (
 )
 
 // decisionProbeMinSecretLength is the shortest credential scrubbed from probe
-// errors wherever it appears. A shorter credential is scrubbed only where it
-// stands as a whole token, so a value such as "abc1" hides the echoed key
-// without cutting the same letters out of other words in the message.
+// errors by replacing just its occurrences. A shorter credential is scrubbed
+// together with the whole token it occurs in, so a value such as "abc1" never
+// survives inside a longer word, and the rest of that word does not show
+// where it stood.
 const decisionProbeMinSecretLength = 8
 
 // decisionProbeURLPattern finds URLs in an error message so their userinfo and
@@ -235,7 +236,7 @@ func decisionProbeErrorFrom(bifrostErr *schemas.BifrostError, secrets []string) 
 			if len(secret) >= decisionProbeMinSecretLength {
 				text = strings.ReplaceAll(text, secret, "[redacted]")
 			} else {
-				text = redactWholeToken(text, secret)
+				text = redactContainingToken(text, secret)
 			}
 		}
 		return decisionProbeURLPattern.ReplaceAllStringFunc(text, redactDecisionProbeURL)
@@ -353,26 +354,28 @@ func redactDecisionProbeURL(raw string) string {
 	return "redacted"
 }
 
-// redactWholeToken replaces each occurrence of token in text that is not part
-// of a longer token, that is, not preceded or followed by a letter, digit,
-// '-' or '_'.
-func redactWholeToken(text, token string) string {
+// redactContainingToken replaces each occurrence of token in text, together
+// with the run of letters, digits, '-' and '_' around it, so the credential is
+// removed whether it stands alone or sits inside a longer token.
+func redactContainingToken(text, token string) string {
 	var out strings.Builder
-	last, from := 0, 0
+	last := 0
 	for {
-		i := strings.Index(text[from:], token)
+		i := strings.Index(text[last:], token)
 		if i < 0 {
 			break
 		}
-		i += from
-		end := i + len(token)
-		if (i == 0 || !isDecisionProbeTokenByte(text[i-1])) && (end == len(text) || !isDecisionProbeTokenByte(text[end])) {
-			out.WriteString(text[last:i])
-			out.WriteString("[redacted]")
-			last, from = end, end
-		} else {
-			from = i + 1
+		start := last + i
+		end := start + len(token)
+		for start > last && isDecisionProbeTokenByte(text[start-1]) {
+			start--
 		}
+		for end < len(text) && isDecisionProbeTokenByte(text[end]) {
+			end++
+		}
+		out.WriteString(text[last:start])
+		out.WriteString("[redacted]")
+		last = end
 	}
 	if last == 0 {
 		return text
