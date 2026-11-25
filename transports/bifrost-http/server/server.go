@@ -50,7 +50,6 @@ import (
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
-	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/prometheus/client_golang/prometheus"
@@ -3736,9 +3735,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err := s.ApplyBasePath(); err != nil {
 		return err
 	}
-	if s.Config.KVStore != nil {
-		integrations.RegisterKVDecoders(s.Config.KVStore)
-	}
 	// Outbound clients for non-inference traffic, built by LoadConfig on the global
 	// proxy it loaded.
 	s.HTTPClientFactory = s.Config.HTTPClientFactory
@@ -3874,7 +3870,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		OAuth2Provider:     s.Config.OAuthProvider,
 		MCPHeadersProvider: s.Config.MCPHeadersProvider,
 		Logger:             logger,
-		KVStore:            s.Config.KVStore,
+		SessionAffinity:    bifrost.NewSessionAffinity(s.Config.Shared.Sessions, logger),
 		ModelCatalog:       s.Config.ModelCatalog,
 
 		MCPSharedDiscoveryStore:  sharedDiscoveryStore,

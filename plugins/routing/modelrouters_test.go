@@ -3,7 +3,6 @@ package routing
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,7 +11,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -106,10 +104,7 @@ func TestRoutingPluginServesStoredModelRouters(t *testing.T) {
 // it saves both tiers, so a tool continuation resumes each on the tier it
 // gave, not on the last one's.
 func TestPersistComplexityTurnTierKeepsEveryRouter(t *testing.T) {
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	plugin := &RoutingPlugin{turnTierStore: &complexityTurnTierStore{store: store}, logger: rules.NewMockLogger()}
+	plugin := &RoutingPlugin{sessions: stringTableForTest(t), logger: rules.NewMockLogger()}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeySessionID, "session-1")
@@ -120,12 +115,12 @@ func TestPersistComplexityTurnTierKeepsEveryRouter(t *testing.T) {
 	plugin.persistComplexityTurnTier(ctx)
 
 	for routerID, want := range map[string]string{"": complexity.TierComplex, "support": complexity.TierSimple} {
-		tier, found, err := plugin.turnTierStore.load(complexityTurnTierKeyFor(ctx, routerID))
+		tier, found, err := plugin.loadTurnTier(complexityTurnTierKeyFor(ctx, routerID))
 		require.NoError(t, err)
 		require.True(t, found, routerID)
 		assert.Equal(t, want, tier, routerID)
 	}
-	_, found, err := plugin.turnTierStore.load(complexityTurnTierKeyFor(ctx, "billing"))
+	_, found, err := plugin.loadTurnTier(complexityTurnTierKeyFor(ctx, "billing"))
 	require.NoError(t, err)
 	assert.False(t, found, "a router that produced no tier saves nothing")
 }
@@ -323,7 +318,7 @@ func TestModelRouterStoreWritesReachLiveRouting(t *testing.T) {
 // TestRoutingPluginBootSkipsOnlyTheRouterItCannotServe pins that one bad
 // stored router cannot keep the others from routing after a restart. A router
 // whose stored condition no longer compiles is served for its status but
-// takes no requests; a router that needs a KV store the gateway does not have
+// takes no requests; a router that needs a session store the gateway does not have
 // is left out; and the healthy router behind both still routes.
 func TestRoutingPluginBootSkipsOnlyTheRouterItCannotServe(t *testing.T) {
 	ctx := context.Background()
@@ -356,7 +351,7 @@ func TestRoutingPluginBootSkipsOnlyTheRouterItCannotServe(t *testing.T) {
 	_, served := plugin.modelRouter("stale")
 	assert.True(t, served, "a router whose condition does not compile is still served, so its status and tests work")
 	_, served = plugin.modelRouter("sessions")
-	assert.False(t, served, "a router that needs a KV store is not served without one")
+	assert.False(t, served, "a router that needs a session store is not served without one")
 	_, served = plugin.modelRouter("healthy")
 	assert.True(t, served)
 

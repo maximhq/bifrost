@@ -369,6 +369,8 @@ import (
 	"testing"
 	"time"
 
+	"sync/atomic"
+
 	"github.com/google/uuid"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -392,7 +394,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"sync/atomic"
 )
 
 // First-admin file setup must default inference auth on without changing existing
@@ -22486,8 +22487,9 @@ func TestLoadConfig_NoConfigFile_FreshStart(t *testing.T) {
 	// Verify WebSocket defaults
 	require.NotNil(t, config.WebSocketConfig, "WebSocketConfig should have defaults")
 
-	// Verify KV store initialized
-	require.NotNil(t, config.KVStore, "KVStore should be initialized")
+	// Verify the shared tables are created
+	require.NotNil(t, config.Shared, "shared tables should be created")
+	require.NotNil(t, config.Shared.Sessions, "the session table should be created")
 }
 
 // TestLoadConfig_NoConfigFile_ExistingDB tests LoadConfig with no config.json but existing DB from previous run

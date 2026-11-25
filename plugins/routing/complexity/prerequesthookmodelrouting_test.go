@@ -15,7 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	governancePlugin "github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
@@ -98,7 +98,7 @@ func modelRoutingTestPlugin(
 }
 
 // modelRoutingTestPluginWithConfig is modelRoutingTestPlugin with a plugin
-// config, for the KV store session tiers and tool continuations need, any
+// config, for the session store session tiers and tool continuations need, any
 // governance, and any decision executor.
 func modelRoutingTestPluginWithConfig(
 	t testing.TB,
@@ -593,14 +593,25 @@ func sessionRouterConfig() complexity.AnalyzerConfig {
 	return *config
 }
 
-// newTestKVStore returns the in-memory KV store session tiers and tool
-// continuations are kept in.
-func newTestKVStore(t *testing.T) *kvstore.Store {
+// sessionConfigForTest returns a routing config over new session and warm tables, as
+// the host wires them, and the session table session tiers and tool continuations are kept in.
+func sessionConfigForTest(t *testing.T) (*routing.Config, *livestore.Table[string, string]) {
 	t.Helper()
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
+	live, err := livestore.New()
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	return store
+	t.Cleanup(live.Close)
+	sessions, err := live.NewTable[string, string](context.Background(), "session_state", livestore.WithWriteTimes())
+	require.NoError(t, err)
+	warm, err := live.NewTable[string, string](context.Background(), routing.ComplexityWarmTable, livestore.WithWriteTimes())
+	require.NoError(t, err)
+	return &routing.Config{Sessions: sessions, Warm: warm}, sessions
+}
+
+// newTestKVStore returns a routing config over new session and warm tables.
+func newTestKVStore(t *testing.T) *routing.Config {
+	t.Helper()
+	config, _ := sessionConfigForTest(t)
+	return config
 }
 
 // quietGovernance is a governance stand-in that records nothing, so requests
@@ -622,19 +633,17 @@ func newQuietGovernance() quietGovernance {
 	return quietGovernance{MockGovernanceStore: rules.NewMockGovernanceStore()}
 }
 
-// flakyKVStore is a KV store whose writes can be made to fail, standing in
-// for a state store outage in the middle of a session.
-type flakyKVStore struct {
-	schemas.KVStore
-	failWrites atomic.Bool
-}
-
-// SetWithTTL fails while the outage is on.
-func (s *flakyKVStore) SetWithTTL(key string, value any, ttl time.Duration) error {
-	if s.failWrites.Load() {
-		return errors.New("state store unavailable")
+// corruptSessions overwrites every entry the session table holds with a tier no version writes,
+// standing in for session state the router cannot use in the middle of a session.
+func corruptSessions(sessions *livestore.Table[string, string]) {
+	var keys []string
+	sessions.Range(func(key, _ string) bool {
+		keys = append(keys, key)
+		return true
+	})
+	for _, key := range keys {
+		sessions.PutWithTTL(key, "UNREADABLE", time.Hour)
 	}
-	return s.KVStore.SetWithTTL(key, value, ttl)
 }
 
 // ---------------------------------------------------------------------------
@@ -1309,7 +1318,7 @@ func TestModelRouterSessionsStayApart(t *testing.T) {
 		return router
 	}
 	pageRule := ruleFor("page-complex", `headers["x-app"] == "page" && complexity_tier == "COMPLEX"`, ruleTarget("", "page-complex"))
-	plugin := modelRoutingTestPluginWithConfig(t, &routing.Config{KVStore: newTestKVStore(t)}, routing.NewMockGovernance(), decision.execute,
+	plugin := modelRoutingTestPluginWithConfig(t, newTestKVStore(t), routing.NewMockGovernance(), decision.execute,
 		[]configstoreTables.TableRoutingRule{pageRule}, []configstore.ModelRouter{sessionRouter("a", 0), sessionRouter("b", 1)})
 	pageConfig := sessionRouterConfig()
 	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(&pageConfig))
@@ -1357,7 +1366,7 @@ func TestModelRouterToolContinuation(t *testing.T) {
 		a.Routing = appRouting(0, "a")
 		b := decisionModelRouter("b", "B", everyTierTargets("b")...)
 		b.Routing = appRouting(1, "b")
-		plugin := modelRoutingTestPluginWithConfig(t, &routing.Config{KVStore: newTestKVStore(t)}, routing.NewMockGovernance(), decision.execute,
+		plugin := modelRoutingTestPluginWithConfig(t, newTestKVStore(t), routing.NewMockGovernance(), decision.execute,
 			nil, []configstore.ModelRouter{a, b})
 
 		turn := appSessionContext("s1", "a")
@@ -1387,7 +1396,7 @@ func TestModelRouterToolContinuation(t *testing.T) {
 		mediumRule := ruleFor("medium", `complexity_tier == "MEDIUM"`, ruleTarget("", "rule-medium"))
 		byLLM := configstore.ModelRouter{ID: "by-llm", Name: "By llm", ComplexityAnalyzerConfig: llmRouterConfig(), Targets: everyTierTargets("by-llm")}
 		byLLM.Routing = globalRouting(0, `model == "rule-medium"`)
-		plugin := modelRoutingTestPluginWithConfig(t, &routing.Config{KVStore: newTestKVStore(t)}, routing.NewMockGovernance(), decision.execute,
+		plugin := modelRoutingTestPluginWithConfig(t, newTestKVStore(t), routing.NewMockGovernance(), decision.execute,
 			[]configstoreTables.TableRoutingRule{mediumRule}, nil)
 		var llmCalls atomic.Int32
 		plugin.SetChatRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
@@ -1619,23 +1628,23 @@ func TestModelRoutersChangeUnderTraffic(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestModelRouterSessionStoreOutageLogsAsModelRouter pins which engine a
-// router's classification is logged under when the session state store fails
-// in the middle of a session. The router still routes the request on what
+// router's classification is logged under when the session state cannot be
+// used in the middle of a session. The router still routes the request on what
 // its classifier just answered, and that decision is the router's: a request
 // no routing rule matched must not show a routing-rule decision in its trail
 // (see TestModelRouterClassificationLogEngine for the same rule without an
 // outage).
 func TestModelRouterSessionStoreOutageLogsAsModelRouter(t *testing.T) {
-	store := &flakyKVStore{KVStore: newTestKVStore(t)}
+	config, sessions := sessionConfigForTest(t)
 	router := configstore.ModelRouter{ID: "support", Name: "Support", ComplexityAnalyzerConfig: sessionRouterConfig(), Targets: everyTierTargets("support")}
 	router.Routing = globalRouting(0, "")
-	plugin := modelRoutingTestPluginWithConfig(t, &routing.Config{KVStore: store}, routing.NewMockGovernance(), modelRoutingDecision().execute,
+	plugin := modelRoutingTestPluginWithConfig(t, config, routing.NewMockGovernance(), modelRoutingDecision().execute,
 		nil, []configstore.ModelRouter{router})
 
 	req := runPreRequest(t, plugin, complexitySessionContext("s1"), simpleText)
 	require.Equal(t, "support-simple", routedModel(req))
 
-	store.failWrites.Store(true)
+	corruptSessions(sessions)
 	ctx := complexitySessionContext("s1")
 	req = runPreRequest(t, plugin, ctx, complexText)
 	assert.Equal(t, "support-complex", routedModel(req), "the classifier's answer still routes the request")

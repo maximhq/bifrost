@@ -40,7 +40,6 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/envutils"
 	"github.com/maximhq/bifrost/framework/featureflags"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -91,9 +90,8 @@ type HandlerStore interface {
 	GetAsyncJobExecutor() *logstore.AsyncJobExecutor
 	// GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
 	GetAsyncJobResultTTL() int
-	// GetKVStore returns the shared in-memory kvstore instance.
-	// Returns nil if not initialized.
-	GetKVStore() *kvstore.Store
+	// GetSharedTables returns the tables that keep state between requests.
+	GetSharedTables() *SharedTables
 	// GetMCPHeaderCombinedAllowlist returns the combined allowlist for MCP headers
 	GetMCPHeaderCombinedAllowlist() schemas.WhiteList
 	// ShouldAllowPerRequestStorageOverride returns whether per-request overrides for content storage are permitted
@@ -874,8 +872,10 @@ type Config struct {
 
 	// Async job executor (initialized during setup if LogsStore + governance are available)
 	AsyncJobExecutor *logstore.AsyncJobExecutor
-	// Shared in-memory kvstore for transport-level protocol coordination.
-	KVStore *kvstore.Store
+	// Shared holds the live-store tables that keep state between requests: session state,
+	// routing's warm coordination, poll leases and transport-level protocol state.
+	// AttachLiveStore creates them on the live store.
+	Shared *SharedTables
 
 	// Process-wide feature flag store. Flags are code-declared via
 	// featureflags.Register; this struct holds the effective state with
@@ -1297,10 +1297,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	config.SetupToken = resolveSetupToken(&configData)
 	// 2. Stores (config, logs, vector) — creates defaults for absent configs
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
-		return nil, err
-	}
-	// 3. KV store
-	if err := initKVStore(config); err != nil {
 		return nil, err
 	}
 	// 3a. Feature flags (after ConfigStore from initStores, before handlers)
@@ -9101,13 +9097,13 @@ func (c *Config) GetAsyncJobResultTTL() int {
 	return logstore.DefaultAsyncJobResultTTL
 }
 
-// GetKVStore returns the shared in-memory kvstore instance.
-func (c *Config) GetKVStore() *kvstore.Store {
-	return c.KVStore
+// GetSharedTables returns the tables that keep state between requests.
+func (c *Config) GetSharedTables() *SharedTables {
+	return c.Shared
 }
 
 // Close gracefully shuts down all background components associated with the Config.
-// This includes ModelCatalog sync worker, OAuthTokenRefreshWorker, KVStore cleanup loop,
+// This includes ModelCatalog sync worker, OAuthTokenRefreshWorker, the live store sweep,
 // ConfigStore, LogsStore, and VectorStore. It should be called when the Config is
 // no longer needed to prevent goroutine leaks.
 func (c *Config) Close(ctx context.Context) {
@@ -9122,9 +9118,6 @@ func (c *Config) Close(ctx context.Context) {
 	}
 	if c.MCPHeadersSweepWorker != nil {
 		c.MCPHeadersSweepWorker.Stop()
-	}
-	if c.KVStore != nil {
-		c.KVStore.Close()
 	}
 	if c.LiveStore != nil {
 		c.LiveStore.Close()
@@ -9207,19 +9200,6 @@ func initFeatureFlags(ctx context.Context, config *Config, configData *ConfigDat
 		for id, val := range configData.FeatureFlags.Flags {
 			store.ApplyFile(id, val.Enabled)
 		}
-	}
-	return nil
-}
-
-// initKVStore initializes the kvstore for the config
-func initKVStore(config *Config) error {
-	var err error
-	config.KVStore, err = kvstore.New(kvstore.Config{
-		DefaultTTL:      30 * time.Minute,
-		CleanupInterval: 1 * time.Minute,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to initialize kvstore: %w", err)
 	}
 	return nil
 }

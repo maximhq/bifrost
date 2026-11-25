@@ -55,9 +55,14 @@ type Config struct {
 	// ComplexityAnalyzerConfig overrides the analyzer defaults. When nil, the persisted
 	// config is used, falling back to the built-in defaults.
 	ComplexityAnalyzerConfig *complexity.AnalyzerConfig `json:"complexity_analyzer_config,omitempty"`
-	// KVStore is the runtime-only shared store used for complexity
-	// session state. It is injected by the host and is never serialized.
-	KVStore schemas.KVStore `json:"-"`
+	// Sessions is the table complexity session tiers live in, beside core's session
+	// bindings: the host passes the same table it builds core's session affinity over.
+	// Keys are strings the plugin builds, values are strings, and an entry expires
+	// after its TTL (zero never expires). Runtime only; never serialized.
+	Sessions *livestore.Table[string, string] `json:"-"`
+	// Warm is the table exemplar warming is coordinated through (see
+	// ComplexityWarmTable). Runtime only; never serialized.
+	Warm *livestore.Table[string, string] `json:"-"`
 }
 
 // chainMaxDepthOrDefault resolves the configured chain depth, falling back to the default.
@@ -79,8 +84,7 @@ type RoutingPlugin struct {
 	complexityConfig   atomic.Pointer[complexity.AnalyzerConfig]
 	semanticClassifier *complexity.SemanticClassifier
 	llmClassifier      *complexity.LLMClassifier
-	sessionStore       *complexitySessionStore
-	turnTierStore      *complexityTurnTierStore
+	sessions           *livestore.Table[string, string] // session tiers and continuation tiers
 	sessionEnabled     atomic.Bool
 	// capture samples classified requests' vectors for phrase suggestions;
 	// see complexitycapture.go.
@@ -200,22 +204,23 @@ func InitFromStore(
 		llmClassifier:      complexity.NewLLMClassifier(logger),
 		runtimeCtx:         ctx,
 	}
-	if config != nil && config.KVStore != nil {
-		plugin.sessionStore = newComplexitySessionStore(config.KVStore, complexitySessionInactivityTTL)
-		plugin.turnTierStore = &complexityTurnTierStore{store: config.KVStore}
+	if config != nil {
+		plugin.sessions = config.Sessions
+	}
+	if config != nil && config.Warm != nil {
 		// Peers sharing a vector store otherwise embed the same phrases against
 		// the same namespace at the same time, because a configuration change
 		// reaches every node at once and the marker that would let a late node
-		// skip the work is written last. Absent a KVStore this stays nil and each
-		// node warms independently, exactly as before.
-		if coordinator := newKVComplexityWarmCoordinator(config.KVStore, newRoutingNodeID()); coordinator != nil {
+		// skip the work is written last. Absent a warm table this stays nil and
+		// each process warms independently, exactly as before.
+		if coordinator := newComplexityWarmCoordinator(config.Warm, newRoutingNodeID()); coordinator != nil {
 			plugin.semanticClassifier.SetWarmCoordinator(coordinator)
 			plugin.warmCoordinator = coordinator
 		}
 	}
 	// Remembering the measured embedding width is what lets a restart adopt an
 	// already-complete generation without calling the provider at all. It is
-	// persisted rather than held in the KVStore because it has to survive every
+	// persisted rather than held in a live-store table because it has to survive every
 	// node restarting at once, which is exactly when nothing is left in memory
 	// to ask.
 	if dimensions := newPersistentEmbeddingDimensionStore(ctx, configStore, logger); dimensions != nil {
@@ -345,8 +350,8 @@ func (p *RoutingPlugin) ValidateComplexityAnalyzerConfig(config *complexity.Anal
 	if resolved.Classifier == complexity.ClassifierLLM && p.chatExecutor() == nil {
 		return fmt.Errorf("llm complexity classifier executor is unavailable")
 	}
-	if resolved.SessionRoutingEnabled() && p.sessionStore == nil {
-		return fmt.Errorf("complexity session routing requires a KV store")
+	if resolved.SessionRoutingEnabled() && p.sessions == nil {
+		return fmt.Errorf("complexity session routing requires a session store")
 	}
 	return nil
 }
@@ -697,7 +702,7 @@ func (p *RoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.B
 
 // persistComplexityTurnTier refreshes session tier state only after a served turn.
 func (p *RoutingPlugin) persistComplexityTurnTier(ctx *schemas.BifrostContext) {
-	if p.turnTierStore == nil || ctx == nil {
+	if p.sessions == nil || ctx == nil {
 		return
 	}
 	sessionID, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
@@ -712,8 +717,8 @@ func (p *RoutingPlugin) persistComplexityTurnTier(ctx *schemas.BifrostContext) {
 		if entry.result == nil || entry.result.Tier == "" {
 			continue
 		}
-		if err := p.turnTierStore.save(complexityTurnTierKeyFor(ctx, routerID), entry.result.Tier, complexityTurnTierTTL(ctx)); err != nil {
-			p.logComplexitySessionStoreError("persist continuation tier", err)
+		if err := p.saveTurnTier(complexityTurnTierKeyFor(ctx, routerID), entry.result.Tier, complexityTurnTierTTL(ctx)); err != nil {
+			p.logComplexitySessionError("persist continuation tier", err)
 		}
 	}
 }

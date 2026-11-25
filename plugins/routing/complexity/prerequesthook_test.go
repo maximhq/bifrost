@@ -12,7 +12,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -57,10 +56,8 @@ func newComplexityRuleFixtureWithConfig(t *testing.T, config *routing.Config) *r
 
 func newSessionComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
 	t.Helper()
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	return newComplexityRuleFixtureWithConfig(t, &routing.Config{KVStore: store})
+	routingConfig := newTestKVStore(t)
+	return newComplexityRuleFixtureWithConfig(t, routingConfig)
 }
 
 func chatRequest(text string) *schemas.BifrostRequest {
@@ -328,13 +325,14 @@ func TestPreRequestHook_SessionModeWithoutIdentityRemainsPerRequest(t *testing.T
 }
 
 func TestPreRequestHook_SessionStoreFailureFallsBackToCurrentClassification(t *testing.T) {
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-	require.NoError(t, err)
-	plugin := newComplexityRuleFixtureWithConfig(t, &routing.Config{KVStore: store})
+	routingConfig, sessions := sessionConfigForTest(t)
+	plugin := newComplexityRuleFixtureWithConfig(t, routingConfig)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
 	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
 	waitForSemanticClassifier(t, plugin)
-	require.NoError(t, store.Close())
+	require.NoError(t, plugin.PreRequestHook(complexitySessionContext("store-failure"), chatRequest("a simple request")))
+	require.Positive(t, sessions.Len(), "the first request stored session state")
+	corruptSessions(sessions)
 
 	ctx := complexitySessionContext("store-failure")
 	require.NoError(t, plugin.PreRequestHook(ctx, chatRequest("a medium request")))
@@ -383,9 +381,7 @@ func TestPreRequestHook_SessionContinuationReusesOrClassifiesRecoveredTask(t *te
 // model which tier's rule selected the request.
 func newTieredComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
 	t.Helper()
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	routingConfig := newTestKVStore(t)
 
 	logger := rules.NewMockLogger()
 	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
@@ -414,7 +410,7 @@ func newTieredComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
 		}))
 	}
 
-	plugin, err := routing.InitFromStore(context.Background(), &routing.Config{KVStore: store}, logger, nil, ruleStore.Store, routing.NewMockGovernance())
+	plugin, err := routing.InitFromStore(context.Background(), routingConfig, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin

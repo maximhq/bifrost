@@ -18,7 +18,6 @@ import (
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/tidwall/gjson"
@@ -1395,10 +1394,7 @@ func newGeminiLiveGateway(t *testing.T, upstream *fakeGeminiLive, enforceAuth bo
 	})
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
-	kv, err := kvstore.New(kvstore.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = kv.Close() })
-	config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}, KVStore: kv}, nil)
+	config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}}, nil)
 	pool := bfws.NewPool(nil)
 	t.Cleanup(pool.Close)
 	handler := &WSRealtimeHandler{client: client, config: config, handlerStore: config, pool: pool, sessions: bfws.NewSessionManager(10)}

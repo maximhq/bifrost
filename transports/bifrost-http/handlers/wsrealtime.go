@@ -169,7 +169,7 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	// This is what lets the resolution check below refuse a mapped token whose virtual key has
 	// since been revoked, instead of deferring that refusal to the first turn.
 	token := extractRealtimeTokenFromAuth(setupHeaders)
-	preMapping, preMapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetKVStore(), token)
+	preMapping, preMapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetSharedTables().RealtimeKeys, token)
 	if preMapped {
 		applyRealtimeEphemeralKeyMapping(preReqCtx, preMapping)
 	}
@@ -348,7 +348,7 @@ func (h *WSRealtimeHandler) runBootstrappedRealtimeSession(
 	// Same pre-pipeline mapping resolution as the main upgrade path: a Bifrost-minted
 	// token's virtual key must be on the context before governance resolves access.
 	token := extractRealtimeTokenFromAuth(setupHeaders)
-	mapping, mapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetKVStore(), token)
+	mapping, mapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetSharedTables().RealtimeKeys, token)
 	if mapped {
 		applyRealtimeEphemeralKeyMapping(preReqCtx, mapping)
 	}
@@ -497,7 +497,7 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 	lib.SettleIdentity(bifrostCtx)
 
 	token := extractRealtimeTokenFromAuth(setupHeaders)
-	mapping, mapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetKVStore(), token)
+	mapping, mapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetSharedTables().RealtimeKeys, token)
 	if mapped {
 		applyRealtimeEphemeralKeyMapping(bifrostCtx, mapping)
 	}

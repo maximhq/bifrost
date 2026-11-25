@@ -162,10 +162,12 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if routingConfig == nil {
 			routingConfig = &routing.Config{}
 		}
-		// Session complexity state uses the same process-wide store as core
-		// session routing. The field is runtime-only and is never persisted in
-		// plugin configuration.
-		routingConfig.KVStore = bifrostConfig.KVStore
+		// Session complexity state uses the same shared session table as
+		// core session routing, and warm coordination its own shared table.
+		// Both fields are runtime-only and never persisted in plugin
+		// configuration.
+		routingConfig.Sessions = bifrostConfig.Shared.Sessions
+		routingConfig.Warm = bifrostConfig.Shared.Warm
 		// Routing rules read the virtual key and its live budget/rate-limit usage, so the
 		// governance plugin must already be registered when this runs.
 		governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](bifrostConfig, governancePluginNameFromContext(ctx))

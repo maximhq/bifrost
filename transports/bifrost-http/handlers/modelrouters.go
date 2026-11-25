@@ -432,7 +432,7 @@ func (h *RoutingHandler) getModelRouterStatus(ctx *fasthttp.RequestCtx) {
 
 // sendModelRouterNotServed answers for a router the routing plugin does not
 // serve. A saved router can be left out at startup, as session routing
-// without a KV store is, so the store decides: a saved router is reported as
+// without a session store is, so the store decides: a saved router is reported as
 // not loaded (503), and only one that is not saved as not found (404).
 func (h *RoutingHandler) sendModelRouterNotServed(ctx *fasthttp.RequestCtx, id string) {
 	if _, err := h.configStore.GetModelRouter(ctx, id); errors.Is(err, configstore.ErrNotFound) {

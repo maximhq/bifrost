@@ -166,8 +166,7 @@ type Bifrost struct {
 	dropExcessRequests         atomic.Bool                           // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 	keySelector                schemas.KeySelector                   // Custom key selector function
 	keyPoolFilter              schemas.KeyPoolFilter                 // optional hook to veto keys before selection (nil = all eligible)
-	kvStore                    schemas.KVStore                       // optional KV store for session stickiness (nil = disabled)
-	sessionAffinity            schemas.SessionAffinity               // decides which key a session stays on; never nil after Init
+	sessionAffinity            schemas.SessionAffinity               // decides which route and key a session stays on; nil when none is configured
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -322,7 +321,6 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		keyPoolFilter: config.KeyPoolFilter,
 		mcpCredStore:  credstore.NewCredStore(config.OAuth2Provider, config.MCPHeadersProvider, config.Logger),
 		logger:        config.Logger,
-		kvStore:       config.KVStore,
 		modelCatalog:  config.ModelCatalog,
 
 		mcpSharedDiscoveryStore:  config.MCPSharedDiscoveryStore,
@@ -355,11 +353,11 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	if bifrost.keySelector == nil {
 		bifrost.keySelector = keyselectors.WeightedRandom
 	}
-	// Always present, so key selection never checks for it: without a KV store the shipped
-	// key affinity has nowhere to keep a binding and declines every request.
+	// Without one configured, session affinity is off: a request that carries a session id is
+	// routed and keyed as if it carried none.
 	bifrost.sessionAffinity = config.SessionAffinity
 	if bifrost.sessionAffinity == nil {
-		bifrost.sessionAffinity = NewSessionAffinity(bifrost.kvStore, bifrost.logger)
+		bifrost.logger.Warn("session affinity is not configured: requests that carry a session id are not kept on the route and key that served them")
 	}
 
 	// Initialize object pools
@@ -11698,6 +11696,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 			requestType != schemas.WebSocketResponsesRequest &&
 			!isBatchRequestType(requestType) &&
 			!isFileRequestType(requestType) &&
+			bifrost.sessionAffinity != nil &&
 			schemas.IsSessionAffinityActive(ctx) {
 			bifrost.sessionAffinity.ResolveKey(ctx, providerKey, model, supportedKeys)
 		}
@@ -11709,7 +11708,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	// provider rejects it outright, as long as that key is one of the eligible ones. A policy
 	// naming anything else is ignored, so a disabled or model-incompatible key can never reach a
 	// request through it.
-	if schemas.IsSessionAffinityActive(ctx) {
+	if bifrost.sessionAffinity != nil && schemas.IsSessionAffinityActive(ctx) {
 		if key, ok := bifrost.sessionAffinity.ResolveKey(ctx, providerKey, model, supportedKeys); ok {
 			for _, eligible := range supportedKeys {
 				if eligible.ID == key.ID {

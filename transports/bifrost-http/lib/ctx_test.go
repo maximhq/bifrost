@@ -25,7 +25,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -49,7 +48,7 @@ func (s testHandlerStore) GetProvidersForModel(_ string) []schemas.ModelProvider
 func (s testHandlerStore) GetStreamChunkInterceptor() StreamChunkInterceptor     { return nil }
 func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor       { return nil }
 func (s testHandlerStore) GetAsyncJobResultTTL() int                             { return 0 }
-func (s testHandlerStore) GetKVStore() *kvstore.Store                            { return nil }
+func (s testHandlerStore) GetSharedTables() *SharedTables                        { return nil }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return schemas.WhiteList{}
 }
@@ -1649,7 +1648,7 @@ func TestClientDisconnectWatcher_RetentionWatcherActuallyStarts(t *testing.T) {
 // in-process the way the HTTP server wires a request: request headers become the request context
 // through ConvertToBifrostContext, the governance plugin and then the routing plugin run as core's
 // LLM plugins over their in-memory stores, keys reach core through BaseAccount (which applies the
-// virtual key's key_ids), and session state lives in the transport's kvstore. Every provider is an
+// virtual key's key_ids), and session state lives in the transport's shared session table. Every provider is an
 // OpenAI-compatible custom provider pointed at one httptest upstream that answers by bearer token, so
 // each key can be made to fail on its own. Only the request body's parsing into a Bifrost request is
 // done by hand. Each test names the plan rows it covers.
@@ -1877,7 +1876,7 @@ type gateway struct {
 	client     *bifrost.Bifrost
 	governance *governance.GovernancePlugin
 	rules      *rules.TestRules
-	kv         *kvstore.Store
+	kv         *livestore.Table[string, string]
 }
 
 // gwSetup is what a scenario's gateway starts with: each provider's keys, the governance state
@@ -1940,19 +1939,16 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 			t.Fatalf("Put %s: %v", rule.ID, err)
 		}
 	}
-	kv, err := kvstore.New(kvstore.Config{})
-	if err != nil {
-		t.Fatalf("kvstore.New: %v", err)
-	}
-	routingPlugin, err := routing.InitFromStore(ctx, &routing.Config{KVStore: kv}, logger, nil, ruleStore.Store, governancePlugin)
+	kv := config.Shared.Sessions
+	routingPlugin, err := routing.InitFromStore(ctx, &routing.Config{Sessions: kv, Warm: config.Shared.Warm}, logger, nil, ruleStore.Store, governancePlugin)
 	if err != nil {
 		t.Fatalf("routing.InitFromStore: %v", err)
 	}
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account:    NewBaseAccount(config),
-		Logger:     logger,
-		KVStore:    kv,
-		LLMPlugins: []schemas.LLMPlugin{governancePlugin, routingPlugin},
+		Account:         NewBaseAccount(config),
+		Logger:          logger,
+		SessionAffinity: bifrost.NewSessionAffinity(kv, logger),
+		LLMPlugins:      []schemas.LLMPlugin{governancePlugin, routingPlugin},
 	})
 	if err != nil {
 		t.Fatalf("bifrost.Init: %v", err)
@@ -1961,7 +1957,6 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 		client.Shutdown()
 		_ = routingPlugin.Cleanup()
 		_ = governancePlugin.Cleanup()
-		_ = kv.Close()
 	})
 	return &gateway{t: t, up: u, config: config, client: client, governance: governancePlugin, rules: ruleStore, kv: kv}
 }
@@ -2931,7 +2926,9 @@ func TestGatewayOverlongSessionIDGivesNoSession(t *testing.T) {
 		if strings.Contains(strings.ToLower(r.trail()), "session") {
 			t.Fatalf("turn %d has no session, yet its trail mentions one:\n%s", turn, r.trail())
 		}
-		if n := g.kv.Len(); n != 0 {
+		n := 0
+		g.kv.Range(func(string, string) bool { n++; return true })
+		if n != 0 {
 			t.Fatalf("turn %d has no session, yet the session store holds %d entries", turn, n)
 		}
 	}
