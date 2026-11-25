@@ -3970,10 +3970,10 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		if tool.Function != nil {
 			// Serialize the parameters (or a default empty schema) to json.RawMessage
 			var schemaObjectBytes []byte
-			if parameters := tool.Function.Parameters; parameters != nil {
+			if parameters := tool.Function.Parameters; parameters != nil && !parameters.IsExplicitEmptyObject() {
 				var err error
 				// Claude rejects oneOf/anyOf/allOf at the input_schema root.
-				if (len(parameters.OneOf) > 0 || len(parameters.AnyOf) > 0 || len(parameters.AllOf) > 0) && schemas.IsAnthropicModelFamily(ctx, model) {
+				if schemas.IsAnthropicModelFamily(ctx, model) && parameters.HasRootComposition() {
 					if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
 						return nil, nil, err
 					}
@@ -3985,7 +3985,8 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 					continue
 				}
 			} else {
-				// Fallback to empty object schema if no parameters
+				// Fallback to an empty object schema if parameters are missing or
+				// were explicitly supplied as an empty object.
 				schemaObjectBytes = []byte(`{"type":"object","properties":{}}`)
 			}
 

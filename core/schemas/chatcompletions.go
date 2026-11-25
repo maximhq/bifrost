@@ -692,12 +692,92 @@ type ToolFunctionParameters struct {
 	keyOrder JSONKeyOrder `json:"-"`
 	// explicitEmptyObject tracks a client-supplied raw {} schema.
 	explicitEmptyObject bool `json:"-"`
+	// rawJSON stores a validated schema that should be forwarded without
+	// materializing the typed representation. It is immutable after construction.
+	rawJSON json.RawMessage `json:"-"`
+}
+
+// NewRawToolFunctionParameters creates tool parameters backed by validated raw
+// JSON. Providers that serialize ToolFunctionParameters can forward the schema
+// without first decoding it into OrderedMaps and other intermediate values.
+// The JSON document must be an object; an empty object is retained as the
+// provider-neutral representation of a parameterless tool.
+// Provider-specific JSON Schema restrictions remain the provider's responsibility.
+func NewRawToolFunctionParameters(data []byte) (*ToolFunctionParameters, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || !json.Valid(trimmed) || trimmed[0] != '{' {
+		return nil, fmt.Errorf("invalid tool function parameters JSON")
+	}
+
+	return &ToolFunctionParameters{
+		rawJSON: append(json.RawMessage(nil), trimmed...),
+	}, nil
+}
+
+// HasRawJSON reports whether the parameters use the raw passthrough form.
+func (t *ToolFunctionParameters) HasRawJSON() bool {
+	return t != nil && len(t.rawJSON) > 0
+}
+
+// IsExplicitEmptyObject reports whether the parameters were explicitly supplied
+// as an empty JSON object. It inspects raw parameters without decoding them.
+// A {} that the caller filled in afterwards is not empty: MarshalJSON emits the
+// typed fields, so this check follows them too.
+func (t *ToolFunctionParameters) IsExplicitEmptyObject() bool {
+	if t == nil || t.hasDefinedSchemaFields() {
+		return false
+	}
+	if len(t.rawJSON) == 0 {
+		return t.explicitEmptyObject
+	}
+
+	trimmed := bytes.TrimSpace(t.rawJSON)
+	return len(trimmed) >= 2 &&
+		trimmed[0] == '{' &&
+		trimmed[len(trimmed)-1] == '}' &&
+		len(bytes.TrimSpace(trimmed[1:len(trimmed)-1])) == 0
+}
+
+// HasRootComposition reports whether the schema has oneOf, anyOf or allOf at
+// its root. As in MarshalJSON, typed fields win once they are set; otherwise raw
+// parameters are checked with top-level lookups, without decoding them.
+func (t *ToolFunctionParameters) HasRootComposition() bool {
+	if t == nil {
+		return false
+	}
+	if len(t.OneOf) > 0 || len(t.AnyOf) > 0 || len(t.AllOf) > 0 {
+		return true
+	}
+	if len(t.rawJSON) == 0 || t.hasDefinedSchemaFields() {
+		return false
+	}
+	return gjson.GetBytes(t.rawJSON, "oneOf").Exists() ||
+		gjson.GetBytes(t.rawJSON, "anyOf").Exists() ||
+		gjson.GetBytes(t.rawJSON, "allOf").Exists()
+}
+
+// Materialize returns parameters whose typed fields describe the schema. Raw
+// parameters are decoded into a new value; any other value is returned as is.
+// Decoding gives up the raw passthrough, so callers use it only for a schema
+// they must rewrite.
+func (t *ToolFunctionParameters) Materialize() (*ToolFunctionParameters, error) {
+	if t == nil || len(t.rawJSON) == 0 || t.hasDefinedSchemaFields() {
+		return t, nil
+	}
+	var typed ToolFunctionParameters
+	if err := Unmarshal(t.rawJSON, &typed); err != nil {
+		return nil, err
+	}
+	return &typed, nil
 }
 
 // MarshalJSON serializes ToolFunctionParameters while preserving the original
 // top-level key order when available. A client-supplied raw `{}` stays `{}`;
 // otherwise object schemas always emit `properties` as an object, never null.
 func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
+	if len(t.rawJSON) > 0 && !t.hasDefinedSchemaFields() {
+		return t.rawJSON, nil
+	}
 	if t.explicitEmptyObject && !t.hasDefinedSchemaFields() {
 		return []byte("{}"), nil
 	}
