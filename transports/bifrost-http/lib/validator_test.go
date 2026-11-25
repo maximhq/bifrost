@@ -1160,6 +1160,48 @@ func TestValidateConfigSchema_MCPClientConfig_ClientCredentialsBlock(t *testing.
 	}
 }
 
+// TestValidateConfigSchema_MCPClientConfig_AWSSigV4: the aws_sigv4 block is required
+// for its auth type and forbidden on others, its fields are checked, and the auth
+// type is accepted on http, sse and openapi but not stdio.
+func TestValidateConfigSchema_MCPClientConfig_AWSSigV4(t *testing.T) {
+	client := func(fields string) string {
+		return `{"mcp": {"client_configs": [{"name": "gateway", ` + fields + `}]}}`
+	}
+	const http = `"connection_type": "http", "connection_string": "https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp", `
+	valid := map[string]string{
+		"region only":        http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-gov-west-1"}`,
+		"assumed role":       http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "service": "bedrock-agentcore", "role_arn": "env.GATEWAY_ROLE_ARN", "external_id": "ext", "session_name": "bifrost"}`,
+		"references":         http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "env.AWS_REGION", "role_arn": "vault.aws/gateway-role", "session_name": "env.GATEWAY_SESSION"}`,
+		"sse":                `"connection_type": "sse", "connection_string": "https://mcp.example.com/sse", "auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "service": "lambda"}`,
+		"openapi":            `"connection_type": "openapi", "openapi_config": {"spec_url": "https://api.example.com/openapi.json"}, "auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "service": "execute-api"}`,
+		"empty session name": http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "role_arn": "arn:aws:iam::123456789012:role/r", "session_name": ""}`,
+	}
+	for name, fields := range valid {
+		if err := ValidateConfigSchema([]byte(client(fields)), loadLocalSchema(t)); err != nil {
+			t.Errorf("%s: expected valid, got %v", name, err)
+		}
+	}
+	invalid := map[string]string{
+		"missing block":             http + `"auth_type": "aws_sigv4"`,
+		"block on another type":     http + `"auth_type": "headers", "aws_sigv4": {"region": "us-east-1"}`,
+		"missing region":            http + `"auth_type": "aws_sigv4", "aws_sigv4": {"service": "lambda"}`,
+		"malformed region":          http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "US East"}`,
+		"service outside allowlist": http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "service": "s3"}`,
+		"external id without role":  http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "external_id": "ext"}`,
+		"role ARN not a role":       http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "role_arn": "arn:aws:iam::123456789012:user/u"}`,
+		"role ARN short account":    http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "role_arn": "arn:aws:iam::1234:role/r"}`,
+		"session name too short":    http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "role_arn": "arn:aws:iam::123456789012:role/r", "session_name": "a"}`,
+		"session name too long":     http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "role_arn": "arn:aws:iam::123456789012:role/r", "session_name": "` + strings.Repeat("s", 65) + `"}`,
+		"unknown field":             http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "access_key": "AKIA"}`,
+		"stdio":                     `"connection_type": "stdio", "stdio_config": {"command": "npx", "args": []}, "auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1"}`,
+	}
+	for name, fields := range invalid {
+		if err := ValidateConfigSchema([]byte(client(fields)), loadLocalSchema(t)); err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+}
+
 // TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument: oauth_config takes the
 // use_client_metadata_document toggle, and it reaches the client's pending OAuth config.
 func TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument(t *testing.T) {

@@ -29,6 +29,7 @@ type Server struct {
 	counters *Counters
 	streams  *streamRegistry
 	oauth    *oauthState
+	sigv4    *sigv4State
 	rest     *restSurface
 	llm      *llmSurface
 	prompts  *promptSurface
@@ -72,6 +73,7 @@ func NewServer(name string) *Server {
 		counters: newCounters(),
 		streams:  newStreamRegistry(),
 		oauth:    newOAuthState(),
+		sigv4:    &sigv4State{},
 		rest:     &restSurface{},
 		llm:      newLLMSurface(),
 		prompts:  &promptSurface{},
@@ -644,6 +646,9 @@ func (s *Server) callerIdentity(r *http.Request, method, sessionID string) strin
 		}
 	}
 	a := s.auth.get()
+	if a.SigV4 != nil {
+		return sigv4Identity(r)
+	}
 	if a.OAuth == nil {
 		return s.auth.check(r.Header).Identity
 	}

@@ -42,6 +42,8 @@ type State struct {
 	StdioEnv map[string]string `json:"stdio_env,omitempty"`
 	// OAuth is the authorization server's state, present while OAuth is on.
 	OAuth *OAuthState `json:"oauth,omitempty"`
+	// SigV4 is the SigV4 verifier's counters and log, present while SigV4 is on.
+	SigV4 *SigV4State `json:"sigv4,omitempty"`
 	// REST is the REST surface's routes and call log, present once used.
 	REST *RESTState `json:"rest,omitempty"`
 	// LLM is the LLM surface's models and scenarios, present once used.
@@ -69,9 +71,15 @@ type State struct {
 
 // State captures a server's current state.
 func (s *Server) State() State {
+	// One read, so the auth settings returned and the states included agree.
+	auth := s.auth.get()
 	var oauth *OAuthState
-	if s.auth.get().OAuth != nil {
+	if auth.OAuth != nil {
 		oauth = s.oauth.snapshot()
+	}
+	var sigv4 *SigV4State
+	if auth.SigV4 != nil {
+		sigv4 = s.sigv4.snapshot()
 	}
 	prompts, resources, templates, reads := s.prompts.snapshot()
 	promptViews, resourceViews, templateViews := s.prompts.views()
@@ -84,7 +92,7 @@ func (s *Server) State() State {
 		Tools:             s.tools.List(""),
 		Revision:          s.tools.Revision(),
 		Faults:            s.faults.peek(),
-		Auth:              s.auth.get(),
+		Auth:              auth,
 		Counters:          s.counters.Snapshot(),
 		Sessions:          s.sessions.count(),
 		Streams:           s.streams.count(),
@@ -93,6 +101,7 @@ func (s *Server) State() State {
 		StdioPID:          s.StdioPID(),
 		StdioEnv:          s.StdioEnv(),
 		OAuth:             oauth,
+		SigV4:             sigv4,
 		REST:              s.rest.snapshot(),
 		LLM:               s.llm.snapshot(),
 
@@ -418,6 +427,7 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		s.prompts.clearReads()
 		s.counters.Reset()
 		s.oauth.resetCounters()
+		s.sigv4.reset()
 		s.rest.clearLog()
 		s.llm.clearLog()
 	case "routes/set":

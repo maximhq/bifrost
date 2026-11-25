@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -96,6 +98,8 @@ func TestIsAuthFailure(t *testing.T) {
 		{"fmt-wrapped 401", fmt.Errorf("call failed: %w", transport.NewError(&transport.AuthorizationRequiredError{})), true},
 		{"transport 403", transport.NewError(errors.New("request failed with status 403: Forbidden")), true},
 		{"fmt-wrapped transport 403", fmt.Errorf("call failed: %w", transport.NewError(errors.New("request failed with status 403: Forbidden"))), true},
+		{"aws_sigv4 refusal on a tool call", transport.NewError(fmt.Errorf("failed to send request: %w", &url.Error{Op: "Post", URL: "https://gw.example.com/mcp",
+			Err: &utils.AWSSigV4RejectedError{StatusCode: 403, Message: "The security token included in the request is expired"}})), true},
 		{"a tool's own error saying forbidden", errors.New("forbidden: this caller may not use echo_tool"), false},
 		{"a tool's own error saying 401", errors.New("tool call failed: 401 Unauthorized"), false},
 		{"text only, chain lost", fmt.Errorf("call failed: %v", transport.NewError(&transport.AuthorizationRequiredError{})), false},

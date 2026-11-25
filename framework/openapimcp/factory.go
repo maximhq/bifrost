@@ -54,7 +54,10 @@ func Factory(opts ...FactoryOption) schemas.InProcessServerFactory {
 		}
 		// A copy, so the deadline sized for the spec does not reach the upstream calls
 		// the server makes with the same client; transport and proxy are shared.
-		specClient := deps.HTTPClient
+		specClient := deps.SpecHTTPClient
+		if specClient == nil {
+			specClient = deps.HTTPClient
+		}
 		if specClient != nil {
 			c := *specClient
 			c.Timeout = SpecFetchTimeout(maxBytes)

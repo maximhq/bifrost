@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -122,6 +123,29 @@ func TestFactory_SpecURLAndFile(t *testing.T) {
 	srv, err = Factory(WithConfigDir(dir))(context.Background(), &schemas.MCPClientConfig{Name: "f", OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("spec.yaml")}}, deps)
 	require.NoError(t, err)
 	assert.NotNil(t, srv)
+}
+
+// TestFactory_SpecURLUsesSpecHTTPClient: spec_url is fetched with deps.SpecHTTPClient
+// when core supplies one (an aws_sigv4 client's unsigned client), never with the
+// signing HTTPClient the upstream calls use.
+func TestFactory_SpecURLUsesSpecHTTPClient(t *testing.T) {
+	specServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(fixture(t, "petstore-3.1.json"))
+	}))
+	t.Cleanup(specServer.Close)
+	var viaSpec, viaAPI atomic.Int32
+	counting := func(n *atomic.Int32) *http.Client {
+		inner := specServer.Client().Transport
+		return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			n.Add(1)
+			return inner.RoundTrip(r)
+		})}
+	}
+	deps := schemas.InProcessServerDeps{HTTPClient: counting(&viaAPI), SpecHTTPClient: counting(&viaSpec)}
+	_, err := Factory()(context.Background(), &schemas.MCPClientConfig{Name: "u", OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: str(specServer.URL + "/openapi.json")}}, deps)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), viaSpec.Load())
+	assert.Zero(t, viaAPI.Load(), "the spec must not be fetched with the upstream client")
 }
 
 // TestFactory_SpecFetchTimeoutScalesWithLimit: the connect-time spec_url fetch

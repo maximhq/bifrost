@@ -106,6 +106,31 @@ func TestRedactMCPClientConfig_ClientCredentials(t *testing.T) {
 	assert.Equal(t, "client-secret-value", config.ClientCredentials.ClientSecret.GetValue(), "the live block is not mutated")
 }
 
+// TestRedactMCPClientConfig_AWSSigV4: a literal role ARN and external ID read back
+// as set, a secret reference is masked, and the live block is left untouched.
+func TestRedactMCPClientConfig_AWSSigV4(t *testing.T) {
+	t.Setenv("SIGV4_REDACT_EXTERNAL_ID", "external-id-from-env")
+	t.Setenv("SIGV4_REDACT_SESSION", "session-from-env")
+	c := &Config{}
+	config := &schemas.MCPClientConfig{
+		ID: "sigv4-1", Name: "gateway", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeAWSSigV4,
+		AWSSigV4: &schemas.MCPAWSSigV4Config{
+			Region: schemas.NewSecretVar("us-gov-west-1"), RoleARN: schemas.NewSecretVar("arn:aws-us-gov:iam::123456789012:role/gateway"),
+			ExternalID: schemas.NewSecretVar("env.SIGV4_REDACT_EXTERNAL_ID"), SessionName: schemas.NewSecretVar("env.SIGV4_REDACT_SESSION"),
+		},
+	}
+	redacted := c.RedactMCPClientConfig(config)
+	require.NotNil(t, redacted.AWSSigV4)
+	assert.Equal(t, "us-gov-west-1", redacted.AWSSigV4.Region.GetValue())
+	assert.Equal(t, "arn:aws-us-gov:iam::123456789012:role/gateway", redacted.AWSSigV4.RoleARN.GetValue(), "a literal role ARN is an identifier, not a secret")
+	assert.NotEqual(t, "external-id-from-env", redacted.AWSSigV4.ExternalID.GetValue())
+	assert.True(t, redacted.AWSSigV4.ExternalID.IsFromEnv(), "the reference itself stays visible")
+	assert.NotEqual(t, "session-from-env", redacted.AWSSigV4.SessionName.GetValue())
+	assert.True(t, redacted.AWSSigV4.SessionName.IsFromEnv())
+	assert.Equal(t, "external-id-from-env", config.AWSSigV4.ExternalID.GetValue(), "the live block is not mutated")
+	assert.NotSame(t, config.AWSSigV4, redacted.AWSSigV4)
+}
+
 // TestRedactMCPClientConfig_OpenAPIConfig: the upstream API credentials inside
 // openapi_config are masked and the (large) spec document is left out of reads,
 // while the server-computed metadata that describes the spec survives and the

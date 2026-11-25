@@ -26,6 +26,7 @@ import (
 //	/s/<name>/as/...     that server's OAuth authorization server, when on
 //	/s/<name>/rest/...   that server's REST surface (see rest.go)
 //	/s/<name>/llm/...    that server's LLM surface (see llm.go)
+//	/aws/...             the fake AWS account SigV4 servers verify against (see aws.go)
 //	/control/<name>/...  that server's control API
 //	/control             fleet-wide control API
 //	/client/<name>/...   a real SDK client the fleet drives (see sdkclient.go)
@@ -336,6 +337,7 @@ func (f *Fleet) Handler() http.Handler {
 	mux.HandleFunc("/control", refuseBrowserRequests(f.routeFleetControl))
 	mux.HandleFunc("/control/", refuseBrowserRequests(f.routeControl))
 	mux.HandleFunc("/client/", refuseBrowserRequests(f.routeClient))
+	mux.HandleFunc("/aws/", refuseBrowserRequests(awsAccount.routeAWS))
 	return mux
 }
 
@@ -368,6 +370,11 @@ func (f *Fleet) routeServer(w http.ResponseWriter, r *http.Request) {
 		// one reads as "gone", the other as "unreachable".
 		http.Error(w, "no such server: "+name, http.StatusNotFound)
 		return
+	}
+	if cfg := s.auth.get().SigV4; cfg != nil && !strings.HasPrefix(rest, "as/") {
+		if r, ok = s.verifySigV4(w, r, cfg); !ok {
+			return
+		}
 	}
 	switch {
 	case rest == "mcp":

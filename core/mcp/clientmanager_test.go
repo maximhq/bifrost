@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,10 +11,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -24,6 +27,7 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/mcp/credstore"
+	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -146,7 +150,8 @@ func TestAcquireClientConn_DropsTheDiscoveryOfACallerWhoMustSignInAgain(t *testi
 // is not dialed again.
 // TestRefreshesOnConnectRejection: a per-call connection rejected with 401 is
 // refreshed and redialed only for auth types with a credential a refresh can
-// replace, client_credentials included (a new token is minted).
+// replace, client_credentials included (a new token is minted) and aws_sigv4
+// (the AWS credentials are fetched again).
 func TestRefreshesOnConnectRejection(t *testing.T) {
 	store := credstore.NewCredStore(nil, nil, nil)
 	for authType, want := range map[schemas.MCPAuthType]bool{
@@ -154,6 +159,7 @@ func TestRefreshesOnConnectRejection(t *testing.T) {
 		schemas.MCPAuthTypePerUserOauth:      true,
 		schemas.MCPAuthTypeTokenExchange:     true,
 		schemas.MCPAuthTypeClientCredentials: true,
+		schemas.MCPAuthTypeAWSSigV4:          true,
 		schemas.MCPAuthTypeHeaders:           false,
 		schemas.MCPAuthTypePerUserHeaders:    false,
 	} {
@@ -489,6 +495,142 @@ func TestUpdateClientCredentials_PerCallShared_Healthy_RefreshesToolsSynchronous
 	assert.Contains(t, state.ToolMap, "shared-percall-client-refresh-echo", "tools must be refreshed synchronously, not deferred to the periodic checker")
 }
 
+// TestAcquireClientConn_AWSSigV4RejectionRefreshesOnce: a per-call aws_sigv4
+// connection the upstream refuses on connect has its cached credentials dropped
+// and is dialed once more, which succeeds here; a second refusal is reported.
+func TestAcquireClientConn_AWSSigV4RejectionRefreshesOnce(t *testing.T) {
+	inner, _ := buildAdminDiscoveryHTTPServer(t)
+	target, _ := url.Parse(inner.URL)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	// While refusals remain, the handshake (discovery probe and initialize) is
+	// refused as AWS refuses a bad signature; each refused initialize is one dial.
+	var refusals, refusalsLeft atomic.Int32
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		handshake := bytes.Contains(body, []byte(`"method":"initialize"`)) || bytes.Contains(body, []byte(`"method":"server/discover"`))
+		if handshake && refusalsLeft.Load() > 0 {
+			if bytes.Contains(body, []byte(`"method":"initialize"`)) {
+				refusalsLeft.Add(-1)
+				refusals.Add(1)
+			}
+			http.Error(w, "The security token included in the request is expired", http.StatusForbidden)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(front.Close)
+	dir := t.TempDir()
+	for k, v := range map[string]string{
+		"AWS_ACCESS_KEY_ID": "AKIATEST", "AWS_SECRET_ACCESS_KEY": "secret", "AWS_SESSION_TOKEN": "", "AWS_PROFILE": "",
+		"AWS_CONFIG_FILE": dir + "/config", "AWS_SHARED_CREDENTIALS_FILE": dir + "/credentials", "AWS_EC2_METADATA_DISABLED": "true",
+	} {
+		t.Setenv(k, v)
+	}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	state := &schemas.MCPClientState{Name: "gateway", State: schemas.MCPConnectionStateHealthy, ExecutionConfig: &schemas.MCPClientConfig{
+		ID: "client-sigv4-refresh", Name: "gateway", AuthType: schemas.MCPAuthTypeAWSSigV4, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(front.URL), AWSSigV4: &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-mcp-test-7")},
+	}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	refusalsLeft.Store(1)
+	conn, release, err := m.AcquireClientConn(ctx, state)
+	require.NoError(t, err, "the redial after the refusal must succeed")
+	require.NotNil(t, conn)
+	release()
+	assert.Equal(t, int32(1), refusals.Load())
+
+	refusalsLeft.Store(2)
+	_, _, err = m.AcquireClientConn(ctx, state)
+	var rejected *utils.AWSSigV4RejectedError
+	require.ErrorAs(t, err, &rejected, "a second refusal is reported, not retried again")
+	assert.Equal(t, int32(3), refusals.Load(), "one refresh per connection, never a loop")
+}
+
+// TestUpdateClientCredentials_StickyAWSSigV4_ReconnectsWithNewBlock: on a
+// persistent aws_sigv4 connection, a credential update merges the new block and
+// redials with it, so the requests that follow are signed for the new region.
+func TestUpdateClientCredentials_StickyAWSSigV4_ReconnectsWithNewBlock(t *testing.T) {
+	ts, rec := buildAdminDiscoveryHTTPServer(t)
+	dir := t.TempDir()
+	for k, v := range map[string]string{
+		"AWS_ACCESS_KEY_ID": "AKIATEST", "AWS_SECRET_ACCESS_KEY": "secret", "AWS_SESSION_TOKEN": "", "AWS_PROFILE": "",
+		"AWS_CONFIG_FILE": dir + "/config", "AWS_SHARED_CREDENTIALS_FILE": dir + "/credentials", "AWS_EC2_METADATA_DISABLED": "true",
+	} {
+		t.Setenv(k, v)
+	}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID: "client-sticky-sigv4", Name: "sticky_sigv4", AuthType: schemas.MCPAuthTypeAWSSigV4, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: schemas.WhiteList{"*"},
+		AWSSigV4: &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-mcp-test-8")},
+	}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+	// signedSince reports whether a request recorded after the first n was signed for region; the old
+	// connection may still send a request or two while the new one is dialed.
+	signedSince := func(n int, region string) bool {
+		auth := rec.headerValues("Authorization")
+		return slices.ContainsFunc(auth[min(n, len(auth)):], func(v string) bool { return strings.Contains(v, "/"+region+"/") })
+	}
+	require.True(t, signedSince(0, "us-mcp-test-8"), "the first connection is signed for the configured region")
+
+	before := len(rec.headerValues("Authorization"))
+	updated := *config
+	updated.AWSSigV4 = &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-mcp-test-9")}
+	require.NoError(t, m.UpdateClientCredentials(config.ID, &updated))
+	assert.True(t, signedSince(before, "us-mcp-test-9"), "the redial is signed for the new region")
+	m.mu.RLock()
+	assert.Equal(t, "us-mcp-test-9", m.clientMap[config.ID].ExecutionConfig.AWSSigV4.Region.GetValue())
+	m.mu.RUnlock()
+}
+
+// TestUpdateClientCredentials_PerCallAWSSigV4_InstallsBlock: a credential update
+// on a per-call aws_sigv4 client installs the new signing block once discovery
+// with it succeeds, as the sticky branch does; a failed discovery keeps the old one.
+func TestUpdateClientCredentials_PerCallAWSSigV4_InstallsBlock(t *testing.T) {
+	ts, _ := buildAdminDiscoveryHTTPServer(t)
+	dir := t.TempDir()
+	for k, v := range map[string]string{
+		"AWS_ACCESS_KEY_ID": "AKIATEST", "AWS_SECRET_ACCESS_KEY": "secret", "AWS_SESSION_TOKEN": "", "AWS_PROFILE": "",
+		"AWS_CONFIG_FILE": dir + "/config", "AWS_SHARED_CREDENTIALS_FILE": dir + "/credentials", "AWS_EC2_METADATA_DISABLED": "true",
+	} {
+		t.Setenv(k, v)
+	}
+	block := func(region string) *schemas.MCPAWSSigV4Config {
+		return &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar(region)}
+	}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	config := &schemas.MCPClientConfig{
+		ID:               "client-percall-sigv4",
+		Name:             "percall-sigv4",
+		AuthType:         schemas.MCPAuthTypeAWSSigV4,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+		AWSSigV4:         block("us-mcp-test-4"),
+	}
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
+	m.mu.Unlock()
+	region := func() string {
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		return m.clientMap[config.ID].ExecutionConfig.AWSSigV4.Region.GetValue()
+	}
+
+	updated := *config
+	updated.AWSSigV4 = block("us-mcp-test-5")
+	require.NoError(t, m.UpdateClientCredentials(config.ID, &updated))
+	assert.Equal(t, "us-mcp-test-5", region(), "the new block is installed once discovery with it succeeds")
+
+	unreachable := updated
+	unreachable.ConnectionString = schemas.NewSecretVar("http://127.0.0.1:1/mcp")
+	unreachable.AWSSigV4 = block("us-mcp-test-6")
+	require.Error(t, m.UpdateClientCredentials(config.ID, &unreachable))
+	assert.Equal(t, "us-mcp-test-5", region(), "a failed discovery keeps the installed block")
+}
+
 // TestSetClientDiscovery_ReplacesStaleTools pins SetClientDiscovery' replace
 // semantics: every caller passes a complete discovery result, so a tool the
 // upstream removed between discoveries must disappear from the in-memory
@@ -815,6 +957,107 @@ func TestBuildTLSHTTPClientNeverFallsBackToUnguardedDefault(t *testing.T) {
 		require.True(t, ok)
 		require.NotNil(t, transport.DialContext)
 	}
+}
+
+// withStaticAWSEnv points the default AWS credential chain at environment keys only.
+func withStaticAWSEnv(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	for k, v := range map[string]string{
+		"AWS_ACCESS_KEY_ID":                  "AKIDMCPTEST",
+		"AWS_SECRET_ACCESS_KEY":              "secret",
+		"AWS_SESSION_TOKEN":                  "",
+		"AWS_PROFILE":                        "",
+		"AWS_ROLE_ARN":                       "",
+		"AWS_WEB_IDENTITY_TOKEN_FILE":        "",
+		"AWS_CONFIG_FILE":                    dir + "/config",
+		"AWS_SHARED_CREDENTIALS_FILE":        dir + "/credentials",
+		"AWS_EC2_METADATA_DISABLED":          "true",
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI": "",
+	} {
+		t.Setenv(k, v)
+	}
+}
+
+// authorizationSeenBy sends one request through httpClient and returns the
+// Authorization header the server received.
+func authorizationSeenBy(t *testing.T, httpClient *http.Client) string {
+	t.Helper()
+	got := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Get("Authorization")
+	}))
+	t.Cleanup(server.Close)
+	resp, err := httpClient.Post(server.URL+"/mcp", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	return <-got
+}
+
+// TestBuildTLSHTTPClient_SignsOnlyAWSSigV4Clients: an aws_sigv4 client's requests
+// are SigV4-signed for its region and service; every other auth type's client is
+// unchanged, and an aws_sigv4 client with no block is refused rather than left
+// to send unsigned requests.
+func TestBuildTLSHTTPClient_SignsOnlyAWSSigV4Clients(t *testing.T) {
+	withStaticAWSEnv(t)
+	m := &MCPManager{logger: defaultLogger}
+
+	signed, err := m.buildTLSHTTPClient(&schemas.MCPClientConfig{
+		Name: "gateway", AuthType: schemas.MCPAuthTypeAWSSigV4,
+		AWSSigV4: &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-mcp-test-1"), Service: "execute-api"},
+	})
+	require.NoError(t, err)
+	auth := authorizationSeenBy(t, signed)
+	assert.True(t, strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=AKIDMCPTEST/"), auth)
+	assert.Contains(t, auth, "/us-mcp-test-1/execute-api/aws4_request")
+
+	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeClientCredentials} {
+		// A stray block on another auth type is ignored, never signed with.
+		plain, err := m.buildTLSHTTPClient(&schemas.MCPClientConfig{AuthType: authType, AWSSigV4: &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-east-1")}})
+		require.NoError(t, err)
+		_, isPlain := plain.Transport.(*http.Transport)
+		assert.True(t, isPlain, "auth type %s must not sign", authType)
+		assert.Empty(t, authorizationSeenBy(t, plain))
+	}
+
+	_, err = m.buildTLSHTTPClient(&schemas.MCPClientConfig{Name: "gateway", AuthType: schemas.MCPAuthTypeAWSSigV4})
+	require.ErrorContains(t, err, "aws_sigv4 is required for aws_sigv4 auth type in client 'gateway'")
+}
+
+// TestCreateOpenAPIConnection_AWSSigV4SpecFetchUnsigned: an openapi aws_sigv4
+// client signs its upstream API calls, but the spec URL gets the unsigned client,
+// so Bifrost's AWS identity never reaches a host that only serves the document.
+func TestCreateOpenAPIConnection_AWSSigV4SpecFetchUnsigned(t *testing.T) {
+	withStaticAWSEnv(t)
+	var deps atomic.Pointer[schemas.InProcessServerDeps]
+	factory := func(_ context.Context, _ *schemas.MCPClientConfig, d schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		deps.Store(&d)
+		return server.NewMCPServer("stub-openapi", "1.0.0"), nil
+	}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: factory}, nil, &MockLogger{}, nil)
+
+	config := &schemas.MCPClientConfig{
+		ID: "api", Name: "api_gateway", ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+		AuthType:      schemas.MCPAuthTypeAWSSigV4,
+		AWSSigV4:      &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-mcp-test-2"), Service: "execute-api"},
+		OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "{}"},
+	}
+	conn, _, err := m.createOpenAPIConnection(context.Background(), config, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	got := deps.Load()
+	require.NotNil(t, got)
+	assert.Contains(t, authorizationSeenBy(t, got.HTTPClient), "/us-mcp-test-2/execute-api/aws4_request")
+	require.NotNil(t, got.SpecHTTPClient)
+	assert.Empty(t, authorizationSeenBy(t, got.SpecHTTPClient))
+
+	// Without signing, the spec and the API share one client.
+	config.AuthType, config.AWSSigV4 = schemas.MCPAuthTypeHeaders, nil
+	conn, _, err = m.createOpenAPIConnection(context.Background(), config, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	got = deps.Load()
+	assert.Same(t, got.HTTPClient, got.SpecHTTPClient)
 }
 
 // TestBuildTLSHTTPClientBlocksLinkLocal proves the dial-time guard refuses
@@ -1928,6 +2171,58 @@ func TestUpdateClient_OpenAPI_HeaderEditRebuildsServer(t *testing.T) {
 	assert.Equal(t, int32(3), stub.calls.Load(), "an update with unchanged headers must not rebuild")
 }
 
+// TestUpdateClient_OpenAPI_AWSSigV4EditRebuildsServer: the guarded HTTP client
+// signs with the aws_sigv4 block it was built from, so changing only the block
+// through UpdateClient rebuilds the server; resending it unchanged does not.
+func TestUpdateClient_OpenAPI_AWSSigV4EditRebuildsServer(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	signed := func(region string) *schemas.MCPClientConfig {
+		config := newOpenAPITestConfig("petstore", "listPets")
+		config.AuthType = schemas.MCPAuthTypeAWSSigV4
+		config.Headers = nil
+		config.AWSSigV4 = &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar(region), Service: "execute-api"}
+		return config
+	}
+	config := signed("us-east-1")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	require.NoError(t, m.UpdateClient(config.ID, signed("us-west-2")))
+	assert.Equal(t, int32(2), stub.calls.Load(), "a region change rebuilds the server")
+	require.NoError(t, m.UpdateClient(config.ID, signed("us-west-2")))
+	assert.Equal(t, int32(2), stub.calls.Load(), "an unchanged block must not rebuild")
+}
+
+// TestUpdateClient_AWSSigV4BlockValidated: an update must keep a valid signing
+// block on an aws_sigv4 client, so it cannot sign for a service outside the
+// allowlist, drop the block, or configure a header the signer sets.
+func TestUpdateClient_AWSSigV4BlockValidated(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	signed := func(block *schemas.MCPAWSSigV4Config) *schemas.MCPClientConfig {
+		config := newOpenAPITestConfig("petstore", "listPets")
+		config.AuthType = schemas.MCPAuthTypeAWSSigV4
+		config.Headers = nil
+		config.AWSSigV4 = block
+		return config
+	}
+	config := signed(&schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-east-1"), Service: "execute-api"})
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	assert.ErrorContains(t, m.UpdateClient(config.ID, signed(&schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-east-1"), Service: "s3"})), "aws_sigv4.service must be one of")
+	assert.ErrorContains(t, m.UpdateClient(config.ID, signed(nil)), "aws_sigv4 is required")
+	withHeader := signed(&schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-east-1"), Service: "execute-api"})
+	withHeader.Headers = map[string]schemas.SecretVar{"X-Amz-Date": *schemas.NewSecretVar("x")}
+	assert.ErrorContains(t, m.UpdateClient(config.ID, withHeader), "is set by the SigV4 signer")
+	assert.ErrorContains(t, m.UpdateClientCredentials(config.ID, signed(&schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("nowhere")})), "aws_sigv4.region must be an AWS region")
+
+	m.mu.RLock()
+	assert.Equal(t, "execute-api", m.clientMap[config.ID].ExecutionConfig.AWSSigV4.Service, "a refused update leaves the stored block")
+	m.mu.RUnlock()
+}
+
 // TestUpdateClient_OpenAPI_DisabledClientDefersRebuild: connectToMCPClient
 // refuses a disabled client, so a spec edit saved while the client is disabled
 // must not dial. The new config is stored and EnableClient builds from it.
@@ -2530,6 +2825,35 @@ func TestPerCallConnFor_Lifecycle(t *testing.T) {
 	require.NoError(t, m.RemoveClient(config.ID))
 	_, ok := m.perCallConns.Load(config.ID)
 	assert.False(t, ok, "removing the client drops its per-call state")
+}
+
+// TestPerCallConnFor_AWSSigV4ChangeRebuilds: the signer lives in the per-call HTTP client, so an
+// edited aws_sigv4 block, or a switch to or from aws_sigv4, builds a new one; an equal block reuses it.
+func TestPerCallConnFor_AWSSigV4ChangeRebuilds(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	sigv4 := func(region string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{ID: "percall-sigv4", Name: "gateway", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			AuthType: schemas.MCPAuthTypeAWSSigV4, AWSSigV4: &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar(region)}}
+	}
+	m.mu.Lock()
+	m.clientMap["percall-sigv4"] = &schemas.MCPClientState{Name: "gateway", ExecutionConfig: sigv4("us-east-1")}
+	m.mu.Unlock()
+
+	first, err := m.perCallConnFor(sigv4("us-east-1"))
+	require.NoError(t, err)
+	again, err := m.perCallConnFor(sigv4("us-east-1"))
+	require.NoError(t, err)
+	assert.Same(t, first, again, "an equal aws_sigv4 block reuses the signing client")
+
+	moved, err := m.perCallConnFor(sigv4("us-west-2"))
+	require.NoError(t, err)
+	assert.NotSame(t, first, moved, "a new region builds a signer for it")
+
+	unsigned := sigv4("us-west-2")
+	unsigned.AuthType, unsigned.AWSSigV4 = schemas.MCPAuthTypeHeaders, nil
+	plain, err := m.perCallConnFor(unsigned)
+	require.NoError(t, err)
+	assert.NotSame(t, moved, plain, "leaving aws_sigv4 drops the signer")
 }
 
 // A call that took its client discovery before RemoveClient and builds per-call state afterwards must

@@ -529,6 +529,16 @@ func (s *Server) issuer(r *http.Request) string {
 // error status may read it as a JSON-RPC response and never see the status.
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (string, bool) {
 	a := s.auth.get()
+	if a.SigV4 != nil {
+		// routeServer verified the signature before dispatching here, unless SigV4
+		// was turned on after it routed the request.
+		identity, verified := r.Context().Value(sigv4IdentityKey{}).(string)
+		if !verified {
+			http.Error(w, "unverified SigV4 request", http.StatusUnauthorized)
+			return "", false
+		}
+		return identity, true
+	}
 	if a.OAuth == nil {
 		res := s.auth.check(r.Header)
 		if !res.OK {

@@ -767,6 +767,53 @@ func TestValidateMCPClientConfig_ClientCredentials(t *testing.T) {
 	require.ErrorContains(t, validateMCPClientConfig(stdio), "not supported for STDIO")
 }
 
+// TestValidateMCPClientConfig_AWSSigV4: the block is required and checked, the
+// server must be reachable over HTTP, and no header the signer owns may be
+// configured or forwarded.
+func TestValidateMCPClientConfig_AWSSigV4(t *testing.T) {
+	config := func(mutate func(*schemas.MCPClientConfig)) *schemas.MCPClientConfig {
+		c := &schemas.MCPClientConfig{
+			ID: "sigv4", Name: "sigv4_client", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"),
+			AuthType:         schemas.MCPAuthTypeAWSSigV4, AWSSigV4: &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-east-1")},
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+	require.NoError(t, validateMCPClientConfig(config(nil)))
+	require.NoError(t, validateMCPClientConfig(config(func(c *schemas.MCPClientConfig) { c.ConnectionType = schemas.MCPConnectionTypeSSE })))
+	require.NoError(t, validateMCPClientConfig(config(func(c *schemas.MCPClientConfig) {
+		c.Headers = map[string]schemas.SecretVar{"X-Api-Version": *schemas.NewSecretVar("2")}
+		c.AllowedExtraHeaders = schemas.WhiteList{"x-tenant-id"}
+	})))
+
+	for name, tc := range map[string]struct {
+		mutate func(*schemas.MCPClientConfig)
+		want   string
+	}{
+		"missing block": {func(c *schemas.MCPClientConfig) { c.AWSSigV4 = nil }, "aws_sigv4 is required for aws_sigv4 auth type in client 'sigv4_client'"},
+		"invalid block": {func(c *schemas.MCPClientConfig) { c.AWSSigV4.Service = "s3" }, "aws_sigv4.service must be one of"},
+		"stdio": {func(c *schemas.MCPClientConfig) {
+			c.ConnectionType, c.ConnectionString, c.StdioConfig = schemas.MCPConnectionTypeSTDIO, nil, &schemas.MCPStdioConfig{Command: "server"}
+		}, "aws_sigv4 auth type needs connection_type http, sse or openapi"},
+		"oauth config id": {func(c *schemas.MCPClientConfig) { c.OauthConfigID = schemas.Ptr("oauth-1") }, "oauth_config_id must not be set for aws_sigv4 auth type"},
+		"authorization header": {func(c *schemas.MCPClientConfig) {
+			c.Headers = map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer x")}
+		}, `header "Authorization" is set by the SigV4 signer and cannot be configured in client 'sigv4_client'`},
+		"x-amz header": {func(c *schemas.MCPClientConfig) {
+			c.Headers = map[string]schemas.SecretVar{"X-Amz-Target": *schemas.NewSecretVar("t")}
+		}, `header "X-Amz-Target" is set by the SigV4 signer`},
+		"forwarded x-amz header":  {func(c *schemas.MCPClientConfig) { c.AllowedExtraHeaders = schemas.WhiteList{"x-amz-security-token"} }, `allowed_extra_headers cannot include "x-amz-security-token": it is set by the SigV4 signer in client 'sigv4_client'`},
+		"forwarded authorization": {func(c *schemas.MCPClientConfig) { c.AllowedExtraHeaders = schemas.WhiteList{"authorization"} }, `allowed_extra_headers cannot include "authorization"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorContains(t, validateMCPClientConfig(config(tc.mutate)), tc.want)
+		})
+	}
+}
+
 // TestValidateMCPClientConfig_STDIONeedsACommand: a STDIO client with an empty or blank command is
 // refused. mcp-go starts no process for one and leaves its stdout nil, and its reader goroutine then
 // panics on it, which took the whole process down.

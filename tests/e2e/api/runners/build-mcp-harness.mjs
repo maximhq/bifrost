@@ -12177,6 +12177,117 @@ const AUTH66 = folder("AUTH-66 OAuth client credentials", `Setup: ${ALLOWLIST_TE
   restoreConfig("AUTH-66"),
 ]);
 
+// ================================================================ AUTH-67 AWS SigV4 (IAM)
+
+// AUTH-67: aws_sigv4 signs every request with Bifrost's own AWS identity. The runner points Bifrost's default AWS
+// credential chain at the fleet's fake Pod Identity endpoint and STS (/aws/...), and a SigV4 server verifies each
+// signature against that account: "pod" is Bifrost's own identity, and an assumed role is
+// "assumed-role/<role>/<session>". A role named *external* needs external ID chaos-external-id.
+const AUTH67_ROLE = "arn:aws:iam::123456789012:role/auth67-external-gateway";
+const AUTH67_ROLE_ID = "assumed-role/auth67-external-gateway/bifrost-auth67";
+const sigv4Client = (clientId, name, server, sigv4, over = {}) => httpClient(clientId, name, server, { auth_type: "aws_sigv4", aws_sigv4: sigv4, tools_to_execute: ["*"], ...over });
+const sigv4Auth = (id, server, sigv4) => mockAuth(id, server, `setup: ${server} accepts only SigV4 for ${sigv4.region}/${sigv4.service}${sigv4.allow ? ` from ${sigv4.allow.join(", ")}` : ""}`, { sigv4 });
+const awsReset = (id) => request(id, "setup: reset the fake AWS account's counters", "POST", "/aws/reset", { base: CHAOS, noAuth: true, body: {}, asserts: [A.status(200)] });
+const awsState = (id, title, asserts) => request(id, title, "GET", "/aws/state", { base: CHAOS, noAuth: true, asserts: [A.status(200), ...asserts] });
+// sigv4Verified checks a server's SigV4 log: nothing refused, every request signed by accessKey for region/service,
+// with the session token signed.
+const sigv4Verified = (accessKey, region, service) => A.custom(`every request was verified, signed by ${accessKey} for ${region}/${service} with its session token signed`, [
+  "var s = pm.response.json().sigv4 || {}, log = s.log || [];",
+  "pm.expect(s.rejected, 'sigv4: ' + JSON.stringify(s)).to.equal(0);",
+  "pm.expect(log.length, 'sigv4: ' + JSON.stringify(s)).to.be.above(0);",
+  `log.forEach(function (e) { pm.expect(e.result, JSON.stringify(e)).to.equal('ok'); pm.expect(e.region, JSON.stringify(e)).to.equal(${lit(region)}); pm.expect(e.service, JSON.stringify(e)).to.equal(${lit(service)}); pm.expect(e.session_token, JSON.stringify(e)).to.equal(true); pm.expect(e.signed_headers.split(';'), JSON.stringify(e)).to.include('x-amz-security-token'); ${accessKey === "*" ? "" : `pm.expect(e.access_key_id, JSON.stringify(e)).to.equal(${lit(accessKey)});`} });`,
+]);
+// sigv4Failure checks the client's last_failure message carries the SigV4 refusal.
+const sigv4Failure = (text) => A.custom(`last_failure says ${lit(text)}`, [
+  `pm.expect(((pm.response.json().clients[0].last_failure || {}).message || ''), 'body: ' + pm.response.text()).to.include(${lit(text)});`,
+]);
+const AUTH67 = folder("AUTH-67 AWS SigV4 (IAM) auth", "Setup: Bifrost's default AWS credential chain is the fleet's fake account (Pod Identity endpoint and STS); fleet servers auth67 (echo_tool, add_tool) accepting only SigV4 for us-east-1/bedrock-agentcore, auth67r accepting only the role session " + AUTH67_ROLE_ID + ", and auth67o whose REST surface accepts only SigV4 for us-east-1/execute-api; auth67d serves an OpenAPI document with no auth. Clients with auth_type aws_sigv4 are created on them.", [
+  awsReset("AUTH-67"),
+  ...freshServer("AUTH-67", "auth67", ["echo_tool", "add_tool"]),
+  sigv4Auth("AUTH-67", "auth67", { region: "us-east-1", service: "bedrock-agentcore" }),
+  createExpect("AUTH-67", "create with Bifrost's own identity: the connection is signed", sigv4Client("auth67-p", "auth67p", "auth67", { region: "us-east-1" }), [A.status(200)]),
+  getClient("AUTH-67", "auth67-p", "the aws_sigv4 block is stored and read back", [A.custom("aws_sigv4.region is us-east-1", [
+    "pm.expect(pm.response.json().clients[0].config.aws_sigv4.region.value, 'body: ' + pm.response.text()).to.equal('us-east-1');",
+  ])]),
+  execTool("AUTH-67", "execute auth67p-echo_tool", "auth67p-echo_tool", [A.status(200)]),
+  execTool("AUTH-67", "execute auth67p-echo_tool again", "auth67p-echo_tool", [A.status(200)]),
+  execTool("AUTH-67", "execute auth67p-add_tool", "auth67p-add_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67", "the calls ran as the pod, every request signed by its Pod Identity credentials", [identityCalls("pod", 3), sigv4Verified("AKIDCHAOSPOD", "us-east-1", "bedrock-agentcore")]),
+  awsState("AUTH-67", "the Pod Identity credentials were fetched once for the create and every call", [A.custom("credential_fetches is 1", [
+    "pm.expect(pm.response.json().credential_fetches, 'body: ' + pm.response.text()).to.equal(1);",
+  ])]),
+  createExpect("AUTH-67", "create with a persistent connection", sigv4Client("auth67-s", "auth67s", "auth67", { region: "us-east-1" }, { needs_session_stickiness: true }), [A.status(200)]),
+  execTool("AUTH-67", "execute auth67s-echo_tool over the persistent connection", "auth67s-echo_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67", "the persistent connection's requests were signed too", [identityCalls("pod", 4), sigv4Verified("AKIDCHAOSPOD", "us-east-1", "bedrock-agentcore")]),
+  clientPut("AUTH-67", "add a header to the persistent client", "auth67-s", { headers: { "X-Auth67-Edit": "v2" } }, [A.status(200)]),
+  execTool("AUTH-67", "execute auth67s-echo_tool after the header edit", "auth67s-echo_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67", "the live connection now sends and signs the new header", [A.custom("the latest signed POST carries x-auth67-edit", [
+    "var log = ((pm.response.json().sigv4 || {}).log || []).filter(function (e) { return e.method === 'POST' && e.result === 'ok'; });",
+    "pm.expect(log.length, JSON.stringify(log)).to.be.above(0);",
+    "pm.expect(log[log.length - 1].signed_headers.split(';'), JSON.stringify(log[log.length - 1])).to.include('x-auth67-edit');",
+  ])]),
+  createExpect("AUTH-67", "create an SSE client", sseClient("auth67-sse", "auth67sse", "auth67", { auth_type: "aws_sigv4", aws_sigv4: { region: "us-east-1" }, tools_to_execute: ["*"] }), [A.status(200)]),
+  execTool("AUTH-67", "execute auth67sse-echo_tool over SSE", "auth67sse-echo_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67", "the SSE stream and its message posts were signed", [identityCalls("pod", 6), sigv4Verified("AKIDCHAOSPOD", "us-east-1", "bedrock-agentcore"), A.custom("the SSE GET and a message POST were verified", [
+    "var log = (pm.response.json().sigv4 || {}).log || [];",
+    "pm.expect(log.some(function (e) { return e.method === 'GET' && /\\/sse$/.test(e.path) && e.result === 'ok'; }), JSON.stringify(log)).to.equal(true);",
+    "pm.expect(log.some(function (e) { return e.method === 'POST' && /\\/sse\\/message$/.test(e.path) && e.result === 'ok'; }), JSON.stringify(log)).to.equal(true);",
+  ])]),
+  deleteClient("AUTH-67", "auth67-sse"),
+  createExpect("AUTH-67", "a per-call client signing for the wrong region is created, but its discovery is refused", sigv4Client("auth67-w", "auth67w", "auth67", { region: "us-west-2" }), [A.status(200)]),
+  getClient("AUTH-67", "auth67-w", "its health is unstable with the server's reason", [clientState("unstable"), sigv4Failure("refused the signed request with HTTP 403: credential scope is for us-west-2/bedrock-agentcore, expected us-east-1/bedrock-agentcore")]),
+  deleteClient("AUTH-67", "auth67-w"),
+  request("AUTH-67", "a persistent connection signing for the wrong region fails the create with the server's reason", "POST", "/api/mcp/client", { body: sigv4Client("auth67-ws", "auth67ws", "auth67", { region: "us-west-2" }, { needs_session_stickiness: true }), asserts: [A.status(500), A.msgContains("refused the signed request with HTTP 403: credential scope is for us-west-2/bedrock-agentcore, expected us-east-1/bedrock-agentcore")] }),
+  request("AUTH-67", "a service outside the allowlist is refused before anything is signed", "POST", "/api/mcp/client", { body: sigv4Client("auth67-x", "auth67x", "auth67", { region: "us-east-1", service: "s3" }), asserts: [A.status(400), A.msgContains("aws_sigv4.service must be one of bedrock-agentcore, aws-mcp, lambda, execute-api")] }),
+  request("AUTH-67", "a role from an unset env var is refused rather than signing as Bifrost's own identity", "POST", "/api/mcp/client", { body: sigv4Client("auth67-u", "auth67u", "auth67", { region: "us-east-1", role_arn: "env.BIFROST_AUTH67_UNSET_ROLE" }), asserts: [A.status(400), A.msgContains("aws_sigv4.role_arn references env.BIFROST_AUTH67_UNSET_ROLE, which does not resolve to an IAM role ARN")] }),
+  request("AUTH-67", "an Authorization header on an aws_sigv4 client is refused", "POST", "/api/mcp/client", { body: sigv4Client("auth67-h", "auth67h", "auth67", { region: "us-east-1" }, { headers: { Authorization: "Bearer x" } }), asserts: [A.status(400), A.msgContains("is set by the SigV4 signer and cannot be configured")] }),
+  // auth67-s keeps signing for us-east-1 in the background, so it goes before the server moves to us-west-2.
+  deleteClient("AUTH-67", "auth67-s"),
+  sigv4Auth("AUTH-67", "auth67", { region: "us-west-2", service: "bedrock-agentcore" }),
+  clientPut("AUTH-67", "an update to the region re-signs the client's requests", "auth67-p", { aws_sigv4: { region: "us-west-2" } }, [A.status(200)]),
+  execTool("AUTH-67", "execute after the region update", "auth67p-echo_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67", "the latest request was signed for us-west-2", [A.custom("the last SigV4 entry is ok for us-west-2", [
+    "var log = (pm.response.json().sigv4 || {}).log || [], e = log[log.length - 1] || {};",
+    "pm.expect(e.result, JSON.stringify(e)).to.equal('ok');",
+    "pm.expect(e.region, JSON.stringify(e)).to.equal('us-west-2');",
+  ])]),
+
+  ...freshServer("AUTH-67", "auth67r", ["echo_tool", "add_tool"]),
+  sigv4Auth("AUTH-67", "auth67r", { region: "us-east-1", service: "bedrock-agentcore", allow: [AUTH67_ROLE_ID] }),
+  createExpect("AUTH-67", "create with an assumed role, external ID and session name", sigv4Client("auth67-r", "auth67r", "auth67r", { region: "us-east-1", role_arn: AUTH67_ROLE, external_id: "chaos-external-id", session_name: "bifrost-auth67" }), [A.status(200)]),
+  getClient("AUTH-67", "auth67-r", "the external ID reads back masked; the session name as set", [A.custom("external_id is masked", [
+    "var c = pm.response.json().clients[0].config.aws_sigv4;",
+    "pm.expect(c.external_id.value, 'body: ' + pm.response.text()).to.not.equal('chaos-external-id');",
+    "pm.expect(c.external_id.value, 'body: ' + pm.response.text()).to.match(/\\*/);",
+    "pm.expect(c.session_name.value, 'body: ' + pm.response.text()).to.equal('bifrost-auth67');",
+  ])]),
+  execTool("AUTH-67", "execute auth67r-echo_tool", "auth67r-echo_tool", [A.status(200)]),
+  mockGet("AUTH-67", "auth67r", "the call ran as the assumed role session", [identityCalls(AUTH67_ROLE_ID, 1), sigv4Verified("*", "us-east-1", "bedrock-agentcore")]),
+  awsState("AUTH-67", "STS was asked once for the role, by the pod, with the external ID and session name", [A.custom("one ok AssumeRole for the role", [
+    `var r = (pm.response.json().assume_role || []).filter(function (e) { return e.role_arn === ${lit(AUTH67_ROLE)} && e.result === 'ok'; });`,
+    "pm.expect(r.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(r[0].external_id).to.equal('chaos-external-id');",
+    "pm.expect(r[0].session_name).to.equal('bifrost-auth67');",
+    "pm.expect(r[0].caller).to.equal('pod');",
+  ])]),
+  request("AUTH-67", "an identity IAM does not allow fails the create with AccessDenied", "POST", "/api/mcp/client", { body: sigv4Client("auth67-d", "auth67d", "auth67r", { region: "us-east-1" }, { needs_session_stickiness: true }), asserts: [A.status(500), A.msgContains("refused the signed request with HTTP 403: AccessDenied: pod is not authorized")] }),
+  request("AUTH-67", "a role whose trust policy needs an external ID fails the create without one", "POST", "/api/mcp/client", { body: sigv4Client("auth67-e", "auth67e", "auth67r", { region: "us-east-1", role_arn: AUTH67_ROLE, session_name: "no-external-id" }, { needs_session_stickiness: true }), asserts: [A.status(500), A.msgContains("could not get AWS credentials"), A.msgContains("requires the external ID")] }),
+
+  ...freshServer("AUTH-67", "auth67o", ["echo_tool"]),
+  sigv4Auth("AUTH-67", "auth67o", { region: "us-east-1", service: "execute-api" }),
+  ...freshServer("AUTH-67", "auth67d", ["echo_tool"]),
+  mockPost("AUTH-67", "auth67d", "routes/add", "setup: auth67d serves the document at GET /openapi.json", { route: { method: "GET", path: "/openapi.json", json: JSON.parse(PETS) } }),
+  createExpect("AUTH-67", "create an OpenAPI client whose spec_url is on another host", oasClient("auth67-o", "auth67o", "auth67o", { auth_type: "aws_sigv4", aws_sigv4: { region: "us-east-1", service: "execute-api" } }, { spec: undefined, spec_url: `${REST("auth67d")}/openapi.json` }), [A.status(200)]),
+  execArgs("AUTH-67", "execute getPetById: the API call is signed", "auth67o-getPetById", { petId: "7" }, [A.status(200), toolContent(echoOf("GET", "/pets/7", "", ""))]),
+  mockGet("AUTH-67", "auth67o", "the API call was verified for us-east-1/execute-api", [sigv4Verified("AKIDCHAOSPOD", "us-east-1", "execute-api")]),
+  mockGet("AUTH-67", "auth67d", "the spec was fetched without a signature", [A.custom("GET /openapi.json carried no Authorization", [
+    REST_CALLS,
+    "pm.expect(calls.length, 'body: ' + pm.response.text()).to.be.above(0);",
+    "calls.forEach(function (c) { pm.expect(c.headers.Authorization, JSON.stringify(c)).to.equal(undefined); pm.expect(c.headers['X-Amz-Date'], JSON.stringify(c)).to.equal(undefined); });",
+  ])]),
+  deleteClient("AUTH-67", "auth67-p"), deleteClient("AUTH-67", "auth67-r"), deleteClient("AUTH-67", "auth67-o"),
+]);
+
 // ================================================================ PUD on 2026-07-28, upstream failures, Bifrost tokens and injected tools
 
 // waitAcked polls driven clients, 250ms apart for up to 10s each, until each has its subscriptions/acknowledged.
@@ -13787,7 +13898,7 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65, AUTH66]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65, AUTH66, AUTH67]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46, OAS47]),
