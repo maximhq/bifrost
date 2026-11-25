@@ -585,7 +585,9 @@ func TestMCPRefusals(t *testing.T) {
 	t.Run("a token whose virtual key is gone gets a 401 with WWW-Authenticate", func(t *testing.T) {
 		for _, mode := range []configtables.MCPServerAuthMode{configtables.MCPServerAuthModeBoth, configtables.MCPServerAuthModeOAuth} {
 			store := &mockOAuth2Store{signingKey: key, vksByID: map[string]*configtables.TableVirtualKey{}}
-			h := newTestMCPHandler(newTestOAuth2Config(store, mode, false))
+			cfg := newTestOAuth2Config(store, mode, false)
+			cfg.LiveStore = liveStoreForTest(t)
+			h := newTestMCPHandler(cfg)
 			ctx, bifrostCtx := newRequestCtx()
 			ctx.Request.Header.Set("Authorization", "Bearer "+goneVKToken)
 

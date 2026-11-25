@@ -769,6 +769,71 @@ type ProviderConfig struct {
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
 }
 
+// ProviderSettings is a provider's configuration without its keys: every ProviderConfig field but
+// Keys, which are rows of their own. A value that holds only settings has no keys to read, so a
+// reader that needs them reads them where they are kept. Settings and Config convert between the
+// two where a provider is loaded or written.
+type ProviderSettings struct {
+	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`
+	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"`
+	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`
+	SendBackRawRequest       bool                              `json:"send_back_raw_request"`
+	SendBackRawResponse      bool                              `json:"send_back_raw_response"`
+	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`
+	IgnoreProviderCost       bool                              `json:"ignore_provider_cost"`
+	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
+	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`
+	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`
+	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"`
+	Passthrough              *schemas.PassthroughPolicy        `json:"passthrough,omitempty"`
+	ConfigHash               string                            `json:"config_hash,omitempty"`
+	Status                   string                            `json:"status,omitempty"`
+	Description              string                            `json:"description,omitempty"`
+}
+
+// Settings returns p's settings, without its keys. The values are shared, not copied.
+func (p *ProviderConfig) Settings() ProviderSettings {
+	return ProviderSettings{
+		NetworkConfig:            p.NetworkConfig,
+		ConcurrencyAndBufferSize: p.ConcurrencyAndBufferSize,
+		ProxyConfig:              p.ProxyConfig,
+		SendBackRawRequest:       p.SendBackRawRequest,
+		SendBackRawResponse:      p.SendBackRawResponse,
+		StoreRawRequestResponse:  p.StoreRawRequestResponse,
+		IgnoreProviderCost:       p.IgnoreProviderCost,
+		CustomProviderConfig:     p.CustomProviderConfig,
+		OpenAIConfig:             p.OpenAIConfig,
+		PromptCache:              p.PromptCache,
+		InjectedTools:            p.InjectedTools,
+		Passthrough:              p.Passthrough,
+		ConfigHash:               p.ConfigHash,
+		Status:                   p.Status,
+		Description:              p.Description,
+	}
+}
+
+// Config returns s as a provider configuration with no keys, for a caller that answers or writes a
+// ProviderConfig. The values are shared, not copied.
+func (s *ProviderSettings) Config() ProviderConfig {
+	return ProviderConfig{
+		NetworkConfig:            s.NetworkConfig,
+		ConcurrencyAndBufferSize: s.ConcurrencyAndBufferSize,
+		ProxyConfig:              s.ProxyConfig,
+		SendBackRawRequest:       s.SendBackRawRequest,
+		SendBackRawResponse:      s.SendBackRawResponse,
+		StoreRawRequestResponse:  s.StoreRawRequestResponse,
+		IgnoreProviderCost:       s.IgnoreProviderCost,
+		CustomProviderConfig:     s.CustomProviderConfig,
+		OpenAIConfig:             s.OpenAIConfig,
+		PromptCache:              s.PromptCache,
+		InjectedTools:            s.InjectedTools,
+		Passthrough:              s.Passthrough,
+		ConfigHash:               s.ConfigHash,
+		Status:                   s.Status,
+		Description:              s.Description,
+	}
+}
+
 // Redacted returns a redacted copy of the provider configuration.
 func (p *ProviderConfig) Redacted() *ProviderConfig {
 	// Create redacted config with same structure but redacted values

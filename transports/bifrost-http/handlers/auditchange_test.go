@@ -11,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/valyala/fasthttp"
 )
 
@@ -185,19 +186,17 @@ func TestAuditChange_ProviderKeyUpdate(t *testing.T) {
 	const newValue = "sk-updated-audit-raw-fedcba9876543210"
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI: {Keys: []schemas.Key{{
-					ID:     "key-1",
-					Name:   "openai-key",
-					Value:  *schemas.NewSecretVar(storedValue),
-					Weight: 1,
-				}}},
-			},
-		},
+		config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {Keys: []schemas.Key{{
+				ID:     "key-1",
+				Name:   "openai-key",
+				Value:  *schemas.NewSecretVar(storedValue),
+				Weight: 1,
+			}}},
+		}),
 		modelsManager: &mockModelsManager{},
 	}
-	attachBifrostClient(t, h.inMemoryStore)
+	attachBifrostClient(t, h.config)
 
 	ctx := newTestRequestCtx(`{"name":"openai-key","value":"` + newValue + `","weight":2}`)
 	ctx.SetUserValue("provider", string(schemas.OpenAI))
@@ -206,7 +205,7 @@ func TestAuditChange_ProviderKeyUpdate(t *testing.T) {
 	if ctx.Response.StatusCode() != fasthttp.StatusOK {
 		t.Fatalf("update status=%d body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	if got := h.inMemoryStore.Providers[schemas.OpenAI].Keys[0].Value.GetValue(); got != newValue {
+	if got := libtest.Providers(h.config)[schemas.OpenAI].Keys[0].Value.GetValue(); got != newValue {
 		t.Fatalf("stored value not updated, got %q", got)
 	}
 
@@ -309,7 +308,7 @@ func TestAuditChange_MCPClientUpdateRecordedWhenVKAssignmentFails(t *testing.T) 
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.SetUserValue("id", existing.ID)
 	ctx.Request.SetBody(body)
 	h.updateMCPClient(ctx)
@@ -348,7 +347,7 @@ func TestAuditChange_MCPClientDeleteRecordedWhenRuntimeRemovalFails(t *testing.T
 	}); err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-	h := &MCPHandler{store: &lib.Config{ConfigStore: cfgStore, ClientConfig: &configstore.ClientConfig{}}, mcpManager: failingRemoveMCPManager{}}
+	h := &MCPHandler{store: &lib.Config{LiveStore: liveStoreForTest(t), ConfigStore: cfgStore, ClientConfig: &configstore.ClientConfig{}}, mcpManager: failingRemoveMCPManager{}}
 
 	var req fasthttp.Request
 	req.Header.SetMethod(fasthttp.MethodDelete)

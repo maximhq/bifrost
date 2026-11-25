@@ -784,6 +784,21 @@ func TestUpdateProvidersConfig_UpdateExistingByName_FallbackFix(t *testing.T) {
 	assert.Equal(t, "original-uuid", result["openai"].Keys[0].ID, "Original KeyID should be preserved")
 }
 
+// storedProviderKey returns provider's stored key keyID as GetProviderKeys reads it, failing the
+// test when the read fails or the key is not stored.
+func storedProviderKey(t *testing.T, store *RDBConfigStore, provider schemas.ModelProvider, keyID string) *schemas.Key {
+	t.Helper()
+	keys, err := store.GetProviderKeys(context.Background(), provider)
+	require.NoError(t, err)
+	for i := range keys {
+		if keys[i].ID == keyID {
+			return &keys[i]
+		}
+	}
+	t.Fatalf("provider %s holds no key %q", provider, keyID)
+	return nil
+}
+
 // TestUpdateProvidersConfig_EnabledFromFileIsPersisted verifies that an explicit enabled
 // value on an existing key is written to the store, while a key that leaves enabled unset
 // keeps the stored value (for example a toggle made in the UI).
@@ -803,8 +818,7 @@ func TestUpdateProvidersConfig_EnabledFromFileIsPersisted(t *testing.T) {
 	require.NoError(t, store.UpdateProvidersConfig(ctx, providers))
 
 	// key-b is disabled outside the file, as the UI toggle does
-	keyB, err := store.GetProviderKey(ctx, "openai", "key-b")
-	require.NoError(t, err)
+	keyB := storedProviderKey(t, store, "openai", "key-b")
 	keyB.Enabled = &enabledFalse
 	require.NoError(t, store.UpdateProviderKey(ctx, "openai", "key-b", *keyB))
 
@@ -884,9 +898,7 @@ func TestProviderKeyCRUD(t *testing.T) {
 	require.Len(t, keys, 1)
 	assert.Equal(t, "openai-primary", keys[0].Name)
 
-	storedKey, err := store.GetProviderKey(ctx, "openai", key.ID)
-	require.NoError(t, err)
-	require.NotNil(t, storedKey)
+	storedKey := storedProviderKey(t, store, "openai", key.ID)
 	assert.Equal(t, "sk-test-key-v1", storedKey.Value.Val)
 
 	key.Value = *schemas.NewSecretVar("sk-test-key-v2")
@@ -895,9 +907,7 @@ func TestProviderKeyCRUD(t *testing.T) {
 	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
 	require.NoError(t, err)
 
-	storedKey, err = store.GetProviderKey(ctx, "openai", key.ID)
-	require.NoError(t, err)
-	require.NotNil(t, storedKey)
+	storedKey = storedProviderKey(t, store, "openai", key.ID)
 	assert.Equal(t, "sk-test-key-v2", storedKey.Value.Val)
 	assert.Equal(t, 2.0, storedKey.Weight)
 
@@ -906,8 +916,7 @@ func TestProviderKeyCRUD(t *testing.T) {
 	for _, decision := range []*bool{new(true), new(false), nil} {
 		key.DisableContentLogging = decision
 		require.NoError(t, store.UpdateProviderKey(ctx, "openai", key.ID, key))
-		storedKey, err = store.GetProviderKey(ctx, "openai", key.ID)
-		require.NoError(t, err)
+		storedKey = storedProviderKey(t, store, "openai", key.ID)
 		assert.Equal(t, decision, storedKey.DisableContentLogging)
 		keys, err = store.GetProviderKeys(ctx, "openai")
 		require.NoError(t, err)
@@ -921,6 +930,91 @@ func TestProviderKeyCRUD(t *testing.T) {
 	keys, err = store.GetProviderKeys(ctx, "openai")
 	require.NoError(t, err)
 	assert.Empty(t, keys)
+}
+
+// TestUpdateProviderLeavesKeyRowsAsStored checks that UpdateProvider writes the provider's settings
+// and nothing else: the keys it is handed are ignored, every key row stays as stored, and the
+// config hash and status keep their stored values.
+func TestUpdateProviderLeavesKeyRowsAsStored(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	stored := schemas.Key{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Weight: 1}
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai": {ConfigHash: "from-file", Keys: []schemas.Key{stored}},
+	}))
+	require.NoError(t, store.UpdateStatus(ctx, "openai", "", "list_models_failed", "upstream 503"))
+	var before tables.TableKey
+	require.NoError(t, store.DB().Where("key_id = ?", "k1").First(&before).Error)
+
+	require.NoError(t, store.UpdateProvider(ctx, "openai", ProviderConfig{
+		SendBackRawRequest: true,
+		ConfigHash:         "from-request",
+		Keys:               []schemas.Key{{ID: "k2", Name: "second", Value: *schemas.NewSecretVar("sk-2")}},
+	}))
+
+	config, err := store.GetProviderConfig(ctx, "openai")
+	require.NoError(t, err)
+	assert.True(t, config.SendBackRawRequest, "the settings are saved")
+	assert.Equal(t, "from-file", config.ConfigHash)
+	assert.Equal(t, "list_models_failed", config.Status)
+	require.Len(t, config.Keys, 1, "no key row is added or deleted")
+	var after tables.TableKey
+	require.NoError(t, store.DB().Where("key_id = ?", "k1").First(&after).Error)
+	assert.Equal(t, before.UpdatedAt, after.UpdatedAt, "the key row is not rewritten")
+	assert.Equal(t, "sk-1", after.Value.GetValue())
+
+	require.ErrorIs(t, store.UpdateProvider(ctx, "anthropic", ProviderConfig{}), ErrNotFound)
+}
+
+// TestGetProviderKeyReadsOneKeyOfItsProvider checks that GetProviderKey returns the stored key and
+// answers not found for a key of another provider or a key with no row.
+func TestGetProviderKeyReadsOneKeyOfItsProvider(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai":    {Keys: []schemas.Key{{ID: "o1", Name: "o1", Value: *schemas.NewSecretVar("sk-o1"), Weight: 2}}},
+		"anthropic": {Keys: []schemas.Key{{ID: "a1", Name: "a1", Value: *schemas.NewSecretVar("sk-a1"), Weight: 1}}},
+	}))
+
+	key, err := store.GetProviderKey(ctx, "openai", "o1")
+	require.NoError(t, err)
+	assert.Equal(t, "sk-o1", key.Value.GetValue())
+	require.NotNil(t, key.Weight)
+	assert.Equal(t, 2.0, *key.Weight)
+
+	_, err = store.GetProviderKey(ctx, "openai", "a1")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = store.GetProviderKey(ctx, "openai", "missing")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestProviderKeyReadsReturnCreationOrder checks that GetProviderKeys and GetProvidersConfig list a
+// provider's keys by row ID, the order they were created in, even when created_at says otherwise,
+// as clock skew between nodes can make it.
+func TestProviderKeyReadsReturnCreationOrder(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{"openai": {}}))
+	want := []string{"k1", "k2", "k3"}
+	for _, id := range want {
+		require.NoError(t, store.CreateProviderKey(ctx, "openai", schemas.Key{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-" + id), Weight: 1}))
+	}
+	// k1 was created first but carries the latest timestamp.
+	require.NoError(t, store.DB().Exec("UPDATE config_keys SET created_at = ? WHERE key_id = ?", time.Now().Add(time.Hour), "k1").Error)
+
+	ids := func(keys []schemas.Key) []string {
+		out := make([]string, 0, len(keys))
+		for _, k := range keys {
+			out = append(out, k.ID)
+		}
+		return out
+	}
+	keys, err := store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	assert.Equal(t, want, ids(keys))
+	providers, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, want, ids(providers["openai"].Keys))
 }
 
 func TestProviderKeyCRUD_ProviderMustExist(t *testing.T) {
@@ -938,9 +1032,6 @@ func TestProviderKeyCRUD_ProviderMustExist(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 
 	_, err = store.GetProviderKeys(ctx, "openai")
-	require.ErrorIs(t, err, ErrNotFound)
-
-	_, err = store.GetProviderKey(ctx, "openai", key.ID)
 	require.ErrorIs(t, err, ErrNotFound)
 
 	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
@@ -2690,7 +2781,10 @@ func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {
 	assert.ErrorAs(t, err, &unresolvedErr, "Should be ErrUnresolvedKeys")
 }
 
-func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *testing.T) {
+// TestDeleteProviderKey_RemovesVirtualKeyProviderConfigKeyAssociations checks that a key's
+// assignments to virtual keys go with the key's own delete, and that a provider settings save
+// handed a key list without the key leaves the key and its assignments alone.
+func TestDeleteProviderKey_RemovesVirtualKeyProviderConfigKeyAssociations(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
 
@@ -2731,10 +2825,14 @@ func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *t
 			{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
 		},
 	}
-	err = store.UpdateProvider(ctx, "openai", updatedProviderConfig)
-	require.NoError(t, err)
-
+	require.NoError(t, store.UpdateProvider(ctx, "openai", updatedProviderConfig))
 	result, err := store.GetVirtualKey(ctx, "vk-update-provider-cleanup")
+	require.NoError(t, err)
+	require.Len(t, result.ProviderConfigs, 1)
+	require.Len(t, result.ProviderConfigs[0].Keys, 1, "a settings save leaves the key and its assignment")
+
+	require.NoError(t, store.DeleteProviderKey(ctx, "openai", "key-b"))
+	result, err = store.GetVirtualKey(ctx, "vk-update-provider-cleanup")
 	require.NoError(t, err)
 	require.Len(t, result.ProviderConfigs, 1)
 	assert.Equal(t, "openai", result.ProviderConfigs[0].Provider)

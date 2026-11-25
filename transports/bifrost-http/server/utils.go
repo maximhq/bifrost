@@ -6,10 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 // GetDefaultConfigDir returns the OS-specific default configuration directory for Bifrost.
@@ -170,13 +173,11 @@ func MarshalPluginConfig[T any](source any) (*T, error) {
 // provider-level update arrives for a keyed provider — in every one of those
 // cases the caller has nothing to compare against and must not skip the write.
 func (s *BifrostHTTPServer) currentKeyStatus(ks schemas.KeyStatus) (status string, description string, found bool) {
-	s.Config.Mu.RLock()
-	defer s.Config.Mu.RUnlock()
-
-	providerConfig, exists := s.Config.Providers[ks.Provider]
-	if !exists {
+	stored, ok := s.Config.LiveStore.Collections.Providers.Get(string(ks.Provider))
+	if !ok {
 		return "", "", false
 	}
+	providerConfig := &stored.Settings // read only
 
 	if ks.KeyID == "" {
 		if providerConfig.CustomProviderConfig == nil || !providerConfig.CustomProviderConfig.IsKeyLess {
@@ -185,12 +186,11 @@ func (s *BifrostHTTPServer) currentKeyStatus(ks schemas.KeyStatus) (status strin
 		return providerConfig.Status, providerConfig.Description, true
 	}
 
-	for i := range providerConfig.Keys {
-		if providerConfig.Keys[i].ID == ks.KeyID {
-			return string(providerConfig.Keys[i].Status), providerConfig.Keys[i].Description, true
-		}
+	rec, ok := s.Config.LiveStore.Collections.ProviderKeys.Get(ks.KeyID)
+	if !ok || rec.Provider != ks.Provider {
+		return "", "", false
 	}
-	return "", "", false
+	return string(rec.Key.Status), rec.Key.Description, true
 }
 
 // updateKeyStatus updates the model discovery status for keys or providers based on key statuses.
@@ -201,7 +201,8 @@ func (s *BifrostHTTPServer) currentKeyStatus(ks schemas.KeyStatus) (status strin
 // ConfigStore.UpdateStatus is an unconditional SQL UPDATE, and list-models runs
 // on a background interval on every node, so writing unconditionally would put
 // a steady keys x nodes x interval stream of no-op UPDATEs on the keys table
-// for rows whose values almost never change.
+// for rows whose values almost never change. A batch that reports a key more
+// than once counts only its last status.
 func (s *BifrostHTTPServer) updateKeyStatus(
 	ctx context.Context,
 	keyStatuses []schemas.KeyStatus,
@@ -210,15 +211,42 @@ func (s *BifrostHTTPServer) updateKeyStatus(
 		return
 	}
 
-	// Update each key/provider status individually
-	for _, ks := range keyStatuses {
+	// One batch can report a key more than once, as list-models does when the key succeeds on one
+	// page and fails on the next. Memory is re-read once, after the loop, so every status is
+	// compared with the value from before the batch: only the last one per key is kept, in order.
+	type statusTarget struct {
+		provider schemas.ModelProvider
+		keyID    string
+	}
+	last := make(map[statusTarget]int, len(keyStatuses))
+	for i, ks := range keyStatuses {
+		last[statusTarget{ks.Provider, ks.KeyID}] = i
+	}
+
+	// Update each key/provider status individually, then re-read each changed key, or the provider
+	// for a keyless provider's own status, once.
+	var changed []livestore.Ref
+	for i, ks := range keyStatuses {
+		if last[statusTarget{ks.Provider, ks.KeyID}] != i {
+			continue
+		}
 		errorMsg := ""
 		if ks.Error != nil && ks.Error.Error != nil {
 			errorMsg = ks.Error.Error.Message
 		}
 
+		// A provider-level status belongs to keyless providers only; a keyed provider carries its
+		// status on each key. Memory always matches the database, so the row is left alone too.
+		if ks.KeyID == "" {
+			if stored, ok := s.Config.LiveStore.Collections.Providers.Get(string(ks.Provider)); ok &&
+				(stored.Settings.CustomProviderConfig == nil || !stored.Settings.CustomProviderConfig.IsKeyLess) {
+				logger.Warn("received provider-level status update for keyed provider %s; skipping", ks.Provider)
+				continue
+			}
+		}
+
 		// Compared before the DB write, not after: a status that has not moved
-		// needs neither the UPDATE nor the in-memory rewrite below.
+		// needs neither the UPDATE nor the refresh below.
 		if currentStatus, currentDesc, found := s.currentKeyStatus(ks); found &&
 			currentStatus == string(ks.Status) && currentDesc == errorMsg {
 			continue
@@ -230,54 +258,23 @@ func (s *BifrostHTTPServer) updateKeyStatus(
 				target = string(ks.Provider)
 			}
 			logger.Error("failed to update model discovery status for %s: %v", target, err)
-			continue // Skip in-memory update if DB update failed
+			continue // Skip the refresh if the DB update failed
 		}
-
-		s.Config.Mu.Lock()
-
-		providerConfig, exists := s.Config.Providers[ks.Provider]
-		if !exists {
-			s.Config.Mu.Unlock()
-			logger.Warn("provider %s not found in memory during status update", ks.Provider)
-			continue
-		}
-
-		isKeylessProvider := providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess
-
+		ref := livestore.Ref{Kind: livestore.KindProviderKey, ID: ks.KeyID}
 		if ks.KeyID == "" {
-			if !isKeylessProvider {
-				logger.Warn("received provider-level status update for keyed provider %s; skipping in-memory update", ks.Provider)
-				s.Config.Mu.Unlock()
-				continue
-			}
-			providerConfig.Status = string(ks.Status)
-			providerConfig.Description = errorMsg
-			s.Config.Providers[ks.Provider] = providerConfig
-			logger.Debug("updated in-memory status for keyless provider %s", ks.Provider)
-			s.Config.Mu.Unlock()
-			continue
+			ref = livestore.Ref{Kind: livestore.KindProvider, ID: string(ks.Provider)}
 		}
-
-		// Find and update the specific key in the Keys slice
-		updated := false
-		for i := range providerConfig.Keys {
-			if providerConfig.Keys[i].ID == ks.KeyID {
-				// Update Status and Description fields
-				providerConfig.Keys[i].Status = ks.Status
-				providerConfig.Keys[i].Description = errorMsg
-				updated = true
-				break
-			}
+		if !slices.Contains(changed, ref) {
+			changed = append(changed, ref)
 		}
-
-		if updated {
-			// Write the modified config back to the map
-			s.Config.Providers[ks.Provider] = providerConfig
-			logger.Debug("updated in-memory status for key %s of provider %s", ks.KeyID, ks.Provider)
-		} else {
-			logger.Warn("key %s not found in provider %s during in-memory update", ks.KeyID, ks.Provider)
-		}
-
-		s.Config.Mu.Unlock()
+	}
+	// Records are never changed in place: re-read the changed rows so memory holds them as written.
+	// This runs in the background, with no caller to report to, so the read retries as a peer's
+	// does and a failure is logged.
+	if len(changed) == 0 {
+		return
+	}
+	if err := s.Config.LiveStore.Refresh(ctx, changed, lib.DBLookupRetry()...); err != nil {
+		logger.Error("failed to refresh %d keys or providers after status updates: %v", len(changed), err)
 	}
 }

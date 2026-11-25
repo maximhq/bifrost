@@ -31,6 +31,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/openapimcp"
@@ -428,42 +429,55 @@ func (s *GovernanceInMemoryStore) LogTimestampPrecision() time.Duration {
 	return 0
 }
 
-// GetConfiguredProviders returns a snapshot of the configured provider map, built under the read
-// lock. Provider edits write to the live map in place, and the governance plugin indexes what
-// this returns after the lock is released (batchBaseProvider, modelMatcher), so handing back the
-// live map would be a concurrent map read and write, which is fatal rather than merely stale.
-// The copy is shallow: the configs themselves are shared and never modified by readers.
+// GetConfiguredProviders returns every configured provider's configuration with its keys, read
+// from the live store into a new map the caller owns. The configs and their key slices are shared
+// and never modified by readers.
 func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
-	s.Config.Mu.RLock()
-	defer s.Config.Mu.RUnlock()
-	snapshot := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(s.Config.Providers))
-	for provider, config := range s.Config.Providers {
-		snapshot[provider] = config
+	snapshot := make(map[schemas.ModelProvider]configstore.ProviderConfig)
+	if s.Config.LiveStore == nil {
+		return snapshot
 	}
+	s.Config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
+		config := p.Settings.Config()
+		if keys, ok := s.Config.LiveStore.Views.ProviderKeyLists.Get(string(p.Name)); ok {
+			config.Keys = *keys
+		}
+		snapshot[p.Name] = config
+		return true
+	})
 	return snapshot
 }
 
-// GetConfiguredProvider returns one provider's configuration, read under the lock without copying
-// the map, for the per-request model check that needs only that provider.
+// GetConfiguredProvider returns one provider's configuration with its keys from the live store, for
+// the per-request model check that needs only that provider. It reads the records directly, so the
+// check allocates nothing.
 func (s *GovernanceInMemoryStore) GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
-	s.Config.Mu.RLock()
-	defer s.Config.Mu.RUnlock()
-	config, ok := s.Config.Providers[provider]
-	return config, ok
+	if s.Config.LiveStore == nil {
+		return configstore.ProviderConfig{}, false
+	}
+	p, ok := s.Config.LiveStore.Collections.Providers.Get(string(provider))
+	if !ok {
+		return configstore.ProviderConfig{}, false
+	}
+	config := p.Settings.Config()
+	if keys, ok := s.Config.LiveStore.Views.ProviderKeyLists.Get(string(provider)); ok {
+		config.Keys = *keys
+	}
+	return config, true
 }
 
 // GetConfiguredProviderNames builds the name slice under the lock, because provider edits write to
 // the map GetConfiguredProviders hands back in place: ranging that map after the lock is released
 // is a concurrent iteration and write, which is fatal rather than merely stale.
 func (s *GovernanceInMemoryStore) GetConfiguredProviderNames() []string {
-	providers, err := s.Config.GetAllProviders()
-	if err != nil {
-		return nil
+	var names []string
+	if s.Config.LiveStore == nil {
+		return names
 	}
-	names := make([]string, 0, len(providers))
-	for _, provider := range providers {
-		names = append(names, string(provider))
-	}
+	s.Config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
+		names = append(names, string(p.Name))
+		return true
+	})
 	return names
 }
 
@@ -1225,12 +1239,12 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 		}
 	}
 
-	// In-memory store holds the latest schemas.Key slice after the most recent
-	// CRUD write — read from there to avoid re-fetching + re-converting from DB.
-	inMemoryKeys, err := s.Config.GetProviderKeysRaw(provider)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
+	// The live store holds the provider's keys as of the latest write: read them there rather than
+	// re-fetching and re-converting them from the database.
+	if _, ok := s.Config.LiveStore.Collections.Providers.Get(string(provider)); !ok {
+		return nil, fmt.Errorf("failed to read provider keys for %s: %w", provider, lib.ErrNotFound)
 	}
+	inMemoryKeys := s.Config.GetProviderKeys(provider)
 	isKeylessProvider := providerInfo.CustomProviderConfig != nil && providerInfo.CustomProviderConfig.IsKeyLess
 	hasNoKeys := len(inMemoryKeys) == 0 && !isKeylessProvider
 
@@ -1283,8 +1297,8 @@ func (s *BifrostHTTPServer) syncIgnoreProviderCost(provider schemas.ModelProvide
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return
 	}
-	pc, err := s.Config.GetProviderConfigRaw(provider)
-	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, err == nil && pc != nil && pc.IgnoreProviderCost)
+	stored, ok := s.Config.LiveStore.Collections.Providers.Get(string(provider))
+	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, ok && stored.Settings.IgnoreProviderCost)
 }
 
 // RemoveProvider removes a provider from the in-memory store
@@ -1321,10 +1335,10 @@ func (s *BifrostHTTPServer) OnKeyAdded(ctx context.Context, provider schemas.Mod
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("model catalog not found")
 	}
-	keys, err := s.Config.GetProviderKeysRaw(provider)
-	if err != nil {
-		return fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
+	if _, ok := s.Config.LiveStore.Collections.Providers.Get(string(provider)); !ok {
+		return fmt.Errorf("failed to read provider keys for %s: %w", provider, lib.ErrNotFound)
 	}
+	keys := s.Config.GetProviderKeys(provider)
 	keyless := isKeylessProvider(provider, s.Config)
 	setKeyConfig(s.Config.ModelCatalog, provider, keys, keyless)
 	// Keyless providers: empty keyID sentinel.
@@ -1349,10 +1363,10 @@ func (s *BifrostHTTPServer) OnKeyUpdated(ctx context.Context, provider schemas.M
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("model catalog not found")
 	}
-	keys, err := s.Config.GetProviderKeysRaw(provider)
-	if err != nil {
-		return fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
+	if _, ok := s.Config.LiveStore.Collections.Providers.Get(string(provider)); !ok {
+		return fmt.Errorf("failed to read provider keys for %s: %w", provider, lib.ErrNotFound)
 	}
+	keys := s.Config.GetProviderKeys(provider)
 	keyless := isKeylessProvider(provider, s.Config)
 	setKeyConfig(s.Config.ModelCatalog, provider, keys, keyless)
 	keyID := key.ID
@@ -1376,10 +1390,10 @@ func (s *BifrostHTTPServer) OnKeyDeleted(ctx context.Context, provider schemas.M
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("model catalog not found")
 	}
-	keys, err := s.Config.GetProviderKeysRaw(provider)
-	if err != nil {
-		return fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
+	if _, ok := s.Config.LiveStore.Collections.Providers.Get(string(provider)); !ok {
+		return fmt.Errorf("failed to read provider keys for %s: %w", provider, lib.ErrNotFound)
 	}
+	keys := s.Config.GetProviderKeys(provider)
 	setKeyConfig(s.Config.ModelCatalog, provider, keys, isKeylessProvider(provider, s.Config))
 	s.Config.ModelCatalog.InvalidateLive(provider, keyID)
 	return nil
@@ -1402,11 +1416,11 @@ func isKeylessProvider(provider schemas.ModelProvider, cfg *lib.Config) bool {
 	if cfg == nil {
 		return false
 	}
-	pc, err := cfg.GetProviderConfigRaw(provider)
-	if err != nil || pc == nil || pc.CustomProviderConfig == nil {
+	stored, ok := cfg.LiveStore.Collections.Providers.Get(string(provider))
+	if !ok || stored.Settings.CustomProviderConfig == nil {
 		return false
 	}
-	return pc.CustomProviderConfig.IsKeyLess
+	return stored.Settings.CustomProviderConfig.IsKeyLess
 }
 
 // setKeyConfig pushes the provider's keys into the catalog's keyconfig. Only a
@@ -2006,8 +2020,7 @@ const liveRefreshProviderConcurrency = 4
 //
 // Safe to call while providers are being edited, unlike the bootstrap seed it
 // replaced: the provider set and each provider's keys are read through the
-// Config accessors, which take Config.Mu.RLock and hand back copies, rather
-// than ranging Config.Providers directly.
+// Config accessors, which read the live store and hand back copies.
 //
 // Deliberately does not invalidate anything first. Key and provider removals
 // already prune the cache through the CRUD handlers, and
@@ -2019,21 +2032,17 @@ func (s *BifrostHTTPServer) RefreshAllLiveModels(ctx context.Context) {
 		return
 	}
 
-	providers, err := s.Config.GetAllProviders()
-	if err != nil {
-		logger.Warn("live model refresh skipped: failed to list providers: %v", err)
-		return
-	}
+	var providers []*registry.Provider
+	s.Config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
+		providers = append(providers, p)
+		return true
+	})
 
 	sem := make(chan struct{}, liveRefreshProviderConcurrency)
 	var wg sync.WaitGroup
-	for _, provider := range providers {
-		keys, err := s.Config.GetProviderKeysRaw(provider)
-		if err != nil {
-			// Removed between GetAllProviders and this read. OnProviderRemoved
-			// has already dropped its live entries, so there is nothing to do.
-			continue
-		}
+	for _, stored := range providers {
+		provider := stored.Name
+		keys := s.Config.GetProviderKeys(provider)
 		wg.Add(1)
 		go func(p schemas.ModelProvider, k []schemas.Key) {
 			defer wg.Done()
@@ -2226,10 +2235,10 @@ func (s *BifrostHTTPServer) RefreshLiveModelsForAllKeys(ctx context.Context, pro
 	if s.Config == nil || s.Config.ModelCatalog == nil || s.Client == nil {
 		return fmt.Errorf("model catalog is not initialized")
 	}
-	keys, err := s.Config.GetProviderKeysRaw(provider)
-	if err != nil {
-		return err
+	if _, found := s.Config.LiveStore.Collections.Providers.Get(string(provider)); !found {
+		return lib.ErrNotFound
 	}
+	keys := s.Config.GetProviderKeys(provider)
 	release, ok := s.beginAllKeysRefresh(provider)
 	if !ok {
 		return handlers.ErrRefreshInProgress
@@ -2302,9 +2311,9 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 	// Skip the fetch entirely when the provider has disabled list_models via
 	// allowed_requests — every per-(provider,keyID) call would just bounce with
 	// "operation not allowed", wasting two goroutines and one bfCtx per attempt.
-	if pc, err := s.Config.GetProviderConfigRaw(provider); err == nil && pc != nil &&
-		pc.CustomProviderConfig != nil &&
-		!pc.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
+	if stored, ok := s.Config.LiveStore.Collections.Providers.Get(string(provider)); ok &&
+		stored.Settings.CustomProviderConfig != nil &&
+		!stored.Settings.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
 		return
 	}
 	// Captured before the upstream calls go out, and checked again by the
@@ -3828,9 +3837,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// live models for every provider concurrently.
 	logger.Info("listing all models and adding to model catalog")
 	if s.Config.ModelCatalog != nil {
-		snapshot := make(map[schemas.ModelProvider][]schemas.Key, len(s.Config.Providers))
+		providers := (&GovernanceInMemoryStore{Config: s.Config}).GetConfiguredProviders()
+		snapshot := make(map[schemas.ModelProvider][]schemas.Key, len(providers))
 		var ignoreProviderCost, keyless []schemas.ModelProvider
-		for provider, providerConfig := range s.Config.Providers {
+		for provider, providerConfig := range providers {
 			snapshot[provider] = providerConfig.Keys
 			if providerConfig.IgnoreProviderCost {
 				ignoreProviderCost = append(ignoreProviderCost, provider)

@@ -1772,17 +1772,13 @@ type gwProviders struct {
 
 // GetConfiguredProviders implements governance.InMemoryStore.
 func (p gwProviders) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
-	p.config.Mu.RLock()
-	defer p.config.Mu.RUnlock()
-	return p.config.Providers
+	return providersOf(p.config)
 }
 
 // GetConfiguredProviderNames implements governance.InMemoryStore.
 func (p gwProviders) GetConfiguredProviderNames() []string {
-	p.config.Mu.RLock()
-	defer p.config.Mu.RUnlock()
-	names := make([]string, 0, len(p.config.Providers))
-	for provider := range p.config.Providers {
+	names := make([]string, 0)
+	for provider := range providersOf(p.config) {
 		names = append(names, string(provider))
 	}
 	return names
@@ -1832,7 +1828,7 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 	t.Helper()
 	ctx := context.Background()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	config := &Config{ClientConfig: &configstore.ClientConfig{AllowDirectKeys: setup.allowDirectKeys}, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}}
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{}
 	for provider, keys := range setup.keys {
 		maxRetries, ok := setup.maxRetries[provider]
 		if !ok {
@@ -1842,7 +1838,7 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 		if provider != schemas.OpenAI {
 			custom = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}
 		}
-		config.Providers[provider] = configstore.ProviderConfig{
+		providers[provider] = configstore.ProviderConfig{
 			Keys: keys,
 			NetworkConfig: &schemas.NetworkConfig{
 				BaseURL:                        u.URL,
@@ -1855,6 +1851,8 @@ func newGateway(t *testing.T, u *gwUpstream, setup gwSetup) *gateway {
 			CustomProviderConfig:     custom,
 		}
 	}
+	config := providerStore(t, providers)
+	config.ClientConfig = &configstore.ClientConfig{AllowDirectKeys: setup.allowDirectKeys}
 	governanceConfig := setup.governance
 	governancePlugin, err := governance.Init(ctx, &governance.Config{}, logger, nil, &governanceConfig, setup.catalog, nil, gwProviders{config: config})
 	if err != nil {
@@ -2275,9 +2273,9 @@ func TestGatewayRuleFallbackToADeletedProviderIsSkipped(t *testing.T) {
 		gwRule(t, "R1", "", "", gwTarget(gwA, "m", ""), schemas.Ptr(`["gw-c/m","gw-b/m"]`)),
 	}})
 	// Delete C the way the server does: from the transport's config and from core.
-	g.config.Mu.Lock()
-	delete(g.config.Providers, gwC)
-	g.config.Mu.Unlock()
+	if err := g.config.RemoveProvider(context.Background(), gwC); err != nil {
+		t.Fatalf("removing C from the config: %v", err)
+	}
 	if err := g.client.RemoveProvider(gwC); err != nil {
 		t.Fatalf("removing C: %v", err)
 	}

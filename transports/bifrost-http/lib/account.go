@@ -10,43 +10,52 @@ import (
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 )
 
 // BaseAccount implements the Account interface for Bifrost.
 // It manages provider configurations using a in-memory store for persistent storage.
 // All data processing (environment variables, key configs) is done upfront in the store.
 type BaseAccount struct {
-	store *Config // store for in-memory configuration
+	config *Config // store for in-memory configuration
 }
 
 // NewBaseAccount creates a new BaseAccount with the given store
-func NewBaseAccount(store *Config) *BaseAccount {
+func NewBaseAccount(config *Config) *BaseAccount {
 	return &BaseAccount{
-		store: store,
+		config: config,
 	}
 }
 
 // GetConfiguredProviders returns a list of all configured providers.
 // Implements the Account interface.
 func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	if baseAccount.store == nil {
-		return nil, fmt.Errorf("store not initialized")
+	if baseAccount.config == nil {
+		return nil, fmt.Errorf("config not initialized")
 	}
-	return baseAccount.store.GetAllProviders()
+	providers := []schemas.ModelProvider{}
+	baseAccount.config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
+		providers = append(providers, p.Name)
+		return true
+	})
+	return providers, nil
 }
 
 // GetKeysForProvider returns the API keys configured for a specific provider.
 // Keys are already processed (environment variables resolved) by the store.
 // Implements the Account interface.
 func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
-	if baseAccount.store == nil {
-		return nil, fmt.Errorf("store not initialized")
+	if baseAccount.config == nil {
+		return nil, fmt.Errorf("config not initialized")
 	}
-	config, err := baseAccount.store.GetProviderConfigRaw(providerKey)
-	if err != nil {
-		return nil, err
+	if _, ok := baseAccount.config.liveProvider(providerKey); !ok {
+		return nil, ErrNotFound
 	}
-	keys := config.Keys
+	// Shared with the live store: the slice is filtered into a new one, never changed in place.
+	var keys []schemas.Key
+	if list, ok := baseAccount.config.LiveStore.Views.ProviderKeyLists.Get(string(providerKey)); ok {
+		keys = *list
+	}
 	if v := ctx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys); v != nil {
 		if includeOnlyKeys, ok := v.([]string); ok {
 			if len(includeOnlyKeys) == 0 {
@@ -74,13 +83,14 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, provider
 // Configuration is already fully processed (environment variables, key configs) by the store.
 // Implements the Account interface.
 func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-	if baseAccount.store == nil {
-		return nil, fmt.Errorf("store not initialized")
+	if baseAccount.config == nil {
+		return nil, fmt.Errorf("config not initialized")
 	}
-	config, err := baseAccount.store.GetProviderConfigRaw(providerKey)
-	if err != nil {
-		return nil, err
+	p, ok := baseAccount.config.liveProvider(providerKey)
+	if !ok {
+		return nil, ErrNotFound
 	}
+	config := &p.Settings
 	providerConfig := &schemas.ProviderConfig{}
 	if config.ProxyConfig != nil {
 		providerConfig.ProxyConfig = config.ProxyConfig
@@ -90,7 +100,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	} else {
 		providerConfig.NetworkConfig = schemas.DefaultNetworkConfig
 	}
-	inherited, ok, err := inheritGlobalProxy(providerConfig.ProxyConfig, baseAccount.store.GetGlobalProxyConfig())
+	inherited, ok, err := inheritGlobalProxy(providerConfig.ProxyConfig, baseAccount.config.GetGlobalProxyConfig())
 	if err != nil {
 		return nil, fmt.Errorf("provider %s: %w", providerKey, err)
 	}

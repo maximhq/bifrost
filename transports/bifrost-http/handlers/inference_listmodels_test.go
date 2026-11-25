@@ -28,19 +28,22 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
 type scribeInMemoryStore struct{ *lib.Config }
 
+// GetConfiguredProviders returns the fixture providers from the live store.
 func (s scribeInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
-	return s.Providers // The test fixture never changes provider configuration.
+	return libtest.Providers(s.Config)
 }
 
+// GetConfiguredProviderNames lists the fixture provider names.
 func (s scribeInMemoryStore) GetConfiguredProviderNames() []string {
-	names := make([]string, 0, len(s.Providers))
-	for provider := range s.Providers {
+	names := make([]string, 0)
+	for provider := range libtest.Providers(s.Config) {
 		names = append(names, string(provider))
 	}
 	return names
@@ -114,22 +117,21 @@ func newElevenlabsScribeHandler(tb testing.TB, keys []schemas.Key, virtualKeys [
 	tb.Cleanup(upstream.Close)
 	log := bifrost.NewNoOpLogger()
 	SetLogger(log)
-	config := &lib.Config{
+	config := libtest.FileOnly(tb, &lib.Config{
 		ClientConfig: &configstore.ClientConfig{}, ModelCatalog: catalog,
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.Elevenlabs: {
-				Keys:                     keys,
-				NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
-				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
-			},
-			schemas.OpenAI: {
-				Keys:                     []schemas.Key{{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("openai-provider-key"), Weight: 1}},
-				NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
-				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
-			},
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Elevenlabs: {
+			Keys:                     keys,
+			NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
 		},
-	}
-	catalog.SetKeyConfigForProvider(schemas.OpenAI, config.Providers[schemas.OpenAI].Keys)
+		schemas.OpenAI: {
+			Keys:                     []schemas.Key{{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("openai-provider-key"), Weight: 1}},
+			NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
+		},
+	})
+	catalog.SetKeyConfigForProvider(schemas.OpenAI, libtest.Providers(config)[schemas.OpenAI].Keys)
 	plugin, err := governance.Init(tb.Context(), nil, log, nil,
 		&configstore.GovernanceConfig{VirtualKeys: virtualKeys}, catalog, nil, scribeInMemoryStore{config})
 	require.NoError(tb, err)
@@ -301,7 +303,7 @@ func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 		filtered:   map[schemas.ModelProvider][]string{schemas.Elevenlabs: catalog.GetModelsForProvider(schemas.Elevenlabs)},
 		unfiltered: map[schemas.ModelProvider][]string{schemas.Elevenlabs: catalog.GetUnfilteredModelsForProvider(schemas.Elevenlabs)},
 	}
-	management := &ProviderHandler{modelsManager: manager, inMemoryStore: handler.config}
+	management := &ProviderHandler{modelsManager: manager, config: handler.config}
 	providerModels := [][]string{
 		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/dictation"},
 		{"elevenlabs/dictation"},
@@ -335,9 +337,10 @@ func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 				}
 			}
 			require.ElementsMatch(t, providerModels[i], ids, "provider listing must preserve upstream inventory and configured alias backfill")
-			rows := management.listManagementModelsForProvider(schemas.Elevenlabs, modelListQuery{
+			rows, err := management.listManagementModelsForProvider(context.Background(), schemas.Elevenlabs, modelListQuery{
 				HasVKFilter: true, Access: scribeCatalogAccess(catalog, vks[i]),
 			})
+			require.NoError(t, err)
 			ids = ids[:0]
 			for _, row := range rows {
 				ids = append(ids, string(row.Provider)+"/"+row.Name)
