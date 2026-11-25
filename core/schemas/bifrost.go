@@ -858,13 +858,8 @@ type Fallback struct {
 // - ImageGenerationRequest
 // NOTE: Bifrost Request is submitted back to pool after every use so DO NOT keep references to this struct after use, especially in go routines.
 type BifrostRequest struct {
-	RequestType RequestType
-	// ProviderResolutionError is set by a PreRequestHook plugin that deliberately left the provider
-	// unset, e.g. model-catalog-resolver for a decision model several providers serve. When no
-	// provider is set after PreRequestHook, core returns it as the 400 message instead of the
-	// generic auto-resolve error. It lives on the request rather than the context because nil-ctx
-	// callers share one context.
-	ProviderResolutionError string `json:"-"`
+	RequestType             RequestType
+	ProviderResolutionError string `json:"-"` // why a PreRequestHook left the provider unset; see validateRequestAfterPreRequestHooks
 
 	ListModelsRequest            *BifrostListModelsRequest
 	ModelRetrieveRequest         *BifrostModelRetrieveRequest

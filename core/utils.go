@@ -121,8 +121,11 @@ func waitRetryBackoff(ctx context.Context, backoff time.Duration) (cancelled boo
 }
 
 // validateRequestAfterPreRequestHooks validates the provider and model fields of the given request.
-// A PreRequestHook plugin that left the provider unset on purpose can explain why through
-// req.ProviderResolutionError; that reason replaces the generic auto-resolve message.
+// A PreRequestHook plugin that left the provider unset on purpose (e.g. model-catalog-resolver for
+// a decision model several providers serve) can explain why in req.ProviderResolutionError; when no
+// provider is set, that reason replaces the generic auto-resolve message, still as a 400. The reason
+// lives on the request rather than the context because nil-ctx callers share one context, so
+// concurrent requests would read each other's reason.
 func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
 		return newBifrostErrorFromMsg("bifrost request cannot be nil")

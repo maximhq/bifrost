@@ -36,10 +36,8 @@ var integrationTypeToDefaultProvider = map[string]schemas.ModelProvider{
 // Plugin resolves the default provider for unprefixed model strings using the model catalog.
 type Plugin struct {
 	catalog *modelcatalog.ModelCatalog
-	// live holds the configured providers, read for a custom provider's allowed_requests. Nil
-	// treats every provider as allowed.
-	live   *livestore.Store
-	logger schemas.Logger
+	live    *livestore.Store // provider configs for allowed_requests; nil allows every provider
+	logger  schemas.Logger
 }
 
 // Init returns a new resolver plugin. The catalog is required; if nil, the plugin returns
