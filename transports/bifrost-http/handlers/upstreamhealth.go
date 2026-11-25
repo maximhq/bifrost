@@ -41,9 +41,9 @@ var allProviderKeys = schemas.WhiteList{"*"}
 
 // vkUpstreamHealth returns the upstream health of the provider/model pairs the virtual key
 // can reach, with each pair's EffectiveRemainingFraction narrowed by the static budgets and rate
-// limits the key has on that provider, on that model under it, and on that model across all
-// providers (a model config with no provider, which governance enforces on every provider). A
-// pair is reachable through a provider config that allows the model, or, when the key allows all
+// limits the key has on that provider, on that model under it (with or without a provider
+// config), and on that model across all providers (a model config with no provider, which
+// governance enforces on every provider). A pair is reachable through a provider config that allows the model, or, when the key allows all
 // providers, through any provider it names no config for: inference grants those with every
 // model. Every pair in the snapshot was dispatched to, so its provider is configured. match
 // decides which per-model limits govern a pair, through the keys the key's provider config allows
@@ -79,7 +79,10 @@ func vkUpstreamHealth(snapshot []schemas.UpstreamHealth, providerConfigs []confi
 				}
 			}
 			for j := range models {
-				if m := &models[j]; m.Provider == nil && match(m.ModelName, nil, entry.Provider, entry.Model, keyIDs) {
+				// A provider-scoped config can exist without a provider config (on a provider
+				// allow_all_providers grants); one that has a provider config is also in
+				// pc.ModelBudgets, and folding it twice changes nothing.
+				if m := &models[j]; (m.Provider == nil || *m.Provider == string(entry.Provider)) && match(m.ModelName, m.Provider, entry.Provider, entry.Model, keyIDs) {
 					entry.EffectiveRemainingFraction = min(entry.EffectiveRemainingFraction, staticRemainingFraction(m.Budgets, m.RateLimit))
 				}
 			}

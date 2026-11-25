@@ -115,3 +115,18 @@ func TestVKUpstreamHealthMatchesThroughTheConfigsKeys(t *testing.T) {
 		t.Fatalf("expected the config's keys for bedrock and every key for the allow-all provider, got %v", seen)
 	}
 }
+
+// A provider-scoped model config needs no provider config: on a provider allow_all_providers
+// grants, an exhausted openai/gpt-4o limit still bounds the pair, and it leaves other providers'
+// pairs alone.
+func TestVKUpstreamHealthFoldsProviderScopedLimitWithoutProviderConfig(t *testing.T) {
+	snapshot := []schemas.UpstreamHealth{
+		{Provider: schemas.OpenAI, Model: "gpt-4o", Status: schemas.UpstreamHealthDegraded, Available: true, EffectiveRemainingFraction: 1},
+		{Provider: schemas.Azure, Model: "gpt-4o", Status: schemas.UpstreamHealthDegraded, Available: true, EffectiveRemainingFraction: 1},
+	}
+	models := []quotaModelUsage{{ModelName: "gpt-4o", Provider: schemas.Ptr("openai"), Budgets: []configstoreTables.TableBudget{{MaxLimit: 10, CurrentUsage: 10}}}}
+	got := vkUpstreamHealth(snapshot, nil, true, models, canonicalModelConfigMatch)
+	if len(got) != 2 || got[0].EffectiveRemainingFraction != 0 || got[1].EffectiveRemainingFraction != 1 {
+		t.Fatalf("expected the exhausted openai/gpt-4o limit to bound only the openai pair, got %+v", got)
+	}
+}
