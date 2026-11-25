@@ -349971,7 +349971,7 @@
     },
     {
       "name": "383. Anthropic Managed Agents deployments through /anthropic_passthrough (anthropic-deployments-passthrough) (#10373 / PR #10374) [SERIAL]",
-      "description": "Claude Managed Agents deployments live at /v1/deployments/{id} on the Anthropic API, and /anthropic_passthrough forwards them. Path model parsing read any deployments/{x} segment as an Azure deployment name, so the deployment id became the request's model and governance refused it with model_blocked before anything reached Anthropic, even under a key that allows every Anthropic model, because the id is not in the model catalog. The fix reads no model from a deployments path. Reading, pausing and archiving a deployment start nothing and skip the model allowlist. Create, update, run and unpause can start runs of an agent whose model governance never sees, so a key that restricts models is refused and a key that allows every Anthropic model passes. The cases create two virtual keys on any Anthropic key, one allowing only claude-haiku-4-5 and one allowing every model, and send the Managed Agents beta header for a deployment that does not exist. The restricted key reads it and gets Anthropic's own 404 not_found_error, and is refused with 403 model_blocked when it unpauses it. The all-models key reads and unpauses it and gets Anthropic's 404 both times. Red before the change: every case is 403 model_blocked naming the deployment id. No model runs and nothing is created on the Anthropic account. Requires the governance plugin and an Anthropic key with Managed Agents access; both keys are deleted at the end.",
+      "description": "Claude Managed Agents deployments live at /v1/deployments/{id} on the Anthropic API, and /anthropic_passthrough forwards them. Path model parsing read any deployments/{x} segment as an Azure deployment name, so the deployment id became the request's model and governance refused it with model_blocked before anything reached Anthropic, even under a key that allows every Anthropic model, because the id is not in the model catalog. The fix reads no model from a deployments path. Reading, pausing and archiving a deployment start nothing and skip the model allowlist. Create, update, run and unpause can start runs of an agent whose model governance never sees, so a key that restricts models is refused, even when the body names a model it allows, and a key that allows every Anthropic model passes. The cases create two virtual keys on any Anthropic key, one allowing only claude-haiku-4-5 and one allowing every model, and send the Managed Agents beta header for a deployment that does not exist. The restricted key reads it and gets Anthropic's own 404 not_found_error, and is refused with 403 model_blocked when it unpauses it, and when it runs it with the allowed model in the body (the run starts the agent's model, not that one). The all-models key reads and unpauses it and gets Anthropic's 404 both times. Red before the change: every case is 403 model_blocked naming the deployment id. No model runs and nothing is created on the Anthropic account. Requires the governance plugin and an Anthropic key with Managed Agents access; both keys are deleted at the end.",
       "item": [
         {
           "name": "anthropic anthropic-deployments-passthrough setup: create a virtual key that allows only claude-haiku-4-5 - #10373",
@@ -350229,6 +350229,67 @@
               }
             ],
             "url": "{{baseUrl}}/anthropic_passthrough/v1/deployments/depl_01HarnessMissingDeploy/unpause"
+          }
+        },
+        {
+          "name": "[EXPECT-403] anthropic claude-haiku-4-5 anthropic-deployments-passthrough: a model-restricted key running a deployment is refused even when its body names the allowed model - #10373",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The setup did not create the model-restricted key, so there is nothing to send it with.",
+                  "if (!pm.collectionVariables.get('anthropicDeploymentsVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic-deployments-passthrough: running a deployment under a model-restricted key is refused even with the allowed model in the body', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'not refused by the model allowlist: ' + pm.response.text()).to.include('model_blocked');",
+                  "});",
+                  "pm.test('anthropic-deployments-passthrough: the refusal does not name the deployment id as the model', function () {",
+                  "  pm.expect(pm.response.text(), 'deployment id read as a model: ' + pm.response.text()).to.not.include('depl_01HarnessMissingDeploy');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{anthropicDeploymentsVkValue}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "managed-agents-2026-04-01"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/anthropic_passthrough/v1/deployments/depl_01HarnessMissingDeploy/run",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-haiku-4-5\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
           }
         },
         {

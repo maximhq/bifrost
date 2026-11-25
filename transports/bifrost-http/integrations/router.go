@@ -572,6 +572,8 @@ type PassthroughConfig struct {
 	PathModel     func(path string) string         // optional: the model a provider-shaped path addresses, used for key selection and governance
 	BodyModelKey  func(method, path string) string // optional: a body key that names what the request runs in place of "model" (an agent id)
 	NoPathModel   func(method, path string) bool   // optional: paths that never name a model, so the model comes from the body alone
+	// RunsUnseenModel marks requests that can run a model they do not name; only an access allowing every model of the provider passes them.
+	RunsUnseenModel func(method, path string) bool
 
 	BodyModelKeyOnly bool // the BodyModelKey is the only body field that names the model, for an upstream that ignores "model"
 	// ModelList, when it returns a filter, is a model-list request whose response governance trims to the caller's access.
@@ -3908,6 +3910,8 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
 	if cfg.ModelFreePath != nil && cfg.ModelFreePath(string(ctx.Method()), path) {
 		bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
+	} else if cfg.RunsUnseenModel != nil && cfg.RunsUnseenModel(string(ctx.Method()), path) {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughRunsUnseenModel, true)
 	}
 	if cfg.ModelList != nil {
 		if filter := cfg.ModelList(string(ctx.Method()), path); filter != nil {

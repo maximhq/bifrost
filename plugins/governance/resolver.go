@@ -166,6 +166,15 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 			Reason:   denialReason(fmt.Sprintf("Passthrough on provider '%s' requires a model: this access restricts models, and the request names none that can be checked", provider), access.DeniedPermitsForModel(string(provider), "")),
 		}
 	}
+	// A passthrough the transport marks as able to run a model it does not name (a run of a Managed
+	// Agents deployment starts its agent's model) is held to an access that allows every model of the
+	// provider. A model its body names does not satisfy that: it is not the model that runs.
+	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeyPassthroughRunsUnseenModel) && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
+		return &EvaluationResult{
+			Decision: DecisionModelBlocked,
+			Reason:   denialReason(fmt.Sprintf("Passthrough on provider '%s' requires an access that allows every model of the provider: this request can run a model it does not name", provider), access.DeniedPermitsForModel(string(provider), "")),
+		}
+	}
 	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) {
 		// A batch item's model, and any request whose credential bypasses key selection (a direct
 		// key, or a bearer that is the credential itself), reaches the provider as written: no key

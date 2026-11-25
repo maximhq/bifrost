@@ -658,6 +658,26 @@ func TestReservedKey_SkipProviderCheckIsProtected(t *testing.T) {
 	}
 }
 
+// TestReservedKey_PassthroughRunsUnseenModelIsProtected pins BifrostContextKeyPassthroughRunsUnseenModel
+// as reserved. Governance reads it to hold a passthrough that can run a model it does not name to an
+// access allowing every model, so a restricted (plugin) write must not be able to clear it.
+func TestReservedKey_PassthroughRunsUnseenModelIsProtected(t *testing.T) {
+	if !isReservedKey(BifrostContextKeyPassthroughRunsUnseenModel) {
+		t.Fatal("BifrostContextKeyPassthroughRunsUnseenModel must be a reserved key")
+	}
+
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	ctx.SetValue(BifrostContextKeyPassthroughRunsUnseenModel, true)
+	ctx.BlockRestrictedWrites()
+
+	ctx.SetValue(BifrostContextKeyPassthroughRunsUnseenModel, false)
+	if v := ctx.Value(BifrostContextKeyPassthroughRunsUnseenModel); v != true {
+		t.Fatalf("reserved key overwritten under BlockRestrictedWrites: got %v, want true", v)
+	}
+}
+
 // TestReservedKey_AuthCredentialIsProtected pins BifrostContextKeyAuthCredential as reserved.
 // Delegated token exchange trusts it to say which credential authenticated the request, so a
 // restricted (plugin) write must not be able to replace it.

@@ -1150,9 +1150,10 @@ func TestPreLLMHookChecksInteractionsAgentAgainstAllowlist(t *testing.T) {
 }
 
 // Claude Managed Agents deployments name no model. The router marks reads, pause and archive
-// model-free, so a key that restricts models reaches them. Create, update, run and unpause can start
-// runs of an agent whose model governance never sees, so they are refused under that key and pass
-// under a key that allows every Anthropic model. A model the body names is checked as usual.
+// model-free, so a key that restricts models reaches them. It marks create, update, run and unpause
+// as running a model they do not name: they start runs of an agent whose model governance never
+// sees, so they are refused under that key even when the body names an allowed model, and pass under
+// a key that allows every Anthropic model.
 func TestPreLLMHookAnthropicDeploymentsUnderModelAllowlists(t *testing.T) {
 	const allowed, denied = "claude-sonnet-4-5", "claude-opus-4-1"
 	restricted := buildVirtualKeyWithProviders("vk-depl", "sk-bf-depl", "Deployments VK", []configstoreTables.TableVirtualKeyProviderConfig{
@@ -1180,6 +1181,11 @@ func TestPreLLMHookAnthropicDeploymentsUnderModelAllowlists(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
 		return ctx
 	}
+	runsUnseen := func(vk string) *schemas.BifrostContext {
+		ctx := presentCtx(vk)
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughRunsUnseenModel, true)
+		return ctx
+	}
 	reads := []*schemas.BifrostRequest{
 		deployment("GET", "/v1/deployments", "", ""),
 		deployment("GET", "/v1/deployments/depl_1", "", ""),
@@ -1199,22 +1205,29 @@ func TestPreLLMHookAnthropicDeploymentsUnderModelAllowlists(t *testing.T) {
 		assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
 	}
 	for _, req := range starts {
-		_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-depl"), req)
+		_, shortCircuit, err := plugin.PreLLMHook(runsUnseen("sk-bf-depl"), req)
 		require.NoError(t, err)
 		assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
 	}
 	// The bug in #10373: a key that allows every Anthropic model reaches every deployments request.
-	for _, req := range append(append([]*schemas.BifrostRequest{}, reads...), starts...) {
-		_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-depl-all"), req)
+	for _, req := range reads {
+		_, shortCircuit, err := plugin.PreLLMHook(modelFree("sk-bf-depl-all"), req)
+		require.NoError(t, err)
+		assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+	}
+	for _, req := range starts {
+		_, shortCircuit, err := plugin.PreLLMHook(runsUnseen("sk-bf-depl-all"), req)
 		require.NoError(t, err)
 		assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
 	}
 
-	// A model the body names is checked under the restricted key.
-	_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", "/v1/deployments/depl_1/run", denied, `{"model":"`+denied+`"}`))
-	require.NoError(t, err)
-	assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
-	_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", "/v1/deployments/depl_1/run", allowed, `{"model":"`+allowed+`"}`))
+	// A model the body names does not let a restricted key start a run: the agent's model runs, not it.
+	for _, model := range []string{allowed, denied} {
+		_, shortCircuit, err := plugin.PreLLMHook(runsUnseen("sk-bf-depl"), deployment("POST", "/v1/deployments/depl_1/run", model, `{"model":"`+model+`"}`))
+		require.NoError(t, err)
+		assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+	}
+	_, shortCircuit, err := plugin.PreLLMHook(runsUnseen("sk-bf-depl-all"), deployment("POST", "/v1/deployments/depl_1/run", allowed, `{"model":"`+allowed+`"}`))
 	require.NoError(t, err)
 	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
 }

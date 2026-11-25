@@ -93,8 +93,9 @@ func NewAnthropicPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Han
 		NoPathModel: isAnthropicDeploymentsPath,
 		// Reading, pausing and archiving a deployment start nothing, so they skip the model allowlist.
 		// Create, update, run and unpause can start runs of an agent whose model governance never sees,
-		// so they stay with the passthrough rule: an access that restricts models is refused.
-		ModelFreePath: isAnthropicDeploymentModelFree,
+		// so only an access that allows every Anthropic model passes them, whatever model the body names.
+		ModelFreePath:   isAnthropicDeploymentModelFree,
+		RunsUnseenModel: isAnthropicDeploymentStart,
 		StripPrefix: []string{
 			"/anthropic_passthrough",
 		},
@@ -129,6 +130,12 @@ func isAnthropicDeploymentModelFree(method, path string) bool {
 		return action == "pause" || action == "archive"
 	}
 	return false
+}
+
+// isAnthropicDeploymentStart reports whether a deployments request can start runs of an agent:
+// any deployments request other than a read, pause or archive (create, update, run, unpause).
+func isAnthropicDeploymentStart(method, path string) bool {
+	return isAnthropicDeploymentsPath(method, path) && !isAnthropicDeploymentModelFree(method, path)
 }
 
 // NewOpenAIPassthroughRouter creates a passthrough router for /openai_passthrough.

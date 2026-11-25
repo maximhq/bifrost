@@ -2354,6 +2354,7 @@ type codexPassthroughReceipt struct {
 	request          *schemas.BifrostRequest
 	skipKeySelection bool
 	skipModelCheck   bool
+	runsUnseenModel  bool
 	modelListFilter  schemas.PassthroughModelListFilter
 }
 
@@ -2374,6 +2375,7 @@ func (p *codexPassthroughReceipt) PreLLMHook(ctx *schemas.BifrostContext, req *s
 	p.request = &snapshot
 	p.skipKeySelection, _ = ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
 	p.skipModelCheck, _ = ctx.Value(schemas.BifrostContextKeySkipModelCheck).(bool)
+	p.runsUnseenModel, _ = ctx.Value(schemas.BifrostContextKeyPassthroughRunsUnseenModel).(bool)
 	p.modelListFilter, _ = ctx.Value(schemas.BifrostContextKeyPassthroughModelListFilter).(schemas.PassthroughModelListFilter)
 	status := 403
 	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "synthetic policy denial"}}}, nil
@@ -2544,9 +2546,10 @@ func TestGenAIPassthroughInteractionsAgentIsTheModel(t *testing.T) {
 // /anthropic_passthrough. Their paths are /v1/deployments/{id}, which path model parsing read as an
 // Azure deployments/{deployment} segment, so the deployment id became the request's model and a
 // virtual key's model allowlist refused every request on a deployment, even under a key allowing "*".
-// A deployments path names no model. Reads, pause and archive start nothing and are model-free;
-// create, update, run and unpause can start runs of an agent, so they are not, and governance holds
-// them to an access that allows every Anthropic model.
+// A deployments path names no model. Reads, pause and archive start nothing and are model-free.
+// Create, update, run and unpause can start runs of an agent, so they are marked as running a model
+// they do not name, and governance holds them to an access that allows every Anthropic model even
+// when the body names one.
 func TestAnthropicPassthroughDeploymentsNameNoModel(t *testing.T) {
 	const deployment = "/anthropic_passthrough/v1/deployments/depl_01AbCdEfGhJkMnPqRsTuVwXy"
 	tests := []struct {
@@ -2556,17 +2559,18 @@ func TestAnthropicPassthroughDeploymentsNameNoModel(t *testing.T) {
 		body          string
 		wantModel     string
 		wantModelFree bool
+		wantUnseen    bool
 	}{
 		{name: "list deployments", method: "GET", uri: "/anthropic_passthrough/v1/deployments?limit=20", wantModelFree: true},
 		{name: "get a deployment", method: "GET", uri: deployment, wantModelFree: true},
 		{name: "pause a deployment", method: "POST", uri: deployment + "/pause", wantModelFree: true},
 		{name: "archive a deployment", method: "POST", uri: deployment + "/archive", wantModelFree: true},
-		{name: "create a deployment", method: "POST", uri: "/anthropic_passthrough/v1/deployments", body: `{"agent":"agent_1"}`},
-		{name: "update a deployment", method: "POST", uri: deployment, body: `{"name":"nightly"}`},
-		{name: "run a deployment", method: "POST", uri: deployment + "/run"},
-		{name: "unpause a deployment", method: "POST", uri: deployment + "/unpause"},
-		{name: "a body model on a create is the model", method: "POST", uri: "/anthropic_passthrough/v1/deployments", body: `{"model":"claude-sonnet-4-5"}`, wantModel: "claude-sonnet-4-5"},
-		{name: "a body model on an action is the model", method: "POST", uri: deployment + "/run", body: `{"model":"claude-sonnet-4-5"}`, wantModel: "claude-sonnet-4-5"},
+		{name: "create a deployment", method: "POST", uri: "/anthropic_passthrough/v1/deployments", body: `{"agent":"agent_1"}`, wantUnseen: true},
+		{name: "update a deployment", method: "POST", uri: deployment, body: `{"name":"nightly"}`, wantUnseen: true},
+		{name: "run a deployment", method: "POST", uri: deployment + "/run", wantUnseen: true},
+		{name: "unpause a deployment", method: "POST", uri: deployment + "/unpause", wantUnseen: true},
+		{name: "a body model on a create is the model", method: "POST", uri: "/anthropic_passthrough/v1/deployments", body: `{"model":"claude-sonnet-4-5"}`, wantModel: "claude-sonnet-4-5", wantUnseen: true},
+		{name: "a body model on a run is the model, and the run is still marked", method: "POST", uri: deployment + "/run", body: `{"model":"claude-sonnet-4-5"}`, wantModel: "claude-sonnet-4-5", wantUnseen: true},
 		{name: "deployment runs are not deployments", method: "GET", uri: "/anthropic_passthrough/v1/deployment_runs/drun_1"},
 		{name: "messages keep the body model", method: "POST", uri: "/anthropic_passthrough/v1/messages", body: `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[]}`, wantModel: "claude-sonnet-4-5"},
 		{name: "a model lookup keeps its path model", method: "GET", uri: "/anthropic_passthrough/v1/models/claude-sonnet-4-5", wantModel: "claude-sonnet-4-5"},
@@ -2591,6 +2595,7 @@ func TestAnthropicPassthroughDeploymentsNameNoModel(t *testing.T) {
 			require.Equal(t, schemas.Anthropic, plugin.request.PassthroughRequest.Provider)
 			require.Equal(t, tc.wantModel, plugin.request.PassthroughRequest.Model)
 			require.Equal(t, tc.wantModelFree, plugin.skipModelCheck)
+			require.Equal(t, tc.wantUnseen, plugin.runsUnseenModel)
 		})
 	}
 }
