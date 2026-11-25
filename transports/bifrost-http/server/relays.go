@@ -92,25 +92,36 @@ func (s *BifrostHTTPServer) startEndpointJobSweeper(reporter jobaccounting.Relay
 	if s.Config.LogsStore == nil {
 		return
 	}
+	// Named per node, as the batch and video sweepers are, so claims show the relay kind and survive reloads.
+	nodeID := ""
+	// The logging plugin also reports each settled job to the trace-fed connectors, as it does for
+	// batch and video. Assigned only when found, so a missing plugin stays a nil interface.
+	var emitter jobaccounting.RelaySettlementEmitter
+	if loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName); err == nil && loggerPlugin != nil {
+		nodeID = loggerPlugin.ClusterNodeID()
+		// A caller's finished status check is confirmed with Bifrost's own poll.
+		loggerPlugin.SetRelayJobPoller(s.relays)
+		emitter = loggerPlugin
+		// A job settled with no tracer is marked done but its cost never reaches the metrics, and the
+		// first sweep runs at once. At boot the tracer comes later and Bootstrap starts the sweeper
+		// then; on a reload the rebuilt plugin gets the tracer before the first sweep.
+		if s.TracingMiddleware == nil {
+			return
+		}
+		s.setSettlementTracer()
+	}
 	var base context.Context = context.Background()
 	if s.Ctx != nil {
 		base = s.Ctx
 	}
 	sweepCtx, cancel := context.WithCancel(base)
 	s.endpointSweeperCancel = cancel
-	// Named per node, as the batch and video sweepers are, so claims show the relay kind and survive reloads.
-	nodeID := ""
-	if loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName); err == nil && loggerPlugin != nil {
-		nodeID = loggerPlugin.ClusterNodeID()
-		// A caller's finished status check is confirmed with Bifrost's own poll.
-		loggerPlugin.SetRelayJobPoller(s.relays)
-	}
 	config := jobaccounting.SweeperConfig{Interval: 10 * time.Second, Logger: logger, ClaimedBy: jobaccounting.RunnerID("relay-sweeper", nodeID)}
 	// Assigned only when set: a nil *kvstore.Store in the interface would not compare as nil.
 	if s.Config.KVStore != nil {
 		config.KVStore = s.Config.KVStore
 	}
-	sweeper := jobaccounting.NewRelayJobSweeper(store, s.relays, s.Config.LogsStore, reporter, config)
+	sweeper := jobaccounting.NewRelayJobSweeper(store, s.relays, s.Config.LogsStore, reporter, emitter, config)
 	go sweeper.Run(sweepCtx)
 }
 

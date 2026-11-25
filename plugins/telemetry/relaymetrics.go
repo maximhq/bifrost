@@ -57,6 +57,13 @@ func (p *PrometheusPlugin) recordRelayMetrics(trace *schemas.Trace) {
 				values = append(values, dims[key])
 			}
 		}
+		// A settled job's charge counts toward relay cost, but it is no call: no duration or overhead.
+		if settled, _ := span.Attributes[schemas.AttrBifrostRelayJobSettlement].(bool); settled {
+			if cost, ok := schemas.GetFloat64AttrOK(span.Attributes, schemas.AttrBifrostRelayCost); ok && cost > 0 {
+				p.RelayCostTotal.WithLabelValues(values...).Add(cost)
+			}
+			continue
+		}
 		p.RelayOperationDuration.WithLabelValues(values...).Observe(schemas.RelaySpanDurationSeconds(span))
 		if upstreamMs, ok := schemas.GetFloat64AttrOK(span.Attributes, schemas.AttrBifrostRelayUpstreamDurationMs); ok && upstreamMs > 0 && p.RelayUpstreamDuration != nil {
 			p.RelayUpstreamDuration.WithLabelValues(values...).Observe(upstreamMs / 1000)

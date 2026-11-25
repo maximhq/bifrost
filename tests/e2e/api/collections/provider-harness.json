@@ -300159,6 +300159,64 @@
               }
             },
             {
+              "name": "the settled job's charge reaches /metrics as relay cost, never as a relay call - relays-e2e",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var VK = pm.collectionVariables.get('relayJobsVkId');",
+                      "function near(a, b) { return Math.abs(a - b) < 1e-9; }",
+                      "// The settlement's own series: this run's key, and no status code, since a settlement is no HTTP call.",
+                      "function settled(text, family) {",
+                      "  var sum = 0, found = false;",
+                      "  (text || '').split('\\n').forEach(function (l) {",
+                      "    if (l.indexOf(family + '{') !== 0) { return; }",
+                      "    if (l.indexOf('relay_name=\"harness-relay-jobs\"') === -1 || l.indexOf('virtual_key_id=\"' + VK + '\"') === -1 || l.indexOf('status_code=\"\"') === -1) { return; }",
+                      "    var parts = l.trim().split(' ');",
+                      "    sum += parseFloat(parts[parts.length - 1]);",
+                      "    found = true;",
+                      "  });",
+                      "  return { sum: sum, found: found };",
+                      "}",
+                      "function scrape(attempt) {",
+                      "  pm.sendRequest({ url: BASE + '/metrics', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('GET /metrics answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var text = res.text();",
+                      "    var cost = settled(text, 'bifrost_relay_cost_total');",
+                      "    if (!near(cost.sum, 0.15) && attempt < 10) { setTimeout(function () { scrape(attempt + 1); }, 2000); return; }",
+                      "    pm.test('the settled job adds its $0.15 to bifrost_relay_cost_total for the start call\\'s key', function () {",
+                      "      pm.expect(near(cost.sum, 0.15), 'settlement cost on /metrics = ' + cost.sum + ' (found=' + cost.found + ')').to.be.true;",
+                      "    });",
+                      "    pm.test('the settlement counts no relay call: no duration, upstream or overhead sample', function () {",
+                      "      ['bifrost_relay_operation_duration_seconds_count', 'bifrost_relay_upstream_socket_duration_seconds_count', 'bifrost_relay_overhead_latency_microseconds_count'].forEach(function (family) {",
+                      "        pm.expect(settled(text, family).found, family + ' has a sample with no status code').to.be.false;",
+                      "      });",
+                      "    });",
+                      "  });",
+                      "}",
+                      "scrape(0);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/health",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "health"
+                  ]
+                }
+              }
+            },
+            {
               "name": "the key budget carries the start fee and the job charge, once each - relays-e2e",
               "event": [
                 {
