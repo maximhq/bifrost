@@ -1879,6 +1879,49 @@ func TestListModels_DecisionsGeminiListsDecisionModels(t *testing.T) {
 	}
 }
 
+// TestListModels_DecisionsCustomGeminiFollowsDatasheet pins that decisions=true
+// gates a custom provider on the Gemini base as its Decision call does
+// (core/providers/gemini Decision): a supports_decisions row decides in either
+// direction, and only a model with no row falls back to the gemini-decision- name.
+func TestListModels_DecisionsCustomGeminiFollowsDatasheet(t *testing.T) {
+	SetLogger(&mockLogger{})
+	rows := map[string]bool{"gemini-decision-retired": false, "gemini-judge-tuned": true}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if supports, ok := rows[model]; ok && provider == "my-gemini" {
+			return &schemas.ModelCapabilities{SupportsDecisions: &supports}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"gemini-decision-1", "gemini-decision-retired", "gemini-judge-tuned", "gemini-3-flash"}
+	h := providerHandlerForTest(t, "my-gemini", []schemas.Key{{ID: "key-a"}}, models, models)
+	config := libtest.Providers(h.config)["my-gemini"]
+	config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
+	libtest.SetProvider(t, h.config, "my-gemini", config, nil)
+
+	ctx := newBareRequestCtx()
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=my-gemini&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"gemini-decision-1", "gemini-judge-tuned"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
 // TestListModels_DecisionsVLLMListsEveryModel pins that decisions=true lists every
 // model a vLLM server serves: the engine answers /v1/systemone for whatever it loads.
 func TestListModels_DecisionsVLLMListsEveryModel(t *testing.T) {

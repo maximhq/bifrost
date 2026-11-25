@@ -351719,6 +351719,114 @@
           }
         }
       ]
+    },
+    {
+      "name": "388. Decision marker on key aliases follows every serving key (v1-models-decision-modality alias) (PR #10271)",
+      "description": "GET /v1/models marks a key alias with the decisions output modality only when every enabled key that may serve it points it at a decision-only model. The catalog's alias index keeps one owner per alias (the last enabled key), so a marker read from it alone tagged an alias another key sends to a chat model, and a client that sorts models by output modality hid a chat route. The case creates a run-scoped provider on the Gemini base with decisions allowed and two keys: the first maps harness-judge to gemini-3-flash, the second maps harness-judge and harness-sole-judge to gemini-decision-1. harness-judge must be listed unmarked and harness-sole-judge marked. Before the change harness-judge was marked. The provider is deleted afterwards.",
+      "item": [
+        {
+          "name": "gemini custom provider /v1/models - alias mapped to chat and decision models by two keys stays unmarked - harness-judge - #10271",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped Gemini-based provider with two keys that map",
+                  "// harness-judge to different models. The chat key is created first, so the decision key is the",
+                  "// last enabled key and owns the alias in the catalog's alias index. ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-decision-alias-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// Only providers older than ten minutes are swept, so a parallel shard's live provider is never touched.",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);",
+                  "var P = '/api/providers/' + encodeURIComponent(name);",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('decisionAliasProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function (rd) {",
+                  "        // 404: a parallel run swept it first.",
+                  "        pm.test('setup: stale provider removed', function () { pm.expect([200, 404], 'unexpected status: ' + (rd ? rd.text() : 'no response')).to.include(rd && rd.code); });",
+                  "        sweep();",
+                  "      });",
+                  "    }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'gemini', is_key_less: false, allowed_requests: { list_models: true, decisions: true } } }, function (res) {",
+                  "      if (!expectOk('setup: created the run-scoped gemini-based provider', res)) { return; }",
+                  "      // Recorded before the keys, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('decisionAliasProvider', name);",
+                  "      call('POST', P + '/keys', { name: name + '-chat', value: 'env.GEMINI_API_KEY', models: ['harness-judge'], weight: 1, aliases: { 'harness-judge': { model_id: 'gemini-3-flash' } } }, function (res2) {",
+                  "        if (!expectOk('setup: created the key that maps harness-judge to a chat model', res2)) { return; }",
+                  "        call('POST', P + '/keys', { name: name + '-decision', value: 'env.GEMINI_API_KEY', models: ['*'], weight: 1, aliases: { 'harness-judge': { model_id: 'gemini-decision-1' }, 'harness-sole-judge': { model_id: 'gemini-decision-1' } } }, function (res3) {",
+                  "          expectOk('setup: created the key that maps both aliases to a decision model', res3);",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('decisionAliasProvider');",
+                  "function modalitiesOf(id) {",
+                  "  var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "  var row = ((body && body.data) || []).filter(function (m) { return m.id === id; })[0];",
+                  "  pm.expect(row, id + ' not listed: ' + pm.response.text()).to.be.an('object');",
+                  "  return (row.architecture && row.architecture.output_modalities) || [];",
+                  "}",
+                  "pm.test('/v1/models returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('an alias one serving key maps to a chat model is not marked as a decision model', function () {",
+                  "  pm.expect(modalitiesOf(name + '/harness-judge')).to.not.include('decisions');",
+                  "});",
+                  "pm.test('an alias every serving key maps to a decision model is marked', function () {",
+                  "  pm.expect(modalitiesOf(name + '/harness-sole-judge')).to.include('decisions');",
+                  "});",
+                  "if (name && name.indexOf('setup-failed') === -1) {",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/models?provider={{decisionAliasProvider}}"
+          }
+        }
+      ]
     }
   ]
 }

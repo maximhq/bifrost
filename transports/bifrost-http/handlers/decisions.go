@@ -66,8 +66,12 @@ type decisionRule struct {
 // load, and a custom provider on the OpenAI base serves chat beside decisions, so
 // none of their models is dedicated.
 func decisionRuleFor(config *lib.Config, provider schemas.ModelProvider, model string) decisionRule {
-	listed := model
-	model = keyAliasTarget(config, provider, model)
+	return decisionRuleForTarget(config, provider, model, keyAliasTarget(config, provider, model))
+}
+
+// decisionRuleForTarget is decisionRuleFor with the key alias already resolved:
+// listed is the name a caller sends and model the one the request path checks for it.
+func decisionRuleForTarget(config *lib.Config, provider schemas.ModelProvider, listed, model string) decisionRule {
 	rule := decisionRule{provider: provider, model: model}
 	if custom := customProviderConfig(config, provider); custom != nil {
 		rule.settled = true
@@ -157,13 +161,55 @@ func keyAliasTarget(config *lib.Config, provider schemas.ModelProvider, model st
 	if !ok {
 		return model
 	}
-	if name := owner.Config.ModelName; name != nil && *name != "" {
+	return aliasConfigTarget(&owner.Config, model)
+}
+
+// aliasConfigTarget returns the model an alias points at, its ModelName, then its
+// ModelID, or model itself when there is no alias or it names neither.
+func aliasConfigTarget(alias *schemas.AliasConfig, model string) string {
+	if alias == nil {
+		return model
+	}
+	if name := alias.ModelName; name != nil && *name != "" {
 		return *name
 	}
-	if owner.Config.ModelID != "" {
-		return owner.Config.ModelID
+	if alias.ModelID != "" {
+		return alias.ModelID
 	}
 	return model
+}
+
+// servesOnlyDecisionsOnEveryKey reports whether every request for the listed model
+// lands on a decision-only model. A name that is no key's alias is checked as itself.
+// An alias is checked through each enabled key that may serve it, by that key's own
+// target, since key selection can send the request through any of them and two keys
+// can map the same alias to different models, while the catalog's alias index keeps
+// only one of them. A key that allows the name without aliasing it sends the name
+// as is. When no enabled key may serve the name, the catalog's alias decides.
+func servesOnlyDecisionsOnEveryKey(config *lib.Config, provider schemas.ModelProvider, listed string) bool {
+	catalog := config.ModelCatalog
+	if catalog == nil {
+		return decisionRuleForTarget(config, provider, listed, listed).servesOnlyDecisions()
+	}
+	owner, ok := catalog.ResolveAlias(provider, listed)
+	if !ok {
+		return decisionRuleForTarget(config, provider, listed, listed).servesOnlyDecisions()
+	}
+	checked := false
+	for _, entry := range catalog.KeyConfigEntries(provider) {
+		if !entry.Enabled || !entry.Allowed.IsAllowed(listed) || entry.Blacklisted.IsBlocked(listed) {
+			continue
+		}
+		checked = true
+		target := aliasConfigTarget(entry.Aliases.ResolveConfig(listed), listed)
+		if !decisionRuleForTarget(config, provider, listed, target).servesOnlyDecisions() {
+			return false
+		}
+	}
+	if !checked {
+		return decisionRuleForTarget(config, provider, listed, aliasConfigTarget(&owner.Config, listed)).servesOnlyDecisions()
+	}
+	return true
 }
 
 // tagDecisionModels adds the decisions output modality to each listed model its
@@ -179,7 +225,8 @@ func tagDecisionModels(config *lib.Config, resp *schemas.BifrostListModelsRespon
 }
 
 // tagDecisionModel adds the decisions output modality to a model its provider
-// serves on the decisions endpoint and on nothing else (see decisionRuleFor), so
+// serves on the decisions endpoint and on nothing else, through every key that may
+// serve it (see decisionRuleFor and servesOnlyDecisionsOnEveryKey), so
 // an OpenAI-compatible client can tell decision models from chat models by
 // architecture.output_modalities alone, as it already can for OpenRouter's. A
 // model that also serves chat is left as it is, so a client does not stop offering
@@ -199,7 +246,7 @@ func tagDecisionModel(config *lib.Config, row *schemas.Model) {
 	if !ok || provider == "" || model == "" {
 		return
 	}
-	if !decisionRuleFor(config, schemas.ModelProvider(provider), model).servesOnlyDecisions() {
+	if !servesOnlyDecisionsOnEveryKey(config, schemas.ModelProvider(provider), model) {
 		return
 	}
 	var arch schemas.Architecture

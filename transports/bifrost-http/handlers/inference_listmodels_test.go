@@ -622,6 +622,97 @@ func TestTagDecisionModels(t *testing.T) {
 	require.Same(t, shared, resp.Data[2].Architecture, "an untagged row keeps the architecture it arrived with")
 }
 
+// TestTagDecisionModelsChecksEveryKeysAlias pins that a key alias is tagged by
+// what each key that may serve it sends, not by the one target the catalog's
+// alias index keeps: two keys mapping "judge" to a decision model and to a chat
+// model leave it untagged in either key order, since key selection may route a
+// request through the chat key. An alias every serving key maps to a decision
+// model is tagged, and a key that blacklists the alias does not count.
+func TestTagDecisionModelsChecksEveryKeysAlias(t *testing.T) {
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	decisionKey := schemas.Key{ID: "decision-key", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+		"judge":         {ModelID: "gemini-decision-1"},
+		"shared-judge":  {ModelID: "gemini-decision-1"},
+		"blocked-judge": {ModelID: "gemini-decision-1"},
+	}}
+	chatKey := schemas.Key{ID: "chat-key", Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"blocked-judge"}, Aliases: schemas.KeyAliases{
+		"judge":         {ModelID: "gemini-3-flash"},
+		"shared-judge":  {ModelID: "gemini-decision-2"},
+		"blocked-judge": {ModelID: "gemini-3-flash"},
+	}}
+	for name, keys := range map[string][]schemas.Key{
+		"decision key first": {decisionKey, chatKey},
+		"chat key first":     {chatKey, decisionKey},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Gemini: {}}, nil)
+			catalog := catalogForTest(t, nil)
+			catalog.SetKeyConfigForProvider(schemas.Gemini, keys)
+			config.ModelCatalog = catalog
+			resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+				{ID: "gemini/judge"}, {ID: "gemini/shared-judge"}, {ID: "gemini/blocked-judge"}, {ID: "gemini/gemini-decision-1"},
+			}}
+
+			tagDecisionModels(config, resp)
+
+			want := map[string][]string{
+				"gemini/judge":             nil,
+				"gemini/shared-judge":      {"decisions"},
+				"gemini/blocked-judge":     {"decisions"},
+				"gemini/gemini-decision-1": {"decisions"},
+			}
+			for _, row := range resp.Data {
+				var got []string
+				if row.Architecture != nil {
+					got = row.Architecture.OutputModalities
+				}
+				require.Equal(t, want[row.ID], got, row.ID)
+			}
+		})
+	}
+}
+
+// BenchmarkTagDecisionModels measures the tagging pass GET /v1/models runs after
+// catalog enrichment, over a listing of ordinary chat rows (rejected by name
+// without a datasheet lookup), decision candidates (one capability lookup each),
+// and key aliases (resolved through each serving key).
+func BenchmarkTagDecisionModels(b *testing.B) {
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	b.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	config := libtest.Config(b, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Gemini: {}, schemas.OpenAI: {}, schemas.Typesafe: {}}, nil)
+	catalog := catalogForTest(b, nil)
+	catalog.SetKeyConfigForProvider(schemas.Gemini, []schemas.Key{
+		{ID: "key-a", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"judge": {ModelID: "gemini-decision-1"}}},
+		{ID: "key-b", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"judge": {ModelID: "gemini-decision-1"}}},
+	})
+	config.ModelCatalog = catalog
+
+	for _, bench := range []struct {
+		name string
+		ids  []string
+	}{
+		{name: "chat rows", ids: []string{"openai/gpt-4o", "openai/gpt-4o-mini", "gemini/gemini-3-flash", "gemini/gemini-3-pro"}},
+		{name: "decision candidates", ids: []string{"typesafe/jev-1.13", "gemini/gemini-decision-1", "openai/gpt-6-luna", "gemini/judge"}},
+	} {
+		rows := make([]schemas.Model, 0, 100)
+		for len(rows) < 100 {
+			for _, id := range bench.ids {
+				rows = append(rows, schemas.Model{ID: id})
+			}
+		}
+		resp := &schemas.BifrostListModelsResponse{Data: make([]schemas.Model, len(rows))}
+		b.Run(bench.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				copy(resp.Data, rows)
+				tagDecisionModels(config, resp)
+			}
+		})
+	}
+}
+
 // TestModelRetrieveTagsDecisionModels pins that GET /v1/models/{model} marks a
 // decision-only model as the listing does, and leaves a chat model unmarked.
 func TestModelRetrieveTagsDecisionModels(t *testing.T) {
