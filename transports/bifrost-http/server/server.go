@@ -952,8 +952,9 @@ func (s *BifrostHTTPServer) ReloadVirtualMCP(ctx context.Context, id uint) (*tab
 	return def, nil
 }
 
-// RemoveVirtualMCP drops a deleted Virtual MCP definition from memory. Keys that were assigned it
-// keep its ID until they are next refreshed; resolution skips an ID whose definition is gone.
+// RemoveVirtualMCP drops a deleted Virtual MCP definition from memory. The delete handler reloads
+// the keys that were assigned it, so their records drop its ID; until then resolution skips an ID
+// whose definition is gone.
 func (s *BifrostHTTPServer) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return s.removeRecord(ctx, livestore.KindVirtualMCP, registry.VirtualMCPKey(id))
 }
