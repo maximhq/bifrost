@@ -3272,6 +3272,15 @@ type DashboardResult struct {
 	MCP               DashboardMCP                       `json:"mcp"`
 }
 
+// NodeUsageWindows holds actual-reset cutoffs in Unix nanoseconds, independently
+// for budgets, tokens and requests. Missing or zero values mean no known reset.
+// Callers own the maps and must not mutate them during a read.
+type NodeUsageWindows struct {
+	Budgets  map[string]int64
+	Tokens   map[string]int64
+	Requests map[string]int64
+}
+
 // NodeUsageCursor identifies the last log row included in a node usage scan.
 // The initial scan uses Timestamp + LogID because each ghost has a timestamp
 // lower bound. Once rows written with IncNumber are seen, subsequent scans use

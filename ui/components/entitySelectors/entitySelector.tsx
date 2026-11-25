@@ -90,6 +90,8 @@ export interface EntitySelectorCommonProps {
 	disabled?: boolean;
 	placeholder?: string;
 	className?: string;
+	/** Id for the default single/add trigger, so a `<label htmlFor>` names it. A caller-supplied `trigger` keeps its own. */
+	id?: string;
 	/**
 	 * Guarantees an already-selected entity renders a real label even when it
 	 * falls outside the fetched search results — callers pass the edited row's
@@ -225,6 +227,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 		searchPlaceholder,
 		LabelResolver,
 		disabled = false,
+		id,
 		placeholder,
 		className,
 		fallbackOption,
@@ -445,6 +448,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 				type="button"
 				variant="outline"
 				role="combobox"
+				id={id}
 				disabled={disabled}
 				className={cn(
 					"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",

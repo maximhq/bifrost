@@ -9,7 +9,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,7 +86,10 @@ func TestLiveSessionLogsAsOneRowWithItsDelegations(t *testing.T) {
 	require.NoError(t, err)
 
 	// The first voice unit opens the session; the row is registered under the session id.
-	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-1", "unit-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+	startedAt := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Second)
+	openCtx := liveUnitCtx("bfsess-1", "unit-1", "voice", true, false)
+	openCtx.SetValue(schemas.BifrostContextKeyRequestStartTime, startedAt)
+	_, _, err = plugin.PreLLMHook(openCtx, liveStartRequest("gpt-live-1"))
 	require.NoError(t, err)
 	// Later units register nothing of their own.
 	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-1", "unit-2", "backend", false, false), liveStartRequest("gpt-5.6-luna"))
@@ -138,6 +140,7 @@ func TestLiveSessionLogsAsOneRowWithItsDelegations(t *testing.T) {
 
 	root, err := store.FindByID(context.Background(), "bfsess-1")
 	require.NoError(t, err)
+	assert.True(t, root.Timestamp.Equal(startedAt))
 	assert.Equal(t, liveSessionObject, root.Object)
 	assert.Equal(t, logStatusSuccess, root.Status)
 	assert.Equal(t, "gpt-live-1", root.Model)
@@ -411,10 +414,10 @@ func TestLiveSessionAbortedRowKeepsItsSessionFacts(t *testing.T) {
 func TestLiveSessionSetupFailureKeepsBilledUsage(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pricing.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"gpt-live-1":{"provider":"openai","mode":"live","input_cost_per_second":0.001}}`), 0o600))
-	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
+	ds := datasheetForTest(t, nil, testLogger{}, datasheet.Config{URL: "file://" + path})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, modelcatalog.NewTestCatalogWithDatasheet(ds), nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, catalogWithDatasheetForTest(t, ds), nil)
 	require.NoError(t, err)
 
 	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-billed-abort", "voice-1", "voice", true, false), liveStartRequest("gpt-live-1"))

@@ -66,13 +66,13 @@ func withManagement(management ManagementTools) Option {
 
 // managementService is a configured Warp with creates allowed: the fake
 // catalog's one write is a create, and these tests are about how writes behave.
-func managementService(model *scriptedModel, store *memoryConversations, management ManagementTools) *Service {
-	return managementServiceAllowing(model, store, management, schemas.WarpManagementCreate)
+func managementService(t testing.TB, model *scriptedModel, store *memoryConversations, management ManagementTools) *Service {
+	return managementServiceAllowing(t, model, store, management, schemas.WarpManagementCreate)
 }
 
 // managementServiceAllowing is managementService with these kinds of change
 // allowed in Warp's settings; none is reads only, the default.
-func managementServiceAllowing(model *scriptedModel, store *memoryConversations, management ManagementTools, writes ...string) *Service {
+func managementServiceAllowing(t testing.TB, model *scriptedModel, store *memoryConversations, management ManagementTools, writes ...string) *Service {
 	row := validWarpConfigRow()
 	if len(writes) > 0 {
 		encoded, err := sonic.MarshalString(writes)
@@ -91,7 +91,7 @@ func managementServiceAllowing(model *scriptedModel, store *memoryConversations,
 	if store != nil {
 		opts = append(opts, WithConversationStore(store))
 	}
-	service := NewService(nil, opts...)
+	service := serviceForTest(t, nil, opts...)
 	service.SetManagementTools(management)
 	return service
 }
@@ -126,7 +126,7 @@ func TestWarpManagementWriteRunsOnlyAfterConfirm(t *testing.T) {
 		TextTurn("Created virtual key team-a."),
 		TextTurn("Nothing was run."),
 	}}
-	service := managementService(model, store, management)
+	service := managementService(t, model, store, management)
 
 	first := runManagementTurn(t, service, "u1", "", "create a virtual key called team-a")
 	require.Len(t, management.called(), 1, "only the read runs before the person confirms")
@@ -181,7 +181,7 @@ func TestWarpManagementFailedConfirmedWriteIsAnswered(t *testing.T) {
 		TextTurn("The virtual key was not created: one named team-a already exists."),
 		TextTurn("redirected reply"),
 	}}
-	service := managementService(model, store, management)
+	service := managementService(t, model, store, management)
 	first := runManagementTurn(t, service, "u1", "", "create a virtual key called team-a")
 	require.NotNil(t, first.Question)
 
@@ -201,7 +201,7 @@ func TestWarpManagementWriteWithOversizedArgumentsIsRefused(t *testing.T) {
 		ToolTurn("c1", "createVirtualKey", long),
 		TextTurn("That name is too long to confirm."),
 	}}
-	service := managementService(model, store, management)
+	service := managementService(t, model, store, management)
 	response := runManagementTurn(t, service, "u1", "", "create a virtual key with a very long name")
 	require.Nil(t, response.Question, "no card is offered for arguments it cannot show whole")
 	require.Empty(t, management.called())
@@ -224,18 +224,18 @@ func TestWarpManagementConfirmationIsClaimedDurably(t *testing.T) {
 		TextTurn("Created virtual key team-a."),
 		TextTurn("Nothing was run."),
 	}}
-	first := runManagementTurn(t, managementService(model, store, management), "u1", "", "create a virtual key called team-a")
+	first := runManagementTurn(t, managementService(t, model, store, management), "u1", "", "create a virtual key called team-a")
 	require.NotNil(t, first.Question)
 	confirm := first.Question.Options[0].Hint
 
 	// The confirmed turn is not filed, so the card stays the newest message.
 	store.failAppend = errors.New("store unavailable")
-	runManagementTurn(t, managementService(model, store, management), "u1", first.ConversationID, confirm)
+	runManagementTurn(t, managementService(t, model, store, management), "u1", first.ConversationID, confirm)
 	require.Len(t, management.called(), 1)
 	store.failAppend = nil
 
 	// A fresh service has no memory of the claim; only the store does.
-	runManagementTurn(t, managementService(model, store, management), "u1", first.ConversationID, confirm)
+	runManagementTurn(t, managementService(t, model, store, management), "u1", first.ConversationID, confirm)
 	require.Len(t, management.called(), 1, "the write ran once")
 	require.Contains(t, inputText(t, model.lastInput), "nothing was run")
 }
@@ -262,7 +262,7 @@ func TestWarpManagementConfirmationIsBoundToOwnerAndAge(t *testing.T) {
 				ToolTurn("c1", "createVirtualKey", `{"name":"team-a"}`),
 				TextTurn("Nothing was run."),
 			}}
-			service := managementService(model, store, management)
+			service := managementService(t, model, store, management)
 			first := runManagementTurn(t, service, "u1", "", "create a virtual key called team-a")
 			require.NotNil(t, first.Question)
 			owner := tamper(store, first.ConversationID)
@@ -286,7 +286,7 @@ func TestWarpManagementWriteIsRefusedWithoutHistory(t *testing.T) {
 		ToolTurn("c1", "createVirtualKey", `{"name":"team-a"}`),
 		TextTurn("I can't do that from Warp here."),
 	}}
-	service := managementService(model, nil, management)
+	service := managementService(t, model, nil, management)
 	response := runManagementTurn(t, service, "u1", "", "create a virtual key called team-a")
 	require.Nil(t, response.Question)
 	require.Empty(t, management.called())
@@ -299,7 +299,7 @@ func TestWarpManagementWriteIsRefusedWithoutHistory(t *testing.T) {
 func TestWarpManagementToolsAndPrompt(t *testing.T) {
 	store := newMemoryConversations()
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("Hello.")}}
-	service := managementService(model, store, newFakeManagement())
+	service := managementService(t, model, store, newFakeManagement())
 	runManagementTurn(t, service, "u1", "", "hi")
 
 	declared := map[string]string{}
@@ -344,7 +344,7 @@ func TestWarpTurnRefusedWithoutBifrostMCP(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("There are two routing rules.")}}
-			service := managementService(model, nil, management)
+			service := managementService(t, model, nil, management)
 			_, err := service.NewTurn(context.Background(), &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "what routing rules exist?"}}}, 64)
 			require.ErrorIs(t, err, ErrNoBifrostMCP)
 			require.Zero(t, model.calls, "the model must not run")
@@ -354,7 +354,7 @@ func TestWarpTurnRefusedWithoutBifrostMCP(t *testing.T) {
 			require.False(t, view.BifrostMCPAvailable)
 		})
 	}
-	view, err := managementService(&scriptedModel{}, nil, newFakeManagement()).ConfigView(context.Background())
+	view, err := managementService(t, &scriptedModel{}, nil, newFakeManagement()).ConfigView(context.Background())
 	require.NoError(t, err)
 	require.True(t, view.BifrostMCPAvailable)
 }
@@ -371,7 +371,7 @@ func TestWarpDecoupledFromBifrostMCPByDefault(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("Hello.")}}
-			service := NewService(nil,
+			service := serviceForTest(t, nil,
 				WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 				WithVectorStore(newFakeWarpVectorStore()),
 				WithLogReader(&fakeLogReader{}),
@@ -519,7 +519,7 @@ func TestWarpManagementWritesFollowWarpSettings(t *testing.T) {
 	t.Run("reads only by default", func(t *testing.T) {
 		management := newFakeManagementAllKinds()
 		model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{ToolTurn("w1", "createVirtualKey", `{"name":"a"}`), TextTurn("I can't.")}}
-		service := managementServiceAllowing(model, newMemoryConversations(), management)
+		service := managementServiceAllowing(t, model, newMemoryConversations(), management)
 		response := runManagementTurn(t, service, "u1", "", "create a virtual key called a")
 
 		require.Nil(t, response.Question, "a write the settings do not allow makes no card")
@@ -535,7 +535,7 @@ func TestWarpManagementWritesFollowWarpSettings(t *testing.T) {
 
 	t.Run("updates and deletes allowed", func(t *testing.T) {
 		model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("ok")}}
-		service := managementServiceAllowing(model, newMemoryConversations(), newFakeManagementAllKinds(), schemas.WarpManagementUpdate, schemas.WarpManagementDelete)
+		service := managementServiceAllowing(t, model, newMemoryConversations(), newFakeManagementAllKinds(), schemas.WarpManagementUpdate, schemas.WarpManagementDelete)
 		runManagementTurn(t, service, "u1", "", "hi")
 
 		names := declared(model)
@@ -612,7 +612,7 @@ func (l *leasingManagement) Close() error { l.closed++; return nil }
 func TestWarpManagementTurnLeasesItsCatalog(t *testing.T) {
 	management := &leasingManagement{fakeManagement: newFakeManagement()}
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("No keys.")}}
-	service := managementService(model, newMemoryConversations(), management)
+	service := managementService(t, model, newMemoryConversations(), management)
 
 	runManagementTurn(t, service, "u1", "", "list my virtual keys")
 	require.Equal(t, 1, management.leases)

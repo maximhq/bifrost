@@ -9,8 +9,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
-	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
-	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
 // benchCatalog builds a catalog at roughly production scale: nProviders each
@@ -48,20 +46,20 @@ func benchCatalog(tb testing.TB, nProviders, nModels int) (*ModelCatalog, []stri
 	if err := os.WriteFile(path, []byte(sb.String()), 0o600); err != nil {
 		tb.Fatalf("write pricing: %v", err)
 	}
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + path})
+	ds := datasheetForTest(tb, nil, nil, datasheet.Config{URL: "file://" + path})
 	if err := ds.LoadFromURLIntoMemory(tb.Context()); err != nil {
 		tb.Fatalf("load pricing: %v", err)
 	}
 
-	kc := keyconfig.New(nil)
+	liveModels, kc := stateStoresForTest(tb)
 	kc.Replace(kcSnapshot)
 	mc := &ModelCatalog{
 		datasheet: ds,
-		live:      live.New(nil),
+		live:      liveModels,
 		keyconf:   kc,
 		done:      make(chan struct{}),
 	}
-	mc.initCaches()
+	withTestCaches(tb, mc)
 	return mc, models
 }
 
@@ -91,7 +89,7 @@ func BenchmarkProvidersForModel_Uncached(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// computeProvidersForModel -> GetModelsForProvider, so flush modelsForProvider
 		// each iteration or it stays warm and this stops measuring the pre-cache path.
-		mc.modelsForProvider.Flush()
+		clearTable(mc.modelsForProvider)
 		_ = mc.computeProvidersForModel(q[i%len(q)])
 	}
 }
@@ -108,7 +106,7 @@ func BenchmarkProvidersForModel_UncachedScale(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				// flush modelsForProvider each iteration so the compute path stays cold
 				// (computeProvidersForModel -> GetModelsForProvider is otherwise memoised).
-				mc.modelsForProvider.Flush()
+				clearTable(mc.modelsForProvider)
 				_ = mc.computeProvidersForModel(q[i%len(q)])
 			}
 		})
@@ -142,9 +140,9 @@ func BenchmarkIsModelAllowed_Uncached(b *testing.B) {
 		// bust both memos each iteration to simulate the pre-cache cost:
 		// IsModelAllowedForProvider -> computeProvidersForModel -> GetModelsForProvider,
 		// so modelsForProvider must be flushed too or it stays warm after iteration 1.
-		mc.providersForModel.Flush()
-		mc.modelsForProvider.Flush()
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), model, nil, unrestricted)
+		clearTable(mc.providersForModel)
+		clearTable(mc.modelsForProvider)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), model, nil, nil, unrestricted)
 	}
 }
 
@@ -171,7 +169,7 @@ func BenchmarkIsModelAllowed_ExplicitList(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, explicit)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, nil, explicit)
 	}
 }
 
@@ -184,7 +182,7 @@ func BenchmarkIsModelAllowed_ExplicitList_Deny(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, explicit)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, nil, explicit)
 	}
 }
 
@@ -201,7 +199,7 @@ func BenchmarkIsModelAllowed_ExplicitList_Prefixed(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, prefixed)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), q[i%len(q)], nil, nil, prefixed)
 	}
 }
 
@@ -210,12 +208,12 @@ func BenchmarkIsModelAllowed_Cached(b *testing.B) {
 	q := benchQueryModels(all, 8)
 	unrestricted := schemas.WhiteList{"*"}
 	for _, m := range q {
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), m, nil, unrestricted)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), m, nil, nil, unrestricted)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		model := q[i%len(q)]
-		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), model, nil, unrestricted)
+		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), model, nil, nil, unrestricted)
 	}
 }

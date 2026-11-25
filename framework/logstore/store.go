@@ -173,10 +173,10 @@ type LogStore interface {
 	GetDimensionTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error)
 	// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension.
 	GetDimensionLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error)
-	// GetNodeUsageAfter returns cumulative usage for rows after the provided stable
+	// GetNodeUsageAfter filters actual-reset windows and returns cumulative usage after the stable
 	// cursor. When the cursor has both timestamp and log ID, rows with the same
 	// timestamp but greater log ID are included to avoid skipping same-timestamp rows.
-	GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error)
+	GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor, windows NodeUsageWindows) (*NodeUsageAggregate, error)
 	Update(ctx context.Context, id string, entry any) error
 	// BatchUpdate applies the non-zero fields of each entry onto the existing row
 	// with that ID; rows that do not exist are skipped, never inserted.

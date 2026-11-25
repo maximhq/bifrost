@@ -219,6 +219,27 @@ Client HTTP Request
 - **Object pooling everywhere**: `sync.Pool` wrappers reduce GC pressure. Pools exist for: channel messages, response channels, error channels, stream channels, plugin pipelines, MCP requests, HTTP request/response objects, scanner buffers.
 - **Plugin pipeline symmetry**: Pre-hooks execute in registration order, post-hooks in **reverse** order (LIFO). For every pre-hook executed, the corresponding post-hook is guaranteed to run.
 - **Streaming**: SSE chunks flow through `chan chan *schemas.BifrostStreamChunk`. Accumulated into full response for post-hooks via `framework/streaming/accumulator.go`.
+- **Data lives in the live store**: every piece of data a process keeps (configuration, runtime state, caches) goes in `framework/livestore`. Components keep only handles (connections, goroutines, locks, compiled programs) and per-request buffers. Pick the structure by what a miss means:
+  - **Collection**: every row of one config-database kind, loaded at boot and refreshed after every write. A miss means the row does not exist.
+  - **Cache**: only the values someone asked for, fetched by a loader on a miss from wherever they live (the config store included) and dropped by expiry or eviction. A miss means "go fetch".
+  - **Table**: what the process itself writes, with no loader. A miss means nothing was written yet. State tables keyed by an entity ID and tables with a generation are tables.
+- **Adding a config.json section**: Settings (client, server, websocket, framework, auth, proxy and the like) stay fields on `lib.Config`; everything that becomes live-store data waits in `bootConfig` (`transports/bifrost-http/lib/livestore.go`) until `loadLiveStore`, the one place collections are filled, loads it; a table its owning component fills is the exception (step 5). To add a content section:
+  1. Add the section to `transports/config.schema.json` (the source of truth, rule 16).
+  2. Add the field to `ConfigData`.
+  3. Add a field for it to `bootConfig`, saying what fills it and whether a gateway without a config store loads it.
+  4. Write its loader in three steps: parse and validate the section into that `bootConfig` field; with a config store, sync it into the database; for a collection, never write the live store.
+  5. Give it a collection and the database loader `LoadAll` uses, or, for content its owning component applies itself, a table that component fills during its own setup, in both modes. Feature flags and datasheet overrides work this way: their owners fill their tables, the feature flag store from `initFeatureFlags` and the model catalog from `loadDatasheetOverridesFromFile`.
+  6. For a collection, on a gateway without a config store, add its records to `bootConfig.records`, or say there that it is skipped and keep the loader's early return and warning.
+  7. Extend `TestConfigJSONContentPerMode` (`lib/configcontent_test.go`), which pins what each mode loads for every kind `bootConfig` holds.
+
+  `TestRepositoryKeepsDataInTheLiveStore` (`tests/rawmaps`, a module of its own; run it with `cd tests/rawmaps && GOWORK=off go test -count=1 ./...`; without `-count=1` Go reports a cached pass, since it does not notice changed files outside the test module) fails on a new `sync.Map` field or package-level `sync.Map`, a map on a struct with a mutex, maps behind an atomic pointer, or a package-level map a function writes; when one genuinely cannot go in the store, add it to `tests/rawmaps/allowlist.txt` with its group and reason.
+
+- **Writes reach memory the same way for every entity**: after a database write, the live store is updated by one of three rules, whatever the entity:
+  1. **Delete**: read the records that refer to the entity (its holders) and delete it in one transaction; a failed read refuses the delete and changes nothing. Then remove the entity's record with a `Remove` ref, which reads nothing and cannot fail (its children cascade in the same publish), evict the caches bound to it, and re-read the holders with retries. If that re-read still fails, answer 500, saying the delete was saved but not loaded.
+  2. **Create or update**: re-read the written rows with retries, bounded by the request's deadline or by a small fixed budget when it has none. If the read still fails, keep the previous record and answer 500, saying the write was saved but not loaded.
+  3. **Never write configuration to the database from live-store contents**: a partial update merges onto a database read, not onto the live record. State the process owns (usage, last reset, reset epochs, discovery status) is exempt.
+
+  A change applied on behalf of another process follows the same rules with `lib.DBLookupRetry()`. Every write path that re-reads (a collection's rows, or a deleted entity's holders) needs a test where that re-read fails, showing which of these outcomes it gives.
 
 ### Every change states its cost on the request flow
 
@@ -406,6 +427,14 @@ type CompletionHandler struct {
 ```
 
 **Route registration:** Each handler implements `RegisterRoutes(router, middlewares...)` — routes get middleware chains applied per-route via `lib.ChainMiddlewares()`.
+
+**Audit changes:** A management handler that writes config records the change with `lib.RecordAuditChange` right after the write commits, before any step that can still fail (an in-memory reload, a read-back, a client rebuild, a cluster broadcast). The enterprise audit layer writes a recorded change even when the request then fails, so recording later loses the event for a change that is already saved. Never record before the write: a failed write must leave no event.
+
+- Snapshot the row as written. When the response comes from a reload or read-back, call `rec.SetAfter(...)` with it once that step succeeds, so a successful request records what it serves.
+- On a branch whose rollback undid the write, call `rec.Discard()`, also when the rollback committed and then returned `lib.SavedNotAppliedError`. Keep the event only when the rollback write itself failed, because the change is still stored.
+- A loop of writes records one change per write as it commits.
+- Snapshots never carry secrets: pass redacted values (`Redacted()`, `configstore.RedactedKey`).
+- When a lower layer commits and then fails, return `lib.SavedNotAppliedError` so the handler can tell a saved change from a failed write (`lib.IsSavedNotApplied`).
 
 **SDK integration layers** (`transports/bifrost-http/integrations/`) provide request/response converters between provider-native SDK formats and Bifrost's internal format. This enables drop-in replacement of OpenAI SDK, Anthropic SDK, AWS Bedrock SDK, Google GenAI SDK, LangChain, and LiteLLM.
 

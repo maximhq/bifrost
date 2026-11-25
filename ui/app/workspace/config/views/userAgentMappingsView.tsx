@@ -140,7 +140,7 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 			</div>
 
 			<Sheet open={isSheetOpen} onOpenChange={handleSheetOpenChange}>
-				<SheetContent className="p-0">
+				<SheetContent resizeKey="user-agent-mappings" className="p-0">
 					<SheetHeader className="flex flex-col items-start px-4 pt-6 md:px-6">
 						<SheetTitle>{isEditing ? t("userAgent.sheetEdit") : t("userAgent.sheetAdd")}</SheetTitle>
 						<SheetDescription>{t("userAgent.sheetDescription")}</SheetDescription>

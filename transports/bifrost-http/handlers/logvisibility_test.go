@@ -75,10 +75,10 @@ func TestHiddenRequestTypesRoutes(t *testing.T) {
 }
 
 func TestHiddenRequestTypesFilterCache(t *testing.T) {
-	h := &LoggingHandler{
+	h := withFilterDataCaches(t, &LoggingHandler{
 		logManager: &visibilityLogManager{t: t}, redactedKeysManager: noRedactedKeys{},
 		config: &lib.Config{ClientConfig: &configstore.ClientConfig{}, LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypeSQLite}},
-	}
+	})
 	r := router.New()
 	h.RegisterRoutes(r)
 	// Populate the unrestricted cache first, then ensure hiding a type does not
