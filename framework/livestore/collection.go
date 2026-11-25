@@ -985,6 +985,9 @@ func (sm *shardedMap[V]) each(fn func(string, V) bool) {
 type readGroup struct {
 	mu    sync.Mutex
 	state map[string]*readState
+	// shareInFlight lets a caller that arrives while a run is in progress share that run's result,
+	// as one request in flight to an upstream does, instead of waiting for a run that starts after it.
+	shareInFlight bool
 	// runLockedHook, when set, runs in Do right after a caller takes the key's run lock. Tests use
 	// it to hold a caller there; it is nil in production.
 	runLockedHook func()
@@ -994,11 +997,14 @@ type readGroup struct {
 type readState struct {
 	// requested is the sequence number handed to the latest caller.
 	requested atomic.Uint64
-	// runMu serialises runs for the key and guards covered, lastErr and lastRunCanceled.
-	runMu sync.Mutex
+	// run holds one token while a caller checks or runs for the key: it serialises runs and guards
+	// covered, lastVal, lastErr and lastRunCanceled. A channel rather than a mutex, so a caller that
+	// may give up waits in a select on its context.
+	run chan struct{}
 	// covered is the highest request sequence a finished run started after.
 	covered uint64
-	// lastErr is the error of the run that set covered.
+	// lastVal and lastErr are the result of the run that set covered.
+	lastVal any
 	lastErr error
 	// lastRunCanceled is set when that run failed with a cancellation or deadline error, which
 	// comes from the runner's own context and says nothing about the store, so covered callers
@@ -1011,28 +1017,57 @@ type readState struct {
 // Do runs fn for key, or waits for and shares a run that started after this call. It returns the
 // error of the run that served this caller. ctx is the caller's context; fn uses it for its work.
 func (g *readGroup) Do(ctx context.Context, key string, fn func() error) error {
+	_, err := g.do(ctx, key, false, func() (any, error) { return nil, fn() })
+	return err
+}
+
+// DoValue is Do for a run that produces a value: every caller the run serves receives it. A
+// caller that finds another caller's run in progress and whose ctx ends while it waits returns
+// ctx.Err() without waiting further; a caller that finds the key idle runs whatever its ctx says.
+func (g *readGroup) DoValue(ctx context.Context, key string, fn func() (any, error)) (any, error) {
+	return g.do(ctx, key, true, fn)
+}
+
+// do is Do and DoValue: giveUp lets a waiting caller return when its ctx ends.
+func (g *readGroup) do(ctx context.Context, key string, giveUp bool, fn func() (any, error)) (any, error) {
 	st := g.acquire(key)
 	defer g.release(key, st)
 
 	seq := st.requested.Add(1)
-	st.runMu.Lock()
-	defer st.runMu.Unlock()
+	select {
+	case st.run <- struct{}{}:
+	default:
+		if !giveUp {
+			st.run <- struct{}{}
+			break
+		}
+		select {
+		case st.run <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	defer func() { <-st.run }()
 	if g.runLockedHook != nil {
 		g.runLockedHook()
 	}
 	if st.covered >= seq && (!st.lastRunCanceled || ctx.Err() != nil) {
-		return st.lastErr
+		return st.lastVal, st.lastErr
 	}
 	// Every request numbered up to start was registered before fn begins, so this run serves
 	// all of them.
 	start := st.requested.Load()
-	err := fn()
+	val, err := fn()
+	if g.shareInFlight {
+		// Every caller registered while fn ran shares its result too.
+		start = st.requested.Load()
+	}
 	st.covered = start
-	st.lastErr = err
+	st.lastVal, st.lastErr = val, err
 	// A deadline the run set for itself, while the runner's context is live, is an answer to share.
 	// The error is checked first, so a fill that succeeded never reads the runner's context.
 	st.lastRunCanceled = (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && ctx.Err() != nil
-	return err
+	return val, err
 }
 
 // acquire returns key's state, creating it when absent, and takes a reference to it.
@@ -1044,7 +1079,7 @@ func (g *readGroup) acquire(key string) *readState {
 	}
 	st := g.state[key]
 	if st == nil {
-		st = &readState{}
+		st = &readState{run: make(chan struct{}, 1)}
 		g.state[key] = st
 	}
 	st.refs++

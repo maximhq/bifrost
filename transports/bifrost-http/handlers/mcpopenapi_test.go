@@ -17,7 +17,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
-	"github.com/maximhq/bifrost/framework/mcp_headers"
 	"github.com/maximhq/bifrost/framework/openapimcp"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
@@ -752,7 +751,7 @@ func createPerUserHeadersOpenAPIClient(t *testing.T, h *MCPHandler, mgr *openAPI
 // the handshake for want of a connection URL.
 func TestFlowSubmit_OpenAPIPerUserHeadersSavesWithoutMCPHandshake(t *testing.T) {
 	h, mgr := newOpenAPITestHandler(t)
-	h.store.MCPHeadersProvider = mcp_headers.NewProvider(h.store.ConfigStore, &mockLogger{})
+	h.store.MCPHeadersProvider = newTestHeadersProvider(t, h.store.ConfigStore, &mockLogger{})
 	client := createPerUserHeadersOpenAPIClient(t, h, mgr)
 
 	now := time.Now()
@@ -775,7 +774,7 @@ func TestFlowSubmit_OpenAPIPerUserHeadersSavesWithoutMCPHandshake(t *testing.T) 
 // saves no credential, so the user restarts from the API error link.
 func TestFlowSubmit_ExpiredFlowIsGone(t *testing.T) {
 	h, mgr := newOpenAPITestHandler(t)
-	h.store.MCPHeadersProvider = mcp_headers.NewProvider(h.store.ConfigStore, &mockLogger{})
+	h.store.MCPHeadersProvider = newTestHeadersProvider(t, h.store.ConfigStore, &mockLogger{})
 	client := createPerUserHeadersOpenAPIClient(t, h, mgr)
 
 	expired := time.Now().Add(-time.Minute)

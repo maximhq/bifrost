@@ -15,6 +15,8 @@
 //   - Collection: every row of one config-database kind, loaded at boot and refreshed after every
 //     write. A miss means the row does not exist; Load is only the safety net for a row written to
 //     the database that no refresh has brought in yet.
+//   - Cache: only the values someone asked for, fetched by a loader on a miss from wherever they
+//     live (the config store included) and dropped by expiry or eviction. A miss means "go fetch".
 //   - Table: what the process itself writes, with no loader. A miss means nothing was written yet.
 //     State tables keyed by a record and tables with a generation are tables.
 package livestore

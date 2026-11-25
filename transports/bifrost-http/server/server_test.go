@@ -65,6 +65,20 @@ import (
 	"gorm.io/gorm"
 )
 
+// newTestProviderLiveStore returns a new, empty live store closed when the test ends.
+var newTestProviderLiveStore = livestoretest.New
+
+// newTestPerUserDiscovery returns a per-user discovery store over store with its cache in a live
+// store of its own.
+func newTestPerUserDiscovery(t testing.TB, store configstore.ConfigStore, logger schemas.Logger) *mcpdiscovery.PerUserStore {
+	t.Helper()
+	s, err := mcpdiscovery.NewPerUserStore(store, newTestProviderLiveStore(t), logger)
+	if err != nil {
+		t.Fatalf("per-user discovery store: %v", err)
+	}
+	return s
+}
+
 func TestAgentRegistrationCallbacksRejectUninitializedGateway(t *testing.T) {
 	t.Parallel()
 
@@ -388,7 +402,7 @@ func TestEvictMCPPerUserDiscoveryCache_ResyncsTheMCPGateway(t *testing.T) {
 		ClientConfig: &configstore.ClientConfig{},
 		MCPConfig:    &schemas.MCPConfig{},
 	}, &schemas.MCPClientConfig{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)})
-	config.MCPPerUserDiscoveryStore = mcpdiscovery.NewPerUserStore(store, noopTestLogger{})
+	config.MCPPerUserDiscoveryStore = newTestPerUserDiscovery(t, store, noopTestLogger{})
 	mcpHandler, err := handlers.NewMCPServerHandler(ctx, config, reloadVirtualKeyToolManager{}, nil, nil)
 	require.NoError(t, err)
 	server := &BifrostHTTPServer{Config: config, MCPServerHandler: mcpHandler}

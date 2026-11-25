@@ -634,11 +634,13 @@ func newDiscoveryRestoreConfig(t *testing.T) (*Config, *bifrost.Bifrost) {
 	c := providerStore(t, nil)
 	shared, err := mcpdiscovery.NewSharedStore(c.ConfigStore, c.LiveStore, logger)
 	require.NoError(t, err)
+	perUser, err := mcpdiscovery.NewPerUserStore(c.ConfigStore, c.LiveStore, logger)
+	require.NoError(t, err)
 	c.MCPSharedDiscoveryStore = shared
 	client := newNoopProviderClient(t, c)
 	client.SetMCPManager(coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{
 		SharedDiscoveryStore:  shared,
-		PerUserDiscoveryStore: mcpdiscovery.NewPerUserStore(c.ConfigStore, logger),
+		PerUserDiscoveryStore: perUser,
 	}, NewBaseAccount(c), nil, logger, nil))
 	c.SetBifrostClient(client)
 	return c, client
