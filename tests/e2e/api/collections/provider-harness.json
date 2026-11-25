@@ -352257,6 +352257,330 @@
           }
         }
       ]
+    },
+    {
+      "name": "392. Bifrost returns its computed cost to the caller (send back cost)",
+      "description": "With send back cost on (client.send_back_cost, or the per-request x-bf-send-back-cost header these cases send, so the shared profile is unchanged), Bifrost returns the cost it computed for a request, priced from its model catalog after every plugin ran: extra_fields.cost on native /v1 bodies, errors and the final stream chunk, and the x-bifrost-cost response header (USD) on every route. Provider-reported usage.cost is untouched. The cases pin: /v1/chat/completions and /v1/responses carry the breakdown in the body and the same total in the header; a stream carries it on its final chunk only; /anthropic/v1/messages (an Anthropic-shaped body with no extra_fields) and /openai/v1/chat/completions carry the header and keep their wire shapes; and a request without the header gets neither. Not live-testable here: x-bf-send-back-cost: false overriding a global true (the shared profile leaves the global off; covered by Go unit tests).",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions returns extra_fields.cost and x-bifrost-cost - send back cost",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function costHeader() {",
+                  "  var value = pm.response.headers.get('x-bifrost-cost');",
+                  "  pm.expect(value, 'x-bifrost-cost missing although x-bf-send-back-cost: true was sent: ' + pm.response.text()).to.be.a('string');",
+                  "  var total = parseFloat(value);",
+                  "  pm.expect(total, 'x-bifrost-cost is not a positive USD amount: ' + value).to.be.above(0);",
+                  "  return total;",
+                  "}",
+                  "pm.test('the body and the header carry the same computed cost', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  var cost = (j.extra_fields || {}).cost;",
+                  "  pm.expect(cost, 'extra_fields.cost missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(cost.total_cost, 'extra_fields.cost.total_cost must be positive: ' + JSON.stringify(cost)).to.be.above(0);",
+                  "  pm.expect(Math.abs(costHeader() - cost.total_cost), 'header and body totals differ: ' + JSON.stringify(cost)).to.be.below(1e-9);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":8}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions streaming carries the cost on the final chunk only - send back cost",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('only the last data frame carries extra_fields.cost', function () {",
+                  "  pm.expect(pm.response.code, 'stream failed: ' + pm.response.text()).to.equal(200);",
+                  "  var frames = [];",
+                  "  (pm.response.text() || '').split('\\n').forEach(function (line) {",
+                  "    var t = line.replace(/\\r$/, '');",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    var payload = t.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    try { frames.push(JSON.parse(payload)); } catch (e) {}",
+                  "  });",
+                  "  pm.expect(frames.length, 'expected several SSE frames: ' + pm.response.text()).to.be.above(1);",
+                  "  var priced = [];",
+                  "  frames.forEach(function (frame, i) { if ((frame.extra_fields || {}).cost) { priced.push(i); } });",
+                  "  pm.expect(priced, 'expected exactly one priced frame, the last: ' + JSON.stringify(priced)).to.eql([frames.length - 1]);",
+                  "  pm.expect(frames[frames.length - 1].extra_fields.cost.total_cost, 'final chunk cost must be positive').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 5, separated by spaces.\"}],\"max_tokens\":32,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/responses returns extra_fields.cost and x-bifrost-cost - send back cost",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function costHeader() {",
+                  "  var value = pm.response.headers.get('x-bifrost-cost');",
+                  "  pm.expect(value, 'x-bifrost-cost missing although x-bf-send-back-cost: true was sent: ' + pm.response.text()).to.be.a('string');",
+                  "  var total = parseFloat(value);",
+                  "  pm.expect(total, 'x-bifrost-cost is not a positive USD amount: ' + value).to.be.above(0);",
+                  "  return total;",
+                  "}",
+                  "pm.test('the Responses body and the header carry the same computed cost', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  var cost = (pm.response.json().extra_fields || {}).cost;",
+                  "  pm.expect(cost, 'extra_fields.cost missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(Math.abs(costHeader() - cost.total_cost), 'header and body totals differ: ' + JSON.stringify(cost)).to.be.below(1e-9);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"Reply with the single word: ok\",\"max_output_tokens\":16}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /anthropic/v1/messages returns x-bifrost-cost with an Anthropic-shaped body - send back cost",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function costHeader() {",
+                  "  var value = pm.response.headers.get('x-bifrost-cost');",
+                  "  pm.expect(value, 'x-bifrost-cost missing although x-bf-send-back-cost: true was sent: ' + pm.response.text()).to.be.a('string');",
+                  "  var total = parseFloat(value);",
+                  "  pm.expect(total, 'x-bifrost-cost is not a positive USD amount: ' + value).to.be.above(0);",
+                  "  return total;",
+                  "}",
+                  "pm.test('the cost reaches an Anthropic SDK caller only as the header', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  costHeader();",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.type, 'not an Anthropic message: ' + pm.response.text()).to.equal('message');",
+                  "  pm.expect(j, 'an Anthropic body must not grow Bifrost fields').to.not.have.property('extra_fields');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"claude-haiku-4-5\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /openai/v1/chat/completions returns x-bifrost-cost and keeps usage.cost unchanged - send back cost",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function costHeader() {",
+                  "  var value = pm.response.headers.get('x-bifrost-cost');",
+                  "  pm.expect(value, 'x-bifrost-cost missing although x-bf-send-back-cost: true was sent: ' + pm.response.text()).to.be.a('string');",
+                  "  var total = parseFloat(value);",
+                  "  pm.expect(total, 'x-bifrost-cost is not a positive USD amount: ' + value).to.be.above(0);",
+                  "  return total;",
+                  "}",
+                  "pm.test('the OpenAI drop-in carries the header and keeps the usage shape', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  costHeader();",
+                  "  var usage = pm.response.json().usage || {};",
+                  "  pm.expect(typeof usage.cost === 'undefined' || typeof usage.cost === 'number', 'usage.cost must stay absent or the provider number, never the Bifrost breakdown: ' + JSON.stringify(usage)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-cost",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":8}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/chat/completions without the header returns no cost - send back cost",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the setting is off by default: no extra_fields.cost and no x-bifrost-cost', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.headers.has('x-bifrost-cost'), 'x-bifrost-cost sent without opting in').to.equal(false);",
+                  "  pm.expect((pm.response.json().extra_fields || {}).cost, 'extra_fields.cost sent without opting in').to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":8}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
