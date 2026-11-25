@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -765,6 +766,10 @@ const LoadBalancerMetadataPrefix = "bifrost_alb_"
 // Kept per attempt because a request that rotated away from a rate-limited key still knows how
 // long that key asked for, which the request's final error no longer says.
 //
+// AnsweredAt is when Bifrost recorded this attempt's failure, so a RetryAfter hint is counted from
+// the answer that carried it rather than from when the request ended. In-process only, never
+// serialized.
+//
 // TriggeredRotation is true iff this attempt's per-key failure caused the next attempt to actually
 // rotate to a *different* key. It is false on:
 //   - the final (terminal) attempt of a request, regardless of outcome,
@@ -782,6 +787,7 @@ type KeyAttemptRecord struct {
 	FailureClass      FailureClass `json:"failure_class,omitempty"`
 	StatusCode        *int         `json:"status_code,omitempty"`
 	RetryAfter        int64        `json:"retry_after_ms,omitempty"`
+	AnsweredAt        time.Time    `json:"-"`
 	TriggeredRotation bool         `json:"triggered_rotation"`
 }
 

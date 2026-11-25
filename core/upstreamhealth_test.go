@@ -97,6 +97,45 @@ func TestUpstreamHealthCredentialsExhaustedUsesAttemptTrail(t *testing.T) {
 	}
 }
 
+// A trail hint counts from the answer that carried it, not from when the chain ended: time spent
+// on later keys comes off it, so the pair cools down no later than that answer plus its hint.
+func TestUpstreamHealthTrailHintCountsFromAnswer(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
+		{Attempt: 0, FailureClass: schemas.FailureClassRateLimit, StatusCode: schemas.Ptr(429), RetryAfter: 20_000, AnsweredAt: t0},
+		{Attempt: 1, FailureClass: schemas.FailureClassRateLimit, StatusCode: schemas.Ptr(429), RetryAfter: 30_000, AnsweredAt: t0.Add(15 * time.Second)},
+	})
+	exhausted := &schemas.BifrostError{
+		StatusCode:  schemas.Ptr(502),
+		Error:       &schemas.ErrorField{Message: "all keys dead"},
+		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeProviderCredentialsExhausted},
+	}
+	end := t0.Add(18 * time.Second)
+	class, status, hint := upstreamFinalFailure(ctx, exhausted, end)
+	if class != schemas.FailureClassRateLimit || status == nil || *status != 429 {
+		t.Fatalf("expected the trail's rate limit, got %s %v", class, status)
+	}
+	if hint != 2_000 {
+		t.Fatalf("expected the first key's hint less the 18s since its answer (2000 ms), got %d ms", hint)
+	}
+
+	var tracker upstreamHealthTracker
+	tracker.recordFailure(schemas.Gemini, "gemini-x", class, status, hint, false, end)
+	if h := findUpstreamHealth(t, tracker.snapshot(t0.Add(20*time.Second-time.Millisecond)), schemas.Gemini, "gemini-x"); h.Available {
+		t.Fatalf("expected cooling down before the first answer plus its hint, got %+v", h)
+	}
+	if h := findUpstreamHealth(t, tracker.snapshot(t0.Add(20*time.Second)), schemas.Gemini, "gemini-x"); !h.Available {
+		t.Fatalf("expected available at the first answer plus its hint, got %+v", h)
+	}
+
+	// A hint whose wait has fully passed still stands for the provider's wait, not the hintless
+	// escalating cooldown.
+	if _, _, hint := upstreamFinalFailure(ctx, exhausted, t0.Add(time.Minute)); hint != 1 {
+		t.Fatalf("expected an elapsed hint to leave 1 ms, got %d ms", hint)
+	}
+}
+
 // A failure on a tracked pair keeps the tracker locked until it holds the pair: pruneLocked takes
 // the tracker's write lock, so it must not be able to drop the pair between the lookup and the
 // update, or the update lands on a pair no snapshot reports.

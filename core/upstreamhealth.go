@@ -107,8 +107,9 @@ func recordsUpstreamFailure(class schemas.FailureClass) bool {
 // was refused), that error carries no upstream class of its own, so the class and Retry-After
 // hint of the last upstream answer in the attempt trail stand for it. Core resets the trail on
 // the chain's first attempt and returns that error only after attempts on it, so the trail is
-// this chain's.
-func upstreamFinalFailure(ctx *schemas.BifrostContext, err *schemas.BifrostError) (schemas.FailureClass, *int, int64) {
+// this chain's. Each trail hint counts from when its answer arrived, so the hint returned is what
+// is left of it at now: a cooldown starting at now ends no later than that answer plus its hint.
+func upstreamFinalFailure(ctx *schemas.BifrostContext, err *schemas.BifrostError, now time.Time) (schemas.FailureClass, *int, int64) {
 	class := ClassifyFailure(err)
 	statusCode := err.StatusCode
 	retryAfter := err.ExtraFields.RetryAfter
@@ -119,11 +120,19 @@ func upstreamFinalFailure(ctx *schemas.BifrostContext, err *schemas.BifrostError
 	for i := len(trail) - 1; i >= 0; i-- {
 		if recordsUpstreamFailure(trail[i].FailureClass) {
 			// A rate-limited pool is free again when the soonest key is: take the smallest hint.
+			// A hint whose wait has already passed leaves 1 ms, so it still stands for the
+			// provider's wait rather than falling back to the hintless cooldown.
 			hint := int64(0)
 			for j := range trail {
-				if trail[j].FailureClass == trail[i].FailureClass && trail[j].RetryAfter > 0 &&
-					(hint == 0 || trail[j].RetryAfter < hint) {
-					hint = trail[j].RetryAfter
+				if trail[j].FailureClass != trail[i].FailureClass || trail[j].RetryAfter <= 0 {
+					continue
+				}
+				left := trail[j].RetryAfter
+				if !trail[j].AnsweredAt.IsZero() {
+					left = max(left-now.Sub(trail[j].AnsweredAt).Milliseconds(), 1)
+				}
+				if hint == 0 || left < hint {
+					hint = left
 				}
 			}
 			return trail[i].FailureClass, trail[i].StatusCode, hint
@@ -332,7 +341,7 @@ func (bifrost *Bifrost) recordUpstreamOutcome(ctx *schemas.BifrostContext, provi
 		bifrost.upstreamHealth.recordSuccess(provider, model, now)
 		return
 	}
-	class, statusCode, retryAfter := upstreamFinalFailure(ctx, err)
+	class, statusCode, retryAfter := upstreamFinalFailure(ctx, err, now)
 	bifrost.upstreamHealth.recordFailure(provider, model, class, statusCode, retryAfter, false, now)
 }
 
