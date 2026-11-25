@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -487,8 +488,10 @@ func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declare
 		},
 	}
 
-	// Execute the tool via tool executor
+	// Execute the tool via tool executor. The capture receives the call's send-back cost; it is found
+	// through the child context the executor creates for the call.
 	ctx = withInputResumption(withCallerCapabilities(ctx), request.Params.MultiRoundTripParams)
+	ctx, costCapture := schemas.WithMCPToolCostCapture(ctx)
 	toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 	if err != nil {
 		logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
@@ -500,11 +503,30 @@ func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declare
 	logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
 
 	result := gatewayToolResult(toolMessage, declaresOutputSchema)
+	if costCapture.Cost != nil {
+		result.Meta = withBifrostCostMeta(result.Meta, costCapture.Cost)
+	}
 	if result.NeedsInput() {
 		// The caller's retry names this call, so its rounds share one id in the MCP logs.
 		result.RequestState = coremcp.WrapRoundTripState(coremcp.CallRoundTripID(ctx), result.RequestState)
 	}
 	return result
+}
+
+// bifrostCostMetaKey names the send-back cost in a tools/call result's _meta. Headers cannot carry it:
+// an SSE answer has already sent them, so _meta is the one per-result channel.
+const bifrostCostMetaKey = "bifrost/cost"
+
+// withBifrostCostMeta returns a new _meta holding every field of meta plus the call's send-back cost.
+// gatewayToolResult's copy of an upstream result shares its _meta, so meta itself is never written.
+func withBifrostCostMeta(meta *mcp.Meta, cost *schemas.BifrostCost) *mcp.Meta {
+	out := &mcp.Meta{AdditionalFields: map[string]any{}}
+	if meta != nil {
+		out.ProgressToken = meta.ProgressToken
+		maps.Copy(out.AdditionalFields, meta.AdditionalFields)
+	}
+	out.AdditionalFields[bifrostCostMetaKey] = cost
+	return out
 }
 
 // gatewayTool is the MCP form of a Bifrost tool, as tools/list sends it.

@@ -2742,3 +2742,53 @@ func TestMCPGateway_ServerTypesOnSlug(t *testing.T) {
 
 // liveStoreForTest returns a new, empty live store closed when the test ends.
 var liveStoreForTest = livestoretest.New
+
+// pricedToolManager answers every call like fakeResultToolManager and, as core does with send-back
+// cost on, fills the cost capture it finds on the call's context. It reads it through a child
+// context, the way BifrostHTTPServer.ExecuteChatMCPTool wraps every /mcp call.
+type pricedToolManager struct {
+	fakeResultToolManager
+	cost *schemas.BifrostCost
+}
+
+func (p *pricedToolManager) ExecuteChatMCPTool(ctx context.Context, call *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	callCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	if capture, ok := callCtx.Value(schemas.BifrostContextKeyMCPToolCostCapture).(*schemas.MCPToolCostCapture); ok {
+		capture.Cost = p.cost
+	}
+	return p.fakeResultToolManager.ExecuteChatMCPTool(ctx, call)
+}
+
+// A tools/call result carries the call's send-back cost in _meta["bifrost/cost"]: headers cannot,
+// since an SSE answer has sent them already. A call that cost nothing carries no _meta.
+func TestToolsCallCarriesSendBackCostInMeta(t *testing.T) {
+	ok := "18C"
+	message := &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &ok}, ChatToolMessage: &schemas.ChatToolMessage{}}
+	cost := &schemas.BifrostCost{AdditionalCost: 0.002, AdditionalCostDetails: &schemas.AdditionalCostDetails{MCPCost: 0.002}, TotalCost: 0.002}
+
+	priced := callToolResult(t, &pricedToolManager{fakeResultToolManager: fakeResultToolManager{result: message}, cost: cost})
+	meta, _ := priced["_meta"].(map[string]any)
+	require.NotNil(t, meta, "a priced call carries _meta: %v", priced)
+	assert.Equal(t, map[string]any{
+		"additional_cost":         0.002,
+		"additional_cost_details": map[string]any{"mcp_cost": 0.002},
+		"total_cost":              0.002,
+	}, meta["bifrost/cost"])
+
+	unpriced := callToolResult(t, &pricedToolManager{fakeResultToolManager: fakeResultToolManager{result: message}})
+	assert.NotContains(t, unpriced, "_meta")
+}
+
+// The cost goes on a new _meta that keeps every field the upstream's had: gatewayToolResult's copy
+// of an upstream result shares its _meta, which must not be written.
+func TestWithBifrostCostMetaKeepsUpstreamFieldsAndLeavesThemUnwritten(t *testing.T) {
+	upstream := &mcp.Meta{ProgressToken: "token-1", AdditionalFields: map[string]any{"vendor/trace": "abc"}}
+	cost := &schemas.BifrostCost{TotalCost: 0.002}
+
+	got := withBifrostCostMeta(upstream, cost)
+	assert.Equal(t, mcp.ProgressToken("token-1"), got.ProgressToken)
+	assert.Equal(t, map[string]any{"vendor/trace": "abc", bifrostCostMetaKey: cost}, got.AdditionalFields)
+	assert.Equal(t, map[string]any{"vendor/trace": "abc"}, upstream.AdditionalFields, "the upstream's _meta is not written")
+
+	assert.Equal(t, map[string]any{bifrostCostMetaKey: cost}, withBifrostCostMeta(nil, cost).AdditionalFields)
+}

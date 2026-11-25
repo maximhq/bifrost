@@ -66,7 +66,9 @@ func (h *MCPInferenceHandler) executeChatMCPTool(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Execute MCP tool
+	// Execute MCP tool. The body stays the bare tool message, so the call's
+	// send-back cost goes out as x-bifrost-cost.
+	costCapture := bifrostCtx.CaptureMCPToolCost()
 	toolMessage, bifrostErr := h.client.ExecuteChatMCPTool(bifrostCtx, &req)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
@@ -74,6 +76,7 @@ func (h *MCPInferenceHandler) executeChatMCPTool(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Send successful response
+	lib.ApplyBifrostCostHeader(ctx, costCapture.Cost)
 	SendJSON(ctx, toolMessage)
 }
 
@@ -99,7 +102,9 @@ func (h *MCPInferenceHandler) executeResponsesMCPTool(ctx *fasthttp.RequestCtx) 
 		return
 	}
 
-	// Execute MCP tool
+	// Execute MCP tool. The body stays the bare tool message, so the call's
+	// send-back cost goes out as x-bifrost-cost.
+	costCapture := bifrostCtx.CaptureMCPToolCost()
 	toolMessage, bifrostErr := h.client.ExecuteResponsesMCPTool(bifrostCtx, &req)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
@@ -107,5 +112,6 @@ func (h *MCPInferenceHandler) executeResponsesMCPTool(ctx *fasthttp.RequestCtx) 
 	}
 
 	// Send successful response
+	lib.ApplyBifrostCostHeader(ctx, costCapture.Cost)
 	SendJSON(ctx, toolMessage)
 }
