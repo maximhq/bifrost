@@ -232,6 +232,7 @@ sent to a client.
 | `reply` | the CallToolResult tools/call returns, verbatim: several content blocks, `structuredContent`, `isError`. An empty result is `{"content":[]}`; clients reject a missing `content`. |
 | `reply_error` | the JSON-RPC error tools/call answers with, `{"code","message","data"}` as given, e.g. `{"code":-32021,"message":"missing capability","data":{"capability":"elicitation"}}` |
 | `reply_env` | answer with this variable from the stdio bridge's registered environment |
+| `progress` | `[{"progress","total","message"}]`, sent in order as `notifications/progress` ahead of the result, under the call's `_meta.progressToken`, and only to a call that sent one. A streamable HTTP call is then answered as an SSE stream; the stdio bridge writes each message as its own line. `progress` must increase with every step |
 | `fault` | a fault set that replaces the server-wide one for calls to this tool (see below) |
 
 Without `reply`, `reply_error` or `reply_env`, a call echoes
@@ -516,6 +517,7 @@ something other than one call (`methods`, `init_fail`, `bad_version`,
 |---|---|
 | `calls` | keyed by the tool the server **resolved** the request to, not the name the caller sent. A call stopped in front of the tool, by an injected status, a 401 or a 404, is not counted here but is in `methods`. A client that maps a caller-facing name to the wrong upstream tool returns a correct-looking response and a wrong counter, and nothing else catches it. |
 | `calls_by_identity` | that revoking one caller's credential did not affect another's |
+| `progress_calls` | by tool, the calls that carried a `progressToken` and were sent progress, so a test can prove a client asked an upstream for progress only when its own caller did |
 | `sessions` | the reconnect signal for HTTP (see below) |
 | `open_streams` / `max_streams` | stream-level leak detection |
 | `methods` | every JSON-RPC request received, counted as it arrives, before any fault, credential or session check can answer it. A call answered with an injected status, a 401 or a 404 still counts, so retries are countable. Unimplemented methods count too, so a surprise surfaces. |

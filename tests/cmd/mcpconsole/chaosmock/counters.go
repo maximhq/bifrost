@@ -33,6 +33,8 @@ type CountersSnapshot struct {
 
 	// Calls counts tools/call by resolved tool name.
 	Calls map[string]int64 `json:"calls"`
+	// ProgressCalls counts, by tool, the calls whose progress was written to the transport.
+	ProgressCalls map[string]int64 `json:"progress_calls"`
 	// CallsByIdentity counts tools/call by the identity that made them, which
 	// is how "revoking user A did not affect user B" becomes checkable.
 	CallsByIdentity map[string]int64 `json:"calls_by_identity"`
@@ -86,6 +88,7 @@ func newCounters() *Counters {
 func newSnapshot() CountersSnapshot {
 	return CountersSnapshot{
 		Calls:             map[string]int64{},
+		ProgressCalls:     map[string]int64{},
 		CallsByIdentity:   map[string]int64{},
 		Methods:           map[string]int64{},
 		SessionRequests:   map[string]int64{},
@@ -163,6 +166,13 @@ func (c *Counters) call(tool, identity string) {
 	c.mu.Unlock()
 }
 
+// progressCall counts one call to tool that was sent progress.
+func (c *Counters) progressCall(tool string) {
+	c.mu.Lock()
+	c.d.ProgressCalls[tool]++
+	c.mu.Unlock()
+}
+
 // faulted counts one injected failure.
 func (c *Counters) faulted() {
 	c.mu.Lock()
@@ -195,6 +205,7 @@ func (c *Counters) Snapshot() CountersSnapshot {
 	defer c.mu.Unlock()
 	out := c.d
 	out.Calls = copyCounts(c.d.Calls)
+	out.ProgressCalls = copyCounts(c.d.ProgressCalls)
 	out.CallsByIdentity = copyCounts(c.d.CallsByIdentity)
 	out.Methods = copyCounts(c.d.Methods)
 	out.SessionRequests = copyCounts(c.d.SessionRequests)

@@ -1021,6 +1021,9 @@ func CallUpstreamTool(ctx context.Context, conn *client.Client, call mcp.CallToo
 	var relayed mcp.ClientCapabilities
 	if relay {
 		relayed = relayedClientCapabilities
+		var stopProgress func()
+		call, stopProgress = withProgressToken(ctx, call)
+		defer stopProgress()
 	}
 	ctx, answerable, hasCaller := upstreamContext(ctx, conn, relayed)
 	relay = relay && hasCaller

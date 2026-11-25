@@ -46,6 +46,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyMCPCallerCapabilities:   {},
 	BifrostContextKeyMCPInputResumption:      {},
 	BifrostContextKeyMCPRoundTripID:          {},
+	BifrostContextKeyMCPProgressReporter:     {},
 	BifrostContextKeyMCPRequestedToolName:    {},
 	BifrostContextKeyMCPToolUIResourceURI:    {},
 	BifrostContextKeyMCPToolAppOnly:          {},

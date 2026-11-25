@@ -8074,6 +8074,79 @@ const capIs = (v) => A.custom(`max_protocol_version is ${v === undefined ? "abse
 const noClient = (id, clientId, title) => request(id, title, "GET", `/api/mcp/clients?server=${clientId}`, { asserts: [A.status(200), A.custom("no such client is listed", ["pm.expect(pm.response.json().clients || [], 'body: ' + pm.response.text()).to.eql([]);"])] });
 const healthyAfterHandshakes = (id, clientId, title) => request(id, title, "GET", `/api/mcp/clients?server=${clientId}`, { pre: waitForClient(clientId, "c.state === 'healthy'"), asserts: [A.status(200), clientState("healthy")] });
 
+// ---------------------------------------------------------------- EP-84 progress relay
+// A tools/call that sends _meta.progressToken gets the progress its upstream reports as SSE, under the caller's
+// own token and before the result. Each server's work tool reports two steps when it is given a token.
+const PROGRESS_STEPS = [{ progress: 1, total: 2, message: "step 1 of 2" }, { progress: 2, total: 2, message: "step 2 of 2" }];
+const PROGRESS_TOKEN = "harness-progress";
+const progressCall = (name, meta = {}) => ({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {}, _meta: meta } });
+// modernProgressCall is a 2026-07-28 tools/call whose _meta carries the token beside the protocol fields.
+const modernProgressCall = (name) => {
+  const msg = modernMsg("tools/call", { name, arguments: {} });
+  msg.params._meta.progressToken = PROGRESS_TOKEN;
+  return msg;
+};
+const legacyProgressRpc = (id, title, name, meta, asserts) => rpc(id, title, progressCall(name, meta), { headers: [MCP_ACCEPT, { key: "MCP-Protocol-Version", value: "2025-11-25" }], asserts });
+// SSE_FRAMES is every JSON-RPC message in the answer, in order: the one JSON body, or the SSE events read as a
+// client reads them. A blank line ends an event, its data lines join with a newline, an event with no data (a
+// heartbeat) carries no message, and an event the stream never ends is dropped.
+const SSE_FRAMES = [
+  "var text = pm.response.text();",
+  "var all = [];",
+  "if (text.indexOf('data:') === -1) { all.push(JSON.parse(text)); } else {",
+  "  var events = text.split(/\\r?\\n\\r?\\n/);",
+  "  events.pop();",
+  "  events.forEach(function (event) {",
+  "    var data = event.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).replace(/^ /, ''); });",
+  "    if (data.length) { all.push(JSON.parse(data.join('\\n'))); }",
+  "  });",
+  "}",
+];
+// ANSWERS_THIS_CALL checks the last message is the successful result of the call, whose id is 1.
+const ANSWERS_THIS_CALL = [
+  "var last = all[all.length - 1];",
+  "pm.expect(last.jsonrpc, 'body: ' + text).to.equal('2.0');",
+  "pm.expect(last.id, 'the result answers this call: ' + text).to.equal(1);",
+  "pm.expect(last.result, 'the result comes last: ' + text).to.be.an('object');",
+  "pm.expect(last.result.isError, 'body: ' + text).to.not.equal(true);",
+];
+const progressRelayed = A.custom("the two upstream steps arrive under the caller's token, in order, then the result", [
+  "pm.expect(pm.response.headers.get('Content-Type') || '', 'progress needs an SSE answer: ' + pm.response.text()).to.include('text/event-stream');",
+  ...SSE_FRAMES,
+  `pm.expect(all.length, 'the progress, then one result: ' + text).to.equal(${PROGRESS_STEPS.length + 1});`,
+  `pm.expect(all.slice(0, -1), 'progress notifications come first, in order: ' + text).to.eql(${lit(PROGRESS_STEPS.map((step) => ({ jsonrpc: "2.0", method: "notifications/progress", params: { ...step, progressToken: PROGRESS_TOKEN } })))});`,
+  ...ANSWERS_THIS_CALL,
+]);
+const noProgressRelayed = A.custom("the result and no progress", [
+  ...SSE_FRAMES,
+  "pm.expect(text, 'progress reached a caller that did not ask for it').to.not.include('notifications/progress');",
+  "pm.expect(all.length, 'body: ' + text).to.equal(1);",
+  ...ANSWERS_THIS_CALL,
+]);
+const progressCallsAre = (server, calls, progressCalls) => mockGet("EP-84", server, `${server} ran work ${calls} times and was asked for progress ${progressCalls}`, [callsIs("work", calls), A.custom(`progress_calls[work] is ${progressCalls}`, [
+  `pm.expect((pm.response.json().counters.progress_calls || {}).work || 0, 'body: ' + pm.response.text()).to.equal(${progressCalls});`,
+])]);
+const progressServer = (server, versions) => [
+  ...serveTools("EP-84", server, [{ name: "work", progress: PROGRESS_STEPS }], "work, which reports two steps of progress"),
+  ...(versions ? [setVersions("EP-84", server, versions)] : []),
+];
+const EP84 = folder("EP-84 Progress relay", "Setup: fleet servers ep84a (every revision), ep84b (2025-11-25 only) and ep84c, each serving work, which reports two steps of progress when the call carries a progressToken; client ep84_a per call over HTTP on ep84a, ep84_b sticky over HTTP on ep84b, ep84_c over SSE on ep84c; anonymous callers.", [
+  ...progressServer("ep84a", ALL_VERSIONS), ...progressServer("ep84b", ["2025-11-25"]), ...progressServer("ep84c"),
+  createClient("EP-84", httpClient("ep84-a", "ep84_a", "ep84a", { tools_to_execute: ["*"] }), "setup: client ep84_a, per call on ep84a"),
+  createClient("EP-84", stickyOn("ep84-b", "ep84_b", "ep84b"), "setup: client ep84_b, sticky on ep84b"),
+  createClient("EP-84", sseClient("ep84-c", "ep84_c", "ep84c", { tools_to_execute: ["*"] }), "setup: client ep84_c, SSE on ep84c"),
+  legacyProgressRpc("EP-84", "2025-11-25 tools/call ep84_a-work with a progressToken", "ep84_a-work", { progressToken: PROGRESS_TOKEN }, [A.status(200), progressRelayed]),
+  rpc("EP-84", `${MODERN} tools/call ep84_a-work with a progressToken`, modernProgressCall("ep84_a-work"),
+    { headers: modernHeaders("tools/call", "ep84_a-work"), asserts: [A.status(200), progressRelayed] }),
+  legacyProgressRpc("EP-84", "2025-11-25 tools/call ep84_a-work without a progressToken", "ep84_a-work", {}, [A.status(200), noProgressRelayed]),
+  progressCallsAre("ep84a", 3, 2),
+  legacyProgressRpc("EP-84", "2025-11-25 tools/call ep84_b-work with a progressToken", "ep84_b-work", { progressToken: PROGRESS_TOKEN }, [A.status(200), progressRelayed]),
+  progressCallsAre("ep84b", 1, 1),
+  legacyProgressRpc("EP-84", "2025-11-25 tools/call ep84_c-work with a progressToken", "ep84_c-work", { progressToken: PROGRESS_TOKEN }, [A.status(200), progressRelayed]),
+  progressCallsAre("ep84c", 1, 1),
+  deleteClient("EP-84", "ep84-a"), deleteClient("EP-84", "ep84-b"), deleteClient("EP-84", "ep84-c"),
+]);
+
 const SET27 = folder("SET-27 Max protocol version validation", "Setup: admin credentials; alpha (echo_tool); client set27-c, per call on alpha, with no cap.", [
   ...freshServer("SET-27", "alpha", ["echo_tool"]),
   createClient("SET-27", httpClient("set27-c", "set27_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
@@ -13900,7 +13973,7 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65, AUTH66, AUTH67]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, EP84, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46, OAS47]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
