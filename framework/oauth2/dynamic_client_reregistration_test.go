@@ -210,6 +210,14 @@ func (s *dcrConfigStore) RecordOAuthFlowIssuer(ctx context.Context, id, state, i
 	return result.RowsAffected > 0, result.Error
 }
 
+// RecordOAuthFlowBrowserBinding mirrors RDBConfigStore's.
+func (s *dcrConfigStore) RecordOAuthFlowBrowserBinding(ctx context.Context, id, state, bindingHash string) (bool, error) {
+	result := s.db.WithContext(ctx).Model(&tables.TableMCPOauthFlow{}).
+		Where("id = ? AND state = ? AND status = ?", id, state, "pending").
+		Update("browser_binding_hash", bindingHash)
+	return result.RowsAffected > 0, result.Error
+}
+
 func (s *dcrConfigStore) GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error) {
 	var flow tables.TableMCPOauthFlow
 	if err := s.db.WithContext(ctx).Where("state = ?", state).First(&flow).Error; err != nil {

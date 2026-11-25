@@ -564,3 +564,40 @@ func TestOAuthIssuerClaims_MatchMigratedNullIssuer(t *testing.T) {
 	_, err = s.RotateMCPOAuthConfig(ctx, stored, fields)
 	require.NoError(t, err, "a rebind from an unbound config applies to a NULL issuer")
 }
+
+// RecordOAuthFlowBrowserBinding writes only the binding hash, and only while the flow is still
+// pending with the state the caller read. Starting the flow again replaces the hash.
+func TestRecordOAuthFlowBrowserBinding(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	seedRotateOauthConfig(t, s, "cfg-flow", "client", "secret")
+	require.NoError(t, s.CreateOauthUserSession(ctx, &tables.TableMCPOauthFlow{
+		ID: "flow-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-flow", State: "state-1", CodeVerifier: "verifier-1",
+		FlowMode: "vk", Status: "pending", ExpiresAt: time.Now().Add(time.Minute),
+	}))
+
+	recorded, err := s.RecordOAuthFlowBrowserBinding(ctx, "flow-1", "state-1", "hash-1")
+	require.NoError(t, err)
+	assert.True(t, recorded)
+	recorded, err = s.RecordOAuthFlowBrowserBinding(ctx, "flow-1", "state-1", "hash-2")
+	require.NoError(t, err)
+	assert.True(t, recorded)
+	stored, err := s.GetOauthUserSessionByState(ctx, "state-1")
+	require.NoError(t, err)
+	assert.Equal(t, "hash-2", stored.BrowserBindingHash)
+	assert.Equal(t, "verifier-1", stored.CodeVerifier, "nothing else on the row changes")
+
+	// A renewal gave the row a new state after the caller read it.
+	recorded, err = s.RecordOAuthFlowBrowserBinding(ctx, "flow-1", "state-0", "hash-3")
+	require.NoError(t, err)
+	assert.False(t, recorded)
+
+	stored.Status = "authorized"
+	require.NoError(t, s.UpdateOauthUserSession(ctx, stored))
+	recorded, err = s.RecordOAuthFlowBrowserBinding(ctx, "flow-1", "state-1", "hash-4")
+	require.NoError(t, err)
+	assert.False(t, recorded, "a finished flow is left alone")
+	stored, err = s.GetOauthUserSessionByState(ctx, "state-1")
+	require.NoError(t, err)
+	assert.Equal(t, "hash-2", stored.BrowserBindingHash)
+}

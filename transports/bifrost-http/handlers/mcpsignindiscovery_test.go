@@ -185,6 +185,15 @@ func callOAuthCallback(t *testing.T, h *OAuthHandler, state string) string {
 	var req fasthttp.Request
 	req.Header.SetMethod(fasthttp.MethodGet)
 	req.SetRequestURI("/api/oauth/callback?state=" + state + "&code=code-1")
+	// The callback comes back to the browser that started the flow, cookie included.
+	flow, err := h.store.ConfigStore.GetOauthUserSessionByState(context.Background(), state)
+	require.NoError(t, err)
+	require.NotNil(t, flow)
+	const browserValue = "test-browser-value"
+	recorded, err := h.store.ConfigStore.RecordOAuthFlowBrowserBinding(context.Background(), flow.ID, state, oauthFlowBindingHash([]byte(browserValue)))
+	require.NoError(t, err)
+	require.True(t, recorded)
+	req.Header.SetCookie(oauthFlowCookieName(state), browserValue)
 	var ctx fasthttp.RequestCtx
 	ctx.Init(&req, nil, nil)
 	h.handleOAuthCallback(&ctx)

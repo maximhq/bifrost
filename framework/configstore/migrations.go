@@ -615,6 +615,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
 	{IDs: []string{"add_vertex_batch_gcs_config_column"}, run: migrationAddVertexBatchGCSConfigColumn},
+	{IDs: []string{"add_mcp_oauth_flow_browser_binding_column"}, run: migrationAddMCPOauthFlowBrowserBindingColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17963,6 +17964,35 @@ func migrationAddVertexBatchGCSConfigColumn(ctx context.Context, db *gorm.DB, lo
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return rollbackVertexBatchGCSConfigColumn(ctx, tx, logger)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("failed to run migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPOauthFlowBrowserBindingColumn adds the column that ties a per-user sign-in to
+// the browser that started it. Flows are short-lived (15 minutes); one that was pending across
+// the upgrade has no binding and is started again from the authentication page.
+func migrationAddMCPOauthFlowBrowserBindingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_oauth_flow_browser_binding_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPOauthFlow{}, "browser_binding_hash"); err != nil {
+				return fmt.Errorf("failed to add browser_binding_hash column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableMCPOauthFlow{}, "browser_binding_hash")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

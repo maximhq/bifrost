@@ -823,6 +823,9 @@ type ConfigStore interface {
 	// RecordOAuthFlowIssuer writes only a flow's expected issuer, while the flow is still pending with
 	// state; it reports whether the row matched.
 	RecordOAuthFlowIssuer(ctx context.Context, id, state, issuer string, issParameterSupported bool) (bool, error)
+	// RecordOAuthFlowBrowserBinding writes only the hash that ties a per-user flow to the browser
+	// that started it, while the flow is still pending with state; it reports whether the row matched.
+	RecordOAuthFlowBrowserBinding(ctx context.Context, id, state, bindingHash string) (bool, error)
 
 	// Per-user OAuth token CRUD. These operate on the same TableMCPOauthToken /
 	// oauth_tokens rows as the shared-token methods above, scoped to
