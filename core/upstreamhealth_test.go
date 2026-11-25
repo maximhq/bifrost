@@ -367,6 +367,44 @@ func TestUpstreamHealthRefusedPoolCoolsDownUntilSoonestKey(t *testing.T) {
 	}
 }
 
+// A key retried after a short hint that then asks for longer is free only once the longer wait
+// ends: with one key and MaxRetries 1, a 429 asking for 1s followed by one asking for 60s cools
+// the pair down for the 60s, not the 1s.
+func TestUpstreamHealthRetriedKeyUsesItsLatestHint(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hint := "60"
+		if calls.Add(1) == 1 {
+			hint = "1"
+		}
+		w.Header().Set("Retry-After", hint)
+		rateLimitedHandler(w, r)
+	}))
+	t.Cleanup(server.Close)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 4, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 1
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = time.Millisecond
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "key-a", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newStreamTestClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	if _, err := client.ChatCompletionRequest(ctx, upstreamHealthChatRequest()); err == nil {
+		t.Fatal("expected the rate-limited upstream to fail the request")
+	}
+	trail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
+	if n := calls.Load(); n != 2 || len(trail) != 2 || trail[1].AnsweredAt.IsZero() {
+		t.Fatalf("expected two answered attempts on the one key, got %d calls and trail %+v", n, trail)
+	}
+	h := findUpstreamHealth(t, client.UpstreamHealthSnapshot(time.Now()), schemas.OpenAI, "gpt-4o-mini")
+	if h.CooldownUntil == nil || h.CooldownUntil.Before(trail[1].AnsweredAt.Add(59*time.Second)) {
+		t.Fatalf("expected the cooldown to follow the key's latest 60s hint, got %+v", h)
+	}
+}
+
 // A chain the retry budget ends before every key was refused proves nothing about the keys it
 // never tried: with MaxRetries 0 a rate limit on the first key ends the chain, and the second key
 // may still serve the pair, so the pair is degraded but stays available.

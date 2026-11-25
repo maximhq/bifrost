@@ -151,14 +151,31 @@ func upstreamFinalFailure(ctx *schemas.BifrostContext, err *schemas.BifrostError
 	return class, statusCode, retryAfter
 }
 
-// soonestTrailHint is the smallest Retry-After left at now among the trail's answers of class, or
-// 0 when none carried one. Each hint counts from when its answer arrived, so a cooldown starting
-// at now ends no later than that answer plus its hint; a hint whose wait has already passed
-// leaves 1 ms, so it still stands for the provider's wait rather than the hintless cooldown.
+// keyAnsweredLater reports whether the key of trail[j] has a later answered record in the trail.
+// A record without a key ID names no key to compare. The trail is bounded by the retry budget,
+// so a scan costs less than an index.
+func keyAnsweredLater(trail []schemas.KeyAttemptRecord, j int) bool {
+	if trail[j].KeyID == "" {
+		return false
+	}
+	for k := j + 1; k < len(trail); k++ {
+		if trail[k].KeyID == trail[j].KeyID && trail[k].FailureClass != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// soonestTrailHint is the smallest Retry-After left at now among the keys whose latest answer in
+// the trail is of class, or 0 when none carried one. Only each key's latest answer counts: a key
+// retried after a short hint that then asked for longer is free only once the longer wait ends.
+// Each hint counts from when its answer arrived, so a cooldown starting at now ends no later than
+// that answer plus its hint; a hint whose wait has already passed leaves 1 ms, so it still stands
+// for the provider's wait rather than the hintless cooldown.
 func soonestTrailHint(trail []schemas.KeyAttemptRecord, class schemas.FailureClass, now time.Time) int64 {
 	hint := int64(0)
 	for j := range trail {
-		if trail[j].FailureClass != class || trail[j].RetryAfter <= 0 {
+		if trail[j].FailureClass != class || trail[j].RetryAfter <= 0 || keyAnsweredLater(trail, j) {
 			continue
 		}
 		left := trail[j].RetryAfter
