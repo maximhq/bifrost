@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strconv"
@@ -199,7 +200,10 @@ func (s *Sweeper) settle(ctx context.Context, job *cstables.TableProviderJob, po
 		Scopes:        s.config.Scopes,
 		Now:           now,
 	}); err != nil {
-		s.warn("%s accounting sweeper accounting failed provider=%s job=%s job_id=%s: %v", s.settler.Kind(), job.Provider, job.JobID, job.ID, err)
+		// A relay job waiting for its start call's log row is expected, not a failure.
+		if !errors.Is(err, ErrRelayStartRowPending) {
+			s.warn("%s accounting sweeper accounting failed provider=%s job=%s job_id=%s: %v", s.settler.Kind(), job.Provider, job.JobID, job.ID, err)
+		}
 		// Settlement failures were the one retry path with no budget: next_check_at
 		// stayed in the past and poll_attempts never moved, so every sweep re-did the
 		// entire settlement and re-failed, forever. Reschedule like any other retry so

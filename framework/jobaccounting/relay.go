@@ -83,6 +83,10 @@ func NewRelayJobSweeper(store SweepStore, poller RelayJobPoller, logs RelayJobLo
 // before a start is keyed by its own request instead (reused_id_is_new_job).
 const MaxRelayJobGenerations = 64
 
+// ErrRelayStartRowPending is a settlement waiting for its start call's Relay Logs row, which is
+// written in batches; the job is settled on the next sweep, so it is no failure to report.
+var ErrRelayStartRowPending = errors.New("its start call's log row is not written yet; it settles on the next sweep")
+
 // RelayJobStartedStatus is the status a relay job row is recorded with, before the upstream reports one.
 const RelayJobStartedStatus = "started"
 
@@ -288,6 +292,11 @@ func (s *RelaySettler) Poll(ctx context.Context, listed *cstables.TableProviderJ
 	}
 	if snapErr != nil {
 		return settle(&relayVerdict{reason: UnpriceableReasonRelayJobParams, reasonErr: snapErr})
+	}
+	// A job checked before its start call's Relay Logs row is written waits for it (see
+	// relayStartRowWait) before sending anything, so it costs no extra status check upstream.
+	if s.startRowPending(ctx, &job) {
+		return &PollResult{Job: &job, Retry: true}, nil
 	}
 
 	// Past its timeout a job still gets one last poll, so a job that finished just before the
@@ -582,18 +591,22 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 		entry.ErrorDetailsParsed = &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(e.verdict.reason), Message: message}}
 		entry.JobDebugParsed.LastError = message
 	}
-	// The start call's row is the richest source. A job a caller's check settles within moments of its
-	// start can beat that row to the store (logs are written in batches), and retention can remove
-	// it, so the details stored with the job at start fill in when it is not found.
-	copied := false
+	// The start call's row carries the model, route and names, as an LLM job row's source log does.
+	// A job a caller's check settles within moments of its start can beat that row to the store,
+	// since logs are written in batches, so the settlement waits for it.
 	if job.SourceLogID != nil {
-		if start, err := e.logs.FindRelayLog(ctx, *job.SourceLogID); err == nil {
+		start, err := e.logs.FindRelayLog(ctx, *job.SourceLogID)
+		switch {
+		case err == nil:
 			copyStartAttribution(entry, start)
-			copied = true
+		case !errors.Is(err, logstore.ErrNotFound):
+			return fmt.Errorf("read start row: %w", err)
+		case time.Since(job.CreatedAt) < relayStartRowWait:
+			return fmt.Errorf("relay job %s: %w", job.ID, ErrRelayStartRowPending)
 		}
 	}
-	if !copied {
-		relayJobStartOf(job).applyTo(entry)
+	if entry.RoutePath == "" {
+		entry.RoutePath = job.Endpoint
 	}
 	if _, err := e.logs.BatchCreateRelayLogsIfNotExists(ctx, []*logstore.RelayLog{entry}); err != nil {
 		return err
@@ -605,112 +618,76 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 // copyStartAttribution gives a job row what its start call's row resolved at request time, as an
 // LLM job row copies its source log: the model, the route and the display names behind the ids.
 func copyStartAttribution(entry, start *logstore.RelayLog) {
-	RelayJobStartOf(start).applyTo(entry)
+	entry.Model, entry.RoutePath = start.Model, start.RoutePath
+	entry.UserName, entry.UserEmail = start.UserName, start.UserEmail
+	entry.VirtualKeyName = start.VirtualKeyName
+	entry.TeamName, entry.CustomerName = start.TeamName, start.CustomerName
+	entry.BusinessUnitID, entry.BusinessUnitName = start.BusinessUnitID, start.BusinessUnitName
+	entry.ProjectID, entry.ProjectName = start.ProjectID, start.ProjectName
+	entry.SessionID, entry.AgentCorrelationID, entry.ParentRequestID = start.SessionID, start.AgentCorrelationID, start.ParentRequestID
+	entry.UserAgent, entry.App = start.UserAgent, start.App
+	entry.TeamIDsParsed, entry.TeamNamesParsed = start.TeamIDsParsed, start.TeamNamesParsed
+	entry.CustomerIDsParsed, entry.CustomerNamesParsed = start.CustomerIDsParsed, start.CustomerNamesParsed
+	entry.BusinessUnitIDsParsed, entry.BusinessUnitNamesParsed = start.BusinessUnitIDsParsed, start.BusinessUnitNamesParsed
 }
 
-// relayJobStartKey is where a job's params carry its RelayJobStart, beside the relay's snapshot.
-const relayJobStartKey = "start"
+// relayStartRowWait is how long a settlement waits for its start call's Relay Logs row, which is
+// written in batches a second or so after the call. A job settled sooner by a caller's own status
+// check is retried on the next sweep rather than written without the start call's details; past
+// it the row is taken as gone (retention, or a write that failed), as an LLM job row takes it.
+const relayStartRowWait = time.Minute
 
-// RelayJobStart is what a job row copies from its start call. It is stored with the job when the job
-// starts, so a job settled before the start call's row is written still shows its route, app and names.
-type RelayJobStart struct {
-	Model              string            `json:"model,omitempty"`
-	RoutePath          string            `json:"route_path,omitempty"`
-	UserName           *string           `json:"user_name,omitempty"`
-	UserEmail          *string           `json:"user_email,omitempty"`
-	VirtualKeyName     *string           `json:"virtual_key_name,omitempty"`
-	TeamName           *string           `json:"team_name,omitempty"`
-	CustomerName       *string           `json:"customer_name,omitempty"`
-	BusinessUnitID     *string           `json:"business_unit_id,omitempty"`
-	BusinessUnitName   *string           `json:"business_unit_name,omitempty"`
-	ProjectID          *string           `json:"project_id,omitempty"`
-	ProjectName        *string           `json:"project_name,omitempty"`
-	SessionID          *string           `json:"session_id,omitempty"`
-	AgentCorrelationID *string           `json:"agent_correlation_id,omitempty"`
-	ParentRequestID    *string           `json:"parent_request_id,omitempty"`
-	UserAgent          *string           `json:"user_agent,omitempty"`
-	App                *string           `json:"app,omitempty"`
-	TeamIDs            []string          `json:"team_ids,omitempty"`
-	TeamNames          []string          `json:"team_names,omitempty"`
-	CustomerIDs        []string          `json:"customer_ids,omitempty"`
-	CustomerNames      []string          `json:"customer_names,omitempty"`
-	BusinessUnitIDs    []string          `json:"business_unit_ids,omitempty"`
-	BusinessUnitNames  []string          `json:"business_unit_names,omitempty"`
-	Dimensions         map[string]string `json:"dimensions,omitempty"` // the start call's x-bf-dim-* values, for the settlement's metrics labels
-}
-
-// RelayJobStartOf reads what a job row copies from its start call's row.
-func RelayJobStartOf(start *logstore.RelayLog) RelayJobStart {
-	return RelayJobStart{
-		Model: start.Model, RoutePath: start.RoutePath,
-		UserName: start.UserName, UserEmail: start.UserEmail, VirtualKeyName: start.VirtualKeyName,
-		TeamName: start.TeamName, CustomerName: start.CustomerName,
-		BusinessUnitID: start.BusinessUnitID, BusinessUnitName: start.BusinessUnitName,
-		ProjectID: start.ProjectID, ProjectName: start.ProjectName,
-		SessionID: start.SessionID, AgentCorrelationID: start.AgentCorrelationID, ParentRequestID: start.ParentRequestID,
-		UserAgent: start.UserAgent, App: start.App,
-		TeamIDs: start.TeamIDsParsed, TeamNames: start.TeamNamesParsed,
-		CustomerIDs: start.CustomerIDsParsed, CustomerNames: start.CustomerNamesParsed,
-		BusinessUnitIDs: start.BusinessUnitIDsParsed, BusinessUnitNames: start.BusinessUnitNamesParsed,
+// startRowPending reports a job younger than relayStartRowWait whose start call's Relay Logs row is
+// not written yet. Only then is the row read, so an older job's poll costs nothing extra.
+func (s *RelaySettler) startRowPending(ctx context.Context, job *cstables.TableProviderJob) bool {
+	if s.logs == nil || job.SourceLogID == nil || time.Since(job.CreatedAt) >= relayStartRowWait {
+		return false
 	}
+	_, err := s.logs.FindRelayLog(ctx, *job.SourceLogID)
+	return errors.Is(err, logstore.ErrNotFound)
 }
 
-func (s RelayJobStart) applyTo(entry *logstore.RelayLog) {
-	entry.Model, entry.RoutePath = s.Model, s.RoutePath
-	entry.UserName, entry.UserEmail = s.UserName, s.UserEmail
-	entry.VirtualKeyName = s.VirtualKeyName
-	entry.TeamName, entry.CustomerName = s.TeamName, s.CustomerName
-	entry.BusinessUnitID, entry.BusinessUnitName = s.BusinessUnitID, s.BusinessUnitName
-	entry.ProjectID, entry.ProjectName = s.ProjectID, s.ProjectName
-	entry.SessionID, entry.AgentCorrelationID, entry.ParentRequestID = s.SessionID, s.AgentCorrelationID, s.ParentRequestID
-	entry.UserAgent, entry.App = s.UserAgent, s.App
-	entry.TeamIDsParsed, entry.TeamNamesParsed = s.TeamIDs, s.TeamNames
-	entry.CustomerIDsParsed, entry.CustomerNamesParsed = s.CustomerIDs, s.CustomerNames
-	entry.BusinessUnitIDsParsed, entry.BusinessUnitNamesParsed = s.BusinessUnitIDs, s.BusinessUnitNames
-}
+// relayJobDimensionsKey is where a job's params keep its start call's x-bf-dim-* values, beside the
+// relay's snapshot. The start call's row mixes them into its metadata, so they are kept apart for
+// the settlement's metrics labels. Nothing else from the start call is stored with the job.
+const relayJobDimensionsKey = "dimensions"
 
-// WithRelayJobStart returns a job's params with its start call's details added beside the relay's
-// snapshot; the snapshot reader ignores the extra key. dims are the call's x-bf-dim-* values, which
-// its row keeps only mixed into metadata. On failure the params are returned unchanged.
-func WithRelayJobStart(params string, start *logstore.RelayLog, dims map[string]string) string {
-	if start == nil {
+// WithRelayJobDimensions returns a job's params with its start call's x-bf-dim-* values added; the
+// snapshot reader ignores the extra key. On failure, or with none, the params are returned unchanged.
+func WithRelayJobDimensions(params string, dims map[string]string) string {
+	if len(dims) == 0 {
 		return params
 	}
-	details := RelayJobStartOf(start)
-	if len(dims) > 0 {
-		details.Dimensions = dims
-	}
-	raw, err := providerUtils.MarshalSorted(details)
+	raw, err := providerUtils.MarshalSorted(dims)
 	if err != nil {
 		return params
 	}
-	out, err := providerUtils.SetRawJSONField([]byte(params), relayJobStartKey, raw)
+	out, err := providerUtils.SetRawJSONField([]byte(params), relayJobDimensionsKey, raw)
 	if err != nil {
 		return params
 	}
 	return string(out)
 }
 
-// relayJobStartOf reads the details stored with a job at its start. A job recorded before they were
-// stored has none, so its route falls back to the endpoint the job row keeps.
-func relayJobStartOf(job *cstables.TableProviderJob) RelayJobStart {
-	var start RelayJobStart
-	if job.Params != nil {
-		if raw := providerUtils.GetJSONField([]byte(*job.Params), relayJobStartKey); raw.IsObject() {
-			_ = sonic.UnmarshalString(raw.Raw, &start)
-		}
+// relayJobDimensions reads the x-bf-dim-* values stored with a job at its start.
+func relayJobDimensions(job *cstables.TableProviderJob) map[string]string {
+	if job.Params == nil {
+		return nil
 	}
-	if start.RoutePath == "" {
-		start.RoutePath = job.Endpoint
+	raw := providerUtils.GetJSONField([]byte(*job.Params), relayJobDimensionsKey)
+	if !raw.IsObject() {
+		return nil
 	}
-	return start
+	var dims map[string]string
+	_ = sonic.UnmarshalString(raw.Raw, &dims)
+	return dims
 }
 
 // Emit reports the settled row to the trace-fed connectors. It runs once, after the row and its
 // marker are saved, with the start call's dimensions so the cost keeps its custom labels.
 func (e *relayLogsRecord) Emit(ctx context.Context) {
 	if e.emitter != nil && e.written != nil {
-		e.emitter.EmitRelaySettlement(ctx, e.written, relayJobStartOf(e.job).Dimensions)
+		e.emitter.EmitRelaySettlement(ctx, e.written, relayJobDimensions(e.job))
 	}
 }
 

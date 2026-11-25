@@ -657,7 +657,8 @@ func (p *LoggerPlugin) accountRelayStatusCheck(entry *logstore.RelayLog, resp *s
 		ctx, cancel := context.WithTimeout(p.ctx, jobAccountingTimeout)
 		defer cancel()
 		outcome, err := jobaccounting.AccountRelayJob(ctx, p.batchStore, p.store, reporter, poller, req)
-		if err != nil {
+		// A job settled moments after its start waits for the start call's row; the sweeper takes it.
+		if err != nil && !errors.Is(err, jobaccounting.ErrRelayStartRowPending) {
 			p.logger.Warn("failed to account relay job from a status check relay=%s job_id=%s: %v", relayName, check.JobID, err)
 			return
 		}
@@ -708,9 +709,9 @@ func (p *LoggerPlugin) recordEndpointJob(entry *logstore.RelayLog, relayName str
 		}
 	}
 	next := time.Now().UTC().Add(time.Duration(max(job.IntervalSeconds, 1)) * time.Second)
-	// The start call's details travel with the job, so a job settled before this row is written
-	// still shows its route, app and names.
-	params := jobaccounting.WithRelayJobStart(job.Params, entry, dims)
+	// Only the start call's x-bf-dim-* values travel with the job, for its settlement's metrics
+	// labels; its names come from the start call's own row when it settles, as for an LLM job.
+	params := jobaccounting.WithRelayJobDimensions(job.Params, dims)
 	row := &tables.TableProviderJob{
 		ID:             id,
 		Kind:           kind,
