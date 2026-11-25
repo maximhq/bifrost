@@ -445,6 +445,9 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	go func() {
+		// Registered first so it runs last: the cancellation and timeout handlers below
+		// run post-hooks on the plugin pipeline that the finalizer releases.
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
 				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
@@ -466,7 +469,6 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
-		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 
 		// read binary audio chunks from the stream

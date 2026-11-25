@@ -4664,7 +4664,10 @@ func TestRecoverStreamPanic(t *testing.T) {
 // TestProviderStreamGoroutinesRecoverPanics guards every provider streaming goroutine:
 // any `go func()` that defers EnsureStreamFinalizerCalled must also defer
 // RecoverStreamPanic, registered after the defer that closes the stream so it runs
-// first, while the channel is still open for the terminal error chunk.
+// first, while the channel is still open for the terminal error chunk. The
+// EnsureStreamFinalizerCalled defer itself must be registered before every defer that
+// runs post-hooks (RecoverStreamPanic, and the cancellation and timeout handlers), so
+// the finalizer, which releases the request's plugin pipeline, runs after them.
 func TestProviderStreamGoroutinesRecoverPanics(t *testing.T) {
 	calls := func(n ast.Node, name string) bool {
 		found := false
@@ -4711,23 +4714,25 @@ func TestProviderStreamGoroutinesRecoverPanics(t *testing.T) {
 			if !ok {
 				return true
 			}
-			var finalizer bool
-			closeAt, recoverAt := -1, -1
+			finalizerAt, closeAt, recoverAt, postHookAt := -1, -1, -1, -1
 			for i, stmt := range lit.Body.List {
 				d, ok := stmt.(*ast.DeferStmt)
 				if !ok {
 					continue
 				}
+				if postHookAt < 0 && (calls(d.Call, "RecoverStreamPanic") || calls(d.Call, "HandleStreamCancellation") || calls(d.Call, "HandleStreamTimeout")) {
+					postHookAt = i
+				}
 				switch {
 				case calls(d.Call, "EnsureStreamFinalizerCalled"):
-					finalizer = true
+					finalizerAt = i
 				case calls(d.Call, "RecoverStreamPanic"):
 					recoverAt = i
 				case calls(d.Call, "CloseStream"):
 					closeAt = i
 				}
 			}
-			if !finalizer {
+			if finalizerAt < 0 {
 				return true
 			}
 			checked++
@@ -4736,6 +4741,9 @@ func TestProviderStreamGoroutinesRecoverPanics(t *testing.T) {
 				t.Errorf("%s: streaming goroutine defers EnsureStreamFinalizerCalled but not RecoverStreamPanic", pos)
 			} else if closeAt >= 0 && recoverAt < closeAt {
 				t.Errorf("%s: RecoverStreamPanic must be deferred after the defer that closes the stream", pos)
+			}
+			if postHookAt >= 0 && finalizerAt > postHookAt {
+				t.Errorf("%s: EnsureStreamFinalizerCalled must be deferred before the defers that run post-hooks, so the plugin pipeline is released after them", pos)
 			}
 			return true
 		})

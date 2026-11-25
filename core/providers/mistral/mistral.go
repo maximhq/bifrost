@@ -671,6 +671,9 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 
 	// Start streaming in a goroutine
 	go func() {
+		// Registered first so it runs last: the cancellation and timeout handlers below
+		// run post-hooks on the plugin pipeline that the finalizer releases.
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
 				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, nil)
@@ -692,7 +695,6 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
-		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 
 		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
