@@ -260,6 +260,7 @@ func decodeGeminiInteraction(ctx *schemas.BifrostContext, t *GeminiInteractionsT
 	// A create that names neither model nor agent in its answer ran the requested model, which its
 	// searches are counted by.
 	resp := interaction.toBifrostResponsesResponse(requestModel)
+	markGeminiClientToolSearchCalls(resp.Output, geminiInteractionsClientToolSearchName(requestBody))
 	switch job {
 	case jobRead:
 		resp.ProviderJob = t.interactionJob(resp, interaction.Status, interaction.Usage, interaction.ServiceTier, false)
@@ -668,6 +669,7 @@ func streamGeminiInteractions(ctx *schemas.BifrostContext, t *GeminiInteractions
 		// A resumed retrieve stream may open after interaction.created; its envelopes still name the run.
 		state.ID = runID
 		state.RawReplay = native
+		state.ClientToolSearchName = geminiInteractionsClientToolSearchName(body)
 		streamUsage := &schemas.BifrostLLMUsage{}
 		// A replay the caller abandons owes nothing: the run's usage belongs to the run.
 		if method == http.MethodPost {

@@ -1716,6 +1716,12 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 				m.ToolSearchOutputTools = json.RawMessage(tools.Raw)
 			}
 		}
+		// A Gemini tool search item carries the signature Google needs back on replay.
+		if t == string(ResponsesMessageTypeToolSearchCall) || t == string(ResponsesMessageTypeToolSearchOutput) {
+			if ec := gjson.GetBytes(data, "encrypted_content"); ec.Type == gjson.String && ec.String() != "" {
+				m.ResponsesReasoning = &ResponsesReasoning{EncryptedContent: Ptr(ec.String())}
+			}
+		}
 		// additional_tools carries the codex tool declarations; same rationale.
 		if t == string(ResponsesMessageTypeAdditionalTools) {
 			if tools := gjson.GetBytes(data, "tools"); tools.IsArray() {
@@ -1858,6 +1864,9 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 		aux := &struct {
 			Arguments json.RawMessage `json:"arguments,omitempty"`
 			Tools     json.RawMessage `json:"tools,omitempty"`
+			Summary   json.RawMessage `json:"summary,omitempty"` // shadows the reasoning summary a signature-only ResponsesReasoning would emit as null
+			Error     json.RawMessage `json:"error,omitempty"`   // shadows the in-memory failure text; tool_search_output has no error field
+			Output    json.RawMessage `json:"output,omitempty"`  // shadows the in-memory no-match message; it has no output field either
 			*Alias
 		}{
 			Alias: (*Alias)(&m),
@@ -2287,6 +2296,52 @@ const ToolSearchExecutionClient = "client"
 // for byte (an OpenAI tool_search_call, tool_search_output or additional_tools item).
 func (m *ResponsesMessage) IsVerbatimItem() bool {
 	return len(m.rawPreserved) > 0
+}
+
+// WithoutEncryptedContent returns m without its encrypted_content, in the decoded field and in the
+// bytes a verbatim item is re-emitted from, and whether either held one. m is not modified.
+func (m ResponsesMessage) WithoutEncryptedContent() (ResponsesMessage, bool) {
+	changed := false
+	if m.ResponsesReasoning != nil && m.ResponsesReasoning.EncryptedContent != nil {
+		reasoning := *m.ResponsesReasoning
+		reasoning.EncryptedContent = nil
+		m.ResponsesReasoning = &reasoning
+		changed = true
+	}
+	if len(m.rawPreserved) > 0 && gjson.GetBytes(m.rawPreserved, "encrypted_content").Exists() {
+		if stripped, err := sjson.DeleteBytes(append([]byte(nil), m.rawPreserved...), "encrypted_content"); err == nil {
+			m.rawPreserved = stripped
+			changed = true
+		}
+	}
+	return m, changed
+}
+
+// WithoutPreservedBytes returns m without the bytes it was decoded from, so it is re-emitted, and can be
+// rebuilt, from its decoded fields. m is not modified.
+func (m ResponsesMessage) WithoutPreservedBytes() ResponsesMessage {
+	m.rawPreserved = nil
+	return m
+}
+
+// SignedToolSearchCalls returns the call ids of the hosted tool searches in input of which an item carries a
+// signature, so a converter treats a call and its output alike when only one does. It does not allocate when
+// there are none.
+func SignedToolSearchCalls(input []ResponsesMessage) map[string]struct{} {
+	var signed map[string]struct{}
+	for i := range input {
+		m := &input[i]
+		if m.Type == nil || (*m.Type != ResponsesMessageTypeToolSearchCall && *m.Type != ResponsesMessageTypeToolSearchOutput) ||
+			m.ResponsesReasoning == nil || m.ResponsesReasoning.EncryptedContent == nil ||
+			m.ResponsesToolMessage == nil || m.CallID == nil || m.IsClientToolSearchItem() {
+			continue
+		}
+		if signed == nil {
+			signed = make(map[string]struct{})
+		}
+		signed[*m.CallID] = struct{}{}
+	}
+	return signed
 }
 
 // IsClientToolSearchItem reports whether m is a tool_search_call or tool_search_output

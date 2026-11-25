@@ -357146,6 +357146,1749 @@
       ]
     },
     {
+      "name": "383. Gemini Interactions tool search (tool retrieval) with deferred tools on /v1/responses and /genai (interactions tool search)",
+      "description": "Google's tool retrieval lets the model search a library of deferred tools (defer_loading) and load only the definitions it needs. It runs on the Interactions API only, on Gemini 3.6 and later. A Responses request with a tool_search tool now runs on Interactions; Google's tool_search_call and tool_search_result steps map onto the Responses tool_search_call and tool_search_output items (execution server), each carrying Google's signature as encrypted_content so a stateless replay can send it back. A deferred tool without a tool_search on a stored turn gets the search Google requires. A client tool_search (execution client) is sent with a name; the model's call to it comes back as a client tool_search_call, and the caller's tool_search_output goes back as the function_result Google documents. The native /genai route forwards the body and returns Google's own steps. Vertex refuses a list of functions as a search result, so there Bifrost declares what a client search loaded and sends the result as text. A tool_choice that names a loaded function has it declared too, as Google refuses a choice of a function tools does not list.",
+      "item": [
+        {
+          "name": "383.1 gemini tool_search with deferred functions via /v1/responses: tool_search_call and tool_search_output items with signatures, then the function call - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"input\": \"Use your tools to convert 100 USD to EUR. Call the conversion tool; do not answer from memory.\",\n  \"tools\": [\n    {\n      \"type\": \"tool_search\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"convert_currency\",\n      \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"amount\": {\n            \"type\": \"number\"\n          },\n          \"from_currency\": {\n            \"type\": \"string\"\n          },\n          \"to_currency\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"amount\",\n          \"from_currency\",\n          \"to_currency\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"book_flight\",\n      \"description\": \"Book a flight between two airports on a date.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"from\": {\n            \"type\": \"string\"\n          },\n          \"to\": {\n            \"type\": \"string\"\n          },\n          \"date\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"from\",\n          \"to\",\n          \"date\"\n        ]\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: a tool_search tool was refused with 400 (\"the interactions API has no \\\"tool_search\\\" tool\"),",
+                  "// and the request ran on generateContent, which has no tool search. Now it runs on Interactions, Google",
+                  "// searches the deferred tools, and the search comes back as the Responses items OpenAI uses for its own.",
+                  "",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini tool_search: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini tool_search: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "var out = j.output || [];",
+                  "var types = out.map(function (o) { return o.type; });",
+                  "pm.test('gemini tool_search: the search is a server tool_search_call with Google\\'s signature - interactions tool search', function () {",
+                  "  var calls = ofType(out, 'tool_search_call');",
+                  "  pm.expect(calls, JSON.stringify(types)).to.not.be.empty;",
+                  "  pm.expect(calls[0].execution, JSON.stringify(calls[0])).to.eql('server');",
+                  "  pm.expect(calls[0].call_id, JSON.stringify(calls[0])).to.be.a('string').and.not.empty;",
+                  "  pm.expect(calls[0].encrypted_content, 'the signature a stateless replay sends back: ' + JSON.stringify(calls[0])).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('gemini tool_search: tool_search_output lists the loaded declaration - interactions tool search', function () {",
+                  "  var outputs = ofType(out, 'tool_search_output');",
+                  "  pm.expect(outputs, JSON.stringify(types)).to.not.be.empty;",
+                  "  var names = (outputs[0].tools || []).map(function (t) { return t.name; });",
+                  "  pm.expect(names, JSON.stringify(outputs[0])).to.include('convert_currency');",
+                  "  pm.expect(outputs[0].call_id, JSON.stringify(outputs[0])).to.eql(ofType(out, 'tool_search_call')[0].call_id);",
+                  "  pm.expect(outputs[0].encrypted_content, JSON.stringify(outputs[0])).to.be.a('string').and.not.empty;",
+                  "});",
+                  "var fc = ofType(out, 'function_call').filter(function (o) { return o.name === 'convert_currency'; })[0];",
+                  "pm.test('gemini tool_search: the model calls the tool it loaded - interactions tool search', function () {",
+                  "  pm.expect(fc, JSON.stringify(types)).to.be.an('object');",
+                  "});",
+                  "pm.test('gemini tool_search: the search steps are mapped, not left raw - interactions tool search', function () {",
+                  "  var raw = ((j.provider_extra_fields || {}).steps || []).map(function (s) { return s.type; });",
+                  "  pm.expect(raw, JSON.stringify(raw)).to.not.include('tool_search_call');",
+                  "  pm.expect(raw, JSON.stringify(raw)).to.not.include('tool_search_result');",
+                  "});",
+                  "pm.collectionVariables.set('h383ResponseId', j.id);",
+                  "pm.collectionVariables.set('h383CallId', fc ? fc.call_id : '');",
+                  "// The stateless replay (383.3): the user turn, every item Google returned unchanged, and the function result.",
+                  "pm.collectionVariables.set('h383ReplayInput', JSON.stringify([{ type: 'message', role: 'user', content: \"Use your tools to convert 100 USD to EUR. Call the conversion tool; do not answer from memory.\" }].concat(out).concat([{ type: 'function_call_output', call_id: fc ? fc.call_id : '', output: '{\"amount\": 92.0, \"currency\": \"EUR\"}' }])));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.2 gemini tool_search stream via /v1/responses: search items stream as output items and response.completed carries them - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"input\": \"Use your tools to convert 100 USD to EUR. Call the conversion tool; do not answer from memory.\",\n  \"stream\": true,\n  \"store\": false,\n  \"tools\": [\n    {\n      \"type\": \"tool_search\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"convert_currency\",\n      \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"amount\": {\n            \"type\": \"number\"\n          },\n          \"from_currency\": {\n            \"type\": \"string\"\n          },\n          \"to_currency\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"amount\",\n          \"from_currency\",\n          \"to_currency\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"book_flight\",\n      \"description\": \"Book a flight between two airports on a date.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"from\": {\n            \"type\": \"string\"\n          },\n          \"to\": {\n            \"type\": \"string\"\n          },\n          \"date\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"from\",\n          \"to\",\n          \"date\"\n        ]\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: the request was refused with 400. Each search step now streams as one whole item.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini tool_search stream: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var events = [];",
+                  "body.replace(/\\r\\n/g, '\\n').split('\\n\\n').forEach(function (block) {",
+                  "  var data = [];",
+                  "  block.split('\\n').forEach(function (l) { if (l.indexOf('data:') === 0) { data.push(l.slice(5).replace(/^ /, '')); } });",
+                  "  var d = data.join('\\n');",
+                  "  if (!d || d === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(d)); } catch (e) { pm.expect.fail('a frame carries JSON data: ' + d.slice(0, 200)); }",
+                  "});",
+                  "var types = events.map(function (e) { return e.type; });",
+                  "pm.test('gemini tool_search stream: no error event - interactions tool search', function () {",
+                  "  pm.expect(types, body.slice(0, 600)).to.not.include('error');",
+                  "  pm.expect(types, body.slice(0, 600)).to.not.include('response.failed');",
+                  "});",
+                  "pm.test('gemini tool_search stream: the search call and output each finish as an item - interactions tool search', function () {",
+                  "  var done = events.filter(function (e) { return e.type === 'response.output_item.done' && e.item; }).map(function (e) { return e.item.type; });",
+                  "  pm.expect(done, JSON.stringify(done)).to.include('tool_search_call');",
+                  "  pm.expect(done, JSON.stringify(done)).to.include('tool_search_output');",
+                  "});",
+                  "var completed = events.filter(function (e) { return e.type === 'response.completed'; })[0];",
+                  "pm.test('gemini tool_search stream: response.completed carries the search and the call - interactions tool search', function () {",
+                  "  pm.expect(completed, JSON.stringify(types).slice(0, 400)).to.be.an('object');",
+                  "  var outTypes = ((completed.response || {}).output || []).map(function (o) { return o.type; });",
+                  "  pm.expect(outTypes, JSON.stringify(outTypes)).to.include('tool_search_call');",
+                  "  pm.expect(outTypes, JSON.stringify(outTypes)).to.include('function_call');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.3 gemini tool_search stateless replay via /v1/responses with store false: the signed search items go back and the model answers - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"store\": false,\n  \"tools\": [\n    {\n      \"type\": \"tool_search\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"convert_currency\",\n      \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"amount\": {\n            \"type\": \"number\"\n          },\n          \"from_currency\": {\n            \"type\": \"string\"\n          },\n          \"to_currency\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"amount\",\n          \"from_currency\",\n          \"to_currency\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"book_flight\",\n      \"description\": \"Book a flight between two airports on a date.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"from\": {\n            \"type\": \"string\"\n          },\n          \"to\": {\n            \"type\": \"string\"\n          },\n          \"date\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"from\",\n          \"to\",\n          \"date\"\n        ]\n      }\n    }\n  ],\n  \"input\": {{h383ReplayInput}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: a tool_search_call input item was refused with 400. Google refuses a deferred call whose search",
+                  "// it cannot verify (\"Server side tool call context must be circulated\"), so this passes only when each",
+                  "// search item goes back as its step with the signature Google issued.",
+                  "",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini tool_search replay: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini tool_search replay: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "pm.test('gemini tool_search replay: the model answers with the tool result - interactions tool search', function () {",
+                  "  var text = ofType(j.output, 'message').map(function (m) { return (m.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "  pm.expect(text, JSON.stringify(j.output).slice(0, 600)).to.match(/92/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.4 gemini tool_search continuation with previous_response_id via /v1/responses: the function result finishes the turn - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"previous_response_id\": \"{{h383ResponseId}}\",\n  \"tools\": [\n    {\n      \"type\": \"tool_search\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"convert_currency\",\n      \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"amount\": {\n            \"type\": \"number\"\n          },\n          \"from_currency\": {\n            \"type\": \"string\"\n          },\n          \"to_currency\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"amount\",\n          \"from_currency\",\n          \"to_currency\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"book_flight\",\n      \"description\": \"Book a flight between two airports on a date.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"from\": {\n            \"type\": \"string\"\n          },\n          \"to\": {\n            \"type\": \"string\"\n          },\n          \"date\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"from\",\n          \"to\",\n          \"date\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"{{h383CallId}}\",\n      \"output\": \"{\\\"amount\\\": 92.0, \\\"currency\\\": \\\"EUR\\\"}\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('gemini tool_search continuation: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini tool_search continuation: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "pm.test('gemini tool_search continuation: the model answers with the tool result - interactions tool search', function () {",
+                  "  var text = ofType(j.output, 'message').map(function (m) { return (m.content || []).map(function (c) { return c.text || ''; }).join(''); }).join('');",
+                  "  pm.expect(text, JSON.stringify(j.output).slice(0, 600)).to.match(/92/);",
+                  "});",
+                  "pm.collectionVariables.set('h383ContinuedId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.5 gemini deferred functions without tool_search on a stored turn via /v1/responses: Bifrost adds the search Google requires - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"previous_response_id\": \"{{h383ContinuedId}}\",\n  \"input\": \"Now check the weather in Paris with your tools.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"convert_currency\",\n      \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"amount\": {\n            \"type\": \"number\"\n          },\n          \"from_currency\": {\n            \"type\": \"string\"\n          },\n          \"to_currency\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"amount\",\n          \"from_currency\",\n          \"to_currency\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"book_flight\",\n      \"description\": \"Book a flight between two airports on a date.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"from\": {\n            \"type\": \"string\"\n          },\n          \"to\": {\n            \"type\": \"string\"\n          },\n          \"date\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"from\",\n          \"to\",\n          \"date\"\n        ]\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: defer_loading was dropped, so Google got every tool up front and never searched. Google refuses",
+                  "// defer_loading without a tool_search, so Bifrost now adds one on models that serve tool retrieval.",
+                  "",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini deferred without tool_search: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini deferred without tool_search: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "pm.collectionVariables.set('h383DeferredId', j.id);",
+                  "var types = (j.output || []).map(function (o) { return o.type; });",
+                  "pm.test('gemini deferred without tool_search: Google searched the deferred tools - interactions tool search', function () {",
+                  "  pm.expect(types, JSON.stringify(types)).to.include('tool_search_call');",
+                  "});",
+                  "pm.test('gemini deferred without tool_search: the model calls the tool it found - interactions tool search', function () {",
+                  "  var names = ofType(j.output, 'function_call').map(function (o) { return o.name; });",
+                  "  pm.expect(names, JSON.stringify(j.output).slice(0, 600)).to.include('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.6 gemini tool_search via typed /genai/v1beta/interactions (native): Google's own search steps come back unchanged - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "interactions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-3.8-flash\",\n  \"input\": \"Use your tools to convert 100 USD to EUR. Call the conversion tool; do not answer from memory.\",\n  \"tools\": [\n    {\n      \"type\": \"tool_search\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"convert_currency\",\n      \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n      \"short_description\": \"Currency conversion\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"amount\": {\n            \"type\": \"number\"\n          },\n          \"from_currency\": {\n            \"type\": \"string\"\n          },\n          \"to_currency\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"amount\",\n          \"from_currency\",\n          \"to_currency\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('gemini native tool_search: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini native tool_search: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "var j = pm.response.json() || {};",
+                  "var steps = (j.steps || []).map(function (s) { return s.type; });",
+                  "pm.test('gemini native tool_search: Google\\'s tool_search_call and tool_search_result steps reach the caller - interactions tool search', function () {",
+                  "  pm.expect(steps, JSON.stringify(steps)).to.include('tool_search_call');",
+                  "  pm.expect(steps, JSON.stringify(steps)).to.include('tool_search_result');",
+                  "});",
+                  "pm.test('gemini native tool_search: the search steps keep their signatures - interactions tool search', function () {",
+                  "  (j.steps || []).filter(function (s) { return s.type === 'tool_search_call' || s.type === 'tool_search_result'; }).forEach(function (s) {",
+                  "    pm.expect(s.signature, JSON.stringify(s).slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.collectionVariables.set('h383NativeId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.7 gemini interactions create stored via /genai, producer for the client tool search turn - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "interactions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-3.8-flash\",\n  \"input\": \"I will ask about money next. Reply OK.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('gemini client search seed: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini client search seed: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "var j = pm.response.json() || {};",
+                  "pm.test('gemini client search seed: a stored run id - interactions tool search', function () { pm.expect(j.id, body.slice(0, 600)).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('h383ClientSeedId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.8 gemini client tool_search via /v1/responses on interactions: the model's search comes back as a client tool_search_call - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"previous_response_id\": \"{{h383ClientSeedId}}\",\n  \"input\": \"Use your tools to convert 100 USD to EUR. Call the conversion tool; do not answer from memory.\",\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"name\": \"search_tool_registry\",\n      \"description\": \"Search the tool registry for tools that match a task. Returns the matching tool declarations.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\",\n            \"description\": \"What the tool should do.\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: Google's function call to the search came back as a plain function_call, which a Responses client",
+                  "// that dispatches tool_search_call never runs.",
+                  "",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini client tool_search: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini client tool_search: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "var calls = ofType(j.output, 'tool_search_call');",
+                  "pm.test('gemini client tool_search: a client tool_search_call with object arguments - interactions tool search', function () {",
+                  "  pm.expect(calls, JSON.stringify(j.output).slice(0, 600)).to.not.be.empty;",
+                  "  pm.expect(calls[0].execution, JSON.stringify(calls[0])).to.eql('client');",
+                  "  pm.expect(calls[0].call_id, JSON.stringify(calls[0])).to.be.a('string').and.not.empty;",
+                  "  pm.expect(calls[0].arguments, JSON.stringify(calls[0])).to.be.an('object');",
+                  "});",
+                  "pm.test('gemini client tool_search: no plain function call to the search tool - interactions tool search', function () {",
+                  "  var names = ofType(j.output, 'function_call').map(function (o) { return o.name; });",
+                  "  pm.expect(names, JSON.stringify(names)).to.not.include('search_tool_registry');",
+                  "});",
+                  "pm.collectionVariables.set('h383ClientTurnId', j.id);",
+                  "pm.collectionVariables.set('h383ClientCallId', calls.length ? calls[0].call_id : '');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.9 gemini client tool_search_output via /v1/responses: the loaded declaration reaches Google and the model calls it - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"previous_response_id\": \"{{h383ClientTurnId}}\",\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"name\": \"search_tool_registry\",\n      \"description\": \"Search the tool registry for tools that match a task. Returns the matching tool declarations.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\",\n            \"description\": \"What the tool should do.\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"tool_search_output\",\n      \"call_id\": \"{{h383ClientCallId}}\",\n      \"execution\": \"client\",\n      \"status\": \"completed\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"convert_currency\",\n          \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"amount\": {\n                \"type\": \"number\"\n              },\n              \"from_currency\": {\n                \"type\": \"string\"\n              },\n              \"to_currency\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"amount\",\n              \"from_currency\",\n              \"to_currency\"\n            ]\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: a tool_search_output input item was refused with 400. It now goes to Google as the",
+                  "// function_result of the caller's search.",
+                  "",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini client tool_search_output: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini client tool_search_output: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "pm.collectionVariables.set('h383ClientAnswerId', j.id);",
+                  "pm.test('gemini client tool_search_output: the model calls the declaration the caller loaded - interactions tool search', function () {",
+                  "  var names = ofType(j.output, 'function_call').map(function (o) { return o.name; });",
+                  "  pm.expect(names, JSON.stringify(j.output).slice(0, 600)).to.include('convert_currency');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.17 gemini client tool_search via /v1/responses on generateContent: the model's search comes back as a client tool_search_call - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"store\": false,\n  \"tool_choice\": \"required\",\n  \"input\": \"Convert 100 USD to EUR. No tool you have converts currency, so search the tool registry for one first; do not answer from memory.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"name\": \"search_tool_registry\",\n      \"description\": \"Search the tool registry for tools that match a task. Returns the matching tool declarations.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\",\n            \"description\": \"What the tool should do.\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: generateContent dropped a client tool_search, so the model never saw the search the caller",
+                  "// declared. With no previous_response_id, store false and no server search, the turn stays on generateContent.",
+                  "",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini client tool_search on generateContent: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini client tool_search on generateContent: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "var calls = ofType(j.output, 'tool_search_call');",
+                  "pm.test('gemini client tool_search on generateContent: the search call comes back as a client tool_search_call - interactions tool search', function () {",
+                  "  pm.expect(calls, JSON.stringify(j.output).slice(0, 600)).to.not.be.empty;",
+                  "  pm.expect(calls[0].execution, JSON.stringify(calls[0])).to.eql('client');",
+                  "  pm.expect(calls[0].call_id, JSON.stringify(calls[0])).to.be.a('string').and.not.empty;",
+                  "  pm.expect(calls[0].arguments, JSON.stringify(calls[0])).to.be.an('object');",
+                  "  pm.expect(calls[0].arguments.query, JSON.stringify(calls[0])).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('gemini client tool_search on generateContent: no plain function call to the search tool - interactions tool search', function () {",
+                  "  var names = ofType(j.output, 'function_call').map(function (o) { return o.name; });",
+                  "  pm.expect(names, JSON.stringify(names)).to.not.include('search_tool_registry');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.18 gemini client tool_search stream via /v1/responses on generateContent: the search streams as one client tool_search_call item - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"store\": false,\n  \"tool_choice\": \"required\",\n  \"input\": \"Convert 100 USD to EUR. No tool you have converts currency, so search the tool registry for one first; do not answer from memory.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"name\": \"search_tool_registry\",\n      \"description\": \"Search the tool registry for tools that match a task. Returns the matching tool declarations.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\",\n            \"description\": \"What the tool should do.\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: the call to the caller's search streamed as a plain function_call with argument deltas.",
+                  "",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini client tool_search stream on generateContent: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var events = [];",
+                  "body.replace(/\\r\\n/g, '\\n').split('\\n\\n').forEach(function (block) {",
+                  "  var data = [];",
+                  "  block.split('\\n').forEach(function (l) { if (l.indexOf('data:') === 0) { data.push(l.slice(5).replace(/^ /, '')); } });",
+                  "  var d = data.join('\\n');",
+                  "  if (!d || d === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(d)); } catch (e) { pm.expect.fail('a frame carries JSON data: ' + d.slice(0, 200)); }",
+                  "});",
+                  "var types = events.map(function (e) { return e.type; });",
+                  "pm.test('gemini client tool_search stream on generateContent: no error event, and the response completes - interactions tool search', function () {",
+                  "  pm.expect(types, body.slice(0, 600)).to.not.include('error');",
+                  "  pm.expect(types, body.slice(0, 600)).to.not.include('response.failed');",
+                  "  pm.expect(types.filter(function (t) { return t === 'response.completed'; }).length, JSON.stringify(types)).to.eql(1);",
+                  "});",
+                  "var added = events.filter(function (e) { return e.type === 'response.output_item.added' && e.item && e.item.type === 'tool_search_call'; });",
+                  "pm.test('gemini client tool_search stream on generateContent: the search opens and finishes as a client tool_search_call item - interactions tool search', function () {",
+                  "  pm.expect(added, JSON.stringify(types)).to.not.be.empty;",
+                  "  pm.expect(added[0].item.execution, JSON.stringify(added[0])).to.eql('client');",
+                  "  var done = events.filter(function (e) { return e.type === 'response.output_item.done' && e.item && e.item.id === added[0].item.id; });",
+                  "  pm.expect(done.length, JSON.stringify(types)).to.eql(1);",
+                  "  pm.expect(done[0].item.type, JSON.stringify(done[0])).to.eql('tool_search_call');",
+                  "  pm.expect(done[0].item.arguments, JSON.stringify(done[0])).to.be.an('object');",
+                  "});",
+                  "pm.test('gemini client tool_search stream on generateContent: the search item streams no function-call argument events - interactions tool search', function () {",
+                  "  var id = added.length ? added[0].item.id : '';",
+                  "  var argEvents = events.filter(function (e) { return (e.type || '').indexOf('function_call_arguments') !== -1 && e.item_id === id; });",
+                  "  pm.expect(argEvents, JSON.stringify(argEvents).slice(0, 400)).to.be.empty;",
+                  "});",
+                  "var completed = events.filter(function (e) { return e.type === 'response.completed'; })[0] || {};",
+                  "pm.test('gemini client tool_search stream on generateContent: response.completed carries the client tool_search_call - interactions tool search', function () {",
+                  "  var out = (completed.response || {}).output || [];",
+                  "  pm.expect(ofType(out, 'tool_search_call').length, JSON.stringify(out).slice(0, 600)).to.eql(1);",
+                  "  pm.expect(ofType(out, 'function_call').map(function (o) { return o.name; }), JSON.stringify(out).slice(0, 600)).to.not.include('search_tool_registry');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.19 gemini client tool_search history via /v1/responses on generateContent: the loaded declaration reaches Google and the model calls it - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"store\": false,\n  \"tool_choice\": \"required\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"name\": \"search_tool_registry\",\n      \"description\": \"Search the tool registry for tools that match a task. Returns the matching tool declarations.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\",\n            \"description\": \"What the tool should do.\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"Convert 100 USD to EUR. No tool you have converts currency, so search the tool registry for one first; do not answer from memory.\"\n    },\n    {\n      \"type\": \"tool_search_call\",\n      \"execution\": \"client\",\n      \"call_id\": \"call_registry_1\",\n      \"status\": \"completed\",\n      \"arguments\": {\n        \"query\": \"convert currency\"\n      }\n    },\n    {\n      \"type\": \"tool_search_output\",\n      \"execution\": \"client\",\n      \"call_id\": \"call_registry_1\",\n      \"status\": \"completed\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"convert_currency\",\n          \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"amount\": {\n                \"type\": \"number\"\n              },\n              \"from_currency\": {\n                \"type\": \"string\"\n              },\n              \"to_currency\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"amount\",\n              \"from_currency\",\n              \"to_currency\"\n            ]\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: generateContent dropped the client search call and output, so the loaded declaration never",
+                  "// reached Google. It now goes up as the search function's call and response, and the loaded function is declared.",
+                  "",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini client tool_search history on generateContent: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini client tool_search history on generateContent: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "pm.test('gemini client tool_search history on generateContent: the model calls the declaration the caller loaded - interactions tool search', function () {",
+                  "  var names = ofType(j.output, 'function_call').map(function (o) { return o.name; });",
+                  "  pm.expect(names, JSON.stringify(j.output).slice(0, 600)).to.include('convert_currency');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.20 gemini client tool_search namespace via /v1/responses on generateContent: a loaded namespace member is declared and its call comes back under the namespace - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"store\": false,\n  \"tool_choice\": \"required\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Current weather for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"name\": \"search_tool_registry\",\n      \"description\": \"Search the tool registry for tools that match a task. Returns the matching tool declarations.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\",\n            \"description\": \"What the tool should do.\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"Convert 100 USD to EUR. No tool you have converts currency, so search the tool registry for one first; do not answer from memory.\"\n    },\n    {\n      \"type\": \"tool_search_call\",\n      \"execution\": \"client\",\n      \"call_id\": \"call_registry_2\",\n      \"status\": \"completed\",\n      \"arguments\": {\n        \"query\": \"convert currency\"\n      }\n    },\n    {\n      \"type\": \"tool_search_output\",\n      \"execution\": \"client\",\n      \"call_id\": \"call_registry_2\",\n      \"status\": \"completed\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"fx\",\n          \"description\": \"Currency tools\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"convert_currency\",\n              \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"amount\": {\n                    \"type\": \"number\"\n                  },\n                  \"from_currency\": {\n                    \"type\": \"string\"\n                  },\n                  \"to_currency\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"amount\",\n                  \"from_currency\",\n                  \"to_currency\"\n                ]\n              }\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: a namespace a client search loaded was never declared on generateContent, so the model could not call",
+                  "// its members. They are now declared under flat names and the call comes back under the namespace.",
+                  "",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini client tool_search namespace on generateContent: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini client tool_search namespace on generateContent: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "var j = pm.response.json() || {};",
+                  "var calls = (j.output || []).filter(function (o) { return o.type === 'function_call' && o.name === 'convert_currency'; });",
+                  "pm.test('gemini client tool_search namespace on generateContent: the model calls the loaded member under its namespace - interactions tool search', function () {",
+                  "  pm.expect(calls, JSON.stringify(j.output).slice(0, 600)).to.not.be.empty;",
+                  "  pm.expect(calls[0].namespace, JSON.stringify(calls[0])).to.eql('fx');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.21 openai gpt-5.6-sol replay of signed gemini tool_search items via /v1/responses: rebuilt in the hosted shape - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"store\": false,\n  \"tools\": [\n    {\n      \"type\": \"tool_search\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"convert_currency\",\n      \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"amount\": {\n            \"type\": \"number\"\n          },\n          \"from_currency\": {\n            \"type\": \"string\"\n          },\n          \"to_currency\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"amount\",\n          \"from_currency\",\n          \"to_currency\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"book_flight\",\n      \"description\": \"Book a flight between two airports on a date.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"from\": {\n            \"type\": \"string\"\n          },\n          \"to\": {\n            \"type\": \"string\"\n          },\n          \"date\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"from\",\n          \"to\",\n          \"date\"\n        ]\n      }\n    }\n  ],\n  \"input\": {{h383ReplayInput}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('openai signed search replay: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = null;",
+                  "try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var dump = body.slice(0, 800);",
+                  "pm.test('openai signed search replay: served by openai - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), dump).to.eql('openai');",
+                  "});",
+                  "pm.test('openai signed search replay: the model answers with the tool result - interactions tool search', function () {",
+                  "  // Before: the items kept Google's call_id, which a hosted OpenAI search item does not have.",
+                  "  var text = (j.output || []).map(function (o) { return (o && o.type === 'message' && o.content || []).map(function (x) { return x && x.text || ''; }).join(''); }).join('');",
+                  "  pm.expect(text, dump).to.match(/92/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.22 gemini forced tool_choice on a function a client search loaded via /v1/responses: the function is declared and called - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"previous_response_id\": \"{{h383ClientTurnId}}\",\n  \"store\": false,\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"log_request\"\n  },\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"name\": \"search_tool_registry\",\n      \"description\": \"Search the tool registry for tools that match a task. Returns the matching tool declarations.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\",\n            \"description\": \"What the tool should do.\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"tool_search_output\",\n      \"call_id\": \"{{h383ClientCallId}}\",\n      \"execution\": \"client\",\n      \"status\": \"completed\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"fx\",\n          \"description\": \"Currency tools\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"convert_currency\",\n              \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"amount\": {\n                    \"type\": \"number\"\n                  },\n                  \"from_currency\": {\n                    \"type\": \"string\"\n                  },\n                  \"to_currency\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"amount\",\n                  \"from_currency\",\n                  \"to_currency\"\n                ]\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"log_request\",\n              \"description\": \"Write a line to the audit log.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"line\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"line\"\n                ]\n              }\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: Google refused the turn, \"`allowed_function_names` should be a subset of the provided",
+                  "// `function_declarations` names\", because only the search's result listed the function.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini forced loaded function: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini forced loaded function: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "pm.test('gemini forced loaded function: the model calls only fx.log_request - interactions tool search', function () {",
+                  "  var calls = ofType(j.output, 'function_call').map(function (o) { return (o.namespace || '') + '.' + o.name; });",
+                  "  pm.expect(calls, body.slice(0, 800)).to.not.be.empty;",
+                  "  calls.forEach(function (c) { pm.expect(c, JSON.stringify(calls)).to.eql('fx.log_request'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.23 gemini allowed_tools on a function a client search loaded via /v1/responses stream: the function is declared and called - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"previous_response_id\": \"{{h383ClientTurnId}}\",\n  \"store\": false,\n  \"stream\": true,\n  \"tool_choice\": {\n    \"type\": \"allowed_tools\",\n    \"mode\": \"required\",\n    \"tools\": [\n      {\n        \"type\": \"function\",\n        \"name\": \"log_request\"\n      }\n    ]\n  },\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"name\": \"search_tool_registry\",\n      \"description\": \"Search the tool registry for tools that match a task. Returns the matching tool declarations.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\",\n            \"description\": \"What the tool should do.\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"tool_search_output\",\n      \"call_id\": \"{{h383ClientCallId}}\",\n      \"execution\": \"client\",\n      \"status\": \"completed\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"fx\",\n          \"description\": \"Currency tools\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"convert_currency\",\n              \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"amount\": {\n                    \"type\": \"number\"\n                  },\n                  \"from_currency\": {\n                    \"type\": \"string\"\n                  },\n                  \"to_currency\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"amount\",\n                  \"from_currency\",\n                  \"to_currency\"\n                ]\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"log_request\",\n              \"description\": \"Write a line to the audit log.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"line\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"line\"\n                ]\n              }\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: Google refused the turn, \"`allowed_function_names` should be a subset of the provided",
+                  "// `function_declarations` names\", because only the search's result listed the function.",
+                  "var body = pm.response.text();",
+                  "pm.test('gemini allowed loaded function stream: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('gemini allowed loaded function stream: served by gemini - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('gemini');",
+                  "});",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var last = null;",
+                  "body.split('\\n').forEach(function (l) { if (l.indexOf('data:') !== 0) { return; } var e = null; try { e = JSON.parse(l.slice(5)); } catch (x) { return; } if (e.type === 'response.completed') { last = e.response; } });",
+                  "pm.test('gemini allowed loaded function stream: the stream completes - interactions tool search', function () {",
+                  "  pm.expect(last, body.slice(-600)).to.be.an('object');",
+                  "});",
+                  "pm.test('gemini allowed loaded function stream: the model calls only fx.log_request - interactions tool search', function () {",
+                  "  var calls = ofType((last || {}).output, 'function_call').map(function (o) { return (o.namespace || '') + '.' + o.name; });",
+                  "  pm.expect(calls, body.slice(0, 800)).to.not.be.empty;",
+                  "  calls.forEach(function (c) { pm.expect(c, JSON.stringify(calls)).to.eql('fx.log_request'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.24 vertex interactions create stored via typed /genai v1beta1 project path, producer for the client tool search turn - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta1/projects/{{vertexProject}}/locations/global/interactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "global",
+                "interactions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-3.6-flash\",\n  \"input\": \"I will ask about money next. Reply OK.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('vertex client search seed: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('vertex client search seed: served by vertex - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('vertex');",
+                  "});",
+                  "var j = pm.response.json() || {};",
+                  "pm.test('vertex client search seed: a stored run id - interactions tool search', function () {",
+                  "  pm.expect(j.id, body.slice(0, 600)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('h383VertexSeedId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.25 vertex client tool_search via /v1/responses on interactions: the model's search comes back as a client tool_search_call - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.6-flash\",\n  \"previous_response_id\": \"{{h383VertexSeedId}}\",\n  \"input\": \"Convert 100 USD to EUR. No tool you have converts currency, so search the tool registry for one first; do not answer from memory.\",\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"name\": \"search_tool_registry\",\n      \"description\": \"Search the tool registry for tools that match a task. Returns the matching tool declarations.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\",\n            \"description\": \"What the tool should do.\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('vertex client tool_search: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('vertex client tool_search: served by vertex - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('vertex');",
+                  "});",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "var calls = ofType(j.output, 'tool_search_call');",
+                  "pm.test('vertex client tool_search: a client tool_search_call - interactions tool search', function () {",
+                  "  pm.expect(calls, body.slice(0, 800)).to.not.be.empty;",
+                  "  pm.expect(calls[0].execution, JSON.stringify(calls[0])).to.eql('client');",
+                  "  pm.expect(calls[0].call_id, JSON.stringify(calls[0])).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('h383VertexTurnId', j.id);",
+                  "pm.collectionVariables.set('h383VertexCallId', calls.length ? calls[0].call_id : '');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.26 vertex client tool_search_output with a namespace via /v1/responses: the loaded functions are declared and the call comes back under the namespace - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.6-flash\",\n  \"previous_response_id\": \"{{h383VertexTurnId}}\",\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"name\": \"search_tool_registry\",\n      \"description\": \"Search the tool registry for tools that match a task. Returns the matching tool declarations.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\",\n            \"description\": \"What the tool should do.\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"tool_search_output\",\n      \"call_id\": \"{{h383VertexCallId}}\",\n      \"execution\": \"client\",\n      \"status\": \"completed\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"fx\",\n          \"description\": \"Currency tools\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"convert_currency\",\n              \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"amount\": {\n                    \"type\": \"number\"\n                  },\n                  \"from_currency\": {\n                    \"type\": \"string\"\n                  },\n                  \"to_currency\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"amount\",\n                  \"from_currency\",\n                  \"to_currency\"\n                ]\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"log_request\",\n              \"description\": \"Write a line to the audit log.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"line\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"line\"\n                ]\n              }\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: Vertex refused the list of functions with \"Unsupported list item type in tool result step\".",
+                  "var body = pm.response.text();",
+                  "pm.test('vertex client tool_search_output: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('vertex client tool_search_output: served by vertex - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('vertex');",
+                  "});",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "pm.collectionVariables.set('h383VertexAnswerId', j.id);",
+                  "pm.test('vertex client tool_search_output: the model calls only fx.convert_currency - interactions tool search', function () {",
+                  "  var calls = ofType(j.output, 'function_call').map(function (o) { return (o.namespace || '') + '.' + o.name; });",
+                  "  pm.expect(calls, body.slice(0, 800)).to.not.be.empty;",
+                  "  calls.forEach(function (c) { pm.expect(c, JSON.stringify(calls)).to.eql('fx.convert_currency'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.27 vertex forced tool_choice on a function a client search loaded via /v1/responses: the model calls it - interactions tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.6-flash\",\n  \"previous_response_id\": \"{{h383VertexTurnId}}\",\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"log_request\"\n  },\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"name\": \"search_tool_registry\",\n      \"description\": \"Search the tool registry for tools that match a task. Returns the matching tool declarations.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\",\n            \"description\": \"What the tool should do.\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"tool_search_output\",\n      \"call_id\": \"{{h383VertexCallId}}\",\n      \"execution\": \"client\",\n      \"status\": \"completed\",\n      \"tools\": [\n        {\n          \"type\": \"namespace\",\n          \"name\": \"fx\",\n          \"description\": \"Currency tools\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"convert_currency\",\n              \"description\": \"Convert an amount of money from one currency to another at the current rate.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"amount\": {\n                    \"type\": \"number\"\n                  },\n                  \"from_currency\": {\n                    \"type\": \"string\"\n                  },\n                  \"to_currency\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"amount\",\n                  \"from_currency\",\n                  \"to_currency\"\n                ]\n              }\n            },\n            {\n              \"type\": \"function\",\n              \"name\": \"log_request\",\n              \"description\": \"Write a line to the audit log.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"line\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"line\"\n                ]\n              }\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before: Vertex refused the list of functions with \"Unsupported list item type in tool result step\".",
+                  "var body = pm.response.text();",
+                  "pm.test('vertex forced loaded function: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('vertex forced loaded function: served by vertex - interactions tool search', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), body.slice(0, 400)).to.eql('vertex');",
+                  "});",
+                  "function ofType(output, type) { return (output || []).filter(function (o) { return o.type === type; }); }",
+                  "var j = pm.response.json() || {};",
+                  "pm.collectionVariables.set('h383VertexForcedId', j.id);",
+                  "pm.test('vertex forced loaded function: the model calls only fx.log_request - interactions tool search', function () {",
+                  "  var calls = ofType(j.output, 'function_call').map(function (o) { return (o.namespace || '') + '.' + o.name; });",
+                  "  pm.expect(calls, body.slice(0, 800)).to.not.be.empty;",
+                  "  calls.forEach(function (c) { pm.expect(c, JSON.stringify(calls)).to.eql('fx.log_request'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.28 vertex interactions cleanup: delete the client search seed - interactions tool search",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{h383VertexSeedId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{h383VertexSeedId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('vertex cleanup client search seed: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.29 vertex interactions cleanup: delete the client search turn - interactions tool search",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{h383VertexTurnId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{h383VertexTurnId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('vertex cleanup client search turn: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.30 vertex interactions cleanup: delete the client search answer turn - interactions tool search",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{h383VertexAnswerId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{h383VertexAnswerId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('vertex cleanup client search answer turn: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.31 vertex interactions cleanup: delete the forced choice turn - interactions tool search",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{h383VertexForcedId}}?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{h383VertexForcedId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('vertex cleanup forced choice turn: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.10 gemini interactions cleanup: delete the tool search run - interactions tool search",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{h383ResponseId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{h383ResponseId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('gemini cleanup tool search run: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.11 gemini interactions cleanup: delete the native tool search run - interactions tool search",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/interactions/{{h383NativeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "interactions",
+                "{{h383NativeId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('gemini cleanup native tool search run: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.12 gemini interactions cleanup: delete the client search seed - interactions tool search",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/interactions/{{h383ClientSeedId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "interactions",
+                "{{h383ClientSeedId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('gemini cleanup client search seed: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.13 gemini interactions cleanup: delete the continued turn - interactions tool search",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{h383ContinuedId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{h383ContinuedId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('gemini cleanup the continued turn: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.14 gemini interactions cleanup: delete the deferred functions turn - interactions tool search",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{h383DeferredId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{h383DeferredId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('gemini cleanup the deferred functions turn: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.15 gemini interactions cleanup: delete the client search turn - interactions tool search",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{h383ClientTurnId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{h383ClientTurnId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('gemini cleanup the client search turn: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "383.16 gemini interactions cleanup: delete the client search answer turn - interactions tool search",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{h383ClientAnswerId}}?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{h383ClientAnswerId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('gemini cleanup the client search answer turn: 200 - interactions tool search', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "384. GenAI Interactions API as a typed route, native on Google providers, translated elsewhere (genai interactions typed)",
       "description": "The Interactions API (POST /interactions, GET/DELETE /interactions/{id}, POST /interactions/{id}/cancel) is a typed GenAI route, not only a passthrough.\n\nGemini and Vertex get the caller body as it is and answer with Google bytes (native). Any other provider gets the request translated to Responses and its answer rendered as an Interaction, with an SSE stream in Interactions events. Agent-only fields on a translated request are refused.\n\n/v1/responses to gemini with previous_response_id (or background, or an agent) now runs on /interactions, and /v1/responses/{id}?provider=gemini reads the run. Vertex uses v1beta1 and needs service-account credentials.",
       "item": [

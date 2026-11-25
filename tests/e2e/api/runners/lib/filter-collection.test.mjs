@@ -48,7 +48,7 @@ try {
   const augmented = join(scratch, "augmented.json");
   execFileSync("node", [AUGMENT, "--source", SOURCE, "--out", augmented], { stdio: "pipe" });
   machgenRows = rowNames(JSON.parse(readFileSync(augmented, "utf8"))).filter((n) => n.includes("MachGen Provider Coverage"));
-  for (const provider of ["machgen", "minimax", "replicate", "runware"]) {
+  for (const provider of ["machgen", "minimax", "replicate", "runware", "gemini", "openai"]) {
     const out = join(scratch, `${provider}.json`);
     execFileSync("node", [FILTER, "--source", augmented, "--out", out, "--provider", provider], { stdio: "pipe" });
     partitions[provider] = rowNames(JSON.parse(readFileSync(out, "utf8")));
@@ -64,6 +64,12 @@ test("the harness has MachGen rows to route", () => {
 test("the machgen partition selects every MachGen row", () => {
   const missing = machgenRows.filter((n) => !partitions.machgen.includes(n));
   assert.deepEqual(missing, [], "MachGen rows dropped from the machgen partition");
+});
+
+test("an OpenAI row that replays Gemini items is OpenAI's", () => {
+  const rows = (provider) => partitions[provider].filter((n) => n.includes(" / 383.21 "));
+  assert.deepEqual(rows("gemini"), [], "383.21 calls OpenAI");
+  assert.equal(rows("openai").length, 1, "383.21 is in the openai partition");
 });
 
 test("MachGen rows stay out of the partitions their model ids name", () => {

@@ -635,3 +635,45 @@ func BenchmarkGenAIInteractionsCreate(b *testing.B) {
 		}
 	}
 }
+
+// TestGenAIInteractionsTranslatedClientSearchKeepsDeclaredName pins that a client tool_search item
+// another provider returns without a name comes back under the name the request declared, unary
+// and streamed, as the Gemini path already does. Before, it came back as "tool_search".
+func TestGenAIInteractionsTranslatedClientSearchKeepsDeclaredName(t *testing.T) {
+	ctx := newInteractionsRequestCtx("/genai/v1beta/interactions")
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := parseInteractionsRequest(t, `{"model":"openai/gpt-5","input":"hi","tools":[{"type":"tool_search","execution":"client","name":"search_tool_registry"}]}`)
+	require.NoError(t, prepareGenAIInteractionsCreate(nil)(ctx, bifrostCtx, req))
+
+	call := schemas.ResponsesMessage{
+		ID:   schemas.Ptr("ts_1"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:    schemas.Ptr("call_1"),
+			Execution: schemas.Ptr(schemas.ToolSearchExecutionClient),
+		},
+	}
+	out, err := genAIInteractionsResponseConverter(bifrostCtx, &schemas.BifrostResponsesResponse{ID: schemas.Ptr("resp_1"), Model: "gpt-5", Status: schemas.Ptr("completed"), Output: []schemas.ResponsesMessage{call}})
+	require.NoError(t, err)
+	interaction, ok := out.(*gemini.GeminiInteraction)
+	require.True(t, ok)
+	require.Len(t, interaction.Steps, 1)
+	require.NotNil(t, interaction.Steps[0].Name)
+	assert.Equal(t, "search_tool_registry", *interaction.Steps[0].Name, "the unary step keeps the declared name")
+
+	outputIndex := 0
+	var frames strings.Builder
+	for _, chunk := range []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeCreated, Response: &schemas.BifrostResponsesResponse{ID: schemas.Ptr("resp_1"), Model: "gpt-5"}},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: &outputIndex, Item: &call},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &outputIndex, Item: &call},
+	} {
+		_, frame, err := genAIInteractionsStreamConverter(bifrostCtx, chunk)
+		require.NoError(t, err)
+		if s, ok := frame.(string); ok {
+			frames.WriteString(s)
+		}
+	}
+	assert.Contains(t, frames.String(), `"name":"search_tool_registry"`, "the streamed step keeps the declared name: %s", frames.String())
+	assert.NotContains(t, frames.String(), `"name":"tool_search"`)
+}

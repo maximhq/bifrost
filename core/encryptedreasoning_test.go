@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -3448,5 +3449,49 @@ func TestStripUnverifiableReasoning_ChatShape_GeminiToolCallIDSignature(t *testi
 	// A second call finds nothing left and must not buy another upstream attempt.
 	if stripUnverifiableReasoning(nil, req) {
 		t.Error("expected no change once the ids are bare")
+	}
+}
+
+// TestStripResponsesEncryptedContentKeepsToolSearchItems pins that the fail-soft strip takes the signature
+// off a Google tool search item and keeps the item: the search and the definitions it loaded are history
+// the next turn needs, not reasoning.
+func TestStripResponsesEncryptedContentKeepsToolSearchItems(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	for _, itemJSON := range []string{
+		`{"type":"message","role":"user","content":"convert"}`,
+		`{"type":"tool_search_call","call_id":"ts_1","execution":"server","status":"completed","arguments":{"function_names":["f"]},"encrypted_content":"c2ln"}`,
+		`{"type":"tool_search_output","call_id":"ts_1","execution":"server","status":"completed","tools":[{"type":"function","name":"f"}],"encrypted_content":"c2ln"}`,
+		`{"type":"reasoning","summary":[],"encrypted_content":"c2ln"}`,
+		`{"type":"function_call","call_id":"fc_1","name":"f","arguments":"{}"}`,
+	} {
+		var item schemas.ResponsesMessage
+		if err := schemas.Unmarshal([]byte(itemJSON), &item); err != nil {
+			t.Fatal(err)
+		}
+		input = append(input, item)
+	}
+	req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-6-sol", Input: input}}
+	if !stripResponsesEncryptedContent(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req) {
+		t.Fatal("nothing was stripped")
+	}
+	var types []string
+	for _, m := range req.ResponsesRequest.Input {
+		types = append(types, string(*m.Type))
+		raw, err := schemas.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "c2ln") {
+			t.Errorf("a signature survived: %s", raw)
+		}
+		if m.IsVerbatimItem() {
+			t.Errorf("%s is still held as the caller's bytes, so no converter can rebuild it", *m.Type)
+		}
+	}
+	if want := []string{"message", "tool_search_call", "tool_search_output", "function_call"}; !slices.Equal(types, want) {
+		t.Errorf("items = %v, want %v", types, want)
+	}
+	if tools := string(req.ResponsesRequest.Input[2].ToolSearchOutputTools); !strings.Contains(tools, `"f"`) {
+		t.Errorf("the loaded definitions are kept, got %s", tools)
 	}
 }

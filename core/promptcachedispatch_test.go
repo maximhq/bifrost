@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/openai"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -223,6 +225,233 @@ func TestPrepareResponsesCodexClientToolSearchForcedLoadedTool(test *testing.T) 
 	assert.JSONEq(test, `{"type":"tool","name":"mcp__linear__create_issue"}`, providerUtils.GetJSONField(body, "tool_choice").Raw, string(body))
 }
 
+// TestPrepareResponsesClientToolSearchForGeminiGenerateContent pins a client tool search on
+// Gemini's generateContent, which has no tool search: the tools the search loaded, a namespace
+// here, are declared before namespaces are flattened, so the model can call them under the same
+// flat names the rest of the request uses and the call is restored to its namespace. A Gemini
+// turn on the Interactions API is left alone, since Google loads the tools from the result.
+func TestPrepareResponsesClientToolSearchForGeminiGenerateContent(test *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var incoming openai.OpenAIResponsesRequest
+	require.NoError(test, schemas.Unmarshal([]byte(fmt.Sprintf(codexClientToolSearchRequest, "gemini-2.5-flash")), &incoming))
+	request := incoming.ToBifrostResponsesRequest(ctx)
+	request.Provider = schemas.Gemini
+	request.Model = "gemini-2.5-flash"
+	before, err := schemas.Marshal(request)
+	require.NoError(test, err)
+
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, request)
+	require.Nil(test, bifrostErr)
+	native, err := gemini.ToGeminiResponsesRequest(ctx, prepared)
+	require.NoError(test, err)
+	body, err := schemas.Marshal(native)
+	require.NoError(test, err)
+	wire := string(body)
+	declared := providerUtils.GetJSONField(body, "tools.#.functionDeclarations|@flatten|#.name").Raw
+	assert.Contains(test, declared, `"tool_search"`, wire)
+	assert.Contains(test, declared, `"mcp__linear__create_issue"`, "the namespace member the search loaded is declared under its flat name: %s", wire)
+	assert.Contains(test, providerUtils.GetJSONField(body, `contents.#.parts|@flatten|#.functionCall.name`).Raw, `"mcp__linear__create_issue"`,
+		"the later call uses the same flat name: %s", wire)
+	require.NotNil(test, prepared.NamespaceToolAliases)
+	assert.Equal(test, "mcp__linear", prepared.NamespaceToolAliases["mcp__linear__create_issue"].Namespace)
+
+	after, err := schemas.Marshal(request)
+	require.NoError(test, err)
+	assert.JSONEq(test, string(before), string(after), "the shared request was mutated")
+
+	interactions := *request
+	params := *request.Params
+	params.PreviousResponseID = schemas.Ptr("v1_prev")
+	interactions.Params = &params
+	hoisted, bifrostErr := hoistClientToolSearchOutputTools(ctx, &interactions)
+	require.Nil(test, bifrostErr)
+	assert.Same(test, &interactions, hoisted, "an Interactions turn keeps Google's own loading")
+}
+
+// TestPrepareResponsesRequest_FlattensNamespacesASearchLoaded pins a namespace a client search loaded on the
+// Interactions API, where Google loads the tools from the search's result: the result lists flat functions, history
+// calls use the same names, and the aliases restore what the model calls. A search that loaded none is untouched.
+func TestPrepareResponsesRequest_FlattensNamespacesASearchLoaded(t *testing.T) {
+	request := func(tools string) *schemas.BifrostResponsesRequest {
+		var req schemas.BifrostResponsesRequest
+		require.NoError(t, schemas.Unmarshal([]byte(`{"model":"gemini-3.8-flash","provider":"gemini","input":[
+			{"type":"tool_search_call","call_id":"c","execution":"client","arguments":{"query":"fx"},"status":"completed"},
+			{"type":"tool_search_output","call_id":"c","execution":"client","status":"completed","tools":`+tools+`},
+			{"type":"function_call","call_id":"d","namespace":"fx","name":"convert_currency","arguments":"{}"},
+			{"type":"function_call_output","call_id":"d","output":"1"}]}`), &req))
+		req.Provider = schemas.Gemini
+		req.Params = &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr("v1_p"), Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch, ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: schemas.Ptr(schemas.ToolSearchExecutionClient)}}}}
+		return &req
+	}
+	prepare := func(req *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+		before, err := schemas.Marshal(req)
+		require.NoError(t, err)
+		out, bifrostErr := prepareResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, req)
+		require.Nil(t, bifrostErr)
+		after, err := schemas.Marshal(req)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(before), string(after), "the shared request was mutated")
+		return out
+	}
+	const fx = `{"type":"namespace","name":"fx","description":"Money.","tools":[{"type":"function","name":"convert_currency","description":"Convert.","parameters":{"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}}}}]}`
+	out := prepare(request(`[` + fx + `,{"type":"namespace","name":"functions","tools":[{"type":"function","name":"wait"}]},{"type":"function","name":"plain"}]`))
+	native, err := gemini.ToGeminiInteractionsRequest(out)
+	require.NoError(t, err)
+	body, err := schemas.Marshal(native)
+	require.NoError(t, err)
+	result := providerUtils.GetJSONField(body, `input.#(type=="function_result").result`)
+	assert.Equal(t, `["fx__convert_currency","wait","plain"]`, result.Get("#.name").Raw, string(body))
+	assert.Equal(t, `["function","function","function"]`, result.Get("#.type").Raw)
+	assert.Equal(t, "Money.\n\nConvert.", result.Get("0.description").String())
+	assert.Contains(t, result.Raw, `"properties":{"b":{"type":"string"},"a":{"type":"string"}}`, "schema order is kept")
+	assert.Contains(t, providerUtils.GetJSONField(body, `input.#(type=="function_call")#.name`).Raw, "fx__convert_currency")
+	assert.Equal(t, schemas.NamespaceToolAlias{Namespace: "fx", Name: "convert_currency"}, out.NamespaceToolAliases["fx__convert_currency"])
+
+	plain := request(`[{"type":"function","name":"plain"}]`)
+	assert.Nil(t, prepare(plain).NamespaceToolAliases)
+
+	// A choice names a loaded function as the caller knows it, and follows its flat name.
+	const other = `{"type":"namespace","name":"bank","tools":[{"type":"function","name":"convert_currency"}]}`
+	for name, tc := range map[string]struct {
+		loaded, choice, want string
+		refused              bool
+	}{
+		"forced":                      {`[` + fx + `]`, `{"type":"function","name":"convert_currency"}`, "fx__convert_currency", false},
+		"allowed":                     {`[` + fx + `]`, `{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"convert_currency"}]}`, "fx__convert_currency", false},
+		"already flat":                {`[` + fx + `]`, `{"type":"function","name":"fx__convert_currency"}`, "fx__convert_currency", false},
+		"unknown":                     {`[` + fx + `]`, `{"type":"function","name":"other"}`, "other", false},
+		"a loaded top-level function": {`[` + fx + `,{"type":"function","name":"convert_currency"}]`, `{"type":"function","name":"convert_currency"}`, "convert_currency", false},
+		"a default namespace member":  {`[` + fx + `,{"type":"namespace","name":"functions","tools":[{"type":"function","name":"convert_currency"}]}]`, `{"type":"function","name":"convert_currency"}`, "convert_currency", false},
+		"the same tool loaded twice":  {`[` + fx + `,` + fx + `]`, `{"type":"function","name":"convert_currency"}`, "fx__convert_currency", false},
+		"in two namespaces":           {`[` + fx + `,` + other + `]`, `{"type":"function","name":"convert_currency"}`, "", true},
+	} {
+		req := request(tc.loaded)
+		var choice schemas.ResponsesToolChoice
+		require.NoError(t, schemas.Unmarshal([]byte(tc.choice), &choice), name)
+		req.Params.ToolChoice = &choice
+		out, bifrostErr := prepareResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, req)
+		if tc.refused {
+			require.NotNil(t, bifrostErr, name)
+			assert.Contains(t, bifrostErr.Error.Message, "ambiguous", name)
+			continue
+		}
+		require.Nil(t, bifrostErr, name)
+		got, err := schemas.Marshal(out.Params.ToolChoice)
+		require.NoError(t, err)
+		assert.Contains(t, string(got), `"name":"`+tc.want+`"`, name)
+		kept, err := schemas.Marshal(req.Params.ToolChoice)
+		require.NoError(t, err)
+		assert.JSONEq(t, tc.choice, string(kept), name+": the caller's choice is not modified")
+	}
+
+	// A flat name that already stands for another tool is refused: the model's call could not be told apart.
+	named := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: &name, ResponsesToolFunction: &schemas.ResponsesToolFunction{}}
+	}
+	for name, tc := range map[string]struct {
+		loaded   string
+		declared []schemas.ResponsesTool
+		refused  bool
+	}{
+		"a declared function":             {`[` + fx + `]`, []schemas.ResponsesTool{named("fx__convert_currency")}, true},
+		"a loaded function":               {`[` + fx + `,{"type":"function","name":"fx__convert_currency"}]`, nil, true},
+		"a member of another namespace":   {`[{"type":"namespace","name":"a","tools":[{"type":"function","name":"b__c"}]},{"type":"namespace","name":"a__b","tools":[{"type":"function","name":"c"}]}]`, nil, true},
+		"the same tool loaded twice":      {`[` + fx + `,` + fx + `]`, nil, false},
+		"the same namespace, declared":    {`[` + fx + `]`, []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeNamespace, Name: schemas.Ptr("fx"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{named("convert_currency")}}}}, false},
+		"a declared function, not loaded": {`[{"type":"function","name":"plain"}]`, []schemas.ResponsesTool{named("plain")}, false},
+	} {
+		req := request(tc.loaded)
+		req.Params.Tools = append(req.Params.Tools, tc.declared...)
+		_, bifrostErr := prepareResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, req)
+		if !tc.refused {
+			assert.Nil(t, bifrostErr, name)
+			continue
+		}
+		require.NotNil(t, bifrostErr, name)
+		assert.Equal(t, 400, *bifrostErr.StatusCode, name)
+		assert.Contains(t, bifrostErr.Error.Message, "not unique", name)
+	}
+}
+
+// TestPrepareResponsesRequest_DeclaresLoadedToolsOnInteractions pins which functions a client search loaded are also
+// declared in tools. Google refuses a tool_choice that names a function tools does not list, so on Gemini the ones it
+// names are declared, and no others, as Google loads those from the result. Vertex loads none, so every one is.
+func TestPrepareResponsesRequest_DeclaresLoadedToolsOnInteractions(t *testing.T) {
+	const fn = `{"type":"function","name":"%s","description":"D.","parameters":{"type":"object","properties":{"a":{"type":"string"}}}}`
+	convert, log := fmt.Sprintf(fn, "convert_currency"), fmt.Sprintf(fn, "log_request")
+	fx := `{"type":"namespace","name":"fx","description":"Money.","tools":[` + convert + `,` + log + `]}`
+	forced := `{"type":"function","name":"log_request"}`
+	for name, tc := range map[string]struct {
+		provider                 schemas.ModelProvider
+		status                   string
+		loaded, choice, declared string
+		want                     []string
+	}{
+		"gemini, no choice":            {schemas.Gemini, "completed", fx, "", "", nil},
+		"gemini, a choice of mode":     {schemas.Gemini, "completed", fx, `"required"`, "", nil},
+		"gemini, forced":               {schemas.Gemini, "completed", fx, forced, "", []string{"fx__log_request"}},
+		"gemini, forced by flat name":  {schemas.Gemini, "completed", fx, `{"type":"function","name":"fx__log_request"}`, "", []string{"fx__log_request"}},
+		"gemini, allowed":              {schemas.Gemini, "completed", fx, `{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"log_request"},{"type":"function","name":"convert_currency"}]}`, "", []string{"fx__convert_currency", "fx__log_request"}},
+		"gemini, forced top-level":     {schemas.Gemini, "completed", convert + `,` + log, forced, "", []string{"log_request"}},
+		"gemini, loaded twice":         {schemas.Gemini, "completed", log + `,` + log, forced, "", []string{"log_request"}},
+		"gemini, already declared":     {schemas.Gemini, "completed", log, forced, log, []string{"log_request"}},
+		"gemini, not loaded":           {schemas.Gemini, "completed", convert, forced, "", nil},
+		"gemini, a search that failed": {schemas.Gemini, "incomplete", log, forced, "", nil},
+		"vertex, no choice":            {schemas.Vertex, "completed", fx, "", "", []string{"fx__convert_currency", "fx__log_request"}},
+		"vertex, forced":               {schemas.Vertex, "completed", fx, forced, "", []string{"fx__convert_currency", "fx__log_request"}},
+		"vertex, top-level":            {schemas.Vertex, "completed", convert + `,` + log, "", "", []string{"convert_currency", "log_request"}},
+		"vertex, already declared":     {schemas.Vertex, "completed", log, "", log, []string{"log_request"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			choice := ""
+			if tc.choice != "" {
+				choice = `"tool_choice":` + tc.choice + `,`
+			}
+			declared := ""
+			if tc.declared != "" {
+				declared = "," + tc.declared
+			}
+			var incoming openai.OpenAIResponsesRequest
+			require.NoError(t, schemas.Unmarshal([]byte(`{"model":"gemini-3.8-flash","previous_response_id":"v1_p",`+choice+`"tools":[{"type":"tool_search","execution":"client","name":"find","description":"Find.","parameters":{"type":"object","properties":{}}}`+declared+`],"input":[
+				{"type":"tool_search_output","call_id":"c","execution":"client","status":"`+tc.status+`","tools":[`+tc.loaded+`]}]}`), &incoming))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := incoming.ToBifrostResponsesRequest(ctx)
+			req.Provider, req.Model = tc.provider, "gemini-3.8-flash"
+			before, err := schemas.Marshal(req)
+			require.NoError(t, err)
+
+			out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			require.Nil(t, bifrostErr)
+			native, err := gemini.ToGeminiInteractionsRequest(out)
+			require.NoError(t, err)
+			body, err := schemas.Marshal(native)
+			require.NoError(t, err)
+			var got []string
+			for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+				if tool.Get("type").String() != "function" {
+					continue
+				}
+				got = append(got, tool.Get("name").String())
+				assert.False(t, tool.Get("defer_loading").Exists(), "Google refuses a deferred tool beside a client search: %s", body)
+				assert.Equal(t, "object", tool.Get("parameters.type").String(), "the declaration is whole: %s", body)
+			}
+			slices.Sort(got)
+			assert.Equal(t, tc.want, got, string(body))
+			if strings.Contains(tc.choice, "log_request") && len(tc.want) > 0 {
+				chosen := providerUtils.GetJSONField(body, "generation_config.tool_choice.allowed_tools.tools").Array()
+				require.NotEmpty(t, chosen, string(body))
+				for _, name := range chosen {
+					assert.Contains(t, got, name.String(), "a chosen tool is declared")
+				}
+			}
+
+			after, err := schemas.Marshal(req)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(before), string(after), "the shared request was mutated")
+		})
+	}
+}
+
 // TestHoistClientToolSearchOutputTools covers the declaration of tools a client-run
 // tool search loaded: deferred, declared once however many searches found them, merged
 // into a namespace the request already declares, and left alone off Claude or without
@@ -286,7 +515,7 @@ func TestHoistClientToolSearchOutputTools(test *testing.T) {
 	for _, testCase := range []struct {
 		name, model, tools string
 	}{
-		{name: "non-Claude model", model: "gemini-2.5-flash", tools: search},
+		{name: "a model that loads searched tools itself", model: "gpt-5.4", tools: search},
 		{name: "server-run tool_search", model: "claude-sonnet-4-6", tools: `{"type":"tool_search"}`},
 	} {
 		test.Run(testCase.name+" is left alone", func(test *testing.T) {

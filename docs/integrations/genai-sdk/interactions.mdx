@@ -90,6 +90,7 @@ The client's `Api-Revision` header goes upstream unchanged.
 - `previous_response_id`, sent as `previous_interaction_id`
 - `background: true`
 - an agent as the model, such as `gemini/deep-research-preview-04-2026`. For an agent you host under your own name, repeat the name in a top-level `agent` field: `{"model": "gemini/data-analyst", "agent": "data-analyst"}`. An `agent` that does not match the model is ignored
+- a `tool_search` tool that Google runs (see [Tool search](#tool-search))
 
 Every other Responses request keeps using `generateContent`. The response `id` is the interaction id, so `GET`, `DELETE` and `POST .../cancel` on `/v1/responses/{id}?provider=gemini` read, delete and cancel the run. Input items come from the run's own input steps. The OpenAI SDK route (`/openai/v1/responses`) and Responses over WebSocket go through the same check.
 
@@ -116,6 +117,32 @@ A restriction Google cannot apply returns 400 instead of being dropped: domain f
 A Responses `computer_use_preview` tool becomes Google's `computer_use` tool. Its environment maps to `browser`, `mobile` or `desktop`.
 
 When you replay a stateless conversation, built-in tool items from an earlier turn are left out of the input. Google ran them and has nothing to replay them from.
+
+### Tool search
+
+Google's [tool retrieval](https://aistudio.google.com/docs/tool-retrieval) lets the model search a large tool list and load only the definitions it needs. It runs on Interactions only, on Gemini 3.6 and later. A Responses request uses it the way it uses OpenAI's hosted tool search:
+
+```json
+{
+  "model": "gemini/gemini-3.8-flash",
+  "input": "What is 100 USD in EUR?",
+  "tools": [
+    {"type": "tool_search"},
+    {"type": "function", "name": "convert_currency", "description": "Convert an amount from one currency to another.", "defer_loading": true, "parameters": {"type": "object", "properties": {"amount": {"type": "number"}, "from": {"type": "string"}, "to": {"type": "string"}}}},
+    {"type": "mcp", "server_label": "weather", "server_url": "https://example.com/mcp", "require_approval": "never", "defer_loading": true}
+  ]
+}
+```
+
+`defer_loading` reaches Google on `function` and `mcp` tools. Google's search shows up in the output as a `tool_search_call` item, which names what the model looked for, and a `tool_search_output` item, which lists the definitions it loaded. Both have `execution: "server"`. A turn can hold several searches, and a search that matches nothing can be followed by text, so check each item's `type` and run only the `function_call` items. Each search item carries Google's signature as `encrypted_content`. To replay a stateless conversation (`store: false`), send the items back unchanged, since Google refuses a deferred tool call whose search it cannot verify. A `tool_search_call` with no `encrypted_content`, such as one OpenAI ran, is left out of the input.
+
+A request that defers tools without a `tool_search` gets one added on a model that serves tool retrieval, because Google refuses `defer_loading` on its own. Without `previous_response_id`, such a request stays on `generateContent`, where Bifrost runs the search itself. On a model older than Gemini 3.6, deferred tools load up front.
+
+For a search your application runs, send `{"type": "tool_search", "execution": "client", "name": "...", "description": "...", "parameters": {...}}`. Bifrost sends it to Google with its name, `tool_search` if you leave the name out. The model's call to it comes back as a `tool_search_call` item with `execution: "client"`. Answer with a `tool_search_output` item that has the same `call_id`, `execution: "client"`, and the definitions to load in `tools`, and Bifrost sends that to Google as the `function_result`. Google refuses `defer_loading` next to a client search, so with one the deferred tools load up front. A client search alone does not move a request to Interactions; send it with `previous_response_id` or on the `/genai` route.
+
+Google refuses a `tool_choice` that names a function `tools` does not list, so a function your search loaded is also declared when `tool_choice` forces it or lists it in `allowed_tools`. Name it as your search returned it: a function of a namespace by its own name, unless two loaded namespaces have one by that name, which returns 400. Vertex does not take a list of functions as a search result. There, every function your search loaded is declared, and the result goes to Vertex as text.
+
+Each server-side search is an extra model call. Google reports its prompt tokens in `total_tool_use_tokens`, and Bifrost bills them as input tokens. On `/genai/v1beta/interactions` the body goes to Gemini and Vertex as you sent it, including `short_description`. For another provider, `tool_search`, `defer_loading` and the search steps in the input are translated, and `short_description` is dropped. Google does not document tool retrieval on Vertex, but `gemini-3.6-flash` and `gemini-3.7-flash` serve it there.
 
 A run that stops at a checkpoint (`requires_continuation`) comes back `incomplete`, with `incomplete_details.reason` set to `requires_continuation` and the token under `provider_extra_fields.continuation_token`. To carry on, send it back with `previous_response_id`. On `/v1/responses`, put `continuation_token` at the top level of the body. On `/openai/v1/responses`, put it under `extra_params` and send `x-bf-passthrough-extra-params: true`, since that route forwards `extra_params` only with the header.
 
@@ -147,3 +174,4 @@ Usage follows Google's own billing. `total_tool_use_tokens`, the tokens a code r
 - `google_maps` and `processing` steps have no Responses item. On `/v1/responses` they stay under `provider_extra_fields.steps`, and a translated `/genai` request refuses a `google_maps` tool.
 - A translated `computer_use` tool that sets `excluded_predefined_functions` or `enable_prompt_injection_detection` returns 400, because another provider would not honor it.
 - `place_citation` and the speech annotations have no Responses annotation and are not mapped.
+- A retrieved interaction (`GET /v1/responses/{id}`) returns the model's call to a client tool search as a plain `function_call`, because the read has no request to name the search tool.

@@ -42,6 +42,7 @@ func genAIInteractionsStreamState(ctx *schemas.BifrostContext) *gemini.BifrostTo
 		}
 	}
 	id, state := uuid.NewString(), gemini.NewBifrostToGeminiInteractionsStreamState()
+	state.ClientToolSearchName, _ = ctx.Value(genAIInteractionsClientSearchNameKey).(string)
 	genAIInteractionsStreams.Store(id, state)
 	ctx.SetValue(genAIInteractionsStreamStateKey, id)
 	return state
@@ -53,6 +54,10 @@ func releaseGenAIInteractionsStreamState(ctx *schemas.BifrostContext) {
 		genAIInteractionsStreams.Delete(id)
 	}
 }
+
+// genAIInteractionsClientSearchNameKey holds the name the request declared its client tool_search
+// under, set only when it declares one.
+const genAIInteractionsClientSearchNameKey schemas.BifrostContextKey = "bifrost-genai-interactions-client-search-name"
 
 // genAIInteractionsBasePaths are the Gemini API and Vertex shapes of the collection.
 func genAIInteractionsBasePaths(pathPrefix string) []string {
@@ -244,6 +249,10 @@ func prepareGenAIInteractionsCreate(handlerStore lib.HandlerStore) PreRequestCal
 		bifrostCtx.SetValue(bifrostContextKeyProvider, defaultProvider)
 		bifrostCtx.SetValue(schemas.BifrostContextKeyInteractionsAPI, true)
 		setGenAIInteractionsVertexPath(ctx, bifrostCtx)
+		// A translated answer names the caller's search after this, as the Gemini path does.
+		if name := gemini.GeminiInteractionsRequestClientToolSearchName(r.Tools); name != "" {
+			bifrostCtx.SetValue(genAIInteractionsClientSearchNameKey, name)
+		}
 
 		headers := extractHeadersFromRequest(ctx)
 		schemas.ExtractAndSetUserAgentFromHeaders(headers, bifrostCtx)
@@ -409,7 +418,8 @@ func genAIInteractionsResponseConverter(ctx *schemas.BifrostContext, resp *schem
 	if genAIInteractionsNative(ctx, resp.ExtraFields.RawResponse) && !genAIInteractionsCachedOtherAPI(ctx, resp.ExtraFields.RawResponse) {
 		return resp.ExtraFields.RawResponse, nil
 	}
-	return gemini.ToGeminiInteraction(resp), nil
+	name, _ := ctx.Value(genAIInteractionsClientSearchNameKey).(string)
+	return gemini.ToGeminiInteractionWithClientSearch(resp, name), nil
 }
 
 func genAIInteractionsErrorConverter(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {

@@ -3629,3 +3629,127 @@ func assertFunctionCallOutputFileIsDataURL(t *testing.T, pdf string, fileType *s
 		t.Fatalf("file_type must not reach OpenAI; raw=%s", raw)
 	}
 }
+
+// A Gemini server search replays with its definitions on the output item and no references on the
+// call. The supplied output is kept, so the tools it loaded are there for the call that follows.
+func TestToOpenAIResponsesRequest_KeepsSuppliedToolSearchOutput(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		toolSearchUserTurn(),
+		{
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("ts_1"), Execution: schemas.Ptr("server"), Arguments: schemas.Ptr(`{"query":"fx"}`)},
+		},
+		{
+			Type:                  schemas.Ptr(schemas.ResponsesMessageTypeToolSearchOutput),
+			ToolSearchOutputTools: json.RawMessage(`[{"type":"function","name":"convert_currency","parameters":{"type":"object","properties":{}}}]`),
+			ResponsesToolMessage:  &schemas.ResponsesToolMessage{CallID: schemas.Ptr("ts_1"), Execution: schemas.Ptr("server")},
+		},
+	}
+	raw, _, wireInput := toolSearchWire(t, schemas.OpenAI, "gpt-6-sol", []schemas.ResponsesTool{deferredWeatherTool()}, input)
+	outs := wireItemsOfType(wireInput, "tool_search_output")
+	if len(outs) != 1 || outs[0].Get("tools.0.name").String() != "convert_currency" || outs[0].Get("execution").String() != "server" {
+		t.Fatalf("want one hosted tool_search_output with the supplied definition, got %s", raw)
+	}
+	if outs[0].Get("call_id").Exists() {
+		t.Errorf("a hosted output carries no call_id: %s", outs[0].Raw)
+	}
+}
+
+// A caller that replays Gemini's signed search items sends them as JSON, which is kept verbatim. They
+// are rebuilt in OpenAI's hosted shape, which has no call_id, with the definitions the search loaded.
+// An item without a signature is the caller's own OpenAI item and stays as it was sent.
+func TestToOpenAIResponsesRequest_RebuildsSignedToolSearchReplay(t *testing.T) {
+	decode := func(items ...string) []schemas.ResponsesMessage {
+		input := []schemas.ResponsesMessage{toolSearchUserTurn()}
+		for _, itemJSON := range items {
+			var item schemas.ResponsesMessage
+			if err := schemas.Unmarshal([]byte(itemJSON), &item); err != nil {
+				t.Fatal(err)
+			}
+			input = append(input, item)
+		}
+		return input
+	}
+	const tools = `"tools":[{"type":"function","name":"convert_currency","parameters":{"type":"object","properties":{}}}]`
+	input := decode(
+		`{"type":"tool_search_call","id":"ts_1","call_id":"ts_1","execution":"server","status":"completed","arguments":{"function_names":["convert_currency"]},"encrypted_content":"c2ln"}`,
+		`{"type":"tool_search_output","call_id":"ts_1","execution":"server","status":"completed",`+tools+`,"encrypted_content":"c2ln"}`,
+		`{"type":"function_call","call_id":"fc_1","name":"convert_currency","arguments":"{}"}`,
+		`{"type":"function_call","call_id":"fc_2","name":"get_time","arguments":"{}"}`,
+	)
+	raw, _, wireInput := toolSearchWire(t, schemas.OpenAI, "gpt-6-sol", []schemas.ResponsesTool{deferredWeatherTool()}, input)
+	calls, outs := wireItemsOfType(wireInput, "tool_search_call"), wireItemsOfType(wireInput, "tool_search_output")
+	if len(calls) != 1 || len(outs) != 1 {
+		t.Fatalf("want one call and one output, got %s", raw)
+	}
+	if calls[0].Get("call_id").Exists() || outs[0].Get("call_id").Exists() || strings.Contains(string(raw), "c2ln") {
+		t.Errorf("hosted items carry no call_id and no signature: %s", raw)
+	}
+	if calls[0].Get("arguments.function_names.0").String() != "convert_currency" || outs[0].Get("tools.0.name").String() != "convert_currency" {
+		t.Errorf("the search and the definitions it loaded are kept: %s", raw)
+	}
+	if !outs[0].Get("tools.0.defer_loading").Bool() {
+		t.Errorf("OpenAI refuses a loaded tool that is not deferred: %s", raw)
+	}
+
+	fcs := wireItemsOfType(wireInput, "function_call")
+	if len(fcs) != 2 || fcs[0].Get("namespace").String() != "convert_currency" || fcs[1].Get("namespace").Exists() {
+		t.Errorf("a call to a loaded function names its namespace, and no other call does: %s", raw)
+	}
+	if input[3].ResponsesToolMessage != nil && input[3].Namespace != nil {
+		t.Errorf("the caller's items are not modified")
+	}
+
+	// The pair is found by the id its items share, before a long one is shortened for OpenAI.
+	long := "ts_" + strings.Repeat("x", 20) + "_ts_" + strings.Repeat("s", MaxToolCallIDLength)
+	raw, _, wireInput = toolSearchWire(t, schemas.OpenAI, "gpt-6-sol", []schemas.ResponsesTool{deferredWeatherTool()}, decode(
+		`{"type":"tool_search_call","call_id":"`+long+`","execution":"server","status":"completed","arguments":{"function_names":["convert_currency"]},"encrypted_content":"c2ln"}`,
+		`{"type":"tool_search_output","call_id":"`+long+`","execution":"server","status":"completed",`+tools+`}`))
+	if outs := wireItemsOfType(wireInput, "tool_search_output"); len(outs) != 1 || outs[0].Get("call_id").Exists() {
+		t.Errorf("the output of a signed call with a long id is rebuilt too: %s", raw)
+	}
+
+	// A pair is rebuilt whole when either item is signed.
+	const callItem, outputItem = `{"type":"tool_search_call","call_id":"ts_1","execution":"server","status":"completed","arguments":{"function_names":["convert_currency"]}`, `{"type":"tool_search_output","call_id":"ts_1","execution":"server","status":"completed",` + tools
+	for _, pair := range [][]string{{callItem + `,"encrypted_content":"c2ln"}`, outputItem + `}`}, {callItem + `}`, outputItem + `,"encrypted_content":"c2ln"}`}} {
+		raw, _, wireInput := toolSearchWire(t, schemas.OpenAI, "gpt-6-sol", []schemas.ResponsesTool{deferredWeatherTool()}, decode(append(pair, `{"type":"function_call","call_id":"fc_1","name":"convert_currency","arguments":"{}"}`)...))
+		outs, fcs := wireItemsOfType(wireInput, "tool_search_output"), wireItemsOfType(wireInput, "function_call")
+		if len(wireItemsOfType(wireInput, "tool_search_call")) != 1 || len(outs) != 1 || outs[0].Get("call_id").Exists() || outs[0].Get("tools.0.name").String() != "convert_currency" || fcs[0].Get("namespace").String() != "convert_currency" {
+			t.Errorf("one signed item of a pair: %s", raw)
+		}
+	}
+
+	const own = `{"type":"tool_search_output","id":"tso_1","call_id":null,"execution":"server","status":"completed",` + tools + `}`
+	raw, _, _ = toolSearchWire(t, schemas.OpenAI, "gpt-6-sol", []schemas.ResponsesTool{deferredWeatherTool()}, decode(own))
+	if !strings.Contains(string(raw), own) {
+		t.Errorf("an unsigned item is sent as it came: %s", raw)
+	}
+}
+
+// A Gemini tool search item's signature goes only to Google. It is removed on OpenAI egress from
+// the typed field and from the bytes a verbatim item is re-emitted from, for every model.
+func TestToOpenAIResponsesRequest_StripsToolSearchSignature(t *testing.T) {
+	for _, model := range []string{"gpt-4o", "gpt-6-sol"} {
+		for _, itemJSON := range []string{
+			`{"type":"tool_search_output","execution":"server","call_id":"ts_1","status":"completed","tools":[{"type":"function","name":"f"}],"encrypted_content":"c2ln"}`,
+			`{"type":"tool_search_call","execution":"server","call_id":"ts_1","status":"completed","arguments":{"query":"x"},"encrypted_content":"c2ln"}`,
+		} {
+			var item schemas.ResponsesMessage
+			if err := schemas.Unmarshal([]byte(itemJSON), &item); err != nil {
+				t.Fatal(err)
+			}
+			input := []schemas.ResponsesMessage{toolSearchUserTurn(), item}
+			raw, _, _ := toolSearchWire(t, schemas.OpenAI, model, []schemas.ResponsesTool{deferredWeatherTool()}, input)
+			if strings.Contains(string(raw), "c2ln") {
+				t.Errorf("%s: the signature reached OpenAI: %s", model, raw)
+			}
+			kept, err := schemas.Marshal(input[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(kept), "c2ln") {
+				t.Errorf("the caller's item lost its signature: %s", kept)
+			}
+		}
+	}
+}
