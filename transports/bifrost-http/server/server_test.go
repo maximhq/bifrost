@@ -2839,6 +2839,33 @@ func TestReloadClientConfigFromConfigStore_AppliesUsageEstimationTokenizers(t *t
 	assert.Equal(t, "cl100k_base", tokenizer(), "clearing the stored list returns the client to the base encodings")
 }
 
+// The config handler never sets send_back_cost on the client directly: the reload after a
+// save, which cluster peers run too, is the one path that hands it to core.
+func TestReloadClientConfigFromConfigStore_AppliesSendBackCost(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = prevLogger })
+
+	store := &clientConfigOnlyStore{}
+	cfg := &lib.Config{LiveStore: liveStoreForTest(t), ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(cfg),
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	server := &BifrostHTTPServer{Config: cfg, Client: client}
+	require.False(t, client.GetSendBackCost())
+
+	store.clientConfig.SendBackCost = true
+	require.NoError(t, server.ReloadClientConfigFromConfigStore(context.Background()))
+	assert.True(t, client.GetSendBackCost(), "the reload turns the stored setting on in core")
+
+	store.clientConfig.SendBackCost = false
+	require.NoError(t, server.ReloadClientConfigFromConfigStore(context.Background()))
+	assert.False(t, client.GetSendBackCost(), "and off again")
+}
+
 // The routing plugin bounds captured request vectors by the logs' retention;
 // if it stopped satisfying the setter, bootstrap and reload would both skip
 // it without a word.
