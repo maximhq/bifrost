@@ -229,7 +229,7 @@ func TestRapidMLXKeyHashUsesURLSource(t *testing.T) {
 	require.Equal(t, "http://localhost:8000/v1", original.GetValue(), "hashing must not mutate the key")
 }
 
-func TestProviderConfigRedactedRapidMLXURL(t *testing.T) {
+func TestRedactedKeyRapidMLXURL(t *testing.T) {
 	for _, tc := range []struct{ name, raw, want string }{
 		{"plain", "http://localhost:8000/v1", "http://localhost:8000/v1"},
 		{"opaque credentials", "http:user:password@localhost:8000/v1", "redacted"},
@@ -249,8 +249,8 @@ func TestProviderConfigRedactedRapidMLXURL(t *testing.T) {
 				}
 				keyConfig := &schemas.RapidMLXKeyConfig{URL: *schemas.NewSecretVar(raw)}
 				original := keyConfig.URL
-				config := ProviderConfig{Keys: []schemas.Key{{RapidMLXKeyConfig: keyConfig}}}
-				got := config.Redacted().Keys[0].RapidMLXKeyConfig
+				key := schemas.Key{RapidMLXKeyConfig: keyConfig}
+				got := RedactedKey(key).RapidMLXKeyConfig
 				want := *schemas.NewSecretVar(raw)
 				want.Val = tc.want
 				require.Equal(t, *want.RedactedIfSecret(), got.URL)

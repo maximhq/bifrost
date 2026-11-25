@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
@@ -68,20 +69,23 @@ type EvaluationResult struct {
 
 // BudgetResolver provides decision logic for the new hierarchical governance system
 type BudgetResolver struct {
-	store                   GovernanceStore
-	logger                  schemas.Logger
-	modelCatalog            *modelcatalog.ModelCatalog
-	governanceInMemoryStore InMemoryStore
+	store        GovernanceStore
+	logger       schemas.Logger
+	modelCatalog *modelcatalog.ModelCatalog
+	live         *livestore.Store
 }
 
 // NewBudgetResolver creates a new budget-based governance resolver
-func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCatalog, logger schemas.Logger, governanceInMemoryStore InMemoryStore) *BudgetResolver {
-	return &BudgetResolver{
-		store:                   store,
-		logger:                  logger,
-		modelCatalog:            modelCatalog,
-		governanceInMemoryStore: governanceInMemoryStore,
+func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCatalog, live *livestore.Store, logger schemas.Logger) (*BudgetResolver, error) {
+	if live == nil {
+		return nil, fmt.Errorf("budget resolver: %w", livestore.ErrNoLiveStore)
 	}
+	return &BudgetResolver{
+		store:        store,
+		logger:       logger,
+		modelCatalog: modelCatalog,
+		live:         live,
+	}, nil
 }
 
 // evaluateAccess applies what a request may reach: the provider gate, the model gate, and the
@@ -142,7 +146,7 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	// provider. A custom provider is held to what its base provider binds. Inline batches are not
 	// opaque: PreLLMHook evaluates each item's model first.
 	if requestType == schemas.BatchCreateRequest && evaluationRequest.OpaqueBatchInput && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
-		if !batchModelBoundByProvider(provider, r.governanceInMemoryStore) {
+		if !batchModelBoundByProvider(provider, r.live) {
 			return &EvaluationResult{
 				Decision: DecisionModelBlocked,
 				Reason:   denialReason(fmt.Sprintf("File-based batch creation on provider '%s' requires an access that allows every model of the provider: its batch API runs the models named inside the uploaded input, not the model on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
@@ -323,16 +327,16 @@ func reasonFromErr(err error, decision Decision) string {
 // literalAccess is access matched without key aliases, for a model that reaches the provider as
 // written. See literalAccessFor.
 func (r *BudgetResolver) literalAccess(access schemas.Access) schemas.Access {
-	return literalAccessFor(access, r.modelCatalog, r.governanceInMemoryStore)
+	return literalAccessFor(access, r.modelCatalog, r.live)
 }
 
 // literalAccessFor rebuilds access without the alias-target source, so a blacklist on a model the name
 // would become through a key alias does not refuse a name that is never resolved. The matcher resolves
 // the provider's configuration as GovernancePlugin.modelMatcher does, so the custom-provider exemption
-// still applies, but on a copy with its keys cleared: key aliases are the only thing
-// IsModelAllowedForProvider reads them for. Without a catalog names match as written. Admission and
-// limit settlement both use it, so a literal request answers to the permits that admitted it.
-func literalAccessFor(access schemas.Access, catalog *modelcatalog.ModelCatalog, store InMemoryStore) schemas.Access {
+// still applies, but passes no keys: key aliases are the only thing IsModelAllowedForProvider reads
+// them for. Without a catalog names match as written. Admission and limit settlement both use it, so
+// a literal request answers to the permits that admitted it.
+func literalAccessFor(access schemas.Access, catalog *modelcatalog.ModelCatalog, live *livestore.Store) schemas.Access {
 	if access == nil {
 		return nil
 	}
@@ -340,13 +344,12 @@ func literalAccessFor(access schemas.Access, catalog *modelcatalog.ModelCatalog,
 	if catalog != nil {
 		matcher = func(provider, model string, allowed []string) bool {
 			var providerConfig *configstore.ProviderConfig
-			if store != nil {
-				if config, ok := configuredProvider(store, schemas.ModelProvider(provider)); ok {
-					config.Keys = nil // config is a copy; with no keys no alias can widen the match
-					providerConfig = &config
-				}
+			if stored, ok := live.Collections.Providers.Get(provider); ok {
+				config := stored.Config
+				providerConfig = &config
 			}
-			return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
+			// No keys: with none, no alias can widen the match.
+			return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, nil, schemas.WhiteList(allowed))
 		}
 	}
 	// A copy of the access itself keeps every permit and level; Bases is only the granting level, so

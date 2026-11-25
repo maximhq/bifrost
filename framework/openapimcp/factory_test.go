@@ -54,6 +54,35 @@ func TestBuildServer_ToolsAndInstructions(t *testing.T) {
 	require.ErrorContains(t, err, "no tools")
 }
 
+// oneClientAccount serves one MCP client's configuration to the core manager, the way a gateway's
+// account serves its configured clients. It answers nothing else, so only its MCP methods may be
+// called.
+type oneClientAccount struct {
+	schemas.Account
+	client *schemas.MCPClientConfig
+}
+
+// GetConfiguredMCPClients lists the one client's ID.
+func (a oneClientAccount) GetConfiguredMCPClients() ([]string, error) {
+	return []string{a.client.ID}, nil
+}
+
+// GetConfigForMCPClient returns the client when the ID is its own.
+func (a oneClientAccount) GetConfigForMCPClient(id string) (*schemas.MCPClientConfig, error) {
+	if id != a.client.ID {
+		return nil, errors.New("MCP client is not configured")
+	}
+	return a.client, nil
+}
+
+// GetConfigForMCPClientByName returns the client when the name is its own.
+func (a oneClientAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+	if name != a.client.Name {
+		return nil, errors.New("MCP client is not configured")
+	}
+	return a.client, nil
+}
+
 func TestFactory_EndToEndThroughCoreManager(t *testing.T) {
 	var got struct {
 		path, query, auth, static string
@@ -66,7 +95,6 @@ func TestFactory_EndToEndThroughCoreManager(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: Factory()}, nil, nil, nil)
 	config := &schemas.MCPClientConfig{
 		ID:             "petstore-id",
 		Name:           "petstore",
@@ -80,7 +108,8 @@ func TestFactory_EndToEndThroughCoreManager(t *testing.T) {
 			SecurityCredentials: map[string]schemas.MCPOpenAPICredential{"ApiKeyAuth": {Value: schemas.NewSecretVar("k-123")}},
 		},
 	}
-	require.NoError(t, manager.AddClient(context.Background(), config))
+	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: Factory()}, oneClientAccount{client: config}, nil, nil, nil)
+	require.NoError(t, manager.AddClient(context.Background(), config.ID))
 	t.Cleanup(func() { _ = manager.RemoveClient(config.ID) })
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

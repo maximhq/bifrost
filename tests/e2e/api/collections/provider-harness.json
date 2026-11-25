@@ -263771,6 +263771,507 @@
       ]
     },
     {
+      "name": "384. Plugins API refuses to create, change or delete the built-in plugins Bifrost configures itself (fixed-builtin-plugins) [SERIAL]",
+      "description": "Pins the plugins API's refusal of the built-in plugins Bifrost configures itself, from the client config, the model catalog or their own APIs rather than a plugin config: governance, routing, logging, prompts, compat and model-catalog-resolver. POST /api/plugins naming one, and PUT or DELETE /api/plugins/{name} on one, answer 400 with \"The <name> plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API\" and leave the plugin running. A PUT with enabled false used to stop the running plugin: without model-catalog-resolver, a request with an unprefixed model name has no plugin to pick its provider.\n\nThe cases send each write for governance and model-catalog-resolver through the registered routes and middleware, and after each refused update and delete read GET /api/plugins/loaded to check the plugin is still loaded. The last two cases keep otel, a built-in configured through this API, editable: the first checks the gateway has no otel row of its own, and the second updates otel with PUT /api/plugins/otel, which creates a disabled row, expects 200 with the update stored, and deletes the row afterwards. The update skips when the gateway already has an otel row, so a configuration this run did not create is never changed. The case names carry openai only so the openai fork selects them; no inference request is sent. The folder is [SERIAL] because a refused write that got through would stop a plugin every other request depends on.\n\nRed before the change: the model-catalog-resolver create, update and delete are accepted, and the update removes the resolver from the loaded plugins. Green after.\n\nRun with FEATURE=\"fixed-builtin-plugins\".",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai POST /api/plugins creating the governance plugin is refused as a fixed built-in - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var REFUSAL = 'The governance plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('POST /api/plugins naming governance answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"governance\",\n  \"enabled\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai PUT /api/plugins/governance disabling the governance plugin is refused and it stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The governance plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('PUT /api/plugins/governance with enabled false answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('governance is still loaded after the refused update', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('governance');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/governance",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "governance"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai DELETE /api/plugins/governance is refused and the governance plugin stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The governance plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('DELETE /api/plugins/governance answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('governance is still loaded after the refused delete', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('governance');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/governance",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "governance"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai POST /api/plugins creating the model-catalog-resolver plugin is refused as a fixed built-in - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var REFUSAL = 'The model-catalog-resolver plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('POST /api/plugins naming model-catalog-resolver answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"model-catalog-resolver\",\n  \"enabled\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai PUT /api/plugins/model-catalog-resolver disabling the model-catalog-resolver plugin is refused and it stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The model-catalog-resolver plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('PUT /api/plugins/model-catalog-resolver with enabled false answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('model-catalog-resolver is still loaded after the refused update', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('model-catalog-resolver');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/model-catalog-resolver",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "model-catalog-resolver"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai DELETE /api/plugins/model-catalog-resolver is refused and the model-catalog-resolver plugin stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The model-catalog-resolver plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('DELETE /api/plugins/model-catalog-resolver answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('model-catalog-resolver is still loaded after the refused delete', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('model-catalog-resolver');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/model-catalog-resolver",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "model-catalog-resolver"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai GET /api/plugins shows no otel row before the editable built-in update - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var list = [];",
+                  "try { list = (pm.response.json() || {}).plugins || []; } catch (e) { list = []; }",
+                  "var found = list.some(function (p) { return p && p.name === 'otel'; });",
+                  "pm.collectionVariables.set('fixedBuiltinOtelPreexisting', pm.response.code === 200 && !found ? 'false' : 'true');",
+                  "pm.test('GET /api/plugins answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the gateway has no otel row of its own for the otel update to create', function () {",
+                  "  pm.expect(found, 'this gateway already configures otel; the otel update is skipped rather than change a row this run did not create, so point the folder at a gateway without one').to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai PUT /api/plugins/otel still updates otel, a built-in configured through the plugins API - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The update creates a disabled otel row, so it runs only after the previous case confirmed the",
+                  "// gateway has none of its own. Skipping when that check did not run keeps a filtered run from",
+                  "// changing an unchecked gateway.",
+                  "if (pm.collectionVariables.get('fixedBuiltinOtelPreexisting') !== 'false') { pm.execution.skipRequest(); }",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var updated = pm.response.code === 200;",
+                  "pm.test('PUT /api/plugins/otel answers 200 and stores the update', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(200);",
+                  "  var plugin = (pm.response.json() || {}).plugin || {};",
+                  "  pm.expect(plugin.name, pm.response.text()).to.equal('otel');",
+                  "  pm.expect(plugin.enabled, pm.response.text()).to.equal(false);",
+                  "  pm.expect((plugin.config || {}).request_headers, JSON.stringify(plugin.config)).to.eql(['x-bf-fixed-builtin-plugins']);",
+                  "});",
+                  "// The gateway had no otel row before this case, so the row is this case's own: remove it whatever",
+                  "// the update answered. The removal must answer 200 when the update created the row; a failed",
+                  "// update may have left no row, so then 404 is the only other answer accepted.",
+                  "mgmt('DELETE', '/api/plugins/otel', null, function (err, res) {",
+                  "  pm.test(updated ? 'cleanup: deleted the otel row the update created' : 'cleanup: removed any otel row the failed update left', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    if (updated) {",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    } else {",
+                  "      pm.expect(res.code, res.text()).to.be.oneOf([200, 404]);",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/otel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "otel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false,\n  \"config\": {\n    \"request_headers\": [\n      \"x-bf-fixed-builtin-plugins\"\n    ]\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "222. Bedrock Converse Claude tool-schema compatibility (tool-schema-compat)",
       "description": "Claude on Bedrock rejects oneOf/anyOf/allOf at the root of a tool input_schema (\"input_schema does not support oneOf, allOf, or anyOf at the top level\"). Folder 99 pins the Anthropic converter, which bedrock_mantle and the Bedrock InvokeModel egress reuse; Bedrock's default Converse egress forwarded toolSpec.inputSchema verbatim, so Codex tools like automation_update failed on bedrock/ but not on bedrock_mantle/. Every inbound route that reaches Converse for Claude is covered: /v1/responses, /openai/v1/responses streaming (Codex's route), /v1/chat/completions, /anthropic/v1/messages, and the native /bedrock converse and invoke routes. The raw_request cases pin the flattened wire schema; the branch-limit case pins the gateway-side 400; the Nova case pins that non-Claude Converse models keep the root composition, which they accept.",
       "item": [
@@ -272568,7 +273069,16 @@
                   "});",
                   "pm.test('gateway tool search responses: the upstream gets bifrost_tool_search, not defer_loading', function () {",
                   "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
-                  "  pm.expect(wire, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  // raw_request is the last turn sent upstream. A turn that can still search declares bifrost_tool_search; the last allowed turn drops it and reports the earlier searches as text.",
+                  "  var request = rr;",
+                  "  if (typeof request === 'string') { try { request = JSON.parse(request); } catch (e) { request = {}; } }",
+                  "  var declared = [];",
+                  "  ((request || {}).tools || []).forEach(function (t) { (t.functionDeclarations || t.function_declarations || []).forEach(function (d) { declared.push(d.name); }); });",
+                  "  if (wire.indexOf('Tool searches already run') !== -1) {",
+                  "    pm.expect(declared, 'the last allowed turn must not offer the search: ' + declared.join(',').slice(0, 800)).to.not.include('bifrost_tool_search');",
+                  "  } else {",
+                  "    pm.expect(declared, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  }",
                   "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
                   "});",
                   "pm.test('gateway tool search responses: the search call never reaches the caller', function () {",
@@ -272637,7 +273147,16 @@
                   "});",
                   "pm.test('gateway tool search messages: the upstream gets bifrost_tool_search, not defer_loading', function () {",
                   "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
-                  "  pm.expect(wire, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  // raw_request is the last turn sent upstream. A turn that can still search declares bifrost_tool_search; the last allowed turn drops it and reports the earlier searches as text.",
+                  "  var request = rr;",
+                  "  if (typeof request === 'string') { try { request = JSON.parse(request); } catch (e) { request = {}; } }",
+                  "  var declared = [];",
+                  "  ((request || {}).tools || []).forEach(function (t) { (t.functionDeclarations || t.function_declarations || []).forEach(function (d) { declared.push(d.name); }); });",
+                  "  if (wire.indexOf('Tool searches already run') !== -1) {",
+                  "    pm.expect(declared, 'the last allowed turn must not offer the search: ' + declared.join(',').slice(0, 800)).to.not.include('bifrost_tool_search');",
+                  "  } else {",
+                  "    pm.expect(declared, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  }",
                   "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
                   "});",
                   "pm.test('gateway tool search messages: the search call never reaches the caller', function () {",
@@ -349970,7 +350489,1113 @@
       ]
     },
     {
-      "name": "383. Rapid-MLX local provider (rapidmlx local provider) (#10032 / PR #10033)",
+      "name": "383. /api/keys lists every key as the provider keys API does: aliases, per-key flags and masked Bedrock credentials (api-keys-list)",
+      "description": "Pins what GET /api/keys returns for a key: the same redacted key the provider keys API (GET /api/providers/{provider}/keys) returns, in the /api/keys list shape with key_id and provider. The list used to build its own copy of each key, which left out the aliases, use_for_batch_api, use_anthropic_endpoints, use_openai_endpoints and disable_content_logging, and returned the Bedrock batch_role_arn unmasked and an env or vault backed project_id or endpoint resolved. It now redacts each key with the providers API's redaction.\n\nThe case stands up a run-scoped Bedrock-based custom provider through the management API, saves one key with literal credentials, an unset env reference, a rich alias and a legacy string alias, the per-key flags and a batch bucket, reads GET /api/keys, and deletes the provider afterwards, sweeping leftovers older than ten minutes. It asserts the aliases, flags, region, project ID and batch bucket read back as saved, every credential (value, access_key, secret_key, session_token, arn, role_arn, session_name, batch_role_arn) comes back masked to its first and last four characters with its middle absent from the body, the env-backed external_id lists its reference, and the provider keys API returns the same values for the key. No inference request is sent.\n\nRed before the change: the listed key has no aliases or flags and batch_role_arn is the saved ARN. Green after.\n\nRun with FEATURE=\"api-keys-list\".",
+      "item": [
+        {
+          "name": "bedrock custom provider key with aliases and batch settings is listed by /api/keys with aliases and flags readable and every credential masked - api-keys-list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-apikeys-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('apiKeysListProvider', provider);",
+                  "// A fixed body: literal credentials, one unset env reference, two aliases (rich and legacy string), the",
+                  "// per-key flags and Bedrock batch settings. use_anthropic_endpoints is left out on purpose.",
+                  "var keyBody = JSON.stringify({",
+                  "  name: provider + '-key', value: 'harness-apikeys-bedrock-api-key-value', models: ['*'], weight: 1,",
+                  "  use_for_batch_api: true, use_openai_endpoints: true, disable_content_logging: true,",
+                  "  aliases: {",
+                  "    'harness-apikeys-claude': {model_id: 'anthropic.claude-3-5-haiku-20241022-v1:0', description: 'harness alias', region: 'us-west-2', inference_profile_arn: 'arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/harnessapikeys'},",
+                  "    'harness-apikeys-short': 'anthropic.claude-3-haiku-20240307-v1:0'",
+                  "  },",
+                  "  bedrock_key_config: {",
+                  "    access_key: 'harness-apikeys-access-key-id', secret_key: 'harness-apikeys-secret-access-key', session_token: 'harness-apikeys-session-token-value', region: 'us-east-1',",
+                  "    arn: 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/harness', role_arn: 'arn:aws:iam::123456789012:role/harness-apikeys-role', external_id: 'env.HARNESS_APIKEYS_UNSET_EXTERNAL_ID',",
+                  "    session_name: 'harness-apikeys-session-name', batch_role_arn: 'arn:aws:iam::123456789012:role/harness-apikeys-batch-role', project_id: 'harness-apikeys-project',",
+                  "    batch_s3_config: {buckets: [{bucket_name: 'harness-apikeys-batch-bucket', prefix: 'batch/', is_default: true}]}",
+                  "  }",
+                  "});",
+                  "sweepStale(function () {",
+                  "  mgmt('POST', '/api/providers', JSON.stringify({provider: provider, custom_provider_config: {base_provider_type: 'bedrock', is_key_less: false}}), function (err, res) {",
+                  "    pm.test('setup: created the run-scoped Bedrock-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { return; }",
+                  "    mgmt('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', keyBody, function (err2, res2) {",
+                  "      pm.test('setup: the key with aliases, per-key flags and Bedrock batch settings is accepted', function () {",
+                  "        pm.expect(err2).to.equal(null);",
+                  "        pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('apiKeysListProvider');",
+                  "function cleanup() {",
+                  "  if (!provider) { return; }",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "// Every credential the key was saved with. A mask keeps the first and last four characters, so the",
+                  "// middle of each literal must never appear in the body.",
+                  "var SECRETS = {",
+                  "  'value': 'harness-apikeys-bedrock-api-key-value',",
+                  "  'access_key': 'harness-apikeys-access-key-id',",
+                  "  'secret_key': 'harness-apikeys-secret-access-key',",
+                  "  'session_token': 'harness-apikeys-session-token-value',",
+                  "  'arn': 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/harness',",
+                  "  'role_arn': 'arn:aws:iam::123456789012:role/harness-apikeys-role',",
+                  "  'session_name': 'harness-apikeys-session-name',",
+                  "  'batch_role_arn': 'arn:aws:iam::123456789012:role/harness-apikeys-batch-role'",
+                  "};",
+                  "function mask(s) { return s.slice(0, 4) + new Array(25).join('*') + s.slice(-4); }",
+                  "var listed = null;",
+                  "pm.test('GET /api/keys lists the saved key once, under its provider', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(200);",
+                  "  var all = pm.response.json();",
+                  "  pm.expect(all, pm.response.text()).to.be.an('array');",
+                  "  var mine = all.filter(function (k) { return k.provider === provider; });",
+                  "  pm.expect(mine, 'keys of ' + provider + ': ' + JSON.stringify(mine)).to.have.lengthOf(1);",
+                  "  listed = mine[0];",
+                  "  pm.expect(listed.name).to.equal(provider + '-key');",
+                  "});",
+                  "if (!listed) { cleanup(); return; }",
+                  "pm.test('the aliases are listed readable: rich alias with region and inference profile ARN, legacy alias as a string', function () {",
+                  "  var aliases = listed.aliases || {};",
+                  "  pm.expect(aliases['harness-apikeys-short'], JSON.stringify(listed)).to.equal('anthropic.claude-3-haiku-20240307-v1:0');",
+                  "  var rich = aliases['harness-apikeys-claude'] || {};",
+                  "  pm.expect(rich.model_id, JSON.stringify(aliases)).to.equal('anthropic.claude-3-5-haiku-20241022-v1:0');",
+                  "  pm.expect(rich.description).to.equal('harness alias');",
+                  "  pm.expect((rich.region || {}).value, 'a literal alias region is an identifier').to.equal('us-west-2');",
+                  "  pm.expect((rich.inference_profile_arn || {}).value, 'a literal inference profile ARN is an identifier').to.equal('arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/harnessapikeys');",
+                  "});",
+                  "pm.test('the per-key flags are listed: batch API, endpoint selection and content logging', function () {",
+                  "  pm.expect(listed.use_for_batch_api, JSON.stringify(listed)).to.equal(true);",
+                  "  pm.expect(listed.use_openai_endpoints).to.equal(true);",
+                  "  pm.expect(listed.use_anthropic_endpoints, 'a flag the key never set reads false').to.equal(false);",
+                  "  pm.expect(listed.disable_content_logging).to.equal(true);",
+                  "});",
+                  "pm.test('the Bedrock identifiers and batch bucket stay readable', function () {",
+                  "  var bedrock = listed.bedrock_key_config || {};",
+                  "  pm.expect((bedrock.region || {}).value, JSON.stringify(bedrock)).to.equal('us-east-1');",
+                  "  pm.expect((bedrock.project_id || {}).value).to.equal('harness-apikeys-project');",
+                  "  pm.expect(bedrock.batch_s3_config).to.eql({buckets: [{bucket_name: 'harness-apikeys-batch-bucket', prefix: 'batch/', is_default: true}]});",
+                  "});",
+                  "pm.test('every credential is masked to its first and last four characters, the batch role ARN included', function () {",
+                  "  var bedrock = listed.bedrock_key_config || {};",
+                  "  var got = {value: listed.value, access_key: bedrock.access_key, secret_key: bedrock.secret_key, session_token: bedrock.session_token, arn: bedrock.arn, role_arn: bedrock.role_arn, session_name: bedrock.session_name, batch_role_arn: bedrock.batch_role_arn};",
+                  "  Object.keys(SECRETS).forEach(function (field) {",
+                  "    pm.expect((got[field] || {}).value, field + ': ' + JSON.stringify(got[field])).to.equal(mask(SECRETS[field]));",
+                  "    pm.expect(pm.response.text(), field + ' must not be echoed').to.not.include(SECRETS[field].slice(4, -4));",
+                  "  });",
+                  "});",
+                  "pm.test('an env-backed credential lists its reference, not a value', function () {",
+                  "  var externalID = (listed.bedrock_key_config || {}).external_id || {};",
+                  "  pm.expect(externalID.ref, JSON.stringify(externalID)).to.equal('env.HARNESS_APIKEYS_UNSET_EXTERNAL_ID');",
+                  "  pm.expect(externalID.type).to.equal('env');",
+                  "  pm.expect(externalID.value, 'the variable is unset on the gateway').to.equal('');",
+                  "});",
+                  "mgmt('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (err, res) {",
+                  "  pm.test('the provider keys API returns the same aliases, flags and masked Bedrock config for the key', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var keys = (res.json() || {}).keys || [];",
+                  "    pm.expect(keys, res.text()).to.have.lengthOf(1);",
+                  "    pm.expect(listed.key_id).to.equal(keys[0].id);",
+                  "    ['value', 'aliases', 'bedrock_key_config', 'use_for_batch_api', 'use_anthropic_endpoints', 'use_openai_endpoints', 'disable_content_logging', 'models', 'blacklisted_models', 'weight', 'enabled'].forEach(function (field) {",
+                  "      pm.expect(listed[field], field).to.eql(keys[0][field]);",
+                  "    });",
+                  "  });",
+                  "  cleanup();",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "keys"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "385. Virtual key rotation returns the new value, with no warning when the key is loaded (vk-rotation-warning)",
+      "description": "Pins the rotation responses. POST /api/governance/virtual-keys/{vk_id}/rotate answers 200 with the new value, and with a warning only when the new value was saved but the in-memory reload failed; POST /api/governance/virtual-keys/rotate reports those keys under warnings. No HTTP request can make the reload fail, so the Go tests (TestRotateVirtualKey_ReloadFailure*, TestRotateVirtualKeys_ReloadFailureCountsAsRotated) pin the warning itself and this case pins that a rotation whose reload succeeds carries neither field, so a client can rely on their absence.\n\nThe case creates a run-scoped virtual key, rotates it alone, rotates it in bulk, and deletes it. No inference request is sent. The case name carries openai only so the openai provider filter selects it. Run with FEATURE=\"vk-rotation-warning\".",
+      "item": [
+        {
+          "name": "openai virtual key rotated alone and in bulk returns a new value each time and no warning - vk-rotation-warning",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "pm.variables.unset('vkRotationWarningId');",
+                  "mgmt('POST', '/api/governance/virtual-keys', JSON.stringify({name: 'harness-vk-rotation-warning-run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9)}), function (err, res) {",
+                  "  var vk = (!err && res.code === 200) ? ((res.json() || {}).virtual_key || {}) : {};",
+                  "  pm.test('setup: created the run-scoped virtual key', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    pm.expect(vk.id, res.text()).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "  pm.variables.set('vkRotationWarningId', vk.id || 'missing');",
+                  "  pm.variables.set('vkRotationWarningValue', vk.value || '');",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var id = pm.variables.get('vkRotationWarningId');",
+                  "var oldValue = pm.variables.get('vkRotationWarningValue');",
+                  "var text = pm.response.text();",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var single = (body.virtual_key || {}).value;",
+                  "pm.test('the rotation returns a new value and no warning', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(single, text).to.be.a('string').and.match(/^sk-bf-/);",
+                  "  pm.expect(single, 'the value must change').to.not.equal(oldValue);",
+                  "  pm.expect(body, text).to.not.have.property('warning');",
+                  "});",
+                  "if (!id || id === 'missing') { return; }",
+                  "mgmt('POST', '/api/governance/virtual-keys/rotate', JSON.stringify({ids: [id]}), function (err, res) {",
+                  "  pm.test('the bulk rotation returns a new value, no warnings and no errors', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var bulk = res.json() || {};",
+                  "    pm.expect(bulk.virtual_keys, res.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(bulk.virtual_keys[0].value, res.text()).to.match(/^sk-bf-/);",
+                  "    pm.expect(bulk.virtual_keys[0].value, 'the value must change again').to.not.equal(single);",
+                  "    pm.expect(bulk, res.text()).to.not.have.property('warnings');",
+                  "    pm.expect(bulk, res.text()).to.not.have.property('errors');",
+                  "  });",
+                  "  mgmt('DELETE', '/api/governance/virtual-keys/' + encodeURIComponent(id), null, function (err2, res2) {",
+                  "    pm.test('cleanup: deleted the run-scoped virtual key', function () {",
+                  "      pm.expect(err2).to.equal(null);",
+                  "      pm.expect(res2.code, res2.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{vkRotationWarningId}}/rotate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkRotationWarningId}}",
+                "rotate"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "386. Deleting an already deleted provider still succeeds (provider-repeat-delete)",
+      "description": "Pins DELETE /api/providers/{provider} for a provider that is already gone. The store reports ErrNotFound for the second delete, which the server and the handler must treat as done and answer 200, as the first delete does; only a delete that fails answers 500. The unit test mocks ErrNotFound at the handler, so this case covers the mapping from the store through the server.\n\nThe case creates a run-scoped keyless custom provider, deletes it twice and checks the provider list no longer names it. No inference request is sent. The case name carries openai only so the openai provider filter selects it. Run with FEATURE=\"provider-repeat-delete\".",
+      "item": [
+        {
+          "name": "openai custom provider deleted twice answers 200 both times and is gone from the list - provider-repeat-delete",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = 'harness-repeat-delete-run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('repeatDeleteProvider', provider);",
+                  "mgmt('POST', '/api/providers', JSON.stringify({provider: provider, custom_provider_config: {base_provider_type: 'openai', is_key_less: true}, network_config: {base_url: 'http://127.0.0.1:9', max_retries: 0}}), function (err, res) {",
+                  "  pm.test('setup: created the run-scoped provider', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('repeatDeleteProvider');",
+                  "pm.test('the first delete answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "  pm.test('the second delete answers 200 and names the provider', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    pm.expect((res.json() || {}).name, res.text()).to.equal(provider);",
+                  "  });",
+                  "  mgmt('GET', '/api/providers', null, function (err2, res2) {",
+                  "    pm.test('the provider is gone from the list', function () {",
+                  "      pm.expect(err2).to.equal(null);",
+                  "      pm.expect(res2.code, res2.text().slice(0, 400)).to.equal(200);",
+                  "      var names = ((res2.json() || {}).providers || []).map(function (p) { return p.name; });",
+                  "      pm.expect(names).to.not.include(provider);",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{repeatDeleteProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{repeatDeleteProvider}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "387. Codex deferred namespace over 512 tools holds back through the gateway search (gateway tool search namespace)",
+      "description": "Codex with supports_search_tool sends a client tool_search plus its MCP tools inside a namespace marked defer_loading. On a model with no tool search of its own (Gemini on Vertex or the Gemini API, older GPT, ...) the gateway search used to bail out on any tool_search or namespace tool, and flattening dropped the namespace's defer_loading, so every member went upstream: an MCP gateway with ~700 tools hit Vertex's 400 \"At most 512 function declarations can be specified\". Bifrost now holds deferred namespace members back behind bifrost_tool_search and serves the search itself. Cases send the Codex shape over /openai/v1/responses with 513 deferred members, unary (raw_request pins the held-back wire) and streaming (the failing request type in the report).",
+      "item": [
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses Codex deferred namespace of 513 tools holds back through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex with supports_search_tool: a client tool_search, its default tools in the",
+                  "// \"functions\" namespace, and an MCP server's 513 tools in a namespace deferred as a whole.",
+                  "var members = [];",
+                  "for (var i = 0; i < 513; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] },",
+                  "    { type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }",
+                  "  ],",
+                  "  max_output_tokens: 256",
+                  "};",
+                  "pm.variables.set('codexDeferredNamespaceBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('gateway tool search namespace responses: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex rejected every deferred tool loaded up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search namespace responses: the upstream gets bifrost_tool_search and not the deferred namespace', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
+                  "  var declared = [];",
+                  "  (rr.tools || []).forEach(function (t) { (t.functionDeclarations || t.function_declarations || []).forEach(function (d) { declared.push(d.name); }); });",
+                  "  // raw_request is the last turn sent upstream. A turn that can still search declares bifrost_tool_search; the last allowed turn drops it and reports the earlier searches as text.",
+                  "  var finalTurn = wire.indexOf('Tool searches already run') !== -1;",
+                  "  if (finalTurn) {",
+                  "    pm.expect(declared, 'the last allowed turn must not offer the search: ' + declared.join(',').slice(0, 800)).to.not.include('bifrost_tool_search');",
+                  "  } else {",
+                  "    pm.expect(declared, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  }",
+                  "  pm.expect(declared.length, 'deferred members must be held back, got ' + declared.length + ' declarations').to.be.below(513);",
+                  "  // Each search loads at most 20 members and they stay declared; with 3 turns an attempt searches at most twice.",
+                  "  pm.expect(declared.filter(function (n) { return n.indexOf('mcp__demo__') === 0; }).length, 'only searched members may load: ' + declared.join(',').slice(0, 800)).to.be.at.most(40);",
+                  "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
+                  "});",
+                  "pm.test('gateway tool search namespace responses: the search call never reaches the caller', function () {",
+                  "  var output = body.output || [];",
+                  "  pm.expect(output.filter(function (x) { return x.type === 'function_call' && x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexDeferredNamespaceBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses stream Codex deferred namespace of 513 tools holds back through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex with supports_search_tool: a client tool_search, its default tools in the",
+                  "// \"functions\" namespace, and an MCP server's 513 tools in a namespace deferred as a whole.",
+                  "var members = [];",
+                  "for (var i = 0; i < 513; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] },",
+                  "    { type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }",
+                  "  ],",
+                  "  max_output_tokens: 256,",
+                  "  stream: true",
+                  "};",
+                  "pm.variables.set('codexDeferredNamespaceStreamBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gateway tool search namespace responses stream: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex rejected every deferred tool loaded up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var events = txt.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) {",
+                  "  try { return JSON.parse(l.slice(6)); } catch (e) { return null; }",
+                  "}).filter(function (e) { return e; });",
+                  "pm.test('gateway tool search namespace responses stream: completes without an error event', function () {",
+                  "  pm.expect(events.filter(function (e) { return e.type === 'error' || e.type === 'response.failed'; }).length, 'stream must not fail: ' + txt.slice(0, 600)).to.eql(0);",
+                  "  pm.expect(events.filter(function (e) { return e.type === 'response.completed'; }).length, 'want exactly one response.completed: ' + txt.slice(-600)).to.eql(1);",
+                  "});",
+                  "pm.test('gateway tool search namespace responses stream: the search call never reaches the caller', function () {",
+                  "  var isSearch = function (x) { return !!x && x.type === 'function_call' && x.name === 'bifrost_tool_search'; };",
+                  "  var leaked = events.filter(function (e) { return isSearch(e.item); }).map(function (e) { return e.item; });",
+                  "  events.filter(function (e) { return e.type === 'response.completed'; }).forEach(function (e) {",
+                  "    ((e.response || {}).output || []).filter(isSearch).forEach(function (x) { leaked.push(x); });",
+                  "  });",
+                  "  pm.expect(leaked.length, 'bifrost_tool_search leaked into the stream: ' + JSON.stringify(leaked).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexDeferredNamespaceStreamBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses Codex deferred namespace of 513 tools finds and calls the one weather member through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex shape with 512 filler MCP tools and one weather tool, all in a namespace deferred as a whole.",
+                  "var members = [];",
+                  "for (var i = 0; i < 512; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "members.splice(237, 0, { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } });",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool. Search for tools if the one you need is not loaded.',",
+                  "  input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use a weather tool.' }] }],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] },",
+                  "    { type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }",
+                  "  ],",
+                  "  max_output_tokens: 1024",
+                  "};",
+                  "pm.variables.set('codexDeferredNamespaceWeatherBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var output = body.output || [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "pm.test('gateway tool search namespace accuracy: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex rejected every deferred tool loaded up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search namespace accuracy: the search call never reaches the caller', function () {",
+                  "  pm.expect(calls.filter(function (x) { return x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace accuracy: the deferred get_weather member was found, loaded and called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want a get_weather call among 513 deferred members - a text-only reply never exercises the search: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(calls.filter(function (x) { return x.name !== 'get_weather' && x.name !== 'mcp__demo__get_weather'; }).length, 'only the weather tool fits the request: ' + JSON.stringify(calls).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexDeferredNamespaceWeatherBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses Codex deferred namespace of 513 tools with tool_choice pinning the bare weather member name declares and calls it through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex shape with 512 filler MCP tools and one weather tool, all in a namespace deferred as a whole; tool_choice pins get_weather by its bare name.",
+                  "var members = [];",
+                  "for (var i = 0; i < 512; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "members.splice(237, 0, { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } });",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool.',",
+                  "  input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use a weather tool.' }] }],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] },",
+                  "    { type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }",
+                  "  ],",
+                  "  tool_choice: { type: 'function', name: 'get_weather' },",
+                  "  max_output_tokens: 1024",
+                  "};",
+                  "pm.variables.set('codexDeferredNamespacePinnedBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var output = body.output || [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "pm.test('gateway tool search namespace pinned choice: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex rejected the request (a pinned member never declared, or every member loaded up front): ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search namespace pinned choice: the search call never reaches the caller', function () {",
+                  "  pm.expect(calls.filter(function (x) { return x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace pinned choice: the pinned get_weather member is declared from the first turn and called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want the forced get_weather call: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(calls.filter(function (x) { return x.name !== 'get_weather' && x.name !== 'mcp__demo__get_weather'; }).length, 'the choice forces get_weather alone: ' + JSON.stringify(calls).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexDeferredNamespacePinnedBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses stream Codex deferred namespace of 513 tools finds and calls the one weather member through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex shape with 512 filler MCP tools and one weather tool, all in a namespace deferred as a whole, streamed.",
+                  "var members = [];",
+                  "for (var i = 0; i < 512; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "members.splice(237, 0, { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } });",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool. Search for tools if the one you need is not loaded.',",
+                  "  input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use a weather tool.' }] }],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] },",
+                  "    { type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }",
+                  "  ],",
+                  "  max_output_tokens: 1024,",
+                  "  stream: true",
+                  "};",
+                  "pm.variables.set('codexDeferredNamespaceWeatherStreamBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gateway tool search namespace accuracy stream: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex rejected every deferred tool loaded up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var events = txt.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) {",
+                  "  try { return JSON.parse(l.slice(6)); } catch (e) { return null; }",
+                  "}).filter(function (e) { return e; });",
+                  "var completed = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "var output = completed.length ? ((completed[0].response || {}).output || []) : [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "pm.test('gateway tool search namespace accuracy stream: completes once without an error event', function () {",
+                  "  pm.expect(events.filter(function (e) { return e.type === 'error' || e.type === 'response.failed'; }).length, 'stream must not fail: ' + txt.slice(0, 600)).to.eql(0);",
+                  "  pm.expect(completed.length, 'want exactly one response.completed across the search turns: ' + txt.slice(-600)).to.eql(1);",
+                  "});",
+                  "pm.test('gateway tool search namespace accuracy stream: the search call never reaches the caller', function () {",
+                  "  var isSearch = function (x) { return !!x && x.type === 'function_call' && x.name === 'bifrost_tool_search'; };",
+                  "  var leaked = events.filter(function (e) { return isSearch(e.item); }).map(function (e) { return e.item; }).concat(output.filter(isSearch));",
+                  "  pm.expect(leaked.length, 'bifrost_tool_search leaked into the stream: ' + JSON.stringify(leaked).slice(0, 600)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace accuracy stream: the deferred get_weather member was found, loaded and called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want a get_weather call among 513 deferred members - a text-only reply never exercises the search: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(calls.filter(function (x) { return x.name !== 'get_weather' && x.name !== 'mcp__demo__get_weather'; }).length, 'only the weather tool fits the request: ' + JSON.stringify(calls).slice(0, 600)).to.eql(0);",
+                  "  var streamed = events.filter(function (e) { return e.type === 'response.output_item.done' && e.item && e.item.type === 'function_call' && (e.item.name === 'get_weather' || e.item.name === 'mcp__demo__get_weather'); });",
+                  "  pm.expect(streamed.length, 'the call must stream as an output item too, not only in response.completed').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexDeferredNamespaceWeatherStreamBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses Codex additional_tools item with a deferred namespace of 513 tools is held back and its weather member found through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex code mode: the MCP server's 512 filler tools and one weather tool sit in an additional_tools input item, in a namespace deferred as a whole.",
+                  "var members = [];",
+                  "for (var i = 0; i < 512; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "members.splice(237, 0, { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } });",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool. Search for tools if the one you need is not loaded.',",
+                  "  input: [",
+                  "    { type: 'additional_tools', role: 'developer', tools: [{ type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }] },",
+                  "    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use a weather tool.' }] }",
+                  "  ],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] }",
+                  "  ],",
+                  "  max_output_tokens: 1024",
+                  "};",
+                  "pm.variables.set('codexAdditionalToolsWeatherBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var output = body.output || [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('gateway tool search namespace additional_tools: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex received every additional_tools member up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search namespace additional_tools: the upstream gets neither the item nor the held-back members', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
+                  "  var declared = [];",
+                  "  (rr.tools || []).forEach(function (t) { (t.functionDeclarations || t.function_declarations || []).forEach(function (d) { declared.push(d.name); }); });",
+                  "  pm.expect(declared.length, 'deferred additional_tools members must be held back, got ' + declared.length + ' declarations').to.be.below(513);",
+                  "  // Each search loads at most 20 members and they stay declared; with 3 turns an attempt searches at most twice.",
+                  "  pm.expect(declared.filter(function (n) { return n.indexOf('mcp__demo__') === 0; }).length, 'only searched members may load: ' + declared.join(',').slice(0, 800)).to.be.at.most(40);",
+                  "  pm.expect(wire, 'the additional_tools item must not reach the upstream').to.not.include('additional_tools');",
+                  "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
+                  "});",
+                  "pm.test('gateway tool search namespace additional_tools: the search call never reaches the caller', function () {",
+                  "  pm.expect(calls.filter(function (x) { return x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace additional_tools: the deferred get_weather member was found, loaded and called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want a get_weather call among 513 deferred additional_tools members - a text-only reply never exercises the search: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(calls.filter(function (x) { return x.name !== 'get_weather' && x.name !== 'mcp__demo__get_weather'; }).length, 'only the weather tool fits the request: ' + JSON.stringify(calls).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexAdditionalToolsWeatherBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses stream Codex additional_tools item with a deferred namespace of 513 tools is held back and its weather member found through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex code mode: the MCP server's 512 filler tools and one weather tool sit in an additional_tools input item, in a namespace deferred as a whole.",
+                  "var members = [];",
+                  "for (var i = 0; i < 512; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "members.splice(237, 0, { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } });",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool. Search for tools if the one you need is not loaded.',",
+                  "  input: [",
+                  "    { type: 'additional_tools', role: 'developer', tools: [{ type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }] },",
+                  "    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use a weather tool.' }] }",
+                  "  ],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] }",
+                  "  ],",
+                  "  max_output_tokens: 1024,\n  stream: true",
+                  "};",
+                  "pm.variables.set('codexAdditionalToolsWeatherStreamBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gateway tool search namespace additional_tools stream: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex received every additional_tools member up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var events = txt.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) {",
+                  "  try { return JSON.parse(l.slice(6)); } catch (e) { return null; }",
+                  "}).filter(function (e) { return e; });",
+                  "var completed = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "var output = completed.length ? ((completed[0].response || {}).output || []) : [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "pm.test('gateway tool search namespace additional_tools stream: completes once without an error event', function () {",
+                  "  pm.expect(events.filter(function (e) { return e.type === 'error' || e.type === 'response.failed'; }).length, 'stream must not fail: ' + txt.slice(0, 600)).to.eql(0);",
+                  "  pm.expect(completed.length, 'want exactly one response.completed across the search turns: ' + txt.slice(-600)).to.eql(1);",
+                  "});",
+                  "pm.test('gateway tool search namespace additional_tools stream: the search call never reaches the caller', function () {",
+                  "  var isSearch = function (x) { return !!x && x.type === 'function_call' && x.name === 'bifrost_tool_search'; };",
+                  "  var leaked = events.filter(function (e) { return isSearch(e.item); }).map(function (e) { return e.item; }).concat(output.filter(isSearch));",
+                  "  pm.expect(leaked.length, 'bifrost_tool_search leaked into the stream: ' + JSON.stringify(leaked).slice(0, 600)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace additional_tools stream: the deferred get_weather member was found, loaded and called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want a get_weather call among 513 deferred additional_tools members - a text-only reply never exercises the search: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(calls.filter(function (x) { return x.name !== 'get_weather' && x.name !== 'mcp__demo__get_weather'; }).length, 'only the weather tool fits the request: ' + JSON.stringify(calls).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexAdditionalToolsWeatherStreamBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses Codex history whose deferred tools exist only in client search outputs calls the weather member they loaded through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex keeps deferred MCP tools on its side and runs the search itself: get_weather reaches the gateway only inside an earlier",
+                  "// client tool_search_output item (a session that started on a model with tool search), next to 80 other tools that search loaded: more than the 60 declarations the test allows, so restoring the whole history fails.",
+                  "var weather = { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } };",
+                  "var others = [];",
+                  "for (var i = 0; i < 80; i++) {",
+                  "  others.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool.',",
+                  "  input: [",
+                  "    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Which demo tools are there?' }] },",
+                  "    { type: 'tool_search_call', execution: 'client', call_id: 'call_ts1', status: 'completed', arguments: { query: 'demo' } },",
+                  "    { type: 'tool_search_output', execution: 'client', call_id: 'call_ts1', status: 'completed', tools: [{ type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', tools: others }] },",
+                  "    { type: 'tool_search_call', execution: 'client', call_id: 'call_ts2', status: 'completed', arguments: { query: 'weather' } },",
+                  "    { type: 'tool_search_output', execution: 'client', call_id: 'call_ts2', status: 'completed', tools: [{ type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', tools: [weather] }] },",
+                  "    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'The demo server has weather and demo tools loaded.' }] },",
+                  "    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use the weather tool.' }] }",
+                  "  ],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] }",
+                  "  ],",
+                  "  max_output_tokens: 1024",
+                  "};",
+                  "pm.variables.set('codexClientSearchHistoryBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var output = body.output || [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gateway tool search namespace client search history: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search namespace client search history: the tools the client search loaded are declared, at most 20 of them', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
+                  "  var declared = [];",
+                  "  (rr.tools || []).forEach(function (t) { (t.functionDeclarations || t.function_declarations || []).forEach(function (d) { declared.push(d.name); }); });",
+                  "  var demo = declared.filter(function (n) { return n.indexOf('mcp__demo__') === 0; });",
+                  "  pm.expect(demo, 'the newest search loaded get_weather, so it must be declared: ' + declared.join(',').slice(0, 800)).to.include('mcp__demo__get_weather');",
+                  "  // History restores at most 20; the attempt may still search twice, 20 members each.",
+                  "  pm.expect(demo.length, 'history searches load at most 20 tools; the rest stay searchable: ' + declared.join(',').slice(0, 800)).to.be.at.most(60);",
+                  "  pm.expect(JSON.stringify(rr), 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
+                  "});",
+                  "pm.test('gateway tool search namespace client search history: the search call never reaches the caller', function () {",
+                  "  pm.expect(calls.filter(function (x) { return x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace client search history: get_weather, known only from the client search history, is called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want a get_weather call - before the fix Gemini never saw the tool: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexClientSearchHistoryBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "388. Rapid-MLX local provider (rapidmlx local provider) (#10032 / PR #10033)",
       "description": "Requires a configured rapidmlx key pointing at a running local Rapid-MLX server serving mlx-community/Qwen3.5-4B-MLX-4bit. Pins chat and native Responses routing, with and without SSE. No external API credentials are required. Opt in with INCLUDE_PREVIEW=1 (Newman environment variable include_preview=1) after configuring the server; all seven requests are skipped by default.",
       "item": [
         {

@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
@@ -43,8 +44,8 @@ type LoggingHandler struct {
 	// dropdowns don't need request-fresh data and the underlying matview-backed
 	// query set is heavy; a short TTL plus single-flight collapses hot reloads
 	// (every page load fires this) into one DB roundtrip.
-	filterDataCache    filterDataCache
-	mcpFilterDataCache filterDataCache
+	filterDataCache    *filterDataCache
+	mcpFilterDataCache *filterDataCache
 
 	// sidekiqRunner runs the background cost-recalculation job; sidekiqStore reads
 	// job rows for status/dedup. Both are nil until SetSidekiqBackend wires them,
@@ -143,6 +144,13 @@ const sessionLogPageLimit = 500
 // filterDataCacheTTL is short enough that newly used models/keys appear in
 // dropdowns promptly without hiding results beyond the matview refresh cadence.
 const filterDataCacheTTL = 30 * time.Second
+
+// logsFilterDataTable and mcpLogsFilterDataTable name the live-store tables the
+// two filter-data caches keep their responses in; one logging handler per process.
+const (
+	logsFilterDataTable    = "logs_filter_data"
+	mcpLogsFilterDataTable = "mcp_logs_filter_data"
+)
 
 const filterDataFanOutLimit = 4
 
@@ -341,50 +349,77 @@ func dimSet(dims []string) map[string]struct{} {
 // key sync.Mutex so that on cache miss only one request hits the DB and the
 // rest wait for it.
 type filterDataCache struct {
-	mu      sync.Mutex
-	entries map[string]*filterDataCacheEntry
+	// payloads holds each key's response for filterDataCacheTTL; the live store
+	// sweeps expired ones, so a key nobody asks for again does not stay.
+	payloads *livestore.Table[string, map[string]interface{}]
+	// builds holds the single-flight lock of each key being read or built: a
+	// handle that lives only while some request holds or waits on it.
+	mu     sync.Mutex
+	builds map[string]*filterDataBuild
 }
 
+// filterDataBuild is one key's single-flight lock and how many requests hold
+// or wait on it.
+type filterDataBuild struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// filterDataCacheEntry is a request's hold on one key's single-flight lock.
 type filterDataCacheEntry struct {
-	mu        sync.Mutex
-	expiresAt time.Time
-	payload   map[string]interface{}
+	key   string
+	build *filterDataBuild
 }
 
-// load returns the cached payload for key if it hasn't expired. The returned
-// entry is locked for single-flight: callers MUST call store() or release()
-// before discarding it.
+// newFilterDataCache creates a filter-data cache whose responses live in the
+// live-store table named name.
+func newFilterDataCache(live *livestore.Store, name string) (*filterDataCache, error) {
+	payloads, err := live.NewTable[string, map[string]interface{}](context.Background(), name, livestore.WithTTL(filterDataCacheTTL))
+	if err != nil {
+		return nil, err
+	}
+	return &filterDataCache{payloads: payloads, builds: make(map[string]*filterDataBuild)}, nil
+}
+
+// load returns the cached payload for key if it hasn't expired. On a miss the
+// returned entry holds the key's lock for single-flight: callers MUST call
+// store() or release() before discarding it. On a hit the lock is already
+// released.
 func (c *filterDataCache) load(key string) (*filterDataCacheEntry, map[string]interface{}, bool) {
 	c.mu.Lock()
-	if c.entries == nil {
-		c.entries = make(map[string]*filterDataCacheEntry)
-	}
-	entry, ok := c.entries[key]
+	build, ok := c.builds[key]
 	if !ok {
-		entry = &filterDataCacheEntry{}
-		c.entries[key] = entry
+		build = &filterDataBuild{}
+		c.builds[key] = build
 	}
+	build.refs++
 	c.mu.Unlock()
 
-	entry.mu.Lock()
-	if !entry.expiresAt.IsZero() && time.Now().Before(entry.expiresAt) && entry.payload != nil {
-		payload := entry.payload
-		entry.mu.Unlock()
+	build.mu.Lock()
+	entry := &filterDataCacheEntry{key: key, build: build}
+	if payload, ok := c.payloads.Get(key); ok && payload != nil {
+		c.release(entry)
 		return entry, payload, true
 	}
 	return entry, nil, false
 }
 
-// store publishes a completed filter-data cache result.
+// store publishes a completed filter-data cache result and releases the key.
 func (c *filterDataCache) store(entry *filterDataCacheEntry, payload map[string]interface{}) {
-	entry.payload = payload
-	entry.expiresAt = time.Now().Add(filterDataCacheTTL)
-	entry.mu.Unlock()
+	c.payloads.Put(entry.key, payload)
+	c.release(entry)
 }
 
-// release releases a filter-data cache entry after a fetch attempt.
+// release releases a filter-data cache entry after a fetch attempt, dropping
+// the key's lock once no request holds or waits on it.
 func (c *filterDataCache) release(entry *filterDataCacheEntry) {
-	entry.mu.Unlock()
+	entry.build.mu.Unlock()
+	c.mu.Lock()
+	entry.build.refs--
+	if entry.build.refs == 0 {
+		delete(c.builds, entry.key)
+	}
+	c.mu.Unlock()
 }
 
 // parseParentRequestIDFilter reads the parent request ID filter from the request.
@@ -418,12 +453,25 @@ type MCPLogRedactionMappingResolver interface {
 }
 
 // NewLoggingHandler creates a new logging handler instance
-func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager RedactedKeysManager, config *lib.Config) *LoggingHandler {
+func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager RedactedKeysManager, config *lib.Config) (*LoggingHandler, error) {
+	if config == nil || config.LiveStore == nil {
+		return nil, fmt.Errorf("logging handler: %w", livestore.ErrNoLiveStore)
+	}
+	filterData, err := newFilterDataCache(config.LiveStore, logsFilterDataTable)
+	if err != nil {
+		return nil, err
+	}
+	mcpFilterData, err := newFilterDataCache(config.LiveStore, mcpLogsFilterDataTable)
+	if err != nil {
+		return nil, err
+	}
 	return &LoggingHandler{
 		logManager:          logManager,
 		redactedKeysManager: redactedKeysManager,
 		config:              config,
-	}
+		filterDataCache:     filterData,
+		mcpFilterDataCache:  mcpFilterData,
+	}, nil
 }
 
 // SetLogRedactionMappingResolver wires the optional resolver used by Enterprise log-detail reads.
@@ -444,8 +492,15 @@ func (h *LoggingHandler) shouldHideDeletedVirtualKeysInFilters() bool {
 	return h.config.ClientConfig.HideDeletedVirtualKeysInFilters
 }
 
-// RegisterRoutes registers all logging-related routes
+// RegisterRoutes registers all logging-related routes. Log routes read the log store and stay
+// open with the config store disabled; cost recalculation runs as a background job kept in the
+// config store, so its routes answer 503 from RequireConfigStoreMiddleware.
 func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	var configStore configstore.ConfigStore
+	if h.config != nil {
+		configStore = h.config.ConfigStore
+	}
+	configRoutes := append(slices.Clip(middlewares), RequireConfigStoreMiddleware(configStore))
 	// LLM Log retrieval with filtering, search, and pagination
 	r.GET("/api/logs", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogs), middlewares...))
 	r.GET("/api/logs/sessions/{session_id}/summary", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogSessionSummaryByID), middlewares...))
@@ -478,9 +533,9 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	// Consolidated, public-facing dashboard payload (all of the above in one call)
 	r.GET("/api/logs/dashboard", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getDashboard), middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
-	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
-	r.GET("/api/logs/recalculate-cost/status", lib.ChainMiddlewares(h.getRecalculateCostStatus, middlewares...))
-	r.POST("/api/logs/recalculate-cost/cancel", lib.ChainMiddlewares(h.cancelRecalculateCost, middlewares...))
+	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, configRoutes...))
+	r.GET("/api/logs/recalculate-cost/status", lib.ChainMiddlewares(h.getRecalculateCostStatus, configRoutes...))
+	r.POST("/api/logs/recalculate-cost/cancel", lib.ChainMiddlewares(h.cancelRecalculateCost, configRoutes...))
 
 	// MCP Tool Log retrieval with filtering, search, and pagination
 	r.GET("/api/mcp-logs", lib.ChainMiddlewares(h.getMCPLogs, middlewares...))

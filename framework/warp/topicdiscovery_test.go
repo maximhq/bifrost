@@ -28,7 +28,7 @@ import (
 func discoveryTestService(t *testing.T, chat ChatFunc) (*Service, *semanticLogReader) {
 	t.Helper()
 	reader := topicTestReader(t, map[string]logstore.Log{})
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: assignTestRow()}), WithLogReader(reader),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(assignTestEmbedding), WithChatFunc(chat),
 	)
@@ -1133,7 +1133,7 @@ func TestWarpUpkeepJobMaintainsTopics(t *testing.T) {
 	require.Equal(t, meta.Message, SummarizeTopicUpkeepMeta(final).Message)
 	require.Contains(t, meta.Message, "Retired 1 topic(s)")
 
-	off := NewService(nil, WithConfigStore(&recordingStore{row: assignTestRow()}))
+	off := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: assignTestRow()}))
 	t.Cleanup(off.Shutdown)
 	final, err = off.RunTopicUpkeepJob(ctx, tables.TableSidekiqJob{ID: "upkeep", Metadata: "{}"}, func(string) error { return nil })
 	require.NoError(t, err, "no topic store is nothing to keep")
@@ -1164,7 +1164,7 @@ func TestRegisterTopicsBindsTheUpkeepJob(t *testing.T) {
 // reader arrives, they find no topic store and do nothing, and the timer queues
 // nothing while there is none.
 func TestRegisterTopicsBindsTheJobsBeforeTheLogReader(t *testing.T) {
-	service := NewService(nil, WithConfigStore(&recordingStore{row: assignTestRow()}))
+	service := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: assignTestRow()}))
 	t.Cleanup(service.Shutdown)
 	runner := sidekiq.New(nil, nil, 1, "")
 	t.Cleanup(runner.Shutdown)
@@ -1220,7 +1220,7 @@ func (s *stallingTopicStore) ListWarpTopics(ctx context.Context, _ logstore.Warp
 // substitute for being told to stop.
 func TestWarpShutdownInterruptsUpkeep(t *testing.T) {
 	store := &stallingTopicStore{entered: make(chan struct{}), finished: make(chan error, 1)}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: assignTestRow()}), WithLogReader(&semanticLogReader{logs: map[string]logstore.Log{}, topics: store}),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(assignTestEmbedding),
 	)

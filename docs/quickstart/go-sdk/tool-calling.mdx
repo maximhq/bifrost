@@ -69,25 +69,63 @@ if response.Choices[0].Message.ChatAssistantMessage != nil && response.Choices[0
 
 Connect to Model Context Protocol (MCP) servers to give AI models access to external tools and services without manually defining each function.
 
+The Account serves MCP clients the way it serves providers: it lists their IDs and returns each one's configuration. Bifrost connects them when you call `ConnectConfiguredMCPClients`, after `Init` and after registering any plugins, so connection hooks see every client. Declare the Account type and its MCP methods at package level:
+
 ```go
-client, initErr := bifrost.Init(context.Background(), schemas.BifrostConfig{
-	Account: &MyAccount{},
-	MCPConfig: &schemas.MCPConfig{
-		ClientConfigs: []schemas.MCPClientConfig{
-			// Sample youtube-mcp server
-			{
-				Name:             "youtube-mcp",
-				ConnectionType:   schemas.MCPConnectionTypeHTTP,
-				ConnectionString: schemas.Ptr("http://your-youtube-mcp-url"),
-				ToolsToExecute: []string{"*"}, // Allow all tools from this client
-			},
-		},
+type MyAccount struct {
+	// ... provider fields and methods as in the setup guide ...
+	mcpClients map[string]*schemas.MCPClientConfig // by client ID
+}
+
+func (a *MyAccount) GetConfiguredMCPClients() ([]string, error) {
+	ids := make([]string, 0, len(a.mcpClients))
+	for id := range a.mcpClients {
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func (a *MyAccount) GetConfigForMCPClient(id string) (*schemas.MCPClientConfig, error) {
+	if config, ok := a.mcpClients[id]; ok {
+		return config, nil
+	}
+	return nil, fmt.Errorf("MCP client %s not configured", id)
+}
+
+func (a *MyAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+	for _, config := range a.mcpClients {
+		if config.Name == name {
+			return config, nil
+		}
+	}
+	return nil, fmt.Errorf("MCP client %s not configured", name)
+}
+```
+
+Then, inside your function, serve the clients from the Account, initialize Bifrost and connect them:
+
+```go
+account := &MyAccount{mcpClients: map[string]*schemas.MCPClientConfig{
+	// Sample youtube-mcp server
+	"youtube-mcp": {
+		ID:               "youtube-mcp",
+		Name:             "youtube-mcp",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://your-youtube-mcp-url"),
+		ToolsToExecute:   []string{"*"}, // Allow all tools from this client
 	},
+}}
+
+client, initErr := bifrost.Init(context.Background(), schemas.BifrostConfig{
+	Account: account,
 })
 if initErr != nil {
 	panic(initErr)
 }
 defer client.Shutdown()
+
+// Dial the MCP clients the Account lists. It returns once each has been tried.
+client.ConnectConfiguredMCPClients(context.Background(), nil)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
 	Provider: schemas.OpenAI,

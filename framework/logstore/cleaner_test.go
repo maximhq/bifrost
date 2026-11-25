@@ -573,3 +573,40 @@ func TestPostgresDeleteLogsChunksLargeIDList(t *testing.T) {
 	assert.Zero(t, countLogs(t, db, "old-"))
 	assert.Equal(t, int64(5), countLogs(t, db, "new-"))
 }
+
+type reclaimingRetentionManager struct {
+	gatedRetentionManager
+	reclaims atomic.Int64
+	maxPages atomic.Int64
+}
+
+func (m *reclaimingRetentionManager) ReclaimSpace(_ context.Context, maxPages int) (int64, error) {
+	m.reclaims.Add(1)
+	m.maxPages.Store(int64(maxPages))
+	return 0, nil
+}
+
+// TestCleanupOldLogsReclaimsSpaceOncePerPass pins that a retention pass ends
+// with one space reclaim for stores that support it.
+func TestCleanupOldLogsReclaimsSpaceOncePerPass(t *testing.T) {
+	manager := &reclaimingRetentionManager{}
+	cleaner := NewLogsCleaner(manager, CleanerConfig{RetentionDays: 30}, testLogger{})
+
+	cleaner.cleanupOldLogs(context.Background())
+
+	require.EqualValues(t, 1, manager.reclaims.Load())
+	require.EqualValues(t, reclaimStepPages, manager.maxPages.Load())
+}
+
+// TestCleanupOldLogsSkipsReclaimWhenPassCancelled pins that a stopped pass does
+// not start a reclaim.
+func TestCleanupOldLogsSkipsReclaimWhenPassCancelled(t *testing.T) {
+	manager := &reclaimingRetentionManager{}
+	cleaner := NewLogsCleaner(manager, CleanerConfig{RetentionDays: 30}, testLogger{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cleaner.cleanupOldLogs(ctx)
+
+	require.Zero(t, manager.reclaims.Load())
+}

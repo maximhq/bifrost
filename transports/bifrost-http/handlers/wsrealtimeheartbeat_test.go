@@ -18,8 +18,8 @@ import (
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/tidwall/gjson"
 
 	"github.com/fasthttp/router"
@@ -1277,6 +1277,21 @@ func (a geminiLiveAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas
 	return &schemas.ProviderConfig{NetworkConfig: network, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a geminiLiveAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a geminiLiveAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a geminiLiveAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // liveTurnRecorder records the turns the pipeline logs and bills.
 type liveTurnRecorder struct {
 	mu        sync.Mutex
@@ -1379,10 +1394,7 @@ func newGeminiLiveGateway(t *testing.T, upstream *fakeGeminiLive, enforceAuth bo
 	})
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
-	kv, err := kvstore.New(kvstore.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = kv.Close() })
-	config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}, KVStore: kv}
+	config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}}, nil, nil)
 	pool := bfws.NewPool(nil)
 	t.Cleanup(pool.Close)
 	handler := &WSRealtimeHandler{client: client, config: config, handlerStore: config, pool: pool, sessions: bfws.NewSessionManager(10)}

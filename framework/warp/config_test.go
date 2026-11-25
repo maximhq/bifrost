@@ -26,8 +26,8 @@ func (s *recordingStore) UpsertWarpConfig(_ context.Context, config *tables.Tabl
 	return nil
 }
 
-func newTestService(store *recordingStore) *Service {
-	return NewService(nil, WithConfigStore(store), WithVectorStore(newFakeWarpVectorStore()))
+func newTestService(t testing.TB, store *recordingStore) *Service {
+	return serviceForTest(t, nil, WithConfigStore(store), WithVectorStore(newFakeWarpVectorStore()))
 }
 
 func validWarpConfigRow() *tables.TableWarpConfig {
@@ -51,7 +51,7 @@ func validWarpConfigInput() *ConfigInput {
 func TestWarpConfigViewReturnsKeyReference(t *testing.T) {
 	row := validWarpConfigRow()
 	row.APIKeyID = "key-abc"
-	service := newTestService(&recordingStore{row: row})
+	service := newTestService(t, &recordingStore{row: row})
 	view, err := service.ConfigView(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "key-abc", view.APIKeyID)
@@ -62,7 +62,7 @@ func TestWarpConfigViewReturnsKeyReference(t *testing.T) {
 // An unconfigured deployment must render its empty settings form, so this is a
 // defaults view rather than an error.
 func TestWarpConfigViewUnconfiguredReturnsDefaults(t *testing.T) {
-	service := newTestService(&recordingStore{})
+	service := newTestService(t, &recordingStore{})
 	view, err := service.ConfigView(context.Background())
 	require.NoError(t, err)
 	require.False(t, view.Configured)
@@ -72,13 +72,13 @@ func TestWarpConfigViewUnconfiguredReturnsDefaults(t *testing.T) {
 }
 
 func TestWarpSaveConfigRequiresConnectedVectorStore(t *testing.T) {
-	service := NewService(nil, WithConfigStore(&recordingStore{}))
+	service := serviceForTest(t, nil, WithConfigStore(&recordingStore{}))
 	_, err := service.SaveConfig(context.Background(), validWarpConfigInput())
 	require.ErrorIs(t, err, ErrNoVectorStore)
 }
 
 func TestWarpConfigViewWithoutStoreIsUnavailable(t *testing.T) {
-	_, err := NewService(nil).ConfigView(context.Background())
+	_, err := serviceForTest(t, nil).ConfigView(context.Background())
 	require.ErrorIs(t, err, ErrUnavailable)
 }
 
@@ -91,7 +91,7 @@ func TestWarpSaveConfigRoundTripsKeyReference(t *testing.T) {
 	input := validWarpConfigInput()
 	input.Model = "gpt-4o-mini"
 	input.APIKeyID = "key-xyz"
-	view, err := newTestService(store).SaveConfig(context.Background(), input)
+	view, err := newTestService(t, store).SaveConfig(context.Background(), input)
 	require.NoError(t, err)
 	require.Len(t, store.upserted, 1)
 	require.Equal(t, "key-xyz", store.upserted[0].APIKeyID)
@@ -103,7 +103,7 @@ func TestWarpSaveConfigRoundTripsKeyReference(t *testing.T) {
 // key at all - so an empty reference must be accepted, not rejected.
 func TestWarpSaveConfigAcceptsEmptyKeyReference(t *testing.T) {
 	store := &recordingStore{}
-	_, err := newTestService(store).SaveConfig(context.Background(), validWarpConfigInput())
+	_, err := newTestService(t, store).SaveConfig(context.Background(), validWarpConfigInput())
 	require.NoError(t, err)
 	require.Len(t, store.upserted, 1)
 	require.Empty(t, store.upserted[0].APIKeyID)
@@ -113,7 +113,7 @@ func TestWarpSaveConfigAcceptsEmptyKeyReference(t *testing.T) {
 // able to fill the form in over more than one sitting.
 func TestWarpSaveConfigAllowsIncompleteDraftWhenDisabled(t *testing.T) {
 	store := &recordingStore{}
-	_, err := newTestService(store).SaveConfig(context.Background(), &ConfigInput{Enabled: false})
+	_, err := newTestService(t, store).SaveConfig(context.Background(), &ConfigInput{Enabled: false})
 	require.NoError(t, err)
 	require.Len(t, store.upserted, 1)
 }
@@ -132,7 +132,7 @@ func TestWarpValidateConfigInputRejectsIncompleteWhenEnabled(t *testing.T) {
 		input := validWarpConfigInput()
 		mutate(input)
 		store := &recordingStore{}
-		_, err := newTestService(store).SaveConfig(context.Background(), input)
+		_, err := newTestService(t, store).SaveConfig(context.Background(), input)
 		require.ErrorIs(t, err, ErrInvalidConfig, name)
 		require.Empty(t, store.upserted, name)
 	}
@@ -192,7 +192,7 @@ func TestWarpSaveConfigRoundTripsExplicitZeroTemperature(t *testing.T) {
 	input.Temperature = &zero
 	input.ReasoningEffort = "low"
 
-	view, err := newTestService(store).SaveConfig(context.Background(), input)
+	view, err := newTestService(t, store).SaveConfig(context.Background(), input)
 	require.NoError(t, err)
 	require.NotNil(t, store.upserted[0].Temperature)
 	require.Equal(t, 0.0, *store.upserted[0].Temperature)
@@ -204,7 +204,7 @@ func TestWarpSaveConfigRoundTripsExplicitZeroTemperature(t *testing.T) {
 
 func TestWarpSaveConfigLeavesTemperatureAndReasoningEffortUnsetByDefault(t *testing.T) {
 	store := &recordingStore{}
-	view, err := newTestService(store).SaveConfig(context.Background(), validWarpConfigInput())
+	view, err := newTestService(t, store).SaveConfig(context.Background(), validWarpConfigInput())
 	require.NoError(t, err)
 	require.Nil(t, store.upserted[0].Temperature)
 	require.Empty(t, store.upserted[0].ReasoningEffort)
@@ -220,7 +220,7 @@ func TestWarpConfigRejectsUnusableConfigs(t *testing.T) {
 		"disabled": {Enabled: false, Provider: "openai", Model: "gpt-4o", EmbeddingProvider: "openai", EmbeddingModel: "embed", EmbeddingDimension: 3},
 		"no model": {Enabled: true, Provider: "openai"},
 	} {
-		_, err := newTestService(&recordingStore{row: row}).Config(context.Background())
+		_, err := newTestService(t, &recordingStore{row: row}).Config(context.Background())
 		require.ErrorIs(t, err, ErrUnavailable, name)
 	}
 }
@@ -232,7 +232,7 @@ func TestWarpValidateConfigInputRejectsNilInput(t *testing.T) {
 	require.ErrorIs(t, ValidateConfigInput(nil), ErrInvalidConfig)
 
 	store := &recordingStore{}
-	_, err := newTestService(store).SaveConfig(context.Background(), nil)
+	_, err := newTestService(t, store).SaveConfig(context.Background(), nil)
 	require.ErrorIs(t, err, ErrInvalidConfig)
 	require.Empty(t, store.upserted, "a rejected write must not reach the store")
 }
@@ -274,13 +274,13 @@ func TestWarpValidateConfigInputAcceptsRegisteredCustomProvider(t *testing.T) {
 // half of the same mistake.
 func TestWarpConfigViewResolvesHistoryRetentionDefault(t *testing.T) {
 	// Unconfigured: the form renders the default rather than a bare zero.
-	view, err := newTestService(&recordingStore{}).ConfigView(context.Background())
+	view, err := newTestService(t, &recordingStore{}).ConfigView(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, schemas.WarpDefaultHistoryRetentionDays, view.HistoryRetentionDays)
 
 	// Stored zero means "never set", which resolves to the same default: a row
 	// written before this setting existed must not read as "expire immediately".
-	view, err = newTestService(&recordingStore{row: validWarpConfigRow()}).ConfigView(context.Background())
+	view, err = newTestService(t, &recordingStore{row: validWarpConfigRow()}).ConfigView(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, schemas.WarpDefaultHistoryRetentionDays, view.HistoryRetentionDays)
 }
@@ -289,7 +289,7 @@ func TestWarpSaveConfigRoundTripsHistoryRetention(t *testing.T) {
 	store := &recordingStore{row: validWarpConfigRow()}
 	input := validWarpConfigInput()
 	input.HistoryRetentionDays = 7
-	view, err := newTestService(store).SaveConfig(context.Background(), input)
+	view, err := newTestService(t, store).SaveConfig(context.Background(), input)
 	require.NoError(t, err)
 	require.Len(t, store.upserted, 1)
 	require.Equal(t, 7, store.upserted[0].HistoryRetentionDays)
@@ -313,11 +313,11 @@ func TestWarpSaveConfigRequiresNewNamespaceForEmbeddingSpace(t *testing.T) {
 	store := &recordingStore{row: validWarpConfigRow()}
 	input := validWarpConfigInput()
 	input.EmbeddingModel = "text-embedding-3-large"
-	_, err := newTestService(store).SaveConfig(context.Background(), input)
+	_, err := newTestService(t, store).SaveConfig(context.Background(), input)
 	require.ErrorIs(t, err, ErrInvalidConfig)
 
 	input.LogVectorStoreNamespace = "BifrostWarpLogsV2"
-	view, err := newTestService(store).SaveConfig(context.Background(), input)
+	view, err := newTestService(t, store).SaveConfig(context.Background(), input)
 	require.NoError(t, err)
 	require.Equal(t, "BifrostWarpLogsV2", view.LogVectorStoreNamespace)
 	require.Equal(t, []string{schemas.WarpDefaultLogVectorStoreNamespace}, retiredNamespaces(store.row))
@@ -365,7 +365,7 @@ func TestWarpSaveDraftDoesNotRetireLiveNamespace(t *testing.T) {
 		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
 		EmbeddingDimension: 1536, LogVectorStoreNamespace: "BifrostWarpLogs",
 	}}
-	_, err := newTestService(store).SaveConfig(context.Background(), &ConfigInput{
+	_, err := newTestService(t, store).SaveConfig(context.Background(), &ConfigInput{
 		Enabled: false, Provider: "openai", Model: "gpt-4o",
 	})
 	require.NoError(t, err, "a draft must not be rejected for a namespace it never changed")
@@ -391,7 +391,7 @@ func TestWarpSaveDraftPreservesStoredEmbeddingSettings(t *testing.T) {
 		SemanticSearchThreshold: 0.8, SemanticSearchLimit: 10,
 	}}
 
-	_, err := newTestService(store).SaveConfig(context.Background(), &ConfigInput{
+	_, err := newTestService(t, store).SaveConfig(context.Background(), &ConfigInput{
 		Enabled: false, Provider: "openai", Model: "gpt-4o",
 	})
 	require.NoError(t, err)
@@ -415,7 +415,7 @@ func TestWarpSaveConfigStillReplacesANamedEmbeddingSpace(t *testing.T) {
 	input.EmbeddingDimension = 3072
 	input.LogVectorStoreNamespace = "BifrostWarpLogsV2"
 
-	_, err := newTestService(store).SaveConfig(context.Background(), input)
+	_, err := newTestService(t, store).SaveConfig(context.Background(), input)
 	require.NoError(t, err)
 	require.Equal(t, "text-embedding-3-large", store.upserted[0].EmbeddingModel)
 	require.Equal(t, 3072, store.upserted[0].EmbeddingDimension)
@@ -433,7 +433,7 @@ func TestWarpSaveConfigValidatesBeforeProvisioning(t *testing.T) {
 		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
 		EmbeddingDimension: 1536, LogVectorStoreNamespace: "BifrostWarpLogs",
 	}}
-	service := NewService(nil, WithConfigStore(store), WithVectorStore(vectors))
+	service := serviceForTest(t, nil, WithConfigStore(store), WithVectorStore(vectors))
 
 	// Changes the embedding space without renaming the namespace: rejected.
 	_, err := service.SaveConfig(context.Background(), &ConfigInput{
@@ -462,7 +462,7 @@ func TestWarpSaveConfigKeepsStoredCustomEmbeddingSettings(t *testing.T) {
 		SemanticSearchThreshold: 0.6, SemanticSearchLimit: 20, TopicDiscoveryMinRequests: 40,
 	}}
 
-	_, err := newTestService(store).SaveConfig(context.Background(), inputFromJSON(t, `{
+	_, err := newTestService(t, store).SaveConfig(context.Background(), inputFromJSON(t, `{
 		"enabled": true, "provider": "openai", "model": "gpt-4o-mini"
 	}`))
 	require.NoError(t, err)
@@ -493,7 +493,7 @@ func TestWarpSaveConfigDetectsPartialEmbeddingSpaceChange(t *testing.T) {
 	}
 
 	refused := &recordingStore{row: row()}
-	_, err := newTestService(refused).SaveConfig(context.Background(), inputFromJSON(t, `{
+	_, err := newTestService(t, refused).SaveConfig(context.Background(), inputFromJSON(t, `{
 		"enabled": false, "embedding_model": "text-embedding-3-large"
 	}`))
 	require.ErrorIs(t, err, ErrInvalidConfig)
@@ -501,7 +501,7 @@ func TestWarpSaveConfigDetectsPartialEmbeddingSpaceChange(t *testing.T) {
 	require.Empty(t, refused.upserted, "a rejected save must not reach the store")
 
 	accepted := &recordingStore{row: row()}
-	_, err = newTestService(accepted).SaveConfig(context.Background(), inputFromJSON(t, `{
+	_, err = newTestService(t, accepted).SaveConfig(context.Background(), inputFromJSON(t, `{
 		"enabled": false, "embedding_model": "text-embedding-3-large",
 		"log_vector_store_namespace": "BifrostWarpLogsV2"
 	}`))
@@ -522,12 +522,12 @@ func TestWarpSaveConfigDistinguishesOmittedFromExplicitlyEmpty(t *testing.T) {
 	}
 
 	omitted := &recordingStore{row: row()}
-	_, err := newTestService(omitted).SaveConfig(context.Background(), inputFromJSON(t, `{"enabled": false}`))
+	_, err := newTestService(t, omitted).SaveConfig(context.Background(), inputFromJSON(t, `{"enabled": false}`))
 	require.NoError(t, err)
 	require.Equal(t, "key-embed", omitted.upserted[0].EmbeddingAPIKeyID, "an omitted field keeps the stored value")
 
 	cleared := &recordingStore{row: row()}
-	_, err = newTestService(cleared).SaveConfig(context.Background(), inputFromJSON(t, `{
+	_, err = newTestService(t, cleared).SaveConfig(context.Background(), inputFromJSON(t, `{
 		"enabled": false, "embedding_api_key_id": ""
 	}`))
 	require.NoError(t, err)
@@ -557,7 +557,7 @@ func TestWarpSaveConfigResolvesNamespaceBeforeComparing(t *testing.T) {
 	input.LogVectorStoreNamespace = schemas.WarpDefaultLogVectorStoreNamespace
 
 	store := &recordingStore{row: stored}
-	_, err := newTestService(store).SaveConfig(context.Background(), input)
+	_, err := newTestService(t, store).SaveConfig(context.Background(), input)
 	require.ErrorIs(t, err, ErrInvalidConfig, "the namespace did not actually change")
 	require.Empty(t, store.upserted)
 
@@ -565,7 +565,7 @@ func TestWarpSaveConfigResolvesNamespaceBeforeComparing(t *testing.T) {
 	// was in use - the default, not the empty string, which names nothing.
 	input.LogVectorStoreNamespace = "BifrostWarpLogsV2"
 	store = &recordingStore{row: stored}
-	_, err = newTestService(store).SaveConfig(context.Background(), input)
+	_, err = newTestService(t, store).SaveConfig(context.Background(), input)
 	require.NoError(t, err)
 	require.Len(t, store.upserted, 1)
 	require.NotNil(t, store.upserted[0].RetiredLogVectorStoreNamespaces)
@@ -590,7 +590,7 @@ func TestWarpSaveConfigCompensatesOnlyItsOwnNamespace(t *testing.T) {
 	t.Run("removes the namespace it created", func(t *testing.T) {
 		vectors := newFakeWarpVectorStore()
 		store := &failingStore{err: errors.New("write failed")}
-		service := NewService(nil, WithConfigStore(store), WithVectorStore(vectors))
+		service := serviceForTest(t, nil, WithConfigStore(store), WithVectorStore(vectors))
 		_, err := service.SaveConfig(context.Background(), validWarpConfigInput())
 		require.Error(t, err)
 		require.Equal(t, []string{validWarpConfigInput().LogVectorStoreNamespace}, vectors.deleted)
@@ -601,7 +601,7 @@ func TestWarpSaveConfigCompensatesOnlyItsOwnNamespace(t *testing.T) {
 		vectors := newFakeWarpVectorStore()
 		vectors.existing = []string{input.LogVectorStoreNamespace}
 		store := &failingStore{err: errors.New("write failed")}
-		service := NewService(nil, WithConfigStore(store), WithVectorStore(vectors))
+		service := serviceForTest(t, nil, WithConfigStore(store), WithVectorStore(vectors))
 		_, err := service.SaveConfig(context.Background(), input)
 		require.Error(t, err)
 		require.Empty(t, vectors.deleted, "a pre-existing namespace may hold vectors a live config still indexes")
@@ -626,7 +626,7 @@ func TestWarpSaveConfigRejectsReusingALegacyDefaultNamespace(t *testing.T) {
 			EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small",
 			EmbeddingDimension: 1536, LogVectorStoreNamespace: stored,
 		}}
-		_, err := newTestService(store).SaveConfig(context.Background(), inputFromJSON(t, `{
+		_, err := newTestService(t, store).SaveConfig(context.Background(), inputFromJSON(t, `{
 			"enabled": false, "embedding_model": "text-embedding-3-large",
 			"log_vector_store_namespace": "`+schemas.WarpDefaultLogVectorStoreNamespace+`"
 		}`))
@@ -643,7 +643,7 @@ func TestWarpSaveConfigRejectsReusingALegacyDefaultNamespace(t *testing.T) {
 // tools: buildToolsFor already adds semantic_search_logs only when a searcher
 // exists, so the loop degrades to the other tools by construction.
 func TestWarpConfigDoesNotRequireAVectorStoreToAnswer(t *testing.T) {
-	service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}))
+	service := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}))
 	require.Nil(t, service.vectorStore, "precondition: no vector store on this deployment")
 
 	config, err := service.Config(context.Background())
@@ -656,7 +656,7 @@ func TestWarpConfigDoesNotRequireAVectorStoreToAnswer(t *testing.T) {
 // operator can fix, and accepting it would promise semantic search the
 // deployment cannot provide.
 func TestWarpSaveConfigStillRequiresAVectorStoreToEnable(t *testing.T) {
-	service := NewService(nil, WithConfigStore(&recordingStore{}))
+	service := serviceForTest(t, nil, WithConfigStore(&recordingStore{}))
 	_, err := service.SaveConfig(context.Background(), validWarpConfigInput())
 	require.ErrorIs(t, err, ErrNoVectorStore)
 }
@@ -705,7 +705,7 @@ func TestWarpSaveConfigRoundTripsAdditionalModels(t *testing.T) {
 		{Provider: schemas.Anthropic, Model: "claude-sonnet-5", APIKeyID: "key-anthropic"},
 		{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
 	}
-	service := newTestService(store)
+	service := newTestService(t, store)
 	view, err := service.SaveConfig(context.Background(), input)
 	require.NoError(t, err)
 	require.Equal(t, want, view.AdditionalModels)
@@ -730,7 +730,7 @@ func TestWarpSaveConfigClearsOmittedAdditionalModels(t *testing.T) {
 	stored := `[{"provider":"anthropic","model":"claude-sonnet-5"}]`
 	row.AdditionalModels = &stored
 	store := &recordingStore{row: row}
-	view, err := newTestService(store).SaveConfig(context.Background(), validWarpConfigInput())
+	view, err := newTestService(t, store).SaveConfig(context.Background(), validWarpConfigInput())
 	require.NoError(t, err)
 	require.Empty(t, view.AdditionalModels)
 	require.Len(t, store.upserted, 1)
@@ -761,7 +761,7 @@ func TestWarpValidateConfigInputRejectsBadAdditionalModels(t *testing.T) {
 			input := validWarpConfigInput()
 			input.AdditionalModels = test.models
 			store := &recordingStore{}
-			_, err := newTestService(store).SaveConfig(context.Background(), input)
+			_, err := newTestService(t, store).SaveConfig(context.Background(), input)
 			require.ErrorIs(t, err, ErrInvalidConfig)
 			require.ErrorContains(t, err, test.want)
 			require.Empty(t, store.upserted)
@@ -788,7 +788,7 @@ func TestWarpConfigIgnoresUnreadableAdditionalModels(t *testing.T) {
 	row := validWarpConfigRow()
 	damaged := `{not json`
 	row.AdditionalModels = &damaged
-	config, err := newTestService(&recordingStore{row: row}).Config(context.Background())
+	config, err := newTestService(t, &recordingStore{row: row}).Config(context.Background())
 	require.NoError(t, err)
 	require.Empty(t, config.AdditionalModels)
 	require.Equal(t, "gpt-4o", config.Model)
@@ -809,7 +809,7 @@ func TestWarpTopicDiscoveryMinRequestsIsConfigurable(t *testing.T) {
 	}
 
 	store := &recordingStore{}
-	service := newTestService(store)
+	service := newTestService(t, store)
 	view, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{
 		"enabled": true, "provider": "openai", "model": "gpt-4o",
 		"embedding_provider": "openai", "embedding_model": "text-embedding-3-small", "embedding_dimension": 1536,
@@ -820,7 +820,7 @@ func TestWarpTopicDiscoveryMinRequestsIsConfigurable(t *testing.T) {
 	require.Equal(t, 40, store.upserted[0].TopicDiscoveryMinRequests)
 	require.Equal(t, 40, configFromRow(store.row).EffectiveTopicDiscoveryMinRequests())
 
-	unset, err := newTestService(&recordingStore{}).ConfigView(context.Background())
+	unset, err := newTestService(t, &recordingStore{}).ConfigView(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, schemas.WarpDefaultTopicDiscoveryMinRequests, unset.TopicDiscoveryMinRequests)
 }
@@ -833,7 +833,7 @@ func TestWarpManagementWritesAreConfigurable(t *testing.T) {
 	base := `"enabled": true, "provider": "openai", "model": "gpt-4o",
 		"embedding_provider": "openai", "embedding_model": "text-embedding-3-small", "embedding_dimension": 1536`
 	store := &recordingStore{}
-	service := newTestService(store)
+	service := newTestService(t, store)
 
 	view, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`}`))
 	require.NoError(t, err)
@@ -875,7 +875,7 @@ func TestWarpVirtualKeyIsConfigurable(t *testing.T) {
 		"vk-off":  {ID: "vk-off", Name: "off", IsActive: &inactive},
 	}}
 	store := &recordingStore{}
-	service := NewService(nil, WithConfigStore(store), WithVectorStore(newFakeWarpVectorStore()), WithGovernanceReader(governance))
+	service := serviceForTest(t, nil, WithConfigStore(store), WithVectorStore(newFakeWarpVectorStore()), WithGovernanceReader(governance))
 
 	view, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`}`))
 	require.NoError(t, err)

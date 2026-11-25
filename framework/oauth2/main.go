@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
@@ -107,26 +108,39 @@ type OAuth2Provider struct {
 	onTokenWritten atomic.Pointer[func(ctx context.Context, tokenID string)]
 
 	// resourceEndpoints caches discovered upstream token endpoints for
-	// id_jag token-exchange clients, keyed by MCP client ID (one entry each).
-	resourceEndpoints sync.Map
+	// id_jag token-exchange clients, keyed by MCP client ID (one entry each):
+	// state of the MCP client kind, so deleting a client drops its entry, and
+	// expiring after resourceEndpointTTL.
+	resourceEndpoints *livestore.Table[string, *resourceEndpoint]
 
 	// idjagGrants holds the ID-JAG last issued per (user, MCP client) for
 	// re-presentation until it expires; bounded like userTokens. See idjagGrant.
 	idjagGrants *idjagGrantCache
 }
 
-// NewOAuth2Provider creates a new OAuth provider instance
-func NewOAuth2Provider(configStore configstore.ConfigStore, logger schemas.Logger) *OAuth2Provider {
+// NewOAuth2Provider creates an OAuth provider, with its token and ID-JAG caches in live, which is
+// required.
+func NewOAuth2Provider(configStore configstore.ConfigStore, live *livestore.Store, logger schemas.Logger) (*OAuth2Provider, error) {
+	if live == nil {
+		return nil, fmt.Errorf("oauth2: %w", livestore.ErrNoLiveStore)
+	}
 	if logger == nil {
 		logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 	}
 	SetLogger(logger)
-	return &OAuth2Provider{
-		configStore:    configStore,
-		retryBaseDelay: time.Second,
-		userTokens:     newUserTokenCache(defaultUserTokenCacheCapacity),
-		idjagGrants:    newIDJAGGrantCache(defaultUserTokenCacheCapacity),
+	tokens, err := newUserTokenCache(live)
+	if err != nil {
+		return nil, err
 	}
+	grants, err := newIDJAGGrantCache(live)
+	if err != nil {
+		return nil, err
+	}
+	endpoints, err := live.RegisterState[resourceEndpoint](context.Background(), resourceEndpointsTable, livestore.KindMCPClient, livestore.WithTTL(resourceEndpointTTL))
+	if err != nil {
+		return nil, err
+	}
+	return &OAuth2Provider{configStore: configStore, retryBaseDelay: time.Second, userTokens: tokens, idjagGrants: grants, resourceEndpoints: endpoints}, nil
 }
 
 // SetTempTokenService installs the temp-token service used by

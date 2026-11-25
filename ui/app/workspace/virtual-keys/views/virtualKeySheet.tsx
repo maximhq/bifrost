@@ -1151,11 +1151,15 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		try {
 			const result = await rotateVirtualKey(virtualKey.id).unwrap();
 			const graceUntil = result.virtual_key?.previous_value_expires_at;
-			toast.success(
-				graceUntil
-					? t("virtualKeys.rotatedWithGrace", { when: new Date(graceUntil).toLocaleString(getLocale()) })
-					: t("virtualKeys.rotatedSuccess"),
-			);
+			if (result.warning) {
+				toast.warning(t("virtualKeys.rotatedNotLoaded"));
+			} else {
+				toast.success(
+					graceUntil
+						? t("virtualKeys.rotatedWithGrace", { when: new Date(graceUntil).toLocaleString(getLocale()) })
+						: t("virtualKeys.rotatedSuccess"),
+				);
+			}
 			setShowRotateWarning(false);
 			onSave();
 		} catch (error) {

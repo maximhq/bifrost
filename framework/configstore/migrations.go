@@ -5,13 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
-	"slices"
-	"strconv"
-	"strings"
-	"time"
-	"unicode"
-
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -25,6 +18,12 @@ import (
 	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
 )
 
 // addColumnIfNotExists is a package-local alias for migrator.AddColumnIfNotExists,
@@ -614,6 +613,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_virtual_key_id_column"}, run: migrationAddWarpVirtualKeyIDColumn},
 	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
+	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
 	{IDs: []string{"add_rapidmlx_key_config_column"}, run: migrationAddRapidMLXKeyConfigColumn},
 }
 
@@ -7055,37 +7055,6 @@ func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB, logger s
 	return nil
 }
 
-// migrationAddRapidMLXKeyConfigColumn adds the rapidmlx_url column to the key table
-func migrationAddRapidMLXKeyConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_rapidmlx_key_config_column"
-	logger.Info("[configstore] starting migration %s", migrationName)
-	defer logger.Info("[configstore] finished migration %s", migrationName)
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: migrationName,
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if err := setMigrationLockTimeout(tx); err != nil {
-				return err
-			}
-			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "rapidmlx_url"); err != nil {
-				return err
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "rapidmlx_url"); err != nil {
-				return err
-			}
-			return nil
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error while running rapidmlx key config column migration: %s", err.Error())
-	}
-	return nil
-}
-
 // migrationWidenEncryptedVarcharColumns widens varchar columns that store AES-256-GCM
 // encrypted values to TEXT. Encryption adds ~28 bytes of overhead plus base64 expansion (4/3x),
 // so a varchar(255) can only hold ~153-char plaintext. Using TEXT removes any size constraints.
@@ -8690,7 +8659,7 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 					newKey.SGLKeyConfig = &schemas.SGLKeyConfig{URL: urlSecretVar}
 				}
 
-				schemaKey := schemaKeyFromTableKey(newKey)
+				schemaKey := SchemaKeyFromTableKey(newKey)
 				hash, err := GenerateKeyHash(schemaKey)
 				if err != nil {
 					return fmt.Errorf("failed to generate hash for new key on provider %s: %w", p.Name, err)
@@ -17941,4 +17910,64 @@ func migrationAddWarpVirtualKeyIDColumn(ctx context.Context, db *gorm.DB, logger
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "virtual_key_id")
 		},
 	})
+}
+
+// migrationAddGovernanceUsageResetEpochs preserves actual reset evidence across
+// restarts. LastReset also advances on calendar adoption, so legacy rows retain
+// zero unknown evidence. Rollback would discard evidence and is not supported.
+func migrationAddGovernanceUsageResetEpochs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	const migrationName = "add_governance_usage_reset_epochs"
+	migration := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "UsageResetEpoch"); err != nil {
+				return err
+			}
+			for _, field := range []string{"TokenUsageResetEpoch", "RequestUsageResetEpoch"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableRateLimit{}, field); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("%s cannot be rolled back without losing reset evidence", migrationName)
+		},
+	}})
+	return migration.Migrate()
+}
+
+// migrationAddRapidMLXKeyConfigColumn adds the rapidmlx_url column to the key table
+func migrationAddRapidMLXKeyConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_rapidmlx_key_config_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "rapidmlx_url"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, "rapidmlx_url"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running rapidmlx key config column migration: %s", err.Error())
+	}
+	return nil
 }
