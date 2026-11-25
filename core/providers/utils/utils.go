@@ -495,6 +495,7 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 // path it blocks until the background client.Do goroutine finishes, preventing a data race
 // between the still-running goroutine and the caller's release of req/resp.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
+	setUserAgent(client, req)
 	// Bound to the goroutine that runs client.Do: the binding must outlive a
 	// ctx-cancelled return of makeRequestWithDoFunc and be gone before the
 	// caller's wait() returns, since req is pooled.
@@ -509,6 +510,7 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 // MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
 // maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
+	setUserAgent(client, req)
 	unbind := bindRequestContext(req, ctx)
 	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
 		defer unbind()
@@ -537,6 +539,7 @@ func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp
 // Returns client.Do's error untouched so callers keep their own error
 // classification and latency bookkeeping.
 func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+	setUserAgent(client, req)
 	unbind := bindRequestContext(req, ctx)
 	startTime := time.Now()
 	err := client.Do(req, resp)
@@ -580,6 +583,7 @@ func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
 // runs on a child context that the abort cancels, so a missed deadline ends
 // both the header wait and the body read without cancelling the request.
 func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	setUserAgentHTTP(req)
 	if abort := AttemptAbortFromContext(req.Context()); abort != nil {
 		if abort.Fired() {
 			return nil, ErrStreamFirstTokenTimeout
@@ -1785,6 +1789,57 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 // internalHeaderPrefix marks Bifrost's own request headers (x-bf-vk and friends). They carry
 // gateway credentials and must never be forwarded to a provider.
 const internalHeaderPrefix = "x-bf-"
+
+// BifrostVersion is reported in the User-Agent sent to providers, so an upstream
+// can identify Bifrost-originated traffic. The transport sets it at startup;
+// library users get "dev".
+var BifrostVersion = "dev"
+
+// The defaults the HTTP libraries send when a request sets no User-Agent. They
+// are replaced; any other value is treated as deliberate and left alone.
+const (
+	fasthttpDefaultUserAgent = "fasthttp"
+	netHTTPDefaultUserAgent  = "Go-http-client/1.1"
+)
+
+// userAgent returns the User-Agent every provider request carries.
+func userAgent() string {
+	return "bifrost/" + BifrostVersion + " Go/" + strings.TrimPrefix(runtime.Version(), "go")
+}
+
+// setUserAgent sets the User-Agent on a fasthttp request, replacing only the
+// library default. Every deliberate choice is left alone:
+//
+//   - a request header the caller set (GitHub Copilot requires its own value),
+//   - fasthttp.Client.Name, which fasthttp applies when the header is empty,
+//   - fasthttp.Client.NoDefaultUserAgentHeader, which opts out of a default.
+func setUserAgent(client *fasthttp.Client, req *fasthttp.Request) {
+	if client != nil && (client.Name != "" || client.NoDefaultUserAgentHeader) {
+		return
+	}
+	current := string(req.Header.Peek("User-Agent"))
+	if current == "" || current == fasthttpDefaultUserAgent {
+		req.Header.Set("User-Agent", userAgent())
+	}
+}
+
+// setUserAgentHTTP is the net/http equivalent of setUserAgent.
+func setUserAgentHTTP(req *http.Request) {
+	// A struct-literal request can carry a nil Header, which http.Client would
+	// initialize later. DoHTTPRequest is exported, so initialize it here before
+	// the write below.
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
+	// net/http omits the header when the value is empty, so a present key is a
+	// deliberate choice. Only the library default is replaced.
+	if values, ok := req.Header["User-Agent"]; ok {
+		if len(values) == 0 || values[0] != netHTTPDefaultUserAgent {
+			return
+		}
+	}
+	req.Header.Set("User-Agent", userAgent())
+}
 
 // supportedBufferedContentEncodings are the response codings handled by
 // CheckAndDecodeBody. Accept-Encoding passthrough is intersected with this set
