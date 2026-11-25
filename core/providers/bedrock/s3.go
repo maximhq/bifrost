@@ -70,14 +70,7 @@ func uploadToS3(
 // generateBatchInputS3Key generates a unique S3 key for batch input files.
 func generateBatchInputS3Key(jobName string) string {
 	timestamp := time.Now().UnixNano()
-	return fmt.Sprintf("bifrost-batch-input/%s-%d.jsonl", jobName, timestamp)
-}
-
-// deriveInputS3URIFromOutput derives an input S3 URI from the output S3 URI.
-// It uses the same bucket but with a different path for input files.
-func deriveInputS3URIFromOutput(outputS3URI, inputKey string) string {
-	bucket, _ := parseS3URI(outputS3URI)
-	return fmt.Sprintf("s3://%s/%s", bucket, inputKey)
+	return fmt.Sprintf("%s%s-%d.jsonl", batchInputFolder, jobName, timestamp)
 }
 
 // ConvertBedrockRequestsToJSONL converts batch request items to JSONL format for Bedrock.
