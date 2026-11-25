@@ -13,9 +13,10 @@ package modelcatalog
 import (
 	"context"
 	"fmt"
-	"github.com/maximhq/bifrost/framework/livestore"
 	"sync"
 	"time"
+
+	"github.com/maximhq/bifrost/framework/livestore"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -33,6 +34,9 @@ type ModelCatalog struct {
 	datasheet *datasheet.Store
 	live      *livemodels.Store
 	keyconf   *keyconfig.Store
+	// ownedStore is the live store a test catalog made for itself; Cleanup
+	// closes it. A catalog from Init uses the gateway's store and owns none.
+	ownedStore *livestore.Store
 
 	// capabilities caches datasheet capability records by (provider, model).
 	// Flushed whenever a sync applies a new sheet.
@@ -63,6 +67,8 @@ type ModelCatalog struct {
 	syncCancel context.CancelFunc
 	done       chan struct{}
 	wg         sync.WaitGroup
+	// cleanupOnce makes Cleanup idempotent; closing done twice would panic.
+	cleanupOnce sync.Once
 }
 
 // resolveMCPLibrarySyncInterval maps the configured MCP library sync interval
@@ -87,6 +93,9 @@ func resolveMCPLibrarySyncInterval(config *Config) time.Duration {
 // Init builds the model catalog over live, whose tables hold its memos, and loads pricing from
 // configStore when there is one. A nil live store is an error.
 func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, live *livestore.Store, logger schemas.Logger) (*ModelCatalog, error) {
+	if live == nil {
+		return nil, fmt.Errorf("model catalog: %w", livestore.ErrNoLiveStore)
+	}
 	pricingURL := DefaultPricingURL
 	if config != nil && config.PricingURL != nil {
 		pricingURL = *config.PricingURL
@@ -120,14 +129,17 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			ModelParametersURL: modelParametersURL,
 			SyncInterval:       syncInterval,
 		}),
-		live:    livemodels.New(logger),
-		keyconf: keyconfig.New(logger),
-		done:    make(chan struct{}),
+		done: make(chan struct{}),
 	}
-	if live != nil {
-		if err := mc.initCaches(live); err != nil {
-			return nil, fmt.Errorf("failed to create the model catalog caches: %w", err)
-		}
+	var err error
+	if mc.live, err = livemodels.New(live, logger); err != nil {
+		return nil, fmt.Errorf("failed to create the live models store: %w", err)
+	}
+	if mc.keyconf, err = keyconfig.New(live, logger); err != nil {
+		return nil, fmt.Errorf("failed to create the key config store: %w", err)
+	}
+	if err := mc.initCaches(live); err != nil {
+		return nil, fmt.Errorf("failed to create the model catalog caches: %w", err)
 	}
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 
@@ -137,7 +149,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	// than one sync.
 	mc.loadCapabilities = mc.datasheetCapabilityLoader
 	providerUtils.SetCapabilityResolver(mc.GetModelCapabilities)
-	mc.datasheet.SetOnModelParametersApplied(mc.flushCapabilities)
+	mc.datasheet.SetOnModelParametersApplied(mc.capabilities.Flush)
 
 	// If Init returns an error the caller never owns mc and will never call
 	// Cleanup(), so cancel syncCtx to stop any background goroutines that
@@ -426,19 +438,27 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 	return nil
 }
 
+// Cleanup stops the background sync, drops the capability resolver and closes
+// the live store a test catalog owns. Only the first call does the teardown, so
+// a test helper's registered Cleanup and an explicit call can both run.
 func (mc *ModelCatalog) Cleanup() error {
-	// Drop the process-global resolver first: it closes over mc, and capability
-	// lookups would otherwise keep running against a torn-down catalog. With no
-	// resolver installed every gate falls back to name detection.
-	providerUtils.SetCapabilityResolver(nil)
-	if mc.syncCancel != nil {
-		mc.syncCancel()
-	}
-	if mc.syncTicker != nil {
-		mc.syncTicker.Stop()
-	}
-	close(mc.done)
-	mc.wg.Wait()
+	mc.cleanupOnce.Do(func() {
+		// Drop the process-global resolver first: it closes over mc, and capability
+		// lookups would otherwise keep running against a torn-down catalog. With no
+		// resolver installed every gate falls back to name detection.
+		providerUtils.SetCapabilityResolver(nil)
+		if mc.syncCancel != nil {
+			mc.syncCancel()
+		}
+		if mc.syncTicker != nil {
+			mc.syncTicker.Stop()
+		}
+		close(mc.done)
+		mc.wg.Wait()
+		if mc.ownedStore != nil {
+			mc.ownedStore.Close()
+		}
+	})
 	return nil
 }
 
@@ -703,27 +723,49 @@ func (mc *ModelCatalog) knownProviders() []schemas.ModelProvider {
 	return out
 }
 
-// NewTestCatalog constructs a minimal ModelCatalog for unit tests. Does not
-// start background workers or hit external services. It has no caches, so
-// every lookup computes its answer.
-func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
-	return &ModelCatalog{
-		datasheet: datasheet.NewTestStore(baseModelIndex),
-		live:      livemodels.New(nil),
-		keyconf:   keyconfig.New(nil),
-		done:      make(chan struct{}),
-	}
+// NewTestCatalog constructs a minimal ModelCatalog for unit tests, over a live
+// store of its own, with the same caches Init builds. Does not start background
+// workers or hit external services.
+func NewTestCatalog(baseModelIndex map[string]string) (*ModelCatalog, error) {
+	return newTestCatalog(datasheet.NewTestStore(baseModelIndex))
 }
 
 // NewTestCatalogWithDatasheet wraps a caller-provided datasheet.Store (e.g. one
 // loaded from a local testdata pricing file via datasheet.New(...) +
-// LoadFromURLIntoMemory) in a ModelCatalog, so tests in other packages can
-// exercise real pricing/cost computation without reaching the network.
-func NewTestCatalogWithDatasheet(ds *datasheet.Store) *ModelCatalog {
-	return &ModelCatalog{
-		datasheet: ds,
-		live:      livemodels.New(nil),
-		keyconf:   keyconfig.New(nil),
-		done:      make(chan struct{}),
+// LoadFromURLIntoMemory) in a ModelCatalog over a live store of its own, so
+// tests in other packages can exercise real pricing/cost computation without
+// reaching the network.
+func NewTestCatalogWithDatasheet(ds *datasheet.Store) (*ModelCatalog, error) {
+	return newTestCatalog(ds)
+}
+
+// newTestCatalog builds a test catalog over ds, keeping its key config and live
+// models in a new live store the catalog owns and Cleanup closes.
+func newTestCatalog(ds *datasheet.Store) (*ModelCatalog, error) {
+	store, err := livestore.New()
+	if err != nil {
+		return nil, err
 	}
+	liveModels, err := livemodels.New(store, nil)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
+	keyconf, err := keyconfig.New(store, nil)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
+	mc := &ModelCatalog{
+		datasheet:  ds,
+		live:       liveModels,
+		keyconf:    keyconf,
+		ownedStore: store,
+		done:       make(chan struct{}),
+	}
+	if err := mc.initCaches(store); err != nil {
+		store.Close()
+		return nil, err
+	}
+	return mc, nil
 }

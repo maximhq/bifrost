@@ -10,8 +10,6 @@ import (
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
-	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
-	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
 func elevenlabsScribeCatalog(tb testing.TB) *ModelCatalog {
@@ -31,7 +29,7 @@ func elevenlabsScribeCatalog(tb testing.TB) *ModelCatalog {
 	if err := ds.LoadFromURLIntoMemory(tb.Context()); err != nil {
 		tb.Fatal(err)
 	}
-	return NewTestCatalogWithDatasheet(ds)
+	return catalogWithDatasheetForTest(tb, ds)
 }
 
 // A successful TTS-only live listing must not remove callable Scribe models
@@ -128,7 +126,7 @@ func BenchmarkElevenlabsScribeWildcardAuthorization(b *testing.B) {
 // would return nil and the live store would publish an empty model list,
 // silently removing the provider's previously-fetched models from routing.
 func TestUpsertLiveFromResponse_NilRespIsNoop(t *testing.T) {
-	mc := NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	mc.UpsertLive(schemas.OpenAI, "k1", false, []string{"gpt-4o", "o1"})
 
 	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, nil)
@@ -145,7 +143,7 @@ func TestUpsertLiveFromResponse_NilRespIsNoop(t *testing.T) {
 // extractModelIDs strips the owning provider prefix and the resulting bare
 // names land in the live cache for GetModelsForProvider.
 func TestUpsertLiveFromResponse_PopulatesFromResponse(t *testing.T) {
-	mc := NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	resp := &schemas.BifrostListModelsResponse{
 		Data: []schemas.Model{
 			{ID: "openai/gpt-4o"},
@@ -181,7 +179,7 @@ func TestGetUnfilteredModelsForProvider_UsesDatabricksPricing(t *testing.T) {
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}
-	mc := NewTestCatalogWithDatasheet(ds)
+	mc := catalogWithDatasheetForTest(t, ds)
 	mc.UpsertLive(schemas.Databricks, "key-1", true, []string{})
 
 	got := mc.GetUnfilteredModelsForProvider(schemas.Databricks)
@@ -210,7 +208,7 @@ func TestGetModelsForProvider_DatabricksUnionsDatasheetWithAliases(t *testing.T)
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}
-	mc := NewTestCatalogWithDatasheet(ds)
+	mc := catalogWithDatasheetForTest(t, ds)
 	mc.UpsertLive(schemas.Databricks, "key-1", false, []string{"my-claude"})
 
 	got := mc.GetModelsForProvider(schemas.Databricks)
@@ -238,7 +236,7 @@ func TestGetUnfilteredModelsForProvider_CloudflareUsesListModelsOnly(t *testing.
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}
-	mc := NewTestCatalogWithDatasheet(ds)
+	mc := catalogWithDatasheetForTest(t, ds)
 	live := []string{"@cf/cloudflare/clef", "@cf/meta/llama-3.1-8b-instruct-fp8"}
 	mc.UpsertLive(schemas.Cloudflare, "k1", true, live)
 
@@ -325,7 +323,7 @@ func TestGetModelsForProvider_IncludesDeprecatedDatasheetModelsWhenLiveExists(t 
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}
-	mc := NewTestCatalogWithDatasheet(ds)
+	mc := catalogWithDatasheetForTest(t, ds)
 	mc.UpsertLive(schemas.OpenAI, "k1", false, []string{"live-model"})
 
 	got := mc.GetModelsForProvider(schemas.OpenAI)
@@ -394,11 +392,11 @@ func TestGetModelsForProvider_DeprecatedDatasheetModelsRespectAllowBlock(t *test
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			kc := keyconfig.New(nil)
+			liveModels, kc := stateStoresForTest(t)
 			kc.Replace(map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: tt.keys})
 			mc := &ModelCatalog{
 				datasheet: deprecatedDatasheet(t),
-				live:      live.New(nil),
+				live:      liveModels,
 				keyconf:   kc,
 				done:      make(chan struct{}),
 			}
@@ -436,7 +434,7 @@ func TestGetModelsForProvider_PartialListModelsProviderUnionsDatasheet(t *testin
 
 	// Perplexity: live lists only a responses-API model; the unlisted "sonar"
 	// chat model must still be unioned in from the datasheet.
-	mcPerplexity := NewTestCatalogWithDatasheet(ds)
+	mcPerplexity := catalogWithDatasheetForTest(t, ds)
 	mcPerplexity.UpsertLive(schemas.Perplexity, "k1", false, []string{"listed-responses-model"})
 	gotPerplexity := mcPerplexity.GetModelsForProvider(schemas.Perplexity)
 	slices.Sort(gotPerplexity)
@@ -447,7 +445,7 @@ func TestGetModelsForProvider_PartialListModelsProviderUnionsDatasheet(t *testin
 
 	// OpenAI is not a partial-list-models provider: its non-deprecated unlisted
 	// datasheet model stays shadowed by the authoritative live list.
-	mcOpenAI := NewTestCatalogWithDatasheet(ds)
+	mcOpenAI := catalogWithDatasheetForTest(t, ds)
 	mcOpenAI.UpsertLive(schemas.OpenAI, "k1", false, []string{"live-model"})
 	gotOpenAI := mcOpenAI.GetModelsForProvider(schemas.OpenAI)
 	slices.Sort(gotOpenAI)
@@ -476,7 +474,7 @@ func TestGetProvidersForModel_ZeroKeyCustomProviderNotCandidate(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			mc := NewTestCatalog(nil)
+			mc := catalogForTest(t, nil)
 			seed(mc)
 			got := mc.GetProvidersForModel("text-embedding-005")
 			if !slices.Equal(got, []schemas.ModelProvider{schemas.Vertex}) {
@@ -500,7 +498,7 @@ func TestGetProvidersForModel_ZeroKeyKeylessProviderStillCandidate(t *testing.T)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			mc := NewTestCatalog(nil)
+			mc := catalogForTest(t, nil)
 			seed(mc)
 			if got := mc.GetProvidersForModel("any-model"); !slices.Equal(got, []schemas.ModelProvider{custom}) {
 				t.Fatalf("GetProvidersForModel = %v, want [%s]", got, custom)
@@ -520,7 +518,7 @@ func TestGetProvidersForModel_PatternAliasCandidate(t *testing.T) {
 		"allow-refuses": {{ID: "k4", Models: schemas.WhiteList{"regex:gpt-.*"}, Aliases: pattern}},
 		"blocked":       {{ID: "k5", Models: all, BlacklistedModels: schemas.BlackList{"claude-opus-5"}, Aliases: pattern}},
 	}
-	mc := NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	mc.ReplaceKeyConfig(keys)
 	// A listed model keeps a wildcard key from claiming every name, so only the alias can add one.
 	for provider, ks := range keys {
@@ -649,7 +647,7 @@ func TestExtractModelIDs_DedupKeepsLatestCreated(t *testing.T) {
 // forwarder reaches the live store and clears filtered + unfiltered entries
 // for one (provider, keyID) pair in a single call.
 func TestInvalidateLive_DropsBothFiltersForKey(t *testing.T) {
-	mc := NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	mc.UpsertLive(schemas.OpenAI, "k1", false, []string{"gpt-4o"})
 	mc.UpsertLive(schemas.OpenAI, "k1", true, []string{"gpt-4o", "o1"})
 	mc.UpsertLive(schemas.OpenAI, "k2", false, []string{"o1"})
@@ -668,7 +666,7 @@ func TestInvalidateLive_DropsBothFiltersForKey(t *testing.T) {
 // TestInvalidateLiveProvider_DropsAcrossKeys verifies the provider-wide
 // forwarder clears every (keyID, mode) combination for the provider.
 func TestInvalidateLiveProvider_DropsAcrossKeys(t *testing.T) {
-	mc := NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	mc.UpsertLive(schemas.OpenAI, "k1", false, []string{"gpt-4o"})
 	mc.UpsertLive(schemas.OpenAI, "k2", false, []string{"o1"})
 	mc.UpsertLive(schemas.Anthropic, "k1", false, []string{"claude-sonnet"})
@@ -691,7 +689,7 @@ func TestInvalidateLiveProvider_DropsAcrossKeys(t *testing.T) {
 // key that is no longer configured, so committing here would advertise the
 // deleted key's models until the process restarted.
 func TestUpsertLiveFromResponseIfCurrent_DropsStaleFetch(t *testing.T) {
-	mc := NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	mc.UpsertLive(schemas.OpenAI, "k1", false, []string{"gpt-4o"})
 
 	gen := mc.LiveGeneration(schemas.OpenAI)
@@ -711,7 +709,7 @@ func TestUpsertLiveFromResponseIfCurrent_DropsStaleFetch(t *testing.T) {
 // the guard must not cost the ordinary refresh anything, so an uncontended
 // commit lands the same models UpsertLiveFromResponse would.
 func TestUpsertLiveFromResponseIfCurrent_CommitsWhenUnchanged(t *testing.T) {
-	mc := NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	gen := mc.LiveGeneration(schemas.OpenAI)
 	resp := &schemas.BifrostListModelsResponse{
 		Data: []schemas.Model{{ID: "openai/gpt-4o"}, {ID: "openai/o1"}},
@@ -732,7 +730,7 @@ func TestUpsertLiveFromResponseIfCurrent_CommitsWhenUnchanged(t *testing.T) {
 // on the same contract as UpsertLiveFromResponse: a missing response must never
 // be able to clear a healthy entry.
 func TestUpsertLiveFromResponseIfCurrent_NilRespIsNoop(t *testing.T) {
-	mc := NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	mc.UpsertLive(schemas.OpenAI, "k1", false, []string{"gpt-4o"})
 
 	if mc.UpsertLiveFromResponseIfCurrent(schemas.OpenAI, "k1", false, nil, mc.LiveGeneration(schemas.OpenAI)) {
@@ -747,7 +745,7 @@ func TestUpsertLiveFromResponseIfCurrent_NilRespIsNoop(t *testing.T) {
 // list-models responses, takes the latest time across keys, skips models with
 // no time, and drops times when the key is invalidated.
 func TestGetModelCreatedTimes(t *testing.T) {
-	mc := NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, &schemas.BifrostListModelsResponse{Data: []schemas.Model{
 		{ID: "openai/model-a", Created: new(int64(100))},
 		{ID: "openai/model-b"},

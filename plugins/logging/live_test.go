@@ -9,7 +9,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -418,7 +417,7 @@ func TestLiveSessionSetupFailureKeepsBilledUsage(t *testing.T) {
 	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, modelcatalog.NewTestCatalogWithDatasheet(ds), nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, catalogWithDatasheetForTest(t, ds), nil)
 	require.NoError(t, err)
 
 	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-billed-abort", "voice-1", "voice", true, false), liveStartRequest("gpt-live-1"))

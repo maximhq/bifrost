@@ -127,7 +127,7 @@ func TestAzureDeepSeekResponsesRoutingDisabled(t *testing.T) {
 	p, err := Init(
 		Config{ShouldDropParams: true, AzureDeepseek: false},
 		bifrost.NewNoOpLogger(),
-		modelcatalog.NewTestCatalogWithDatasheet(ds),
+		catalogWithDatasheetForTest(t, ds),
 	)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
@@ -163,7 +163,7 @@ func TestAzureDeepSeekResponsesRoutingHeaderOverride(t *testing.T) {
 	p, err := Init(
 		Config{ShouldDropParams: true, AzureDeepseek: false},
 		bifrost.NewNoOpLogger(),
-		modelcatalog.NewTestCatalogWithDatasheet(ds),
+		catalogWithDatasheetForTest(t, ds),
 	)
 	if err != nil {
 		t.Fatalf("Init: %v", err)
@@ -181,4 +181,16 @@ func TestAzureDeepSeekResponsesRoutingHeaderOverride(t *testing.T) {
 	if !converted || changed != schemas.ChatCompletionRequest {
 		t.Errorf("request was not converted to chat completions, got %v (set: %v)", changed, converted)
 	}
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }

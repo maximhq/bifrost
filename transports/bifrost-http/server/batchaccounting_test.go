@@ -116,7 +116,7 @@ func TestInteractionPollerReadsTheRunWithTheCreatingKey(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := libtest.FileOnly(t, &lib.Config{
-		ModelCatalog: modelcatalog.NewTestCatalog(nil),
+		ModelCatalog: catalogForTest(t, nil),
 	}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.Gemini: {
 			Keys: []schemas.Key{
@@ -172,4 +172,16 @@ func TestInteractionPollerReadsTheRunWithTheCreatingKey(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, http.StatusNotFound, jobaccounting.ProviderCallStatus(err), "a 404 answered as a passthrough response becomes a provider call error")
 	assert.Equal(t, jobaccounting.ProviderCallGone, jobaccounting.ClassifyProviderCall(err))
+}
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }

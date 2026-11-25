@@ -21,7 +21,7 @@ func newOfflinePricingCatalog(t *testing.T) *modelcatalog.ModelCatalog {
 	require.NoError(t, err)
 	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + abs})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
-	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+	return catalogWithDatasheetForTest(t, ds)
 }
 
 // newWarmupBudgetFixture wires a plugin over a store whose "openai" provider

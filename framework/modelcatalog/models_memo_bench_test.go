@@ -9,8 +9,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
-	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
-	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
 // benchCatalog builds a catalog at roughly production scale: nProviders each
@@ -53,11 +51,11 @@ func benchCatalog(tb testing.TB, nProviders, nModels int) (*ModelCatalog, []stri
 		tb.Fatalf("load pricing: %v", err)
 	}
 
-	kc := keyconfig.New(nil)
+	liveModels, kc := stateStoresForTest(tb)
 	kc.Replace(kcSnapshot)
 	mc := &ModelCatalog{
 		datasheet: ds,
-		live:      live.New(nil),
+		live:      liveModels,
 		keyconf:   kc,
 		done:      make(chan struct{}),
 	}

@@ -1427,6 +1427,31 @@ func isKeylessProvider(provider schemas.ModelProvider, cfg *lib.Config) bool {
 	return stored.Settings.CustomProviderConfig.IsKeyLess
 }
 
+// SeedModelCatalog pushes every provider the live store holds into the catalog, as boot does before
+// fetching live models: its keys, whether it is a keyless custom provider, and whether its
+// self-reported cost is ignored. It returns each provider's keys, a copy the caller may keep.
+func SeedModelCatalog(catalog *modelcatalog.ModelCatalog, live *livestore.Store) map[schemas.ModelProvider][]schemas.Key {
+	snapshot := make(map[schemas.ModelProvider][]schemas.Key)
+	var ignoreProviderCost, keyless []schemas.ModelProvider
+	live.Collections.Providers.Range(func(p *registry.Provider) bool {
+		var keys []schemas.Key
+		if list, ok := live.Views.ProviderKeyLists.Get(string(p.Name)); ok {
+			keys = append(keys, (*list)...)
+		}
+		snapshot[p.Name] = keys
+		if p.Settings.IgnoreProviderCost {
+			ignoreProviderCost = append(ignoreProviderCost, p.Name)
+		}
+		if p.Settings.CustomProviderConfig != nil && p.Settings.CustomProviderConfig.IsKeyLess {
+			keyless = append(keyless, p.Name)
+		}
+		return true
+	})
+	catalog.ReplaceKeyConfig(snapshot, keyless...)
+	catalog.ReplaceIgnoreProviderCost(ignoreProviderCost)
+	return snapshot
+}
+
 // setKeyConfig pushes the provider's keys into the catalog's keyconfig. Only a
 // keyless custom provider stays routable with zero keys; any other provider
 // left without a key must stop claiming models, or a bare model name can be
@@ -3861,21 +3886,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// live models for every provider concurrently.
 	logger.Info("listing all models and adding to model catalog")
 	if s.Config.ModelCatalog != nil {
-		snapshot := make(map[schemas.ModelProvider][]schemas.Key)
-		var ignoreProviderCost, keyless []schemas.ModelProvider
-		s.Config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
-			snapshot[p.Name] = s.Config.GetProviderKeys(p.Name)
-			if p.Settings.IgnoreProviderCost {
-				ignoreProviderCost = append(ignoreProviderCost, p.Name)
-			}
-			if p.Settings.CustomProviderConfig != nil && p.Settings.CustomProviderConfig.IsKeyLess {
-				keyless = append(keyless, p.Name)
-			}
-			return true
-		})
-		s.Config.ModelCatalog.ReplaceKeyConfig(snapshot, keyless...)
-		s.Config.ModelCatalog.ReplaceIgnoreProviderCost(ignoreProviderCost)
-
+		SeedModelCatalog(s.Config.ModelCatalog, s.Config.LiveStore)
 		s.RefreshAllLiveModels(ctx)
 	}
 	logger.Info("models added to catalog")

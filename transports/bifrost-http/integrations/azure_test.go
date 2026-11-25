@@ -18,6 +18,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -147,7 +148,7 @@ func newAzureRouteTestRouter(t *testing.T, account azureRouteTestAccount, plugin
 // Azure's list, as aliases named after them on an Azure key put them there.
 func azureRouteResolver(t *testing.T) schemas.LLMPlugin {
 	t.Helper()
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive(schemas.Azure, "azure-route-test-key", false, []string{"neural", "DragonHDLatestNeural", "fast-transcription", "short-audio"})
 	resolver, err := modelcatalogresolver.Init(catalog, bifrost.NewNoOpLogger())
 	require.NoError(t, err)
@@ -392,4 +393,28 @@ func TestAzureSpeechRawResponsePreCallbackKeepsRawRequestGated(t *testing.T) {
 
 	require.Nil(t, bifrostCtx.Value(schemas.BifrostContextKeySendBackRawRequest), "the client's raw request override survived")
 	require.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeySendBackRawResponse))
+}
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }

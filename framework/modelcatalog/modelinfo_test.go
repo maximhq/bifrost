@@ -10,8 +10,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
-	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
-	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
 func modelInfoCatalog(t testing.TB) *ModelCatalog {
@@ -66,10 +64,11 @@ func modelInfoCatalog(t testing.TB) *ModelCatalog {
 	if err := ds.LoadModelParamsFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load model-parameters testdata: %v", err)
 	}
+	liveModels, keyconf := stateStoresForTest(t)
 	mc := &ModelCatalog{
 		datasheet: ds,
-		live:      live.New(nil),
-		keyconf:   keyconfig.New(nil),
+		live:      liveModels,
+		keyconf:   keyconf,
 		done:      make(chan struct{}),
 	}
 	withTestCaches(t, mc)

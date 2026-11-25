@@ -3166,7 +3166,12 @@ func TestGatewayDirectKeyUnderAVirtualKeyIsStillCharged(t *testing.T) {
 	if err := os.WriteFile(paramsPath, []byte(`{"gpt-4o-mini": {"mode": "chat", "model_parameters": [{"id": "temperature"}]}}`), 0o600); err != nil {
 		t.Fatalf("write the model parameters sheet: %v", err)
 	}
-	catalog, err := modelcatalog.Init(t.Context(), &modelcatalog.Config{PricingURL: schemas.Ptr("file://" + pricingPath), ModelParametersURL: schemas.Ptr("file://" + paramsPath)}, nil, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatalf("livestore.New: %v", err)
+	}
+	t.Cleanup(live.Close)
+	catalog, err := modelcatalog.Init(t.Context(), &modelcatalog.Config{PricingURL: schemas.Ptr("file://" + pricingPath), ModelParametersURL: schemas.Ptr("file://" + paramsPath)}, nil, live, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	if err != nil {
 		t.Fatalf("modelcatalog.Init: %v", err)
 	}

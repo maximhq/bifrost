@@ -10,6 +10,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,7 +40,13 @@ func datasheetOverrideTestConfig(t *testing.T, withStore bool) *Config {
 	}
 	pricingURL, paramsURL := "file://"+pricingPath, "file://"+paramsPath
 	disabled := int64(0)
-	mc, err := modelcatalog.Init(ctx, &modelcatalog.Config{PricingURL: &pricingURL, ModelParametersURL: &paramsURL, MCPLibrarySyncInterval: &disabled}, cs, nil, bifrost.NewNoOpLogger())
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	if cs != nil {
+		require.NoError(t, live.LoadAll(ctx, cs.DB()))
+	}
+	mc, err := modelcatalog.Init(ctx, &modelcatalog.Config{PricingURL: &pricingURL, ModelParametersURL: &paramsURL, MCPLibrarySyncInterval: &disabled}, cs, live, bifrost.NewNoOpLogger())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mc.Cleanup() })
 	return &Config{ConfigStore: cs, ModelCatalog: mc}

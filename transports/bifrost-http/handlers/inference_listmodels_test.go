@@ -47,7 +47,7 @@ func newElevenlabsScribeHandler(tb testing.TB, keys []schemas.Key, virtualKeys [
 	}`), 0o600))
 	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + path})
 	require.NoError(tb, ds.LoadFromURLIntoMemory(tb.Context()))
-	catalog := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	catalog := catalogWithDatasheetForTest(tb, ds)
 	catalog.SetKeyConfigForProvider(schemas.Elevenlabs, keys)
 	// Seed the same per-key filtered responses that a pre-fix refresh cached.
 	models := elevenlabs.ElevenlabsListModelsResponse{{ModelID: "eleven_turbo_v2_5", Name: "Upstream Turbo"}}
@@ -553,4 +553,28 @@ func TestModelRetrieveTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }

@@ -799,7 +799,7 @@ func TestRefreshAllLiveModels_NilClientIsNoop(t *testing.T) {
 
 	server := &BifrostHTTPServer{
 		Config: libtest.FileOnly(t, &lib.Config{
-			ModelCatalog: modelcatalog.NewTestCatalog(nil),
+			ModelCatalog: catalogForTest(t, nil),
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
 			"custom-provider": {Keys: []schemas.Key{{ID: "key-1"}}},
 		}),
@@ -824,7 +824,7 @@ func TestRefreshAllLiveModels_SkipsProvidersWithNoEnabledKeys(t *testing.T) {
 
 	server := &BifrostHTTPServer{
 		Config: libtest.FileOnly(t, &lib.Config{
-			ModelCatalog: modelcatalog.NewTestCatalog(nil),
+			ModelCatalog: catalogForTest(t, nil),
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
 			"all-disabled": {Keys: []schemas.Key{
 				{ID: "key-1", Enabled: schemas.Ptr(false)},
@@ -1014,7 +1014,7 @@ func TestRefreshLiveModelsForProvider_AllKeysDisabled(t *testing.T) {
 
 	server := &BifrostHTTPServer{
 		Config: libtest.FileOnly(t, &lib.Config{
-			ModelCatalog: modelcatalog.NewTestCatalog(nil),
+			ModelCatalog: catalogForTest(t, nil),
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
 			"custom-provider": {},
 		}),
@@ -1058,7 +1058,7 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualDisabledKeys(t *testing
 
 	const provider schemas.ModelProvider = "keyless-provider"
 	cfg := libtest.FileOnly(t, &lib.Config{
-		ModelCatalog: modelcatalog.NewTestCatalog(nil),
+		ModelCatalog: catalogForTest(t, nil),
 	}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		provider: {
 			Keys: []schemas.Key{{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1, Enabled: schemas.Ptr(false)}},
@@ -1107,7 +1107,7 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualEnabledKey(t *testing.T
 
 	const provider schemas.ModelProvider = "keyless-provider"
 	cfg := libtest.FileOnly(t, &lib.Config{
-		ModelCatalog: modelcatalog.NewTestCatalog(nil),
+		ModelCatalog: catalogForTest(t, nil),
 	}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		provider: {
 			Keys: []schemas.Key{{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1}},
@@ -1153,7 +1153,7 @@ func TestOnKeyAdded_DisabledKeySkipsFetch(t *testing.T) {
 	disabledKey := schemas.Key{ID: "key-1", Enabled: schemas.Ptr(false)}
 	server := &BifrostHTTPServer{
 		Config: libtest.FileOnly(t, &lib.Config{
-			ModelCatalog: modelcatalog.NewTestCatalog(nil),
+			ModelCatalog: catalogForTest(t, nil),
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
 			"custom-provider": {Keys: []schemas.Key{disabledKey}},
 		}),
@@ -1178,7 +1178,7 @@ func TestOnKeyUpdated_DisabledKeySkipsFetchButInvalidatesCache(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("custom-provider", "key-1", false, []string{"custom-provider/some-model"})
 
 	disabledKey := schemas.Key{ID: "key-1", Enabled: schemas.Ptr(false)}
@@ -1316,7 +1316,7 @@ func newProviderRegistrationFixture(t *testing.T) *providerRegistrationFixture {
 		CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
 	}
 	cc := lib.DefaultClientConfig
-	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &cc, ModelCatalog: modelcatalog.NewTestCatalog(nil)}, nil)
+	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &cc, ModelCatalog: catalogForTest(t, nil)}, nil)
 	// The key is written to the config store and brought into the live store, which the governance
 	// store reads it from.
 	require.NoError(t, cfg.ConfigStore.CreateVirtualKey(context.Background(), &configstoreTables.TableVirtualKey{
@@ -1559,7 +1559,7 @@ func TestReloadProvider_FailedRefetchKeepsPreviousCatalog(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("custom-provider", "key-1", false, []string{"some-model"})
 	catalog.UpsertLive("custom-provider", "key-1", true, []string{"some-model", "unlisted-model"})
 
@@ -1588,7 +1588,7 @@ func TestReloadProvider_PrunesRemovedAndDisabledKeys(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("custom-provider", "key-enabled", false, []string{"kept-model"})
 	catalog.UpsertLive("custom-provider", "key-disabled", false, []string{"disabled-model"})
 	catalog.UpsertLive("custom-provider", "key-removed", false, []string{"removed-model"})
@@ -1622,7 +1622,7 @@ func TestReloadProvider_KeylessProviderRetainsSentinelEntry(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("keyless-provider", "", false, []string{"keyless-model"})
 
 	server := newReloadProviderServer(t, catalog, "keyless-provider", nil, true)
@@ -1650,7 +1650,7 @@ func TestReloadProvider_ZeroKeyProviderClaimsModelsOnlyWhenKeyless(t *testing.T)
 	const provider schemas.ModelProvider = "harness-oauthkey-run"
 	for _, keyless := range []bool{false, true} {
 		t.Run(fmt.Sprintf("keyless=%v", keyless), func(t *testing.T) {
-			catalog := modelcatalog.NewTestCatalog(nil)
+			catalog := catalogForTest(t, nil)
 			server := newReloadProviderServer(t, catalog, provider, nil, keyless)
 			if _, err := server.ReloadProvider(context.Background(), provider, false); err != nil {
 				t.Fatalf("ReloadProvider returned unexpected error: %v", err)
@@ -1673,7 +1673,7 @@ func TestReloadProvider_KeylessPrunesResidualKeyEntries(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("keyless-provider", "", false, []string{"keyless-model"})
 	catalog.UpsertLive("keyless-provider", "residual-key", false, []string{"residual-model"})
 
@@ -1696,7 +1696,7 @@ func TestReloadProvider_NoKeysDropsEverything(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("custom-provider", "key-1", false, []string{"orphaned-model"})
 
 	server := newReloadProviderServer(t, catalog, "custom-provider", nil, false)
@@ -1725,7 +1725,7 @@ func TestReloadProvider_ConcurrentReloadsAndReadsAreRaceFree(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("custom-provider", "key-1", false, []string{"some-model"})
 	catalog.UpsertLive("custom-provider", "key-1", true, []string{"some-model", "unlisted-model"})
 

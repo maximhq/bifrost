@@ -2,8 +2,9 @@ package modelcatalog
 
 import (
 	"context"
-	"github.com/maximhq/bifrost/framework/livestore"
 	"time"
+
+	"github.com/maximhq/bifrost/framework/livestore"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -53,17 +54,6 @@ func (mc *ModelCatalog) GetModelCapabilities(provider schemas.ModelProvider, mod
 	if mc == nil || model == "" {
 		return nil
 	}
-	if mc.loadCapabilities == nil && mc.capabilities == nil {
-		return nil
-	}
-	if mc.capabilities == nil {
-		// A catalog built without a live store has no caches and computes every answer.
-		caps, err := mc.loadCapabilities(provider, model)
-		if err != nil {
-			return nil
-		}
-		return caps
-	}
 	key := livestore.EncodeKey(string(provider), model)
 	if memo, ok := mc.capabilities.Get(key); ok {
 		return memo.caps
@@ -89,12 +79,4 @@ func (mc *ModelCatalog) GetModelCapabilities(provider schemas.ModelProvider, mod
 		return nil
 	}
 	return memo.caps
-}
-
-// flushCapabilities drops every cached capability record, for a sync that applied a new sheet. A
-// catalog built without a live store has no cache to drop.
-func (mc *ModelCatalog) flushCapabilities() {
-	if mc.capabilities != nil {
-		mc.capabilities.Flush()
-	}
 }

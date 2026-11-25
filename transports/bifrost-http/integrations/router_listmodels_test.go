@@ -15,7 +15,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -246,7 +245,7 @@ func TestIntegrationModelRoutesEnrichFromTheCatalog(t *testing.T) {
 	require.NoError(t, ds.LoadFromURLIntoMemory(t.Context()))
 	store := &mockHandlerStore{
 		availableProviders: []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic},
-		modelCatalog:       modelcatalog.NewTestCatalogWithDatasheet(ds),
+		modelCatalog:       catalogWithDatasheetForTest(t, ds),
 	}
 
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{

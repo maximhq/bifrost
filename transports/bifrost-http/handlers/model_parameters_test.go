@@ -8,7 +8,6 @@ import (
 
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
@@ -40,7 +39,7 @@ func TestGetModelParameters_ResolvesQualifiedAndBareIDs(t *testing.T) {
 	h := &ProviderHandler{
 		configStore: store,
 		config: &lib.Config{
-			ModelCatalog: modelcatalog.NewTestCatalogWithDatasheet(ds),
+			ModelCatalog: catalogWithDatasheetForTest(t, ds),
 		},
 	}
 

@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
@@ -1419,7 +1420,7 @@ func modelCatalogForPricingJSON(t *testing.T, pricingJSON []byte) *modelcatalog.
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}
-	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+	return catalogWithDatasheetForTest(t, ds)
 }
 
 func TestListModels_UnknownKeysDoNotFilter(t *testing.T) {
@@ -2393,7 +2394,7 @@ func TestListModelDetails_UnknownKeysDoNotFilter(t *testing.T) {
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.config.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+	h.config.ModelCatalog = catalogForTest(t, nil)
 
 	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
@@ -2424,7 +2425,7 @@ func TestListModelDetails_SkipsUnknownKeysAndFiltersWithValid(t *testing.T) {
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.config.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+	h.config.ModelCatalog = catalogForTest(t, nil)
 
 	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
@@ -2461,7 +2462,7 @@ func TestListModelDetails_SkipsDisabledKeysAndFiltersWithValid(t *testing.T) {
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.config.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+	h.config.ModelCatalog = catalogForTest(t, nil)
 
 	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
@@ -2497,7 +2498,7 @@ func TestListModelDetails_UnfilteredIgnoresKeys(t *testing.T) {
 		[]string{"gpt-4o"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.config.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+	h.config.ModelCatalog = catalogForTest(t, nil)
 
 	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
@@ -3569,7 +3570,7 @@ func TestListModels_UnfilteredListingSkipsCallerAccess(t *testing.T) {
 					[]string{"gpt-4o", "gpt-4o-mini"},
 					[]string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"},
 				)
-				h.config.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+				h.config.ModelCatalog = catalogForTest(t, nil)
 				h.modelsManager.(*mockModelsManager).access = tc.access
 
 				ctx := newBareRequestCtx()
@@ -3647,7 +3648,7 @@ func TestListModels_UsesCatalogAwareAliasMatchingForKeyAllowlist(t *testing.T) {
 		[]string{"gpt-4o"},
 		[]string{"gpt-4o"},
 	)
-	h.config.ModelCatalog = modelcatalog.NewTestCatalog(map[string]string{
+	h.config.ModelCatalog = catalogForTest(t, map[string]string{
 		"gpt-4o-2024-08-06": "gpt-4o",
 	})
 
@@ -3917,7 +3918,15 @@ func datasheetHandlerForTest(t *testing.T) *ProviderHandler {
 	t.Cleanup(func() { _ = cs.Close(ctx) })
 	pricingURL, paramsURL := "file://"+pricingPath, "file://"+paramsPath
 	disabled := int64(0)
-	mc, err := modelcatalog.Init(ctx, &modelcatalog.Config{PricingURL: &pricingURL, ModelParametersURL: &paramsURL, MCPLibrarySyncInterval: &disabled}, cs, nil, bifrost.NewNoOpLogger())
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(live.Close)
+	if err := live.LoadAll(ctx, cs.DB()); err != nil {
+		t.Fatal(err)
+	}
+	mc, err := modelcatalog.Init(ctx, &modelcatalog.Config{PricingURL: &pricingURL, ModelParametersURL: &paramsURL, MCPLibrarySyncInterval: &disabled}, cs, live, bifrost.NewNoOpLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
