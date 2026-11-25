@@ -175,8 +175,8 @@ type pollCounter interface {
 	IncrementProviderJobPollAttempts(ctx context.Context, jobID string) error
 }
 
-// HasRelayJob reports whether a relay started a job with this upstream id on the route routeKey
-// names, open or settled, for the gateway to relay only a real job's status check free: a caller
+// HasRelayJob reports whether a relay started a job with this upstream id, read by the status check
+// routeKey names, open or settled, for the gateway to relay only a real job's status check free: a caller
 // still reads a finished job's results with it. One primary-key read, the job's first row.
 // A store error is returned as it is, so the caller can tell its own not-found error from a failed
 // lookup.

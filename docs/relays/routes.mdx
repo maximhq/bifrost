@@ -228,7 +228,7 @@ How header matching works:
 - If the relay sets the same header under [Extra headers](./configuration#extra-headers), the route sees the relay's value, since that is what reaches the API.
 - A call that sends the same header twice with different capitalization (`X-Amz-Target` and `x-amz-target`) is refused with `400`.
 
-Some headers are removed before the route check, so a route can never match on them: credential headers (`Authorization`, `x-api-key` and similar), Bifrost's own `x-bf-*` headers, `Host`, `Content-Length` and connection headers.
+Some headers a caller sends are removed before the route check, so a route can never match on them: method overrides (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`, so a caller cannot run a call as another method than the one it was routed and priced as; one you set yourself, in the relay's extra headers or a [job status check](./async-jobs), is sent as configured), credential headers (`Authorization`, `x-api-key` and similar), Bifrost's own `x-bf-*` headers, `Host`, `Content-Length` and connection headers.
 
 ---
 
@@ -259,7 +259,7 @@ For one route:
 
 1. Open the route, or select **Add Route**.
 2. Under **Enforced Body Fields**, enter each field. Fields the relay already enforces are listed below the table.
-3. Select **Save Route**. The route table marks the route with **sets body**.
+3. Select **Save Route**. The route table marks the route with the number of fields it enforces, such as **2 enforced fields**.
 
 <Frame>
   <img
@@ -340,7 +340,7 @@ What the API receives, with `include_usage: true` set:
 
 A call is refused with `400`, before it reaches the API, when Bifrost cannot guarantee the fields:
 
-- The body is not a JSON object: form data, plain text, or a JSON list.
+- The body is not a JSON object: form data, plain text, or a JSON list. Spaces, tabs and line breaks alone count as no body; any other character, such as a non-breaking space, makes it a body that is not JSON.
 - The body is sent with a content type that is not JSON, such as `application/x-www-form-urlencoded`, even when its text parses as JSON. A body with no content type is read as JSON. `application/json`, a `+json` or `-json` type such as `application/vnd.api+json`, and `application/x-amz-json-1.1` are accepted. Other types are refused, even ones that contain `json`, such as `application/jsonp`.
 - The body nests objects or arrays more than 1000 levels deep.
 - The body names a forced field twice, such as `"include_usage"` written two times, or under different letter case, such as `"Include_Usage"`. Many APIs read the last copy or ignore case, so the caller's value could win.
@@ -358,7 +358,7 @@ To stop forcing a field everywhere, remove it from the relay. To leave the relay
 { "method": "POST", "path": "/usage", "inherit_body_overrides": false }
 ```
 
-The switch is shown only when the relay enforces at least one field, and the route table marks such a route with **relay fields off**.
+The switch is shown only when the relay enforces at least one field.
 
 ---
 

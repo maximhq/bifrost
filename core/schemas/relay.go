@@ -504,6 +504,8 @@ func routeIdentity(route RelayRouteConfig) string {
 	return string(key)
 }
 
+// Validate checks a relay's routes, usage mapping, streaming paths, async jobs and forced body
+// fields; ValidateEndpoint adds the endpoint-level fields.
 func (c *RelayConfig) Validate() error {
 	if c == nil {
 		return nil
