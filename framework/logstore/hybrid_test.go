@@ -3015,3 +3015,20 @@ func TestHybridLogStoreForwardsRetentionInterval(t *testing.T) {
 	hybrid := &HybridLogStore{inner: &retentionIntervalStore{interval: want}}
 	assert.Equal(t, want, hybrid.RetentionInterval())
 }
+
+// reclaimingStore reports a fixed reclaim; any other LogStore call panics.
+type reclaimingStore struct {
+	LogStore
+	reclaimed int64
+}
+
+func (s *reclaimingStore) ReclaimFreeSpace(context.Context) (int64, error) { return s.reclaimed, nil }
+
+// The cleaner reclaims through the hybrid store, so a dropped forward would leave a SQLite
+// logs.db behind object storage at its largest size.
+func TestHybridLogStoreForwardsReclaimFreeSpace(t *testing.T) {
+	hybrid := &HybridLogStore{inner: &reclaimingStore{reclaimed: 3 << 20}}
+	reclaimed, err := hybrid.ReclaimFreeSpace(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(3<<20), reclaimed)
+}

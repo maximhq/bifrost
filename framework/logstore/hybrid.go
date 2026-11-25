@@ -1220,6 +1220,11 @@ func (h *HybridLogStore) RetentionInterval() time.Duration {
 	return h.inner.RetentionInterval()
 }
 
+// ReclaimFreeSpace forwards to the inner store.
+func (h *HybridLogStore) ReclaimFreeSpace(ctx context.Context) (int64, error) {
+	return h.inner.ReclaimFreeSpace(ctx)
+}
+
 // DeleteMCPToolLogsBatch deletes old MCP tool log rows in batches. Like
 // DeleteLogsBatch, object-store entries are left to the bucket lifecycle policy.
 func (h *HybridLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {

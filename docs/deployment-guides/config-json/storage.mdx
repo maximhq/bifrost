@@ -340,6 +340,14 @@ Set `retention_days` to automatically purge old log entries. `0` disables retent
 }
 ```
 
+#### Disk space on SQLite
+
+After each cleanup pass, Bifrost gives the space of the deleted logs back to the filesystem, so `logs.db` shrinks instead of staying at its largest size. This needs the database in SQLite's incremental auto-vacuum mode, which a new `logs.db` gets when Bifrost creates it. A `logs.db` created by an earlier version is not in that mode and keeps its size. To convert it once, stop Bifrost and run this on the file at your `logs_store` `config.path` (`/app/data/logs.db` in the Docker image). It rewrites the database, so it needs up to twice the file's size in free disk space.
+
+```bash
+sqlite3 /app/data/logs.db "PRAGMA auto_vacuum = INCREMENTAL; VACUUM;"
+```
+
 #### Disk space on PostgreSQL
 
 Retention deletes expired rows every hour. PostgreSQL keeps the space of deleted rows inside the table and reuses it for new logs once autovacuum has processed them, so with retention on, the tables stay near their steady-state size instead of growing. Bifrost sets `autovacuum_vacuum_scale_factor = 0.01` and `autovacuum_vacuum_threshold = 10000` on `logs`, `mcp_tool_logs`, `relay_logs`, `warp_topic_assignments` and `warp_topic_unmatched`, so autovacuum runs after about 1% of a table is dead rows instead of PostgreSQL's default 20%. The migration replaces any per-table values for these two parameters that you set yourself, and rolling it back resets them to the server defaults. Reapply your own values after upgrading if you tuned these tables by hand.
