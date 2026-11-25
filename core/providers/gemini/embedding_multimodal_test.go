@@ -13,7 +13,7 @@ import (
 func TestToGeminiEmbeddingRequestBatchContentUsesBatchRequest(t *testing.T) {
 	one := "one"
 	two := "two"
-	req, err := ToGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+	req, err := ToGeminiEmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{
 		Model: "gemini-embedding-001",
 		Input: []schemas.EmbeddingInputItem{
 			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &one}}},
@@ -67,7 +67,7 @@ func TestToGeminiEmbeddingRequestRequestLevelTaskTypeExtraParamReachesEveryInput
 			Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &texts[i]}},
 		})
 	}
-	req, err := ToGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+	req, err := ToGeminiEmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{
 		Model: "gemini-embedding-001",
 		Input: input,
 		Params: &schemas.EmbeddingParameters{
@@ -107,7 +107,7 @@ func TestToGeminiEmbeddingRequestRequestLevelTaskTypeExtraParamReachesEveryInput
 func TestToGeminiEmbeddingRequestRequestLevelTaskTypeParamReachesEveryInput(t *testing.T) {
 	one, two, three := "one", "two", "three"
 	taskType, title := "RETRIEVAL_DOCUMENT", "Catalogue"
-	req, err := ToGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+	req, err := ToGeminiEmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{
 		Model: "gemini-embedding-001",
 		Input: schemas.EmbeddingInput{
 			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &one}}},
@@ -187,7 +187,7 @@ func TestGeminiBatchEmbeddingRequestKeepsDifferingParamsPerItem(t *testing.T) {
 // requests[] entry; a nested config must land there, never at the batch top level.
 func TestToGeminiEmbeddingRequestPutsEmbedContentConfigOnEachEntry(t *testing.T) {
 	text := "alpha"
-	req, err := ToGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+	req, err := ToGeminiEmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{
 		Model: "gemini-embedding-2",
 		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 		Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{
@@ -208,6 +208,45 @@ func TestToGeminiEmbeddingRequestPutsEmbedContentConfigOnEachEntry(t *testing.T)
 	}
 }
 
+// outputDimensionality is per entry on :batchEmbedContents (Gemini 400s it at the root), is read from
+// extra params only under passthrough, and Params.Dimensions wins over it.
+func TestToGeminiEmbeddingRequestPutsOutputDimensionalityOnEachEntry(t *testing.T) {
+	a, b := "alpha", "beta"
+	input := []schemas.EmbeddingInputItem{
+		{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &a}}},
+		{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &b}}},
+	}
+	for name, tc := range map[string]struct {
+		dims        *int
+		passthrough bool
+		want        int64 // 0 means absent
+	}{
+		"extra param with passthrough":    {nil, true, 8},
+		"extra param without passthrough": {nil, false, 0},
+		"dimensions win":                  {schemas.Ptr(16), true, 16},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			if tc.passthrough {
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			}
+			req, err := ToGeminiEmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+				Model:  "gemini-embedding-001",
+				Input:  input,
+				Params: &schemas.EmbeddingParameters{Dimensions: tc.dims, ExtraParams: map[string]interface{}{"outputDimensionality": float64(8)}},
+			})
+			require.NoError(t, err)
+			body, err := providerUtils.MarshalSorted(req)
+			require.NoError(t, err)
+			merged, err := providerUtils.MergeExtraParamsIntoJSON(body, req.ExtraParams)
+			require.NoError(t, err)
+			require.False(t, gjson.GetBytes(merged, "outputDimensionality").Exists(), string(merged))
+			require.Equal(t, tc.want, gjson.GetBytes(merged, "requests.0.outputDimensionality").Int(), string(merged))
+			require.Equal(t, tc.want, gjson.GetBytes(merged, "requests.1.outputDimensionality").Int(), string(merged))
+		})
+	}
+}
+
 // The GenAI integration accepts embedContentConfig on each entry and forwards it in place.
 func TestGeminiBatchEmbeddingRequestReadsEmbedContentConfig(t *testing.T) {
 	var batch GeminiBatchEmbeddingRequest
@@ -216,7 +255,7 @@ func TestGeminiBatchEmbeddingRequestReadsEmbedContentConfig(t *testing.T) {
 	bifrostReq, err := batch.ToBifrostEmbeddingRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline))
 	require.NoError(t, err)
 
-	out, err := ToGeminiEmbeddingRequest(bifrostReq)
+	out, err := ToGeminiEmbeddingRequest(nil, bifrostReq)
 	require.NoError(t, err)
 	body, err := providerUtils.MarshalSorted(out)
 	require.NoError(t, err)

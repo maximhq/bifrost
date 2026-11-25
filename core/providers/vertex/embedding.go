@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"maps"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
@@ -68,42 +69,111 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Ver
 	return vertexReq, nil
 }
 
-// ToVertexGeminiEmbeddingRequest converts a Bifrost embedding request to Vertex Gemini embedding format.
-// Only a single content entry is supported (len == 1); batch is not supported by this endpoint.
-func ToVertexGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*VertexGeminiEmbeddingRequest, error) {
+// ToVertexGeminiEmbeddingRequest converts a Bifrost embedding request to the Vertex :embedContent format.
+// Callers route several inputs to ToVertexGeminiBatchEmbeddingRequest.
+func ToVertexGeminiEmbeddingRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostEmbeddingRequest) (*VertexGeminiEmbeddingRequest, error) {
 	if bifrostReq == nil || len(bifrostReq.Input) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("embedding input is not provided")
-	}
-
-	if len(bifrostReq.Input) > 1 {
-		return nil, providerUtils.InvalidRequestErrorf("this model does not support batch embedding inputs (multiple contents); use a single content entry")
 	}
 
 	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
-	content := bifrostReq.Input[0].Content
-	params := bifrostReq.Params
+	req, err := toVertexGeminiEmbeddingEntry(bifrostReq.Input[0].Content, bifrostReq.Params, isPassthroughExtraParams(ctx))
+	if err != nil {
+		return nil, err
+	}
+	if bifrostReq.Params != nil {
+		req.ExtraParams = bifrostReq.Params.ExtraParams
+	}
+	return req, nil
+}
+
+// ToVertexGeminiBatchEmbeddingRequest converts a multi-input Bifrost embedding request to the Vertex :batchEmbedContents format.
+func ToVertexGeminiBatchEmbeddingRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostEmbeddingRequest) (*VertexGeminiBatchEmbeddingRequest, error) {
+	if bifrostReq == nil || len(bifrostReq.Input) == 0 {
+		return nil, providerUtils.InvalidRequestErrorf("embedding input is not provided")
+	}
+
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
+		return nil, providerUtils.InvalidRequestErrorf("%s", err)
+	}
+
+	batch := &VertexGeminiBatchEmbeddingRequest{Requests: make([]VertexGeminiEmbeddingRequest, 0, len(bifrostReq.Input))}
+	if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
+		// These are applied per entry; Vertex rejects them at the batch top level.
+		batch.ExtraParams = withoutKeys(bifrostReq.Params.ExtraParams, vertexBatchEntryExtraKeys...)
+	}
+	passthrough := isPassthroughExtraParams(ctx)
+	for _, item := range bifrostReq.Input {
+		entry, err := toVertexGeminiEmbeddingEntry(item.Content, bifrostReq.Params, passthrough)
+		if err != nil {
+			return nil, err
+		}
+		batch.Requests = append(batch.Requests, *entry)
+	}
+	return batch, nil
+}
+
+// vertexEmbeddingEntryExtraKeys are native extra params lifted onto each entry under passthrough.
+var vertexEmbeddingEntryExtraKeys = []string{"taskType", "title", "outputDimensionality", "autoTruncate"}
+
+// vertexBatchEntryExtraKeys are the extra params that belong on batch entries, never the batch top level.
+var vertexBatchEntryExtraKeys = append([]string{"embedContentConfig"}, vertexEmbeddingEntryExtraKeys...)
+
+// toVertexGeminiEmbeddingEntry builds one embedContent body (also a batchEmbedContents entry) without extra params.
+// Under passthrough, vertexEmbeddingEntryExtraKeys fill the fields the typed params leave unset.
+func toVertexGeminiEmbeddingEntry(content schemas.EmbeddingContent, params *schemas.EmbeddingParameters, passthrough bool) (*VertexGeminiEmbeddingRequest, error) {
 	gemContent, err := gemini.EmbeddingContentToGeminiContent(content, geminiImageURLSchemes...)
 	if err != nil {
 		return nil, err
 	}
-	req := &VertexGeminiEmbeddingRequest{
-		Content: gemContent,
-	}
+	req := &VertexGeminiEmbeddingRequest{Content: gemContent}
 	if params != nil {
 		req.TaskType = params.TaskType
 		req.Title = params.Title
 		req.OutputDimensionality = params.Dimensions
 		req.AutoTruncate = params.AutoTruncate
-
 		if params.ExtraParams != nil {
-			req.ExtraParams = params.ExtraParams
-			req.EmbedContentConfig = gemini.ReadEmbedContentConfig(req.ExtraParams)
+			if passthrough {
+				extra := params.ExtraParams
+				if req.TaskType == nil {
+					req.TaskType, _ = schemas.SafeExtractStringPointer(extra["taskType"])
+				}
+				if req.Title == nil {
+					req.Title, _ = schemas.SafeExtractStringPointer(extra["title"])
+				}
+				if req.OutputDimensionality == nil {
+					req.OutputDimensionality, _ = schemas.SafeExtractIntPointer(extra["outputDimensionality"])
+				}
+				if req.AutoTruncate == nil {
+					req.AutoTruncate, _ = schemas.SafeExtractBoolPointer(extra["autoTruncate"])
+				}
+			}
+			req.EmbedContentConfig = gemini.ReadEmbedContentConfig(params.ExtraParams)
 		}
 	}
 	return req, nil
+}
+
+// withoutKeys returns m minus keys, cloning only when one is present so the caller's map is never mutated.
+func withoutKeys(m map[string]interface{}, keys ...string) map[string]interface{} {
+	for _, k := range keys {
+		if _, ok := m[k]; ok {
+			m = maps.Clone(m)
+			for _, k := range keys {
+				delete(m, k)
+			}
+			return m
+		}
+	}
+	return m
+}
+
+// isPassthroughExtraParams reports whether the caller asked for extra params to be forwarded.
+func isPassthroughExtraParams(ctx *schemas.BifrostContext) bool {
+	return ctx != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true
 }
 
 // extractBase64FromDataURI strips the "data:<mime>;base64," prefix from a data URI,
