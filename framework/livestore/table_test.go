@@ -346,3 +346,342 @@ func TestTableLenAndFlush(t *testing.T) {
 		t.Fatal("Flush must drop every entry")
 	}
 }
+
+// observedSet is one call a set observer heard.
+type observedSet struct {
+	key, value           string
+	writtenAt, expiresAt int64
+}
+
+// observedDelete is one call a delete observer heard.
+type observedDelete struct {
+	key       string
+	deletedAt int64
+}
+
+// observed records what a table's observers hear.
+type observed struct {
+	mu      sync.Mutex
+	sets    []observedSet
+	deletes []observedDelete
+}
+
+// observe installs observers on tb that record into a new observed.
+func observe(tb *Table[string, string]) *observed {
+	o := &observed{}
+	tb.OnSet(func(k, v string, writtenAt, expiresAt int64) {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		o.sets = append(o.sets, observedSet{k, v, writtenAt, expiresAt})
+	})
+	tb.OnDelete(func(k string, deletedAt int64) {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		o.deletes = append(o.deletes, observedDelete{k, deletedAt})
+	})
+	return o
+}
+
+// timedTableForTest creates a table of strings that keeps write times on a new store.
+func timedTableForTest(t *testing.T) *Table[string, string] {
+	t.Helper()
+	s := newStore()
+	t.Cleanup(s.Close)
+	tb, err := s.NewTable[string, string](context.Background(), "timed", WithWriteTimes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tb
+}
+
+// TestObserversHearEachWrite checks what each write hands the observers: the value, the write
+// time and the absolute expiry; a claim or a swap only when it is stored; a delete only when the
+// key was there.
+func TestObserversHearEachWrite(t *testing.T) {
+	clock := setClock(t, time.Unix(1_000_000, 0))
+	tb := timedTableForTest(t)
+	o := observe(tb)
+	at := clock.UnixNano()
+
+	tb.PutWithTTL("a", "openai/gpt", time.Minute)
+	tb.PutWithTTL("b", "never", 0)
+	if !tb.PutIfAbsent("c", "first", time.Minute) {
+		t.Fatal("the first claim must be stored")
+	}
+	if tb.PutIfAbsent("c", "second", time.Minute) {
+		t.Fatal("a live claim must not be taken")
+	}
+	if CompareAndSwap(tb, "b", "stale", "lost") {
+		t.Fatal("a swap from a value the key does not hold must fail")
+	}
+	if !CompareAndSwap(tb, "b", "never", "swapped") {
+		t.Fatal("a swap from the held value must be stored")
+	}
+	want := []observedSet{
+		{"a", "openai/gpt", at, at + int64(time.Minute)},
+		{"b", "never", at, 0},
+		{"c", "first", at, at + int64(time.Minute)},
+		{"b", "swapped", at, 0},
+	}
+	if len(o.sets) != len(want) {
+		t.Fatalf("sets = %+v, want %+v", o.sets, want)
+	}
+	for i := range want {
+		if o.sets[i] != want[i] {
+			t.Fatalf("set %d = %+v, want %+v", i, o.sets[i], want[i])
+		}
+	}
+
+	tb.Delete("a")
+	tb.Delete("missing")
+	if len(o.deletes) != 1 || o.deletes[0] != (observedDelete{"a", at}) {
+		t.Fatalf("deletes = %+v, want only a", o.deletes)
+	}
+}
+
+// TestDeleteOfAnExpiredEntryIsObserved checks that a delete is observed when the key was held,
+// expired or not.
+func TestDeleteOfAnExpiredEntryIsObserved(t *testing.T) {
+	clock := setClock(t, time.Unix(1_000_000, 0))
+	tb := timedTableForTest(t)
+	o := observe(tb)
+	tb.PutWithTTL("k", "v", time.Second)
+	*clock = clock.Add(time.Minute)
+	tb.Delete("k")
+	if len(o.deletes) != 1 {
+		t.Fatalf("deletes = %+v, want one", o.deletes)
+	}
+}
+
+// TestGetAndDeleteTakesOnce checks the single-use take: one caller gets the value, the delete
+// observer hears it once, and an expired value is removed without being returned or observed.
+func TestGetAndDeleteTakesOnce(t *testing.T) {
+	clock := setClock(t, time.Unix(1_000_000, 0))
+	tb := timedTableForTest(t)
+	o := observe(tb)
+
+	tb.PutWithTTL("upload:1", "session", time.Minute)
+	if v, ok := tb.GetAndDelete("upload:1"); !ok || v != "session" {
+		t.Fatalf("first take = %q, %v", v, ok)
+	}
+	if _, ok := tb.GetAndDelete("upload:1"); ok {
+		t.Fatal("a second take must find nothing")
+	}
+	if len(o.deletes) != 1 {
+		t.Fatalf("deletes = %+v, want one", o.deletes)
+	}
+
+	tb.PutWithTTL("upload:2", "stale", time.Second)
+	*clock = clock.Add(time.Minute)
+	if _, ok := tb.GetAndDelete("upload:2"); ok {
+		t.Fatal("an expired value must not be taken")
+	}
+	if _, ok := tb.Get("upload:2"); ok {
+		t.Fatal("an expired value must be removed")
+	}
+	if len(o.deletes) != 1 {
+		t.Fatalf("an expired take must not be observed: deletes = %+v", o.deletes)
+	}
+}
+
+// TestObserversCanBeRemoved checks that a table without observers keeps working, and that nil
+// removes an installed observer.
+func TestObserversCanBeRemoved(t *testing.T) {
+	setClock(t, time.Unix(1_000_000, 0))
+	tb := timedTableForTest(t)
+	tb.PutWithTTL("k", "v", time.Minute)
+	if v, ok := tb.Get("k"); !ok || v != "v" {
+		t.Fatalf("Get = %q, %v", v, ok)
+	}
+	tb.Delete("k")
+
+	o := observe(tb)
+	tb.OnSet(nil)
+	tb.OnDelete(nil)
+	tb.Put("k", "v")
+	tb.Delete("k")
+	if len(o.sets) != 0 || len(o.deletes) != 0 {
+		t.Fatalf("removed observers heard %+v %+v", o.sets, o.deletes)
+	}
+}
+
+// TestObserverHearsNoWriteTimeWithoutWriteTimes checks that a table without write times hands its
+// set observer a zero write time and still the absolute expiry.
+func TestObserverHearsNoWriteTimeWithoutWriteTimes(t *testing.T) {
+	clock := setClock(t, time.Unix(1_000_000, 0))
+	s := newStore()
+	t.Cleanup(s.Close)
+	tb, err := s.NewTable[string, string](context.Background(), "untimed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := observe(tb)
+	tb.PutWithTTL("k", "v", time.Minute)
+	if len(o.sets) != 1 || o.sets[0] != (observedSet{"k", "v", 0, clock.Add(time.Minute).UnixNano()}) {
+		t.Fatalf("sets = %+v", o.sets)
+	}
+}
+
+// TestConditionalWritesKeepTheLaterTime checks the write-time rule both ways, for sets and
+// deletes: an older write is skipped, one at the same time or later applies, and a given expiry
+// is kept as the absolute time it names.
+func TestConditionalWritesKeepTheLaterTime(t *testing.T) {
+	clock := setClock(t, time.Unix(1_000_000, 0))
+	tb := timedTableForTest(t)
+	at := clock.UnixNano()
+
+	tb.PutWithTTL("k:1", "local", 0)
+	if tb.PutIfNewer("k:1", "older", at-1, 0) {
+		t.Fatal("an older write must report that it stored nothing")
+	}
+	if v, _ := tb.Get("k:1"); v != "local" {
+		t.Fatalf("an older write must be skipped, got %q", v)
+	}
+	if !tb.PutIfNewer("k:1", "tie", at, 0) {
+		t.Fatal("a write at the same time must report that it stored")
+	}
+	if v, _ := tb.Get("k:1"); v != "tie" {
+		t.Fatalf("a write at the same time must apply, got %q", v)
+	}
+	if tb.DeleteIfNewer("k:1", at-1) {
+		t.Fatal("a delete older than the write must report that it removed nothing")
+	}
+	if _, ok := tb.Get("k:1"); !ok {
+		t.Fatal("a delete older than the write must be skipped")
+	}
+	if !tb.DeleteIfNewer("k:1", at) {
+		t.Fatal("a delete at the write time must report that it removed the entry")
+	}
+	if _, ok := tb.Get("k:1"); ok {
+		t.Fatal("a delete at the write time must apply")
+	}
+
+	expires := at + int64(time.Second)
+	tb.PutIfNewer("k:2", "given", at, expires)
+	*clock = clock.Add(2 * time.Second)
+	if _, ok := tb.Get("k:2"); ok {
+		t.Fatal("an entry must expire at the absolute time it was given")
+	}
+	tb.PutWithTTL("k:3", "local", 0)
+	tb.PutIfNewer("k:3", "newer", clock.UnixNano()+1, 0)
+	if v, _ := tb.Get("k:3"); v != "newer" {
+		t.Fatalf("a newer write must apply, got %q", v)
+	}
+	if tb.PutIfNewer("k:3", "older", clock.UnixNano(), 0) {
+		t.Fatal("a write older than the one PutIfNewer stored must be skipped")
+	}
+}
+
+// TestConditionalWritesAreNotObserved checks that PutIfNewer and DeleteIfNewer never reach the
+// observers.
+func TestConditionalWritesAreNotObserved(t *testing.T) {
+	setClock(t, time.Unix(1_000_000, 0))
+	tb := timedTableForTest(t)
+	o := observe(tb)
+	tb.PutIfNewer("k", "v", 5, 0)
+	tb.DeleteIfNewer("k", 6)
+	if len(o.sets) != 0 || len(o.deletes) != 0 {
+		t.Fatalf("conditional writes were observed: %+v %+v", o.sets, o.deletes)
+	}
+}
+
+// structValue is a struct value as a consumer stores it.
+type structValue struct {
+	KeyID string
+	Count int
+}
+
+// TestConditionalWritesNeedWriteTimes checks that a table without write times takes no
+// conditional write, and that any value type works in one that keeps them.
+func TestConditionalWritesNeedWriteTimes(t *testing.T) {
+	setClock(t, time.Unix(1_000_000, 0))
+	s := newStore()
+	t.Cleanup(s.Close)
+	untimed, err := s.NewTable[string, string](context.Background(), "untimed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if untimed.PutIfNewer("k", "v", 5, 0) {
+		t.Fatal("a table without write times must not take a conditional write")
+	}
+	if _, ok := untimed.Get("k"); ok {
+		t.Fatal("a refused conditional write must store nothing")
+	}
+	untimed.Put("k", "v")
+	if untimed.DeleteIfNewer("k", 5) {
+		t.Fatal("a table without write times must not take a conditional delete")
+	}
+	if _, ok := untimed.Get("k"); !ok {
+		t.Fatal("a refused conditional delete must leave the entry")
+	}
+
+	structs, err := s.NewTable[string, structValue](context.Background(), "structs", WithWriteTimes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !structs.KeepsWriteTimes() || untimed.KeepsWriteTimes() {
+		t.Fatal("KeepsWriteTimes must report the option")
+	}
+	structs.PutIfNewer("m", structValue{KeyID: "k1", Count: 3}, 5, 0)
+	if v, ok := structs.Get("m"); !ok || v != (structValue{KeyID: "k1", Count: 3}) {
+		t.Fatalf("Get = %+v, %v", v, ok)
+	}
+}
+
+// TestWriteTimesRefuseAMemo checks that a table cannot keep write times and be a memo, and that
+// the refused name stays free.
+func TestWriteTimesRefuseAMemo(t *testing.T) {
+	s := newStore()
+	t.Cleanup(s.Close)
+	if _, err := s.NewTable[string, string](context.Background(), "memo", WithWriteTimes(), WithGeneration(func() uint64 { return 1 })); err == nil {
+		t.Fatal("a memo that keeps write times must fail")
+	}
+	if _, err := s.NewTable[string, string](context.Background(), "memo", WithWriteTimes()); err != nil {
+		t.Fatalf("a refused table must leave its name free: %v", err)
+	}
+}
+
+// TestTableWritesReadTheClockOnlyWhenTheyNeedIt checks that a write asks the clock only for what
+// needs the time: an expiry, a write time or a delete observer. Tables with none of those serve
+// per-request writes, which should pay no clock read for features they do not use.
+func TestTableWritesReadTheClockOnlyWhenTheyNeedIt(t *testing.T) {
+	var reads atomic.Int64
+	at := time.Unix(1_000_000, 0)
+	now = func() time.Time { reads.Add(1); return at }
+	t.Cleanup(func() { now = time.Now })
+	s := newStore()
+	defer s.Close()
+	ctx := context.Background()
+	plain, err := s.NewTable[string, int](ctx, "clock_plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memo, err := s.NewTable[string, int](ctx, "clock_memo", WithGeneration(func() uint64 { return 1 }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	timed, err := s.NewTable[string, int](ctx, "clock_write_times", WithWriteTimes())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// count runs op and checks it read the clock want times.
+	count := func(op string, want int64, run func()) {
+		t.Helper()
+		before := reads.Load()
+		run()
+		if n := reads.Load() - before; n != want {
+			t.Errorf("%s read the clock %d times, want %d", op, n, want)
+		}
+	}
+	count("Put on a table with no TTL", 0, func() { plain.Put("a", 1) })
+	count("PutIfAbsent with no TTL", 0, func() { plain.PutIfAbsent("b", 2, 0) })
+	count("CompareAndSwap with no TTL", 0, func() { CompareAndSwap(plain, "a", 1, 3) })
+	count("GetOrCompute on a memo with no TTL", 0, func() { memo.GetOrCompute("m", func() (int, time.Duration, bool) { return 4, 0, true }) })
+	count("Delete with no delete observer", 0, func() { plain.Delete("a") })
+
+	count("PutWithTTL", 1, func() { plain.PutWithTTL("c", 5, time.Minute) })
+	count("Put on a table that keeps write times", 1, func() { timed.Put("d", 6) })
+	plain.OnDelete(func(string, int64) {})
+	count("Delete with a delete observer", 1, func() { plain.Delete("b") })
+}
