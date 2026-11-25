@@ -60,6 +60,9 @@ type Manager struct {
 	// globalProxy returns the proxy an endpoint without its own inherits, nil for none.
 	globalProxy func() (*schemas.ProxyConfig, error)
 	logger      schemas.Logger
+	// knownJob reports whether a relay started a job with this id on this job route; nil (no job
+	// store) relays no call as a status check.
+	knownJob atomic.Pointer[JobLookup]
 }
 
 // NewManager returns an empty manager. store may be nil, in which case endpoints can only be made
@@ -355,6 +358,64 @@ func (m *Manager) Names() []string {
 	return names
 }
 
+// JobLookup reports whether relayName started a job, open or settled, on the route routeKey names,
+// with this upstream id.
+// A lookup that could not answer (the store failed) returns its error, never a plain false, so a
+// real status check is not charged or refused over a blip.
+type JobLookup func(ctx context.Context, relayName, routeKey, jobID string) (bool, error)
+
+// errJobLookupFailed is a status check whose job could not be confirmed because the lookup failed.
+var errJobLookupFailed = errors.New("could not confirm the job this status check names; try again")
+
+// HasJobLookup reports whether status checks can be confirmed, and so relayed free.
+func (m *Manager) HasJobLookup() bool {
+	return m.knownJob.Load() != nil
+}
+
+// SetJobLookup sets how the gateway confirms a status check names a job it started, so only such a
+// call is relayed free and can settle it.
+func (m *Manager) SetJobLookup(lookup JobLookup) {
+	if lookup == nil {
+		m.knownJob.Store(nil)
+		return
+	}
+	m.knownJob.Store(&lookup)
+}
+
+// knownStatusCheck confirms a status check against the jobs the relay started: the candidates are
+// tried most specific first, the first whose id names a started job wins, and every candidate
+// reading that same id that also names a started job is kept for settlement. A made-up id (or a
+// deeper path read as one) is never a status check. It costs one job lookup per candidate, and only
+// for a call that fits a poll template. key names the candidate set, so a rewrite can be told apart.
+func (m *Manager) knownStatusCheck(ctx context.Context, e *endpoint, req *schemas.BifrostRelayRequest) (id string, matches []schemas.RelayJobMatch, key string, err error) {
+	candidates := e.statusCheckCandidates(ctx, req)
+	key = statusCandidatesKey(candidates)
+	lookup := m.knownJob.Load()
+	if len(candidates) == 0 || lookup == nil {
+		return "", nil, key, nil
+	}
+	failed := false
+	for _, c := range candidates {
+		if id != "" && c.id != id {
+			continue
+		}
+		known, lookupErr := (*lookup)(ctx, e.cfg.Name, c.match.RouteKey, c.id)
+		if lookupErr != nil {
+			failed = true
+			continue
+		}
+		if known {
+			id = c.id
+			matches = append(matches, c.match)
+		}
+	}
+	// No candidate confirmed while one could not be checked: neither free nor priced, retry later.
+	if id == "" && failed {
+		return "", nil, key, errJobLookupFailed
+	}
+	return id, matches, key, nil
+}
+
 func (m *Manager) get(name string) *endpoint {
 	return (*m.endpoints.Load())[name]
 }
@@ -402,21 +463,45 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	headers := e.routeHeaders(in.Headers, callerExtraHeaders(ctx))
 	contentType, _ := headerValue("content-type", headers, e.operatorHeaders)
 	p := e.plan(in.Method, in.Path, headers)
-	if !p.allowed {
-		if p.route != nil {
-			return nil, statusError(http.StatusNotFound, fmt.Sprintf("route %s %s on relay %q is disabled", in.Method, in.Path, in.Endpoint))
-		}
-		return nil, statusError(http.StatusNotFound, fmt.Sprintf("no route for %s %s on relay %q", in.Method, in.Path, in.Endpoint))
+	noRoute := func() *schemas.BifrostError {
+		return statusError(http.StatusNotFound, fmt.Sprintf("no route for %s %s on relay %q", in.Method, in.Path, in.Endpoint))
 	}
-	// Forced fields go in first, so pricing, logs and the upstream all see the sent body.
+	if !p.allowed && p.route != nil {
+		return nil, statusError(http.StatusNotFound, fmt.Sprintf("route %s %s on relay %q is disabled", in.Method, in.Path, in.Endpoint))
+	}
+	// Only a relay with async jobs can let an unrouted call through, as a caller's status check.
+	if !p.allowed && !e.hasJobs {
+		return nil, noRoute()
+	}
+	// Forced fields go in first, so pricing, logs, status check matching and the upstream all see the sent body.
 	body, created, err := applyBodyOverrides(p.body, in.Method, contentType, in.Body)
 	if err != nil {
+		if !p.allowed {
+			return nil, noRoute()
+		}
 		return nil, statusError(http.StatusBadRequest, err.Error())
 	}
 	// A created body keeps a JSON content type the caller or operator already set (application/x-amz-json-1.1).
+	// Set before the status check test, so it sees the content type that is sent with the body.
 	if created && !isJSONBodyType(contentType) {
 		in.Headers = withJSONContentType(in.Headers)
 		contentType = "application/json"
+	}
+	// A caller's status check for one of the relay's jobs is relayed free, whatever route it reaches
+	// (a disabled one was refused above): the job is charged once, when it settles.
+	if e.hasJobs && !hasDotSegment(in.Path) {
+		probe := &schemas.BifrostRelayRequest{Method: strings.ToUpper(in.Method), Path: in.Path, RawQuery: in.RawQuery, Headers: in.Headers, Body: body}
+		id, matches, key, lookupErr := m.knownStatusCheck(ctx, e, probe)
+		if lookupErr != nil {
+			return nil, statusError(http.StatusServiceUnavailable, lookupErr.Error())
+		}
+		p.statusKey = key
+		if id != "" {
+			p.statusJobID, p.statusMatches, p.allowed, p.billing = id, matches, true, false
+		}
+	}
+	if !p.allowed {
+		return nil, noRoute()
 	}
 	model, err := ReadRequestModel(p.usage.modelSource, body, contentType, in.RawQuery, p.usage.effectiveModelPath())
 	if err != nil {
@@ -537,6 +622,7 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 	if pipeline != nil {
 		var shortCircuit *schemas.RelayPluginShortCircuit
 		var preReq *schemas.BifrostRelayRequest
+		sentMethod, sentPath := req.Method, req.Path
 		preReq, shortCircuit, preCount = pipeline.RunRelayPreHooks(ctx, req, func(entered int) { preCount = entered })
 		if shortCircuit != nil {
 			if shortCircuit.Response != nil {
@@ -561,6 +647,40 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		if preReq != nil {
 			req = preReq
 		}
+		// The call as sent is checked against the routes again: a disabled route answers 404 whatever the
+		// call was admitted as, a status check included. Adding or removing a header can change which
+		// route matches, so any relay with a disabled route looks again; one with none skips it when
+		// method and path are unchanged.
+		if req.Method != sentMethod || req.Path != sentPath || e.hasDisabled {
+			// The headers as the first check saw them, the caller's x-bf-eh-* ones included, so an
+			// unchanged call always lands on the same route.
+			if route := e.selectRoute(req.Method, req.Path, e.routeHeaders(req.Headers, callerExtraHeaders(ctx))); route != nil && route.disabled {
+				// The span starts first, so the refusal counts in relay metrics as a short-circuit does.
+				span = startRelaySpan(ctx, entrySpanID, req, start)
+				return recovered(runPost(nil, statusError(http.StatusNotFound, fmt.Sprintf("no route for %s %s on relay %q", req.Method, req.Path, req.RelayName))))
+			}
+		}
+		// A pre-hook may rewrite the call, in place or with a new request, so the call that is sent
+		// is matched again for settlement; its price was already decided on the call as received.
+		if e.hasJobs {
+			// An unchanged call keeps its lookup; a rewrite that changes which templates fit (or how they
+			// read the id) is confirmed again, so a newly matched route reaches settlement too.
+			if statusCandidatesKey(e.statusCheckCandidates(ctx, req)) != p.statusKey {
+				wasStatusCheck := p.statusJobID != ""
+				var lookupErr error
+				p.statusJobID, p.statusMatches, p.statusKey, lookupErr = m.knownStatusCheck(ctx, e, req)
+				if lookupErr != nil {
+					span = startRelaySpan(ctx, entrySpanID, req, start)
+					return recovered(runPost(nil, statusError(http.StatusServiceUnavailable, lookupErr.Error())))
+				}
+				// Rewritten into something that is no longer a status check: refused. It was admitted, logged
+				// and checked as a free status check, so it is never sent as another, priced call.
+				if wasStatusCheck && p.statusJobID == "" {
+					span = startRelaySpan(ctx, entrySpanID, req, start)
+					return recovered(runPost(nil, statusError(http.StatusNotFound, fmt.Sprintf("no route for %s %s on relay %q", req.Method, req.Path, req.RelayName))))
+				}
+			}
+		}
 	}
 
 	span = startRelaySpan(ctx, entrySpanID, req, start)
@@ -573,6 +693,10 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 	// client so one past the response threshold can be forwarded as a stream instead of held, as an
 	// LLM reply is, unless the route reads its usage or job from the body (readsReplyBody).
 	threshold := largeResponseThreshold(ctx)
+	// A caller's status check is read the way any reply is, as batch and video settle from what the
+	// normal path read: one read whole can settle its job at once, one handed off as a stream (past
+	// the threshold, or an event stream) is settled by the sweeper, at the same price.
+	statusJobID := p.statusJobID
 	if p.readsReplyBody() {
 		threshold = 0
 	}
@@ -646,11 +770,17 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		resp.Usage = extractUsage(p.usage, reply.contentType, reply.body, requestUnits)
 		// A route that starts a job hands the job id and its settlement snapshot to the logging
 		// plugin, which records it for the sweeper. The start call is still counted here.
-		job, err := p.route.jobHandle(reply.contentType, reply.body)
-		if err != nil && m.logger != nil {
-			m.logger.Warn("relay %s: %v; the call is billed without settling a job", req.RelayName, err)
+		// A status check never starts a job, even when its reply carries an id at the job's id path.
+		if statusJobID == "" {
+			job, err := p.route.jobHandle(reply.contentType, reply.body)
+			if err != nil && m.logger != nil {
+				m.logger.Warn("relay %s: %v; the call is billed without settling a job", req.RelayName, err)
+			}
+			resp.Usage.Job = job
 		}
-		resp.Usage.Job = job
+	}
+	if statusJobID != "" && reply.status >= 200 && reply.status < 300 {
+		resp.JobStatusCheck = &schemas.RelayJobStatusCheck{JobID: statusJobID, ContentType: reply.contentType, Matches: p.statusMatches}
 	}
 	// A post-hook that clears the response without an error is refused like an empty recovery.
 	return recovered(runPost(resp, nil))

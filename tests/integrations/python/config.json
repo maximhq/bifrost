@@ -2190,14 +2190,6 @@
         },
         {
           "method": "POST",
-          "path": "/v1/textract",
-          "headers": {
-            "X-Amz-Target": "Textract.Get*"
-          },
-          "billable": false
-        },
-        {
-          "method": "POST",
           "path": "/v1/rest/jobs",
           "usage": {
             "cost_per_request": 0.01

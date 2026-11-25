@@ -7,6 +7,10 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { Status, StatusBarColors, Statuses } from "@/lib/constants/logs";
 import type { RelayLog } from "@/lib/types/relays";
+import { RELAY_JOB_OUTCOME_BAR, relayJobOutcome, relayJobReason, relayJobSettledAt } from "../relayJob";
+import { getLocale } from "@/lib/i18n";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
+import { format } from "date-fns";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import i18n from "@/lib/i18n";
 import type { TFunction } from "i18next";
@@ -68,7 +72,15 @@ export const createRelayColumns = (
 		size: 8,
 		maxSize: 8,
 		cell: ({ row }) => (
-			<div title={row.original.status} className={`h-full min-h-[24px] w-1 rounded-sm ${StatusBarColors[statusOf(row.original.status)]}`} />
+			<div
+				title={row.original.kind === "job" ? t(`relayLogs.jobOutcome.${relayJobOutcome(row.original)}`) : row.original.status}
+				className={`h-full min-h-[24px] w-1 rounded-sm ${
+					// A job row is always written as success; its colour is how the job ended.
+					row.original.kind === "job"
+						? RELAY_JOB_OUTCOME_BAR[relayJobOutcome(row.original)]
+						: StatusBarColors[statusOf(row.original.status)]
+				}`}
+			/>
 		),
 	},
 	{
@@ -121,10 +133,27 @@ export const createRelayColumns = (
 			// detail sheet, the same way LLM's streaming variants get a distinct badge color/label
 			// rather than a text suffix, so a bare "streamed" string in this muted line read as out
 			// of place next to that pattern.
-			const secondary =
-				log.kind === "job"
-					? t("relayLogs.columns.settled", { status: log.job_status ?? "-" })
-					: [routeLabel, log.billable ? "" : t("relayLogs.columns.notBillable")].filter(Boolean).join(" · ");
+			const outcome = log.kind === "job" ? relayJobOutcome(log) : undefined;
+			const settledAt = relayJobSettledAt(log);
+			const jobLine =
+				outcome === "unpriced"
+					? t("relayLogs.columns.jobUnpriced", { reason: relayJobReason(log) })
+					: outcome === "failed"
+						? t("relayLogs.columns.jobFailed", { status: log.job_status ?? "-" })
+						: t("relayLogs.columns.settled", { status: log.job_status ?? "-" });
+			// A job row is listed at its start; the line says when it actually ended.
+			const secondary = outcome
+				? [jobLine, settledAt ? format(settledAt, "MMM d, HH:mm:ss", { locale: dateFnsLocale(getLocale()) }) : ""]
+						.filter(Boolean)
+						.join(" · ")
+				: [
+						routeLabel,
+						log.billable ? "" : t("relayLogs.columns.notBillable"),
+						// A start call names the job it started, so the settlement can be found from it.
+						log.job_id ? t("relayLogs.columns.startsJob", { id: log.job_id }) : "",
+					]
+						.filter(Boolean)
+						.join(" · ");
 			return (
 				<div className="flex min-w-0 flex-col leading-tight">
 					<TruncatedLabel truncateFrom="start" className="font-mono text-[12px]">

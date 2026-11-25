@@ -71,6 +71,17 @@ export function startRelayUpstream(): Promise<RelayUpstream> {
         res.end(JSON.stringify({ ok: true }));
         return;
       }
+      // A one-step async job: the start returns its id, and its first status check finds it done.
+      if (path === "/v1/jobs" && req.method === "POST") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ id: JOB_ID }));
+        return;
+      }
+      if (path === `/v1/jobs/${JOB_ID}`) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "SUCCEEDED", pages: JOB_PAGES }));
+        return;
+      }
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "not found" }));
     });
@@ -85,6 +96,36 @@ export function startRelayUpstream(): Promise<RelayUpstream> {
       });
     });
   });
+}
+
+export const JOB_ID = "job-relay-logs-e2e";
+export const JOB_PAGES = 2;
+
+/** A relay whose POST /v1/jobs starts an async job, polled through the free GET /v1/jobs/** route. */
+export function createRelayLogsJobRelayPayload(name: string, baseUrl: string) {
+  return {
+    name,
+    description: "E2E relay logs job",
+    base_url: baseUrl,
+    auth: { type: "bearer" },
+    credential: { value: { value: UPSTREAM_KEY } },
+    routes: [
+      {
+        method: "POST",
+        path: "/v1/jobs",
+        usage: { cost_per_request: FEE_PER_REQUEST },
+        job: {
+          id_path: "id",
+          poll: { method: "GET", path: "/v1/jobs/{{job.id}}" },
+          status_path: "status",
+          succeeded: ["SUCCEEDED"],
+          interval_seconds: 1,
+          usage: { units_path: "pages", cost_per_unit: RATE_PER_UNIT },
+        },
+      },
+      { method: "GET", path: "/v1/jobs/**" },
+    ],
+  };
 }
 
 /** A unique relay name; relays are keyed by name, so it doubles as the cleanup handle. */
@@ -163,6 +204,8 @@ export interface RelayLogRow {
   request_id: string;
   relay_name: string;
   kind: "call" | "job";
+  job_id?: string;
+  job_debug?: { polls: number; last_status?: string; settled_at: string };
   method: string;
   path: string;
   route_path?: string;

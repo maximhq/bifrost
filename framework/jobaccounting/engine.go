@@ -311,6 +311,10 @@ func mergeJobHints(dst *cstables.TableProviderJob, src *cstables.TableProviderJo
 	}
 	dst.AggregateLogWrittenAt = src.AggregateLogWrittenAt
 	dst.GovernanceReportedAt = src.GovernanceReportedAt
+	// A relay job's polls are counted on the row as they are sent, so the stored count is current.
+	if dst.Kind == cstables.ProviderJobKindRelay && src.PollAttempts > dst.PollAttempts {
+		dst.PollAttempts = src.PollAttempts
+	}
 	dst.SelectedKeyID = src.SelectedKeyID
 	dst.VirtualKeyID = src.VirtualKeyID
 	dst.UserID = src.UserID

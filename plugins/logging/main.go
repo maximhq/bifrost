@@ -1352,6 +1352,10 @@ type LoggerPlugin struct {
 	logDeleteSubscribers         map[uint64]LogDeleteCallback
 	nextLogDeleteSubscriberID    uint64
 	batchUsageReporter           jobaccounting.UsageReporter
+	relayJobPoller               jobaccounting.RelayJobPoller // polls a relay job a caller's status check found finished
+	relaySettling                sync.Map                     // relay+job id -> struct{}: a settle from a status check is running
+	relaySettleSlotsOnce         sync.Once
+	relaySettleSlots             chan struct{}      // bounds concurrent settles from status checks
 	settlementTracer             schemas.Tracer     // tracer for settled batch/video cost spans; nil disables the bridge
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests              atomic.Int64
@@ -1698,6 +1702,14 @@ func (p *LoggerPlugin) notifyLogCallbacks(ctx context.Context, entry *logstore.L
 			callback(ctx, entry)
 		}()
 	}
+}
+
+// SetRelayJobPoller sets how a caller's finished status check is confirmed: Bifrost polls the job
+// itself with its stored template and prices that reply. nil leaves such jobs to the sweeper.
+func (p *LoggerPlugin) SetRelayJobPoller(poller jobaccounting.RelayJobPoller) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.relayJobPoller = poller
 }
 
 func (p *LoggerPlugin) SetBatchUsageReporter(reporter jobaccounting.UsageReporter) {

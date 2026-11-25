@@ -792,6 +792,7 @@
 			"toastExported_other": "로그 {{count}}개 내보냄",
 			"toastFailed": "내보내기 실패: {{error}}",
 			"summary": {
+				"jobId": "작업 ID: {{value}}",
 				"search": "검색 \"{{value}}\"",
 				"request": "요청 \"{{value}}\"",
 				"providers": "공급자({{total}}개)",
@@ -818,6 +819,20 @@
 		"batchMixedModel": "혼합"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "과금 전에 정산 행이 삭제됨",
+			"relay_job_no_usage": "최종 응답에 과금할 사용량이 없음",
+			"relay_job_rejected": "업스트림이 작업 ID를 거부함",
+			"relay_job_access_denied": "업스트림이 작업 접근을 거부함",
+			"relay_job_gone": "업스트림이 작업을 더 이상 찾지 못함",
+			"relay_job_timeout": "제한 시간 안에 끝나지 않음",
+			"relay_job_params": "작업 설정을 읽을 수 없음"
+		},
+		"jobOutcome": {
+			"unpriced": "가격 없음",
+			"failed": "실패",
+			"succeeded": "성공"
+		},
 		"fields": {
 			"relay": "릴레이",
 			"kind": "종류",
@@ -836,6 +851,9 @@
 			"no": "아니요"
 		},
 		"columns": {
+			"startsJob": "작업 {{id}} 시작",
+			"jobUnpriced": "가격 없음: {{reason}}",
+			"jobFailed": "실패: {{status}}",
 			"jobBadge": "작업",
 			"noRoute": "라우트 없음",
 			"route": "라우트 {{route}}",
@@ -876,6 +894,13 @@
 			"perRequest": "{{value}}/요청"
 		},
 		"detail": {
+			"jobStatusStat": "작업 상태",
+			"jobNotSettled": "아직 정산되지 않음",
+			"jobSettlementFailed": "정산을 확인할 수 없습니다.",
+			"jobSettlement": "작업 정산",
+			"costUnpriced": "가격 없음",
+			"unpricedBody": "Bifrost가 이 작업의 가격을 정하지 못해 비용을 알 수 없고 작업 자체는 과금되지 않았어요. 시작 호출의 과금은 그대로예요.",
+			"unpricedTitle": "가격 없는 작업",
 			"loadingDetails": "릴레이 로그 상세 정보를 불러오는 중",
 			"notFound": "릴레이 로그를 찾을 수 없어요",
 			"loadFailed": "이 릴레이 로그를 불러올 수 없어요.",
@@ -906,6 +931,12 @@
 			"tokensNotPricedValue": "입력 {{input}} / 출력 {{output}}",
 			"matchedRoute": "일치한 라우트",
 			"parentLog": "상위 로그",
+			"jobPolls": "상태 확인 시도 횟수",
+			"jobLastStatus": "마지막 작업 상태",
+			"jobLastHttpStatus": "마지막 폴링 HTTP 상태",
+			"jobSettledAt": "정산 시각",
+			"jobSettledBy": "정산한 상태 확인",
+			"jobLastError": "가격 없이 끝난 이유",
 			"responseBodyPreview": "응답 본문 (미리보기)",
 			"filterByValue": "이 값의 릴레이 호출 보기",
 			"queryParameters": "쿼리 매개변수",
@@ -915,6 +946,7 @@
 			"contentHidden": "이 요청은 콘텐츠 로깅이 비활성화되어 있어요."
 		},
 		"filters": {
+			"unpriced": "가격 없는 작업",
 			"reset": "초기화",
 			"searchRelays": "릴레이 검색",
 			"searchMethods": "메서드 검색",

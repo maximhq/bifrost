@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -36,7 +37,10 @@ type endpoint struct {
 	bodyOverrides      []bodyOverride            // endpoint-level forced body fields, for a request matching no route
 	awsKey             *schemas.BedrockKeyConfig // aws_sigv4 credential in the shape the signer reads
 	awsRegion          string
-	streamIdle         int // seconds
+	streamIdle         int   // seconds
+	hasJobs            bool  // a route starts an async job, so replies are checked for status checks
+	jobOrder           []int // the job routes, most specific poll template first, ranked once here
+	hasDisabled        bool  // a route is disabled, so a rewrite (even adding or removing a header) can reach it
 }
 
 // newEndpoint validates cfg and compiles it. proxy is the effective proxy (the endpoint's own, or
@@ -76,6 +80,19 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 	if cfg.Network != nil && cfg.Network.StreamIdleTimeoutInSeconds > 0 {
 		e.streamIdle = cfg.Network.StreamIdleTimeoutInSeconds
 	}
+	for i := range e.routes {
+		if e.routes[i].job != nil {
+			e.hasJobs = true
+			e.jobOrder = append(e.jobOrder, i)
+		}
+		if e.routes[i].disabled {
+			e.hasDisabled = true
+		}
+	}
+	// Ranked once when the relay is built, so a status check only walks the order.
+	slices.SortStableFunc(e.jobOrder, func(a, b int) int {
+		return pollFixedText(e.routes[b].job.Poll) - pollFixedText(e.routes[a].job.Poll)
+	})
 	if cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && cfg.Credential != nil && cfg.Credential.AWS != nil {
 		e.awsKey = bedrockKeyConfig(cfg.Credential.AWS)
 		e.awsRegion = cfg.Credential.AWS.Region.GetValue()
@@ -92,6 +109,11 @@ type plan struct {
 	billing bool
 	stream  streamMode
 	body    []bodyOverride // the request body fields forced on this call
+	// statusJobID is the job a caller's status check names, "" for any other call. Such a call is
+	// relayed free on any route but a disabled one, since the job is charged once, when it settles.
+	statusJobID   string
+	statusMatches []schemas.RelayJobMatch // the started jobs' routes whose templates the status check matched
+	statusKey     string                  // the candidate set the job lookup ran on
 }
 
 // readsReplyBody reports whether a billable call reads something from its reply's body: a priced

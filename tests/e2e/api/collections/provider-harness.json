@@ -299831,7 +299831,7 @@
         },
         {
           "name": "Async jobs: a Textract-shaped job is charged once when it finishes, never per status check",
-          "description": "harness-relay-jobs mirrors AWS Textract on the local fixture: POST /v1/textract with X-Amz-Target Textract.StartDocumentAnalysis charges a $0.01 fee and starts a job (job.id_path JobId); a route for Textract.Get* is billable: false, so the caller's own status checks are free. The sweeper polls GetDocumentAnalysis every 2s (it ticks every 10s) until JobStatus is terminal, then writes one job row to Relay Logs priced at DocumentMetadata.Pages x $0.05 and charges it to the start call's budgets. The fixture's Scenario field picks the outcome: ok (3 pages), failed (no charge), throttle (one 400 ThrottlingException, then 2 pages). A run-scoped key with a $10 daily budget proves the charge reaches governance. /v1/rest/jobs returns a job id that climbs out of the poll path, which must not be polled.",
+          "description": "harness-relay-jobs mirrors AWS Textract on the local fixture: POST /v1/textract with X-Amz-Target Textract.StartDocumentAnalysis charges a $0.01 fee and starts a job (job.id_path JobId); no route takes Textract.Get*: the gateway recognizes the caller's own status check from the job's poll template and relays it free. The sweeper polls GetDocumentAnalysis every 2s (it ticks every 10s) until JobStatus is terminal, then writes one job row to Relay Logs priced at DocumentMetadata.Pages x $0.05 and charges it to the start call's budgets. The fixture's Scenario field picks the outcome: ok (3 pages), failed (no charge), throttle (one 400 ThrottlingException, then 2 pages). A run-scoped key with a $10 daily budget proves the charge reaches governance. /v1/rest/jobs returns a job id that climbs out of the poll path, which must not be polled.",
           "item": [
             {
               "name": "setup: create a run-scoped virtual key with a $10 daily budget, granted harness-relay-jobs - relays-e2e",
@@ -299846,6 +299846,7 @@
                       "var vkValue = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
                       "pm.test('jobs key: has an id and a value', function () { pm.expect(vk.id, 'key id').to.be.a('string').and.not.empty; pm.expect(typeof vkValue, 'key value type').to.eql('string'); pm.expect(vkValue.length, 'key value length').to.be.above(0); });",
                       "pm.collectionVariables.set('relayJobsVkId', vk.id);",
+                      "pm.collectionVariables.set('relayJobsVkName', vk.name);",
                       "pm.collectionVariables.set('relayJobsVkValue', vkValue);"
                     ]
                   }
@@ -300040,7 +300041,7 @@
                       "    var dump = JSON.stringify(row);",
                       "    pm.expect(row.billable, dump).to.eql(false);",
                       "    pm.expect(near(row.cost || 0, 0), dump).to.be.true;",
-                      "    pm.expect(row.route_path, dump).to.eql('/v1/textract');",
+                      "    pm.expect(row.route_path || '', 'no route of its own: the gateway recognized the status check. ' + dump).to.eql('');",
                       "  });",
                       "});"
                     ]
@@ -300125,6 +300126,11 @@
                       "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
                       "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.eql(pm.collectionVariables.get('relayJobOkStartLogId'));",
                       "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "    pm.expect(row.job_debug && row.job_debug.polls >= 1, 'the row records the status checks sent: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_debug.last_status, dump).to.eql(\"SUCCEEDED\");",
+                      "    pm.expect(row.job_debug.last_http_status, dump).to.eql(200);",
+                      "    pm.expect(row.job_debug.settled_at, dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_name, 'the start call\\'s names are copied: ' + dump).to.eql(pm.collectionVariables.get('relayJobsVkName'));",
                       "  });",
                       "});"
                     ]
@@ -300340,6 +300346,11 @@
                       "    pm.expect(near(row.units, 3), 'units should be 3: ' + dump).to.be.true;",
                       "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.eql(pm.collectionVariables.get('relayJobRetryStartLogId'));",
                       "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "    pm.expect(row.job_debug && row.job_debug.polls >= 1, 'the row records the status checks sent: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_debug.last_status, dump).to.eql(\"SUCCEEDED\");",
+                      "    pm.expect(row.job_debug.last_http_status, dump).to.eql(200);",
+                      "    pm.expect(row.job_debug.settled_at, dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_name, 'the start call\\'s names are copied: ' + dump).to.eql(pm.collectionVariables.get('relayJobsVkName'));",
                       "  });",
                       "});"
                     ]
@@ -300578,6 +300589,12 @@
                       "    pm.expect(row.units == null, 'units: ' + dump).to.be.true;",
                       "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.eql(pm.collectionVariables.get('relayJobFailedStartLogId'));",
                       "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "    pm.expect(row.job_debug && row.job_debug.polls >= 1, 'the row records the status checks sent: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_debug.last_status, dump).to.eql(\"FAILED\");",
+                      "    pm.expect(row.job_debug.outcome, 'a failed job is a $0 settlement, not unpriced: ' + dump).to.eql(\"failed\");",
+                      "    pm.expect(row.job_debug.last_http_status, dump).to.eql(200);",
+                      "    pm.expect(row.job_debug.settled_at, dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_name, 'the start call\\'s names are copied: ' + dump).to.eql(pm.collectionVariables.get('relayJobsVkName'));",
                       "  });",
                       "});"
                     ]
@@ -300600,6 +300617,229 @@
                   "path": [
                     "health"
                   ]
+                }
+              }
+            },
+            {
+              "name": "a job a caller finds finished is started like any other - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-4');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                      "var ID = pm.variables.get('relayReqId');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "// The Relay Logs row carries the caller's x-request-id as request_id and is written by the batching writer, so poll.",
+                      "function relayLog(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?request_id=' + encodeURIComponent(ID) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for request ' + ID + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    var calls = logs.filter(function (l) { return l.kind !== 'job'; });",
+                      "    if (calls.length > 1) { return pm.test('one call row for request ' + ID, function () { pm.expect.fail(calls.length + ' call rows: ' + res.text()); }); }",
+                      "    if (calls.length) { return check(calls[0]); }",
+                      "    if (attempt < 20) { setTimeout(function () { relayLog(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('Relay Logs row for request ' + ID + ' was written', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                      "  });",
+                      "}",
+                      "// How many requests carrying this case's tag reached the local upstream fixture.",
+                      "function upstreamHits(cb) {",
+                      "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                      "    var ok = !err && res && res.code === 200;",
+                      "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                      "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                      "    });",
+                      "    cb(ok ? res.json().hits : -1);",
+                      "  });",
+                      "}",
+                      "// The body the upstream fixture echoed, parsed; {} when it was empty or not JSON.",
+                      "function sentBody() { var echo = pm.response.json(); try { return echo.body ? JSON.parse(echo.body) : {}; } catch (e) { return {}; } }",
+                      "pm.test('start instant: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });",
+                      "var jobId = pm.response.json().JobId;",
+                      "pm.test('start instant: the upstream answered with a job id', function () { pm.expect(jobId, pm.response.text()).to.be.a('string').and.not.empty; });",
+                      "pm.collectionVariables.set('relayJobInstant', jobId);",
+                      "relayLog(function (row) {",
+                      "  pm.collectionVariables.set('relayJobInstantStartLogId', row.id);",
+                      "  pm.test('start instant: the start call is one billed call carrying the route fee and the job id', function () {",
+                      "    var dump = JSON.stringify(row);",
+                      "    pm.expect(row.kind, dump).to.eql('call');",
+                      "    pm.expect(row.billable, dump).to.eql(true);",
+                      "    pm.expect(near(row.cost, 0.01), 'cost should be 0.01: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_id, dump).to.eql(jobId);",
+                      "    pm.expect(row.job_status, dump).to.eql('started');",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "{{relayJobsVkValue}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/x-amz-json-1.1"
+                  },
+                  {
+                    "key": "X-Amz-Target",
+                    "value": "Textract.StartDocumentAnalysis"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-jobs/v1/textract?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-jobs",
+                    "v1",
+                    "textract"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"DocumentLocation\": {\"S3Object\": {\"Bucket\": \"docs\", \"Name\": \"invoice.pdf\"}}, \"Scenario\": \"instant\"}"
+                }
+              }
+            },
+            {
+              "name": "a caller's status check that finds the job finished settles it at once, as a video retrieve does - relays-e2e",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                      "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-2');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var BASE = pm.variables.get('baseUrl');",
+                      "function near(a, b) { return typeof a === 'number' && Math.abs(a - b) < 1e-9; }",
+                      "pm.test('instant status check: HTTP 200 reporting the job finished', function () {",
+                      "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200);",
+                      "  pm.expect(pm.response.json().JobStatus, pm.response.text()).to.eql('SUCCEEDED');",
+                      "});",
+                      "var jobId = pm.collectionVariables.get('relayJobInstant');",
+                      "// The status check settles the job before its reply returns; a few tries cover a slow log store.",
+                      "function jobRows(check, attempt) {",
+                      "  attempt = attempt || 0;",
+                      "  pm.sendRequest({ url: BASE + '/api/relay-logs?kinds=job&job_id=' + encodeURIComponent(jobId) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "    if (err || res.code !== 200) { return pm.test('Relay Logs lookup for job ' + jobId + ' answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "    var logs = res.json().logs || [];",
+                      "    if (logs.length) { return check(logs); }",
+                      "    if (attempt < 10) { setTimeout(function () { jobRows(check, attempt + 1); }, 500); return; }",
+                      "    pm.test('the status check settled job ' + jobId + ' at once', function () { pm.expect.fail('no job row within 5s'); });",
+                      "  });",
+                      "}",
+                      "jobRows(function (rows) {",
+                      "  pm.test('the caller was told 1 page, yet the job is priced from Bifrost\\'s own poll at 4 pages', function () { pm.expect(pm.response.json().DocumentMetadata.Pages, pm.response.text()).to.eql(1); });",
+                      "  pm.test('one job row at 4 pages x $0.05, linked to its start call', function () {",
+                      "    var dump = JSON.stringify(rows);",
+                      "    pm.expect(rows.length, dump).to.eql(1);",
+                      "    var row = rows[0];",
+                      "    pm.expect(row.job_status, dump).to.eql('SUCCEEDED');",
+                      "    pm.expect(near(row.cost, 0.2), 'cost should be 0.2: ' + dump).to.be.true;",
+                      "    pm.expect(row.parent_log_id, dump).to.eql(pm.collectionVariables.get('relayJobInstantStartLogId'));",
+                      "  });",
+                      "  // The caller's check triggers Bifrost's own poll at once, well before the job's 2s interval and the 10s tick.",
+                      "  var settledBy = rows[0].job_debug && rows[0].job_debug.settled_by_request_id;",
+                      "  pm.test('the caller\\'s status check settled the job, not Bifrost\\'s own schedule', function () { pm.expect(settledBy, 'settled_by_request_id is empty, so the caller path settled nothing: ' + JSON.stringify(rows)).to.be.a('string').and.not.empty; });",
+                      "  if (!settledBy) { return; }",
+                      "  // The settling request is this status check's own row, not the start call's.",
+                      "  (function callRow(attempt) {",
+                      "    pm.sendRequest({ url: BASE + '/api/relay-logs?kinds=call&request_id=' + encodeURIComponent(pm.variables.get('relayReqId')) + '&limit=5', method: 'GET' }, function (err, res) {",
+                      "      if (err || res.code !== 200) { return pm.test('Relay Logs lookup for the status check answers 200', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); }); }",
+                      "      var calls = res.json().logs || [];",
+                      "      if (!calls.length && attempt < 10) { return setTimeout(function () { callRow(attempt + 1); }, 500); }",
+                      "      pm.test('settled by this status check\\'s own Relay Logs row', function () {",
+                      "        pm.expect(calls.length, res.text()).to.eql(1);",
+                      "        pm.expect(settledBy, res.text()).to.eql(calls[0].id);",
+                      "        pm.expect(calls[0].billable, 'the terminal status check is not billable: ' + res.text()).to.eql(false);",
+                      "        pm.expect(calls[0].cost || 0, 'and carries no charge: ' + res.text()).to.eql(0);",
+                      "      });",
+                      "    });",
+                      "  })(0);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "x-request-id",
+                    "value": "{{relayReqId}}"
+                  },
+                  {
+                    "key": "x-bf-vk",
+                    "value": "{{relayJobsVkValue}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/x-amz-json-1.1"
+                  },
+                  {
+                    "key": "X-Amz-Target",
+                    "value": "Textract.GetDocumentAnalysis"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/relay/harness-relay-jobs/v1/textract?tag={{relayReqId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "relay",
+                    "harness-relay-jobs",
+                    "v1",
+                    "textract"
+                  ],
+                  "query": [
+                    {
+                      "key": "tag",
+                      "value": "{{relayReqId}}"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"JobId\": \"{{relayJobInstant}}\"}"
                 }
               }
             },
@@ -300747,6 +300987,12 @@
                       "    pm.expect(row.units == null, 'units: ' + dump).to.be.true;",
                       "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.eql(pm.collectionVariables.get('relayJobNoUsageStartLogId'));",
                       "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "    pm.expect(row.job_debug && row.job_debug.polls >= 1, 'the row records the status checks sent: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_debug.last_status, dump).to.eql(\"SUCCEEDED\");",
+                      "    pm.expect(row.job_debug.outcome, 'the upstream said SUCCEEDED but the reply had no usage, so the job is unpriced: ' + dump).to.eql(\"unpriced\");",
+                      "    pm.expect(row.job_debug.last_http_status, dump).to.eql(200);",
+                      "    pm.expect(row.job_debug.settled_at, dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_name, 'the start call\\'s names are copied: ' + dump).to.eql(pm.collectionVariables.get('relayJobsVkName'));",
                       "  });",
                       "});"
                     ]
@@ -300916,6 +301162,11 @@
                       "    pm.expect(near(row.units, 2), 'units should be 2: ' + dump).to.be.true;",
                       "    pm.expect(row.parent_log_id, 'the row points at its start call: ' + dump).to.eql(pm.collectionVariables.get('relayJobThrottleStartLogId'));",
                       "    pm.expect(row.virtual_key_id, dump).to.eql(pm.collectionVariables.get('relayJobsVkId'));",
+                      "    pm.expect(row.job_debug && row.job_debug.polls >= 2, 'the throttled poll and the one that settled are both counted: ' + dump).to.be.true;",
+                      "    pm.expect(row.job_debug.last_status, dump).to.eql(\"SUCCEEDED\");",
+                      "    pm.expect(row.job_debug.last_http_status, dump).to.eql(200);",
+                      "    pm.expect(row.job_debug.settled_at, dump).to.be.a('string').and.not.empty;",
+                      "    pm.expect(row.virtual_key_name, 'the start call\\'s names are copied: ' + dump).to.eql(pm.collectionVariables.get('relayJobsVkName'));",
                       "  });",
                       "});"
                     ]

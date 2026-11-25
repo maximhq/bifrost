@@ -797,6 +797,7 @@
 			"toastExported_other": "Exported {{count}} logs",
 			"toastFailed": "Export failed: {{error}}",
 			"summary": {
+				"jobId": "Job ID: {{value}}",
 				"search": "search \"{{value}}\"",
 				"request": "request \"{{value}}\"",
 				"providers": "providers ({{total}})",
@@ -823,6 +824,20 @@
 		"batchMixedModel": "mixed"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "The settlement row was deleted before it was charged",
+			"relay_job_no_usage": "The final reply had no usage to price",
+			"relay_job_rejected": "The upstream refused the job id",
+			"relay_job_access_denied": "The upstream denied access to the job",
+			"relay_job_gone": "The upstream no longer knows the job",
+			"relay_job_timeout": "Did not finish before its timeout",
+			"relay_job_params": "Job settings could not be read"
+		},
+		"jobOutcome": {
+			"unpriced": "Unpriced",
+			"failed": "Failed",
+			"succeeded": "Succeeded"
+		},
 		"fields": {
 			"relay": "Relay",
 			"kind": "Kind",
@@ -841,6 +856,9 @@
 			"no": "No"
 		},
 		"columns": {
+			"startsJob": "Starts job {{id}}",
+			"jobUnpriced": "Unpriced: {{reason}}",
+			"jobFailed": "Failed: {{status}}",
 			"jobBadge": "JOB",
 			"noRoute": "No route",
 			"route": "Route {{route}}",
@@ -881,6 +899,13 @@
 			"perRequest": "{{value}}/req"
 		},
 		"detail": {
+			"jobStatusStat": "Job status",
+			"jobNotSettled": "Not settled yet",
+			"jobSettlementFailed": "Could not check the settlement.",
+			"jobSettlement": "Job settlement",
+			"costUnpriced": "unpriced",
+			"unpricedBody": "Bifrost could not price this job, so its cost is unknown and the job itself was not charged. The start call kept its own charge.",
+			"unpricedTitle": "Unpriced job",
 			"loadingDetails": "Loading relay log details",
 			"notFound": "Relay log not found",
 			"loadFailed": "This relay log could not be loaded.",
@@ -911,6 +936,12 @@
 			"tokensNotPricedValue": "{{input}} in / {{output}} out",
 			"matchedRoute": "Matched route",
 			"parentLog": "Parent log",
+			"jobPolls": "Status check attempts",
+			"jobLastStatus": "Last job status",
+			"jobLastHttpStatus": "Last poll HTTP status",
+			"jobSettledAt": "Settled at",
+			"jobSettledBy": "Settled by status check",
+			"jobLastError": "Why it ended unpriced",
 			"responseBodyPreview": "Response Body (Preview)",
 			"filterByValue": "Show relay calls with this value",
 			"queryParameters": "Query Parameters",
@@ -920,6 +951,7 @@
 			"contentHidden": "Content logging has been disabled for this request."
 		},
 		"filters": {
+			"unpriced": "Unpriced jobs",
 			"reset": "Reset",
 			"searchRelays": "Search relays",
 			"searchMethods": "Search methods",

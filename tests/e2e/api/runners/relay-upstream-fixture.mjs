@@ -28,7 +28,8 @@ import http from "node:http";
 //                        repeated token returns the same id. Textract.GetDocumentAnalysis {JobId}
 //                        walks the scenario: ok (IN_PROGRESS twice, then SUCCEEDED with 3 pages), failed,
 //                        throttle (one 400 ThrottlingException, then SUCCEEDED with 2 pages),
-//                        nousage (SUCCEEDED with no page count)
+//                        nousage (SUCCEEDED with no page count), instant (SUCCEEDED on a caller's ?tag= check with
+//                        1 page; Bifrost's own polls see IN_PROGRESS until then and 4 pages after)
 //   POST /v1/rest/jobs   {"id": "<id>"} -> echoes that id as the job id, to try ids a relay must refuse
 //   GET  /__relay/jobs?id=<id>  {"id", "polls", "scenario", "data": []}
 //   GET  /__relay/escaped       {"hits": <n>}: requests whose raw path left /v1/rest/jobs/
@@ -45,13 +46,22 @@ let jobSeq = 0;
 let escaped = 0;
 
 // One poll of a Textract-shaped job, advancing its scenario.
-const pollJob = (job) => {
+const pollJob = (job, tagged) => {
 	job.polls++;
 	switch (job.scenario) {
 		case "failed":
 			return [200, { JobStatus: "FAILED", StatusMessage: "unsupported document" }];
 		case "nousage":
 			return [200, { JobStatus: "SUCCEEDED" }];
+		case "instant":
+			// A caller's tagged check is told 1 page and Bifrost's own poll 4, so the charge shows whose reply priced it.
+			// Bifrost's polls see it running until the caller has checked, so the sweeper never settles it first.
+			if (tagged) {
+				job.callerChecked = true;
+				return [200, { JobStatus: "SUCCEEDED", DocumentMetadata: { Pages: 1 } }];
+			}
+			if (!job.callerChecked) return [200, { JobStatus: "IN_PROGRESS" }];
+			return [200, { JobStatus: "SUCCEEDED", DocumentMetadata: { Pages: 4 } }];
 		case "throttle":
 			if (job.polls === 1) return [400, { __type: "ThrottlingException", message: "Rate exceeded" }];
 			return [200, { JobStatus: "SUCCEEDED", DocumentMetadata: { Pages: 2 } }];
@@ -137,7 +147,7 @@ const server = http.createServer(async (req, res) => {
 				send(res, 400, { __type: "InvalidJobIdException", message: "unknown job" });
 				return;
 			}
-			const [status, reply] = pollJob(job);
+			const [status, reply] = pollJob(job, Boolean(url.searchParams.get("tag")));
 			send(res, status, { ...reply, data: [] });
 			return;
 		}

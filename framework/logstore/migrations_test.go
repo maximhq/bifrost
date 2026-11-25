@@ -1645,3 +1645,20 @@ func TestMigrationTuneRetentionAutovacuum_SQLite(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, migrationTuneRetentionAutovacuum(context.Background(), db, testLogger{}))
 }
+
+// A job status past 64 characters fits once the column is text, and the migration runs once.
+func TestMigrationWidenRelayLogJobStatus_Postgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("postgres not available")
+	}
+	db.Exec("DROP TABLE IF EXISTS relay_logs CASCADE")
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS relay_logs CASCADE") })
+	require.NoError(t, db.Exec(`CREATE TABLE relay_logs (id VARCHAR(255) PRIMARY KEY, job_status VARCHAR(64))`).Error)
+	db.Exec(`DELETE FROM migrations WHERE id = 'relay_logs_widen_job_status'`)
+	long := strings.Repeat("s", 200)
+	insert := `INSERT INTO relay_logs (id, job_status) VALUES ('a', ?)`
+	require.Error(t, db.Exec(insert, long).Error, "varchar(64) refuses it before the migration")
+	require.NoError(t, migrationWidenRelayLogJobStatus(context.Background(), db, testLogger{}))
+	require.NoError(t, db.Exec(insert, long).Error)
+}

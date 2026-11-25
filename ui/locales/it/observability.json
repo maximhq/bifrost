@@ -797,6 +797,7 @@
 			"toastExported_other": "Esportati {{count}} log",
 			"toastFailed": "Esportazione non riuscita: {{error}}",
 			"summary": {
+				"jobId": "ID job: {{value}}",
 				"search": "ricerca «{{value}}»",
 				"request": "richiesta «{{value}}»",
 				"providers": "provider ({{total}})",
@@ -823,6 +824,20 @@
 		"batchMixedModel": "misto"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "La riga di regolazione è stata eliminata prima dell'addebito",
+			"relay_job_no_usage": "La risposta finale non conteneva un utilizzo da prezzare",
+			"relay_job_rejected": "L'upstream ha rifiutato l'ID del job",
+			"relay_job_access_denied": "L'upstream ha negato l'accesso al job",
+			"relay_job_gone": "L'upstream non conosce più il job",
+			"relay_job_timeout": "Non terminato entro il timeout",
+			"relay_job_params": "Impostazioni del job non leggibili"
+		},
+		"jobOutcome": {
+			"unpriced": "Senza prezzo",
+			"failed": "Non riuscito",
+			"succeeded": "Riuscito"
+		},
 		"fields": {
 			"relay": "Relay",
 			"kind": "Tipo",
@@ -841,6 +856,9 @@
 			"no": "No"
 		},
 		"columns": {
+			"startsJob": "Avvia il job {{id}}",
+			"jobUnpriced": "Senza prezzo: {{reason}}",
+			"jobFailed": "Non riuscito: {{status}}",
 			"jobBadge": "JOB",
 			"noRoute": "Nessuna route",
 			"route": "Route {{route}}",
@@ -881,6 +899,13 @@
 			"perRequest": "{{value}}/req"
 		},
 		"detail": {
+			"jobStatusStat": "Stato del job",
+			"jobNotSettled": "Non ancora regolato",
+			"jobSettlementFailed": "Impossibile verificare il regolamento.",
+			"jobSettlement": "Regolazione del job",
+			"costUnpriced": "senza prezzo",
+			"unpricedBody": "Bifrost non ha potuto prezzare questo job, quindi il suo costo è sconosciuto e il job non è stato addebitato. La chiamata di avvio ha mantenuto il proprio addebito.",
+			"unpricedTitle": "Job senza prezzo",
 			"loadingDetails": "Caricamento dei dettagli del log del relay",
 			"notFound": "Log del relay non trovato",
 			"loadFailed": "Impossibile caricare questo log del relay.",
@@ -911,6 +936,12 @@
 			"tokensNotPricedValue": "{{input}} in ingresso / {{output}} in uscita",
 			"matchedRoute": "Route corrispondente",
 			"parentLog": "Log padre",
+			"jobPolls": "Tentativi di controllo dello stato",
+			"jobLastStatus": "Ultimo stato del job",
+			"jobLastHttpStatus": "Stato HTTP dell'ultimo polling",
+			"jobSettledAt": "Regolato il",
+			"jobSettledBy": "Regolato dal controllo di stato",
+			"jobLastError": "Perché è terminato senza prezzo",
 			"responseBodyPreview": "Corpo della risposta (anteprima)",
 			"filterByValue": "Mostra le chiamate relay con questo valore",
 			"queryParameters": "Parametri di query",
@@ -920,6 +951,7 @@
 			"contentHidden": "Il logging dei contenuti è stato disabilitato per questa richiesta."
 		},
 		"filters": {
+			"unpriced": "Job senza prezzo",
 			"reset": "Reimposta",
 			"searchRelays": "Cerca relay",
 			"searchMethods": "Cerca metodi",

@@ -222,7 +222,8 @@ type Settler interface {
 }
 
 // PollScheduler is an optional Settler hook for a kind that sets its own poll schedule. Its jobs get
-// no jitter and no MaxPollAttempts cap, so the kind must end them itself.
+// no jitter and no MaxPollAttempts cap, so the kind must end them itself, and it counts the polls it
+// sends itself, so a reschedule does not add one.
 type PollScheduler interface {
 	NextPollAt(job *cstables.TableProviderJob, now time.Time) time.Time
 }

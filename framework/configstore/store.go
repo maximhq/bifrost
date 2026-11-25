@@ -1138,6 +1138,9 @@ type ConfigStore interface {
 	GetProviderJobsByIDs(ctx context.Context, jobIDs []string) ([]*tables.TableProviderJob, error)
 	ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error)
 	ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
+	// IncrementProviderJobPollAttempts counts one sent poll on a job, touching nothing else. It is on the
+	// interface so a store that wraps this one (the enterprise store embeds it) passes it through.
+	IncrementProviderJobPollAttempts(ctx context.Context, jobID string) error
 	MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
 	MarkProviderJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
 	CompleteProviderJob(ctx context.Context, jobID, runnerID string) error

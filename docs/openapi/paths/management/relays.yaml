@@ -113,6 +113,12 @@ _relay-log-filters:
     description: Exact upstream job ID.
     schema:
       type: string
+  unpriced:
+    name: unpriced
+    in: query
+    description: '`true` returns only job rows that ended without a price (a blank cost).'
+    schema:
+      type: boolean
   session_id:
     name: session_id
     in: query
@@ -670,6 +676,7 @@ relay-logs:
       - $ref: '#/_relay-log-filters/max_cost'
       - $ref: '#/_relay-log-filters/request_id'
       - $ref: '#/_relay-log-filters/job_id'
+      - $ref: '#/_relay-log-filters/unpriced'
       - $ref: '#/_relay-log-filters/session_id'
       - $ref: '#/_relay-log-filters/min_latency'
       - $ref: '#/_relay-log-filters/max_latency'

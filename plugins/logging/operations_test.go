@@ -6778,6 +6778,21 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	require.Len(t, store.jobs, 2, "a lookup error records nothing rather than risk a duplicate row")
 }
 
+// Past the last generation slot each start gets its own row, even when callers share an x-request-id.
+func TestRelayJobRowPastTheLastGenerationIsKeyedByItsCall(t *testing.T) {
+	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.batchStore = store
+	for gen := 1; gen <= jobaccounting.MaxRelayJobGenerations; gen++ {
+		id, scoped := jobaccounting.RelayJobRowID("textract", "", "j-1", gen)
+		store.jobs[id] = &cstables.TableProviderJob{ID: id, JobID: scoped, AccountingStatus: cstables.ProviderJobAccountingStatusAccounted}
+	}
+	reusing := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{}}`, ReusedIDIsNewJob: true}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "row-a", RequestID: "shared", RelayName: "textract"}, "", reusing)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "row-b", RequestID: "shared", RelayName: "textract"}, "", reusing)
+	require.Len(t, store.jobs, jobaccounting.MaxRelayJobGenerations+2)
+}
+
 func clientIPTestContext(requestID string) *schemas.BifrostContext {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
@@ -7400,4 +7415,32 @@ func BenchmarkSpeechSessionContextLookup(b *testing.B) {
 			}
 		})
 	}
+}
+
+// Status-check settles are bounded: one per job, and maxRelaySettles at once; the rest wait for the sweeper.
+func TestAdmitRelaySettleIsBounded(t *testing.T) {
+	p := &LoggerPlugin{}
+	release, ok := p.admitRelaySettle("relay\x00j1")
+	require.True(t, ok)
+	_, again := p.admitRelaySettle("relay\x00j1")
+	require.False(t, again, "a second check of the same job is left to the first")
+	release()
+	release, ok = p.admitRelaySettle("relay\x00j1")
+	require.True(t, ok, "admitted again once the first finished")
+	release()
+
+	var releases []func()
+	for i := range maxRelaySettles {
+		r, ok := p.admitRelaySettle(fmt.Sprintf("relay\x00job-%d", i))
+		require.True(t, ok)
+		releases = append(releases, r)
+	}
+	_, full := p.admitRelaySettle("relay\x00one-more")
+	require.False(t, full, "past the cap the check is left to the sweeper")
+	for _, r := range releases {
+		r()
+	}
+	r, ok := p.admitRelaySettle("relay\x00one-more")
+	require.True(t, ok)
+	r()
 }

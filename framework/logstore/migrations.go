@@ -358,6 +358,8 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_model_routing_suggestion_tables"}, run: migrationAddComplexitySuggestionTables},
 	{IDs: []string{"logs_add_model_routing_columns"}, run: migrationAddModelRoutingColumns},
 	{IDs: []string{"logs_tune_retention_autovacuum"}, run: migrationTuneRetentionAutovacuum},
+	{IDs: []string{"relay_logs_add_job_debug"}, run: migrationAddRelayLogJobDebug},
+	{IDs: []string{"relay_logs_widen_job_status"}, run: migrationWidenRelayLogJobStatus},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -6225,6 +6227,53 @@ func migrationAddRelayLogSessionID(ctx context.Context, db *gorm.DB, logger sche
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("relay_logs_add_session_id is non-rollbackable: dropping the column would lose the session identity recorded on existing rows")
+		},
+	}})
+	return m.Migrate()
+}
+
+// migrationAddRelayLogJobDebug adds job_debug, how a job row's job was polled. A nullable text
+// column with no index or backfill, so it is a metadata-only change on both dialects.
+func migrationAddRelayLogJobDebug(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "relay_logs_add_job_debug",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &RelayLog{}, "JobDebug")
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("relay_logs_add_job_debug is non-rollbackable: dropping the column would lose recorded job polling details")
+		},
+	}})
+	return m.Migrate()
+}
+
+// migrationWidenRelayLogJobStatus widens relay_logs.job_status to text: a job's status is any string
+// the upstream reports, and one past 64 characters failed the job row's insert, so the job was polled
+// again forever. varchar to text needs no table rewrite on Postgres; SQLite does not enforce the
+// length, so it has nothing to change.
+func migrationWidenRelayLogJobStatus(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "relay_logs_widen_job_status",
+		Migrate: func(tx *gorm.DB) error {
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return tx.Exec("ALTER TABLE relay_logs ALTER COLUMN job_status TYPE TEXT").Error
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("relay_logs_widen_job_status is non-rollbackable: narrowing the column would cut stored job statuses")
 		},
 	}})
 	return m.Migrate()

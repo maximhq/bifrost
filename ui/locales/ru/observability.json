@@ -841,6 +841,7 @@
 			"toastExported_other": "Экспортировано {{count}} журналов",
 			"toastFailed": "Не удалось экспортировать: {{error}}",
 			"summary": {
+				"jobId": "ID задания: {{value}}",
 				"search": "поиск «{{value}}»",
 				"request": "запрос «{{value}}»",
 				"providers": "провайдеры ({{total}})",
@@ -871,6 +872,20 @@
 		"batchMixedModel": "смешанные"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "Строка расчёта удалена до списания",
+			"relay_job_no_usage": "В последнем ответе нет данных об использовании",
+			"relay_job_rejected": "Upstream отклонил идентификатор задания",
+			"relay_job_access_denied": "Upstream отказал в доступе к заданию",
+			"relay_job_gone": "Upstream больше не знает это задание",
+			"relay_job_timeout": "Не завершилось до тайм-аута",
+			"relay_job_params": "Не удалось прочитать настройки задания"
+		},
+		"jobOutcome": {
+			"unpriced": "Без цены",
+			"failed": "Ошибка",
+			"succeeded": "Успешно"
+		},
 		"fields": {
 			"relay": "Ретранслятор",
 			"kind": "Тип",
@@ -889,6 +904,9 @@
 			"no": "Нет"
 		},
 		"columns": {
+			"startsJob": "Запускает задание {{id}}",
+			"jobUnpriced": "Без цены: {{reason}}",
+			"jobFailed": "Ошибка: {{status}}",
 			"jobBadge": "ЗАДАНИЕ",
 			"noRoute": "Нет маршрута",
 			"route": "Маршрут {{route}}",
@@ -931,6 +949,13 @@
 			"perRequest": "{{value}}/запрос"
 		},
 		"detail": {
+			"jobStatusStat": "Статус задания",
+			"jobNotSettled": "Ещё не рассчитано",
+			"jobSettlementFailed": "Не удалось проверить расчёт.",
+			"jobSettlement": "Расчёт задания",
+			"costUnpriced": "без цены",
+			"unpricedBody": "Bifrost не смог определить цену задания, поэтому его стоимость неизвестна и само задание не списано. Стартовый вызов сохранил своё списание.",
+			"unpricedTitle": "Задание без цены",
 			"loadingDetails": "Загрузка сведений о журнале ретранслятора",
 			"notFound": "Журнал ретранслятора не найден",
 			"loadFailed": "Не удалось загрузить этот журнал ретранслятора.",
@@ -961,6 +986,12 @@
 			"tokensNotPricedValue": "{{input}} вход / {{output}} выход",
 			"matchedRoute": "Совпавший маршрут",
 			"parentLog": "Родительский журнал",
+			"jobPolls": "Попытки проверки статуса",
+			"jobLastStatus": "Последний статус задания",
+			"jobLastHttpStatus": "HTTP-статус последнего опроса",
+			"jobSettledAt": "Время расчёта",
+			"jobSettledBy": "Рассчитано проверкой статуса",
+			"jobLastError": "Почему завершено без цены",
 			"responseBodyPreview": "Тело ответа (предпросмотр)",
 			"filterByValue": "Показать вызовы ретрансляторов с этим значением",
 			"queryParameters": "Параметры запроса",
@@ -970,6 +1001,7 @@
 			"contentHidden": "Для этого запроса журналирование содержимого отключено."
 		},
 		"filters": {
+			"unpriced": "Задания без цены",
 			"reset": "Сбросить",
 			"searchRelays": "Поиск ретрансляторов",
 			"searchMethods": "Поиск методов",
