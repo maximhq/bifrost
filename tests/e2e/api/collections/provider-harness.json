@@ -204277,6 +204277,124 @@
       ]
     },
     {
+      "name": "MCP OAuth client registration limit per address (register-limit) [SERIAL]",
+      "description": "Pins the per-address limit on POST /oauth2/register (RFC 7591 dynamic client registration is open by design, and every accepted registration is a stored row). One address may make 60 valid registration attempts per hour; the next is answered 429 temporarily_unavailable with Retry-After and no client_id. Case 1 sends 60 registrations from its pre-request script, each of which must answer 201 or 429 (earlier folders in the same run register from the same address, so some of the allowance may already be spent), then sends one more and expects 429. Case 2 sends a body with no redirect_uris and expects 400: validation runs before the count, so a malformed request is told what is wrong even from an address that is past the limit. This folder uses up the address's allowance for the hour, so it sits after the last folder that registers a client, and a second run against the same server inside that hour gets 429 in those earlier folders; restart the server between runs. Needs mcp_server_auth_mode oauth or both, which the harness profile sets. The case names carry the mcp keyword so PROVIDER=mcp runs keep them, like the other MCP OAuth rows. No provider spend.",
+      "item": [
+        {
+          "name": "[EXPECT-429] mcp oauth2 register past 60 registrations from one address - register limit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var unexpected = [];",
+                  "var sent = 0;",
+                  "function next() {",
+                  "  if (sent >= 60) {",
+                  "    pm.collectionVariables.set('registerLimitUnexpected', unexpected.join('; '));",
+                  "    return;",
+                  "  }",
+                  "  sent++;",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.get('baseUrl') + '/oauth2/register',",
+                  "    method: 'POST',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: '{\"client_name\": \"register-limit harness\", \"redirect_uris\": [\"http://127.0.0.1:1234/cb\"]}' }",
+                  "  }, function (err, res) {",
+                  "    if (err) {",
+                  "      unexpected.push('request ' + sent + ': ' + err);",
+                  "    } else if (res.code !== 201 && res.code !== 429) {",
+                  "      unexpected.push('request ' + sent + ': ' + res.code + ' ' + res.text());",
+                  "    }",
+                  "    next();",
+                  "  });",
+                  "}",
+                  "pm.collectionVariables.unset('registerLimitUnexpected');",
+                  "next();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the 60 registrations before the limit answered 201 or 429 - register limit', function () {",
+                  "  pm.expect(pm.collectionVariables.get('registerLimitUnexpected'), 'failed: ' + pm.collectionVariables.get('registerLimitUnexpected')).to.equal('');",
+                  "});",
+                  "pm.test('registration past the limit exact response status - register limit', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(429);",
+                  "});",
+                  "pm.test('registration past the limit says when to retry and issues no client - register limit', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error, 'failed: ' + pm.response.text()).to.equal('temporarily_unavailable');",
+                  "  pm.expect(body.client_id, 'failed: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(Number(pm.response.headers.get('Retry-After')), 'failed: Retry-After ' + pm.response.headers.get('Retry-After')).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/oauth2/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_name\": \"register-limit harness\", \"redirect_uris\": [\"http://127.0.0.1:1234/cb\"]}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] mcp oauth2 register with no redirect_uris is still told what is wrong past the limit - register limit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('malformed registration past the limit exact response status - register limit', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('malformed registration is refused for its content, not for the limit - register limit', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error, 'failed: ' + pm.response.text()).to.equal('invalid_redirect_uri');",
+                  "  pm.expect(body.error_description, 'failed: ' + pm.response.text()).to.include('redirect_uris');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/oauth2/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_name\": \"register-limit harness\"}"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "Code mode execution budget",
       "description": "Requires the default Starlark code-mode implementation. Exercises local computations only, with no upstream provider requests.",
       "item": [

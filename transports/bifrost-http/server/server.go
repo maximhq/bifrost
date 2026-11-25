@@ -3359,6 +3359,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Going ahead with API handlers
 	oauth2DiscoveryHandler := handlers.NewOAuth2DiscoveryHandler(s.Config)
 	oauth2IssuanceHandler := handlers.NewOAuth2IssuanceHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
+	// This is the handler that serves /oauth2/register, so it carries the registration limit.
+	if err := oauth2IssuanceHandler.LimitRegistrations(s.Config.LiveStore); err != nil {
+		return err
+	}
 	if s.OAuth2Extensions != nil {
 		oauth2DiscoveryHandler.SetExtensions(s.OAuth2Extensions)
 		oauth2IssuanceHandler.SetExtensions(s.OAuth2Extensions)
