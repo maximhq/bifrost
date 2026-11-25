@@ -66,54 +66,47 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	// Get available tools per client
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
-	// A discovered tool may itself be named like a path ("report.py") or carry its
-	// server's name ("codey.add"), so the supplied name is tried before the
-	// server prefix and the ".py" suffix are stripped from it.
-	serverName, toolCandidates := normalizeDocsArgs(serverName, toolName, s.codeModeServers(ctx, availableToolsPerClient))
-
-	// Find matching client
+	// Find matching client. A discovered tool may itself be named like a path ("report.py")
+	// or carry its server's name ("codey.add"), so the supplied name is tried before the
+	// server prefix and the ".py" suffix are stripped from it. The names are parsed against
+	// every server the caller sees, and code mode is checked only for the server they name.
 	var matchedClientName string
 	var matchedTool *schemas.ChatTool
-
-	serverNameLower := strings.ToLower(serverName)
-	for clientName, tools := range availableToolsPerClient {
-		client := s.clientManager.GetClientByName(clientName)
-		if client == nil {
-			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
-			continue
-		}
-		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
-			continue
-		}
-
-		clientNameLower := strings.ToLower(clientName)
-		if clientNameLower == serverNameLower {
+	requestedServer := serverName
+	match := func(servers []string) {
+		var toolCandidates []string
+		serverName, toolCandidates = normalizeDocsArgs(requestedServer, toolName, servers)
+		for clientName, tools := range availableToolsPerClient {
+			if len(tools) == 0 || !strings.EqualFold(clientName, serverName) || !s.isCodeModeServer(ctx, clientName) {
+				continue
+			}
 			matchedClientName = clientName
-
-			// Find the specific tool
 			for _, candidate := range toolCandidates {
 				if matchedTool = findToolReference(tools, clientName, candidate); matchedTool != nil {
 					break
 				}
 			}
-			break
+			return
 		}
 	}
+	servers := serverNames(availableToolsPerClient)
+	match(servers)
 
 	// Handle server not found
 	if matchedClientName == "" {
-		var availableServers []string
-		for name := range availableToolsPerClient {
-			client := s.clientManager.GetClientByName(name)
-			if client != nil && client.ExecutionConfig.CodeModeFor(ctx) {
-				availableServers = append(availableServers, name)
+		// A server outside code mode may have claimed part of a dotted name, so parse the
+		// names again against the code mode servers alone before reporting the miss.
+		codeModeServers := s.codeModeServers(ctx, availableToolsPerClient)
+		if len(codeModeServers) < len(servers) {
+			match(codeModeServers)
+		}
+		if matchedClientName == "" {
+			errorMsg := fmt.Sprintf("Server '%s' not found. Available servers are:\n", serverName)
+			for _, sn := range codeModeServers {
+				errorMsg += fmt.Sprintf("  - %s\n", sn)
 			}
+			return createToolResponseMessage(toolCall, errorMsg, true), nil
 		}
-		errorMsg := fmt.Sprintf("Server '%s' not found. Available servers are:\n", serverName)
-		for _, sn := range availableServers {
-			errorMsg += fmt.Sprintf("  - %s\n", sn)
-		}
-		return createToolResponseMessage(toolCall, errorMsg, true), nil
 	}
 
 	// Handle tool not found
@@ -154,13 +147,17 @@ func findToolReference(tools []schemas.ChatTool, clientName, toolName string) *s
 // toolCandidates lists the tool names to try in order: a bare name as supplied, with only
 // "()" dropped, so a tool named "report.pyi" keeps its suffix, then the name with its
 // directory and ".pyi" extension dropped, then without a "<server>." prefix, then without
-// a ".py" suffix too. A name with a directory is a stub path, so its ".pyi" is an extension.
+// a ".py" suffix too. A name with a directory is a stub path, so its ".pyi" is an extension,
+// and its directory must name parsedServer: a path into another server yields no candidates.
 func normalizeDocsArgs(server, tool string, servers []string) (parsedServer string, toolCandidates []string) {
 	parsedServer, _, _ = parseVFSFilePath(server, servers)
 	if parsedServer == "" {
 		parsedServer = strings.TrimSpace(server)
 	}
 	exactTool, _ := trimVFSPath(tool, nil)
+	if i := strings.LastIndexByte(exactTool, '/'); i >= 0 && !strings.EqualFold(exactTool[:i], parsedServer) {
+		return parsedServer, nil
+	}
 	exactTool = dropVFSDir(exactTool)
 	toolCandidates = []string{
 		exactTool,

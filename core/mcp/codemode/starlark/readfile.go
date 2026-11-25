@@ -88,89 +88,83 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 
 	// Get available tools per client
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
-	servers := s.codeModeServers(ctx, availableToolsPerClient)
 
-	// Parse the file path to extract server name and optional tool name
-	serverName, toolName, isToolLevel := resolveVFSFilePath(fileName, servers, availableToolsPerClient)
-
-	// Find matching client
+	// Find matching client. The path is parsed against the names of every server the caller
+	// sees, and code mode is checked only for a server the path names, so a hit looks up
+	// one client instead of all of them.
 	var matchedClientName string
 	var matchedTools []schemas.ChatTool
-	matchCount := 0
+	var serverName string
+	var isToolLevel bool
+	match := func(servers []string) *schemas.ChatMessage {
+		var toolName string
+		serverName, toolName, isToolLevel = resolveVFSFilePath(fileName, servers, availableToolsPerClient)
+		matchCount := 0
+		for clientName, tools := range availableToolsPerClient {
+			if len(tools) == 0 || !strings.EqualFold(clientName, serverName) || !s.isCodeModeServer(ctx, clientName) {
+				continue
+			}
 
-	for clientName, tools := range availableToolsPerClient {
-		client := s.clientManager.GetClientByName(clientName)
-		if client == nil {
-			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
-			continue
-		}
-		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
-			continue
-		}
-
-		clientNameLower := strings.ToLower(clientName)
-		serverNameLower := strings.ToLower(serverName)
-
-		if clientNameLower == serverNameLower {
 			matchCount++
 			if matchCount > 1 {
 				// Multiple matches found
 				errorMsg := fmt.Sprintf("Multiple servers match filename '%s':\n", fileName)
 				for name := range availableToolsPerClient {
-					if strings.ToLower(name) == serverNameLower {
+					if strings.EqualFold(name, serverName) {
 						errorMsg += fmt.Sprintf("  - %s\n", name)
 					}
 				}
 				errorMsg += "\nPlease use a more specific filename. Use the exact display name from listToolFiles to avoid ambiguity."
-				return createToolResponseMessage(toolCall, errorMsg, true), nil
+				return createToolResponseMessage(toolCall, errorMsg, true)
 			}
 
 			matchedClientName = clientName
 
 			if isToolLevel {
 				// Tool-level: filter to specific tool
-				var foundTool *schemas.ChatTool
-				for i, tool := range tools {
-					if tool.Function != nil {
-						if matchesToolReference(toolName, clientName, tool.Function.Name) {
-							foundTool = &tools[i]
-							break
-						}
-					}
-				}
-
+				foundTool := findToolReference(tools, clientName, toolName)
 				if foundTool == nil {
-					availableTools := make([]string, 0)
+					errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools in this server are:\n", toolName, clientName)
 					for _, tool := range tools {
 						if tool.Function != nil {
-							availableTools = append(availableTools, getCanonicalToolName(clientName, tool.Function.Name))
+							errorMsg += fmt.Sprintf("  - servers/%s/%s.pyi\n", clientName, getCanonicalToolName(clientName, tool.Function.Name))
 						}
 					}
-					errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools in this server are:\n", toolName, clientName)
-					for _, t := range availableTools {
-						errorMsg += fmt.Sprintf("  - servers/%s/%s.pyi\n", clientName, t)
-					}
-					return createToolResponseMessage(toolCall, errorMsg, true), nil
+					return createToolResponseMessage(toolCall, errorMsg, true)
 				}
-
 				matchedTools = []schemas.ChatTool{*foundTool}
 			} else {
 				// Server-level: use all tools
 				matchedTools = tools
 			}
 		}
+		return nil
 	}
 
+	servers := serverNames(availableToolsPerClient)
+	if resp := match(servers); resp != nil {
+		return resp, nil
+	}
 	if matchedClientName == "" {
-		// List server names only: listing every tool file of every server on a
-		// mistyped path floods the caller's context.
-		errorMsg := fmt.Sprintf("No server found matching '%s'. Available servers: %s\n", serverName, strings.Join(servers, ", "))
-		if s.GetBindingLevel() == schemas.CodeModeBindingLevelServer {
-			errorMsg += "Use servers/<server>.pyi as listed by listToolFiles.\n"
-		} else {
-			errorMsg += "Use servers/<server>/<tool>.pyi as listed by listToolFiles.\n"
+		// A server outside code mode may have claimed part of a dotted path, so parse it
+		// again against the code mode servers alone before reporting the miss.
+		codeModeServers := s.codeModeServers(ctx, availableToolsPerClient)
+		if len(codeModeServers) < len(servers) {
+			if resp := match(codeModeServers); resp != nil {
+				return resp, nil
+			}
 		}
-		return createToolResponseMessage(toolCall, errorMsg, true), nil
+		if matchedClientName == "" {
+			// List server names only: listing every tool file of every server on a
+			// mistyped path floods the caller's context.
+			errorMsg := fmt.Sprintf("No server found matching '%s'. Available servers: %s\n", serverName, strings.Join(codeModeServers, ", "))
+			if s.GetBindingLevel() == schemas.CodeModeBindingLevelServer {
+				errorMsg += "Use servers/<server>.pyi as listed by listToolFiles.\n"
+			} else {
+				errorMsg += "Use servers/<server>/<tool>.pyi as listed by listToolFiles.\n"
+			}
+			return createToolResponseMessage(toolCall, errorMsg, true), nil
+		}
 	}
 
 	// Generate compact Python signatures
@@ -232,8 +226,31 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	return createToolResponseMessage(toolCall, fileContent, false), nil
 }
 
+// serverNames returns the names of the servers in toolsPerClient that expose tools, in no
+// particular order: the names a VFS path is parsed against.
+func serverNames(toolsPerClient map[string][]schemas.ChatTool) []string {
+	servers := make([]string, 0, len(toolsPerClient))
+	for name, tools := range toolsPerClient {
+		if len(tools) > 0 {
+			servers = append(servers, name)
+		}
+	}
+	return servers
+}
+
+// isCodeModeServer reports whether the named client runs in code mode for the caller on ctx.
+func (s *StarlarkCodeMode) isCodeModeServer(ctx context.Context, clientName string) bool {
+	client := s.clientManager.GetClientByName(clientName)
+	if client == nil {
+		s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
+		return false
+	}
+	return client.ExecutionConfig != nil && client.ExecutionConfig.CodeModeFor(ctx)
+}
+
 // codeModeServers returns the sorted names of the connected code mode servers that expose tools,
-// i.e. the names readToolFile and getToolDocs can resolve.
+// i.e. the names readToolFile and getToolDocs can resolve. It looks up every client, so callers
+// use it on a miss only.
 func (s *StarlarkCodeMode) codeModeServers(ctx context.Context, availableToolsPerClient map[string][]schemas.ChatTool) []string {
 	servers := make([]string, 0, len(availableToolsPerClient))
 	for name, tools := range availableToolsPerClient {
@@ -292,9 +309,13 @@ func trimVFSPath(p string, servers []string) (trimmed string, hadStubExtension b
 
 // resolveVFSFilePath parses fileName like parseVFSFilePath, but first tries it with a ".py"
 // suffix kept, so "codey.report.py()" reads tool "report.py" when codey has one and falls
-// back to tool "report" otherwise. toolsPerClient holds the connected servers' tools.
+// back to tool "report" otherwise. toolsPerClient holds the connected servers' tools. Only a
+// path that still ends in ".py" needs that tool scan; any other path parses directly.
 func resolveVFSFilePath(fileName string, servers []string, toolsPerClient map[string][]schemas.ChatTool) (serverName, toolName string, isToolLevel bool) {
-	trimmed, _ := trimVFSPath(fileName, servers)
+	trimmed, hadStubExtension := trimVFSPath(fileName, servers)
+	if !strings.HasSuffix(trimmed, ".py") {
+		return parseVFSBasePath(trimmed, servers)
+	}
 	if server, tool, toolLevel := parseVFSBasePath(trimmed, servers); toolLevel {
 		for clientName, tools := range toolsPerClient {
 			if strings.EqualFold(clientName, server) && isKnownServer(clientName, servers) && findToolReference(tools, clientName, tool) != nil {
@@ -302,7 +323,10 @@ func resolveVFSFilePath(fileName string, servers []string, toolsPerClient map[st
 			}
 		}
 	}
-	return parseVFSFilePath(fileName, servers)
+	if hadStubExtension || isKnownServer(trimmed, servers) {
+		return parseVFSBasePath(trimmed, servers)
+	}
+	return parseVFSBasePath(strings.TrimSuffix(trimmed, ".py"), servers)
 }
 
 // splitDottedToolReference splits the callable form "server.tool" used in executeToolCode.
