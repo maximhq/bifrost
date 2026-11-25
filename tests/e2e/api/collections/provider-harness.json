@@ -360720,6 +360720,307 @@
           ]
         }
       ]
+    },
+    {
+      "name": "384. Vertex passthrough rewrites resource names, not prompt text (vertex passthrough body rewrite)",
+      "description": "Pins that the Vertex passthrough body rewrite (rewritePassthroughBody in core/providers/vertex/utils.go) only touches resource-name fields.\n\nBug: the rewrite ran three regexes over the whole JSON body, so any projects/<x> or /locations/<x> in prompt text was replaced with the key's project and region. The /locations/ regex also ran past the closing quote of the string, so a prompt containing /locations/paris corrupted the JSON and Vertex answered 400 \"Invalid JSON payload received\".\n\nThe rewrite exists because the google-genai SDK in Vertex mode writes the client's (often placeholder) project and location into three top-level body fields: cachedContents create `model`, generateContent `cachedContent` and the Veo poll `operationName`. It is now limited to those fields.\n\nCases: (1) generateContent with projects/ and /locations/ in the prompt echoes it back unchanged; (2) the same on the streaming passthrough path; (3) cachedContents create with a placeholder project in `model` and /locations/ text in contents: the model field is still rewritten, the text is not; (4) generateContent naming that cache under the placeholder project bills cached tokens, so `cachedContent` is still rewritten; (5) cleanup. Every path uses the literal placeholder-project the way an SDK client configured with a dummy project does. Cases 3-5 pin x-bf-api-key so the cache is created, used and deleted on one key: the delete names no model, so it could otherwise land on a key in another region, which rewrites the path to a location where the cache does not exist.",
+      "item": [
+        {
+          "name": "384.1 vertex/gemini-2.5-flash generateContent via /genai_passthrough keeps projects/ and /locations/ in prompt text - vertex passthrough body rewrite",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/projects/placeholder-project/locations/{{vertexLocation}}/publishers/google/models/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "projects",
+                "placeholder-project",
+                "locations",
+                "{{vertexLocation}}",
+                "publishers",
+                "google",
+                "models",
+                "gemini-2.5-flash:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Repeat this text back verbatim and output nothing else: github.com/acme/projects/roadmap and /locations/paris\"}]}],\"generationConfig\":{\"temperature\":0,\"maxOutputTokens\":128,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex passthrough generateContent: 200 - vertex passthrough body rewrite', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "var text = (((((j.candidates || [])[0] || {}).content || {}).parts) || []).map(function (p) { return p.text || ''; }).join('');",
+                  "pm.test('prompt text reached the model unchanged - vertex passthrough body rewrite', function () {",
+                  "  pm.expect(text, 'prompt was rewritten in transit: ' + text).to.include('github.com/acme/projects/roadmap');",
+                  "  pm.expect(text, 'prompt was rewritten in transit: ' + text).to.include('/locations/paris');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "384.2 vertex/gemini-2.5-flash streamGenerateContent via /genai_passthrough keeps projects/ and /locations/ in prompt text - vertex passthrough body rewrite",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/projects/placeholder-project/locations/{{vertexLocation}}/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "projects",
+                "placeholder-project",
+                "locations",
+                "{{vertexLocation}}",
+                "publishers",
+                "google",
+                "models",
+                "gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Repeat this text back verbatim and output nothing else: github.com/acme/projects/roadmap and /locations/paris\"}]}],\"generationConfig\":{\"temperature\":0,\"maxOutputTokens\":128,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex passthrough streamGenerateContent: 200 - vertex passthrough body rewrite', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var text = '';",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  try {",
+                  "    var ev = JSON.parse(line.slice(5));",
+                  "    (((((ev.candidates || [])[0] || {}).content || {}).parts) || []).forEach(function (p) { text += p.text || ''; });",
+                  "  } catch (e) {}",
+                  "});",
+                  "pm.test('streamed prompt text reached the model unchanged - vertex passthrough body rewrite', function () {",
+                  "  pm.expect(text, 'prompt was rewritten in transit: ' + text + ' | ' + pm.response.text().slice(0, 400)).to.include('github.com/acme/projects/roadmap');",
+                  "  pm.expect(text, 'prompt was rewritten in transit: ' + text).to.include('/locations/paris');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "384.3 vertex/gemini-2.5-flash cachedContents create via /genai_passthrough rewrites the placeholder project in model - vertex passthrough body rewrite",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/projects/placeholder-project/locations/{{vertexLocation}}/cachedContents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "projects",
+                "placeholder-project",
+                "locations",
+                "{{vertexLocation}}",
+                "cachedContents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"projects/placeholder-project/locations/{{vertexLocation}}/publishers/google/models/gemini-2.5-flash\",\"displayName\":\"h384-vertex\",\"systemInstruction\":{\"parts\":[{\"text\":\"{{cachePrefix}}\"}]},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"The office moved from /locations/paris to projects/roadmap last year.\"}]}],\"ttl\":\"300s\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex passthrough cachedContents create: 200 - vertex passthrough body rewrite', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "pm.test('create returns a cachedContents resource name - vertex passthrough body rewrite', function () {",
+                  "  pm.expect(j.name, pm.response.text().slice(0, 600)).to.match(/cachedContents\\/.+/);",
+                  "});",
+                  "pm.collectionVariables.set('h384VertexCacheId', String(j.name || '').split('/').pop());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "384.4 vertex/gemini-2.5-flash generateContent via /genai_passthrough with a placeholder-project cachedContent bills cached tokens - vertex passthrough body rewrite",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/projects/placeholder-project/locations/{{vertexLocation}}/publishers/google/models/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "projects",
+                "placeholder-project",
+                "locations",
+                "{{vertexLocation}}",
+                "publishers",
+                "google",
+                "models",
+                "gemini-2.5-flash:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"In one short sentence, what is the manual about?\"}]}],\"cachedContent\":\"projects/placeholder-project/locations/{{vertexLocation}}/cachedContents/{{h384VertexCacheId}}\",\"generationConfig\":{\"maxOutputTokens\":64,\"thinkingConfig\":{\"thinkingBudget\":0}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex passthrough generateContent with cachedContent: 200 - vertex passthrough body rewrite', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json() || {};",
+                  "pm.test('cachedContent was rewritten to the key project and applied - vertex passthrough body rewrite', function () {",
+                  "  pm.expect(j.usageMetadata && j.usageMetadata.cachedContentTokenCount, 'cachedContent not applied: ' + pm.response.text().slice(0, 600)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "384.5 vertex cachedContents delete via /genai_passthrough cleans up - vertex passthrough body rewrite",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex API Key"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/projects/placeholder-project/locations/{{vertexLocation}}/cachedContents/{{h384VertexCacheId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "projects",
+                "placeholder-project",
+                "locations",
+                "{{vertexLocation}}",
+                "cachedContents",
+                "{{h384VertexCacheId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex passthrough cachedContents delete: 200 - vertex passthrough body rewrite', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

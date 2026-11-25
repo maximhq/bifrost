@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -492,27 +494,34 @@ var (
 	vertexShortModelLit   = []byte(`"models/`)
 )
 
-// rewritePassthroughBody points a JSON passthrough body at the key's project and region: placeholder
-// project or location segments are replaced and short-form "models/X" names are expanded to full
-// resource paths. Returns the original slice with changed=false when there is nothing to rewrite.
-func rewritePassthroughBody(body []byte, projectID, region string) (out []byte, changed bool) {
-	hasProjects := bytes.Contains(body, vertexBodyProjectsLit)
-	hasLocations := bytes.Contains(body, vertexLocationsLit)
-	hasShortModel := bytes.Contains(body, vertexShortModelLit)
-	if !hasProjects && !hasLocations && !hasShortModel {
-		return body, false
-	}
+// vertexPassthroughResourceFields are the top-level body fields the google-genai SDK fills with the client's
+// project and location. Only these are rewritten; prompt text and every other field pass through untouched.
+var vertexPassthroughResourceFields = []string{"model", "cachedContent", "operationName"}
 
+// rewritePassthroughBody points a JSON passthrough body at the key's project and region: the project and
+// location segments of vertexPassthroughResourceFields are replaced and a short-form "models/X" is expanded
+// to a full resource path. Returns the original slice with changed=false when there is nothing to rewrite.
+func rewritePassthroughBody(body []byte, projectID, region string) (out []byte, changed bool) {
 	out = body
-	if hasProjects {
-		out = vertexBodyProjectsRe.ReplaceAll(out, []byte("${1}projects/"+projectID))
+	if !bytes.Contains(body, vertexBodyProjectsLit) && !bytes.Contains(body, vertexLocationsLit) && !bytes.Contains(body, vertexShortModelLit) {
+		return out, false
 	}
-	if hasLocations {
-		out = vertexLocationsPathRe.ReplaceAll(out, []byte("/locations/"+region))
+	for _, field := range vertexPassthroughResourceFields {
+		value := providerUtils.GetJSONField(out, field)
+		if value.Type != gjson.String {
+			continue
+		}
+		name := vertexBodyProjectsRe.ReplaceAllString(value.Str, "${1}projects/"+projectID)
+		name = vertexLocationsPathRe.ReplaceAllString(name, "/locations/"+region)
+		if strings.HasPrefix(name, "models/") && strings.Count(name, "/") == 1 {
+			name = "projects/" + projectID + "/locations/" + region + "/publishers/google/" + name
+		}
+		if name == value.Str {
+			continue
+		}
+		if rewritten, err := providerUtils.SetJSONField(out, field, name); err == nil {
+			out, changed = rewritten, true
+		}
 	}
-	if hasShortModel {
-		out = vertexShortModelRe.ReplaceAll(out,
-			[]byte(`"projects/`+projectID+`/locations/`+region+`/publishers/google/$1"`))
-	}
-	return out, !bytes.Equal(out, body)
+	return out, changed
 }

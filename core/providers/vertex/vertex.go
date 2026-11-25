@@ -46,13 +46,8 @@ var vertexLocationsPathRe = regexp.MustCompile(`/locations/[^/]+`)
 
 var vertexProjectsPathRe = regexp.MustCompile(`/projects/[^/]+`)
 
-// vertexBodyProjectsRe matches projects/{project} in body JSON values,
-// where the path may appear as "projects/X (after a JSON quote) or /projects/X (mid-path).
-var vertexBodyProjectsRe = regexp.MustCompile(`(["/])projects/[^/"]+`)
-
-// vertexShortModelRe matches short-form model names like "models/X" in JSON bodies
-// that need expanding to the full Vertex resource path.
-var vertexShortModelRe = regexp.MustCompile(`"(models/[^/"]+)"`)
+// vertexBodyProjectsRe matches projects/{project} inside one resource-name string, at its start or after a "/".
+var vertexBodyProjectsRe = regexp.MustCompile(`(^|/)projects/[^/]+`)
 
 // defaultCredentialsCacheKey is the sentinel pool key used when AuthCredentials
 // is empty and we fall back to google.FindDefaultCredentials.
