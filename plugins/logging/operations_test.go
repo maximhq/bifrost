@@ -1353,6 +1353,52 @@ func TestApplyInternalCallCostsRoutingOwnershipAndBudgetFlag(t *testing.T) {
 	}
 }
 
+// TestErrorCostBreakdownMatchesErrorRow pins the send-back cost of an error to
+// what this plugin records on the error's log row: the catalog's
+// CalculateErrorCostBreakdown must price the same billed usage and side calls,
+// at the same model, to the same total and split. Routing is on the first
+// attempt here, where the row's gate and the catalog's ungated read agree.
+func TestErrorCostBreakdownMatchesErrorRow(t *testing.T) {
+	pricing := newTestPricingManager(t)
+	plugin := &LoggerPlugin{pricingManager: pricing}
+	provider, embedModel, inputTokens := "openai", "text-embedding-3-small", 1000
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 0)
+	schemas.SetCacheMetadataOnContext(ctx, &schemas.BifrostCacheMetadata{ProviderUsed: &provider, ModelUsed: &embedModel, InputTokens: &inputTokens})
+	schemas.AppendGuardrailJudgeCallOnContext(ctx, schemas.BifrostGuardrailJudgeCall{
+		JudgeProvider: schemas.OpenAI, JudgeModel: "gpt-4o", PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150,
+	})
+	schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
+		ProviderUsed: &provider, ModelUsed: &embedModel, InputTokens: &inputTokens, CountTowardBudgets: true,
+	})
+	billed := &schemas.BifrostLLMUsage{PromptTokens: 200, CompletionTokens: 80, TotalTokens: 280}
+	bifrostErr := &schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: billed}}
+	bifrostErr.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "my-alias", "gpt-4o")
+
+	// The row as the error path builds it: entry.Model is the resolved model.
+	entry := &logstore.Log{Provider: string(schemas.OpenAI)}
+	applyModelAlias(entry, "my-alias", "gpt-4o")
+	guardrailMetadata, _ := schemas.GuardrailMetadataFromContext(ctx)
+	plugin.applyErrorBillingFromBilledUsage(ctx, entry, billed, schemas.ChatCompletionRequest)
+	plugin.applyInternalCallCosts(ctx, entry, guardrailMetadata)
+	if err := entry.SerializeFields(); err != nil {
+		t.Fatalf("SerializeFields: %v", err)
+	}
+
+	cost := pricing.CalculateErrorCostBreakdown(ctx, bifrostErr)
+	if entry.Cost == nil || cost == nil {
+		t.Fatalf("row cost = %v, send-back cost = %+v, want both priced", entry.Cost, cost)
+	}
+	if math.Abs(cost.TotalCost-*entry.Cost) > 1e-12 {
+		t.Fatalf("send-back total %v != row total %v", cost.TotalCost, *entry.Cost)
+	}
+	if math.Abs(cost.InputCost-entry.InputCost) > 1e-12 || math.Abs(cost.OutputCost-entry.OutputCost) > 1e-12 || math.Abs(cost.AdditionalCost-entry.AdditionalCost) > 1e-12 {
+		t.Fatalf("send-back split %v/%v/%v != row split %v/%v/%v",
+			cost.InputCost, cost.OutputCost, cost.AdditionalCost, entry.InputCost, entry.OutputCost, entry.AdditionalCost)
+	}
+}
+
 // TestApplyErrorBillingFromBilledUsage_ComputesCostWhenTokensAlreadyParsed guards
 // the case where stream accumulation already captured token usage on a failed
 // request but no cost was computed: cost must still be backfilled, and the

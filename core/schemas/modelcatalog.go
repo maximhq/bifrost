@@ -37,3 +37,19 @@ type ModelInfoProvider interface {
 	// plugin-facing ctx.CalculateCostBreakdown wraps this.
 	CalculateRequestCostBreakdown(ctx *BifrostContext, resp *BifrostResponse) *BifrostCost
 }
+
+// ErrorCostProvider is an optional extension of ModelInfoProvider for pricing a
+// failed request. It is type-asserted off the catalog on the context, so
+// ModelInfoProvider implementations that do not provide it keep compiling and
+// their errors simply carry no cost.
+//
+// Implemented by *modelcatalog.ModelCatalog.
+type ErrorCostProvider interface {
+	// CalculateErrorCostBreakdown returns what the logging plugin records as
+	// the cost of an error row: the error's billed usage priced at its
+	// provider and resolved model, plus the request's side calls (semantic
+	// cache embedding, guardrail judges, routing calls that count toward
+	// budgets) read from ctx. Returns nil when nothing is billable. The
+	// returned value is owned by the caller.
+	CalculateErrorCostBreakdown(ctx *BifrostContext, err *BifrostError) *BifrostCost
+}

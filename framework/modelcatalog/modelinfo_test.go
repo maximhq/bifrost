@@ -1,6 +1,7 @@
 package modelcatalog
 
 import (
+	"context"
 	"math"
 	"os"
 	"path/filepath"
@@ -494,4 +495,206 @@ func BenchmarkEnrichListModelsResponse(b *testing.B) {
 			mc.EnrichListModelsResponse(resp)
 		}
 	})
+}
+
+// errorPricingCatalog loads the shared datasheet testdata, which has a chat model
+// (gpt-4o: input 2.5e-6, output 1e-5) and an embedding model
+// (text-embedding-3-small: input 2e-8) for the side calls an error is billed for.
+func errorPricingCatalog(t testing.TB) *ModelCatalog {
+	t.Helper()
+	abs, err := filepath.Abs("datasheet/testdata/pricing.json")
+	if err != nil {
+		t.Fatalf("resolve testdata path: %v", err)
+	}
+	ds := datasheetForTest(t, nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	return catalogWithDatasheetForTest(t, ds)
+}
+
+func billedChatError(requested, resolved string) *schemas.BifrostError {
+	err := &schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{
+		BilledUsage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+	}}
+	err.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, requested, resolved)
+	return err
+}
+
+// The billed usage of an aliased request is priced at the model that actually ran,
+// as the logging plugin's error row is, and at the requested model when no alias
+// resolved.
+func TestCalculateErrorCostBreakdownPricesBilledUsageAtResolvedModel(t *testing.T) {
+	mc := errorPricingCatalog(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const want = 100*2.5e-6 + 50*1e-5
+
+	for name, err := range map[string]*schemas.BifrostError{
+		"alias resolved":  billedChatError("my-alias", "gpt-4o"),
+		"no alias":        billedChatError("gpt-4o", ""),
+		"resolved equals": billedChatError("gpt-4o", "gpt-4o"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cost := mc.CalculateErrorCostBreakdown(ctx, err)
+			if cost == nil || !approxEqual(cost.TotalCost, want) {
+				t.Fatalf("cost = %+v, want total %v", cost, want)
+			}
+			if !approxEqual(cost.InputCost+cost.OutputCost, want) || cost.AdditionalCost != 0 {
+				t.Fatalf("split = input %v / output %v / additional %v, want only input and output", cost.InputCost, cost.OutputCost, cost.AdditionalCost)
+			}
+		})
+	}
+}
+
+// A request that failed before the model ran still paid for its side calls: a
+// guardrail-blocked request has no billed usage but did run its judge.
+func TestCalculateErrorCostBreakdownAddsSideCalls(t *testing.T) {
+	mc := errorPricingCatalog(t)
+	provider, embedModel, inputTokens := "openai", "text-embedding-3-small", 1000
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	schemas.SetCacheMetadataOnContext(ctx, &schemas.BifrostCacheMetadata{
+		ProviderUsed: &provider,
+		ModelUsed:    &embedModel,
+		InputTokens:  &inputTokens,
+	})
+	schemas.AppendGuardrailJudgeCallOnContext(ctx, schemas.BifrostGuardrailJudgeCall{
+		JudgeProvider:    schemas.OpenAI,
+		JudgeModel:       "gpt-4o",
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	})
+	schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
+		ProviderUsed:       &provider,
+		ModelUsed:          &embedModel,
+		InputTokens:        &inputTokens,
+		CountTowardBudgets: true,
+	})
+	// Classification calls that do not count toward budgets are not billed.
+	schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
+		ProviderUsed: &provider,
+		ModelUsed:    &embedModel,
+		InputTokens:  &inputTokens,
+	})
+
+	err := &schemas.BifrostError{}
+	err.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", "")
+	cost := mc.CalculateErrorCostBreakdown(ctx, err)
+
+	const (
+		wantCache     = 1000 * 2e-8
+		wantGuardrail = 100*2.5e-6 + 50*1e-5
+		wantRouting   = 1000 * 2e-8
+		wantTotal     = wantCache + wantGuardrail + wantRouting
+	)
+	if cost == nil || cost.AdditionalCostDetails == nil {
+		t.Fatalf("cost = %+v, want an additional-side breakdown", cost)
+	}
+	details := cost.AdditionalCostDetails
+	if !approxEqual(details.SemanticCacheCost, wantCache) || !approxEqual(details.GuardrailCost, wantGuardrail) || !approxEqual(details.RoutingCost, wantRouting) {
+		t.Fatalf("details = %+v, want cache %v / guardrail %v / routing %v", details, wantCache, wantGuardrail, wantRouting)
+	}
+	if !approxEqual(cost.AdditionalCost, wantTotal) || !approxEqual(cost.TotalCost, wantTotal) || cost.InputCost != 0 || cost.OutputCost != 0 {
+		t.Fatalf("cost = %+v, want additional and total %v only", cost, wantTotal)
+	}
+}
+
+// The error is priced as the request's final outcome, after its fallbacks ran, so
+// the routing call is charged to it even though the fallback index is no longer 0
+// (the logging row charges routing only to the first attempt).
+func TestCalculateErrorCostBreakdownChargesRoutingAfterFallbacks(t *testing.T) {
+	mc := errorPricingCatalog(t)
+	provider, model, inputTokens := "openai", "text-embedding-3-small", 1000
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 2)
+	schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
+		ProviderUsed:       &provider,
+		ModelUsed:          &model,
+		InputTokens:        &inputTokens,
+		CountTowardBudgets: true,
+	})
+
+	err := &schemas.BifrostError{}
+	err.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", "")
+	cost := mc.CalculateErrorCostBreakdown(ctx, err)
+	if cost == nil || !approxEqual(cost.TotalCost, 1000*2e-8) {
+		t.Fatalf("cost = %+v, want the routing call priced", cost)
+	}
+}
+
+func TestCalculateErrorCostBreakdownNothingBillable(t *testing.T) {
+	mc := errorPricingCatalog(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if cost := mc.CalculateErrorCostBreakdown(ctx, &schemas.BifrostError{}); cost != nil {
+		t.Fatalf("cost = %+v, want nil for an error with no usage and no side calls", cost)
+	}
+	if cost := mc.CalculateErrorCostBreakdown(ctx, billedChatError("unpriced-model", "")); cost != nil {
+		t.Fatalf("cost = %+v, want nil for a model with no price", cost)
+	}
+	if cost := mc.CalculateErrorCostBreakdown(ctx, nil); cost != nil {
+		t.Fatalf("cost = %+v, want nil for a nil error", cost)
+	}
+}
+
+// The datasheet can return the provider's own usage.Cost pointer; the error
+// keeps BilledUsage, so the result must never alias it.
+func TestCalculateErrorCostBreakdownReturnsCallerOwnedCopy(t *testing.T) {
+	mc := errorPricingCatalog(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	err := billedChatError("gpt-4o", "")
+	err.ExtraFields.BilledUsage.Cost = &schemas.BifrostCost{
+		InputCost:        0.01,
+		InputCostDetails: &schemas.InputCostDetails{TextCost: 0.01},
+		TotalCost:        0.01,
+	}
+
+	cost := mc.CalculateErrorCostBreakdown(ctx, err)
+	if cost == nil {
+		t.Fatal("cost = nil, want a breakdown")
+	}
+	cost.TotalCost = 99
+	if cost.InputCostDetails != nil {
+		cost.InputCostDetails.TextCost = 99
+	}
+	if got := err.ExtraFields.BilledUsage.Cost; got.TotalCost != 0.01 || got.InputCostDetails.TextCost != 0.01 {
+		t.Fatalf("mutating the result changed the error's billed usage: %+v", got)
+	}
+}
+
+// BenchmarkCalculateRequestCostBreakdownRealCtx is the per-request cost of send
+// back cost when it is on: one breakdown pass on a context carrying the
+// governance identity the scope lookup reads, as a real request's does.
+func BenchmarkCalculateRequestCostBreakdownRealCtx(b *testing.B) {
+	mc := modelInfoCatalog(b)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-bench")
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-bench")
+	resp := cachedChatResponse()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if mc.CalculateRequestCostBreakdown(ctx, resp) == nil {
+			b.Fatal("breakdown = nil")
+		}
+	}
+}
+
+// BenchmarkCalculateErrorCostBreakdown prices a failed request with billed usage
+// and no side calls, the common error shape.
+func BenchmarkCalculateErrorCostBreakdown(b *testing.B) {
+	mc := errorPricingCatalog(b)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-bench")
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-bench")
+	err := billedChatError("gpt-4o", "")
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if mc.CalculateErrorCostBreakdown(ctx, err) == nil {
+			b.Fatal("cost = nil")
+		}
+	}
 }
