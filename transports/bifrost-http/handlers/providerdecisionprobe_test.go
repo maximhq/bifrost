@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/valyala/fasthttp"
 )
 
@@ -64,9 +65,9 @@ func newDecisionProbeHandlerWithReplies(t *testing.T, replies ...probeUpstreamRe
 }
 
 // newDecisionProbeHandlerWithConfig is newDecisionProbeHandlerWithReplies with
-// configure applied to the provider configs, every one pointed at the fake
-// upstream, before the Bifrost client starts.
-func newDecisionProbeHandlerWithConfig(t *testing.T, configure func(map[schemas.ModelProvider]configstore.ProviderConfig), replies ...probeUpstreamReply) (*ProviderHandler, *decisionProbeUpstream) {
+// configure applied to the provider configs and keys, every provider pointed at
+// the fake upstream, before the Bifrost client starts.
+func newDecisionProbeHandlerWithConfig(t *testing.T, configure func(map[schemas.ModelProvider]configstore.ProviderConfig, map[schemas.ModelProvider][]schemas.Key), replies ...probeUpstreamReply) (*ProviderHandler, *decisionProbeUpstream) {
 	t.Helper()
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
@@ -96,31 +97,31 @@ func newDecisionProbeHandlerWithConfig(t *testing.T, configure func(map[schemas.
 	}))
 	t.Cleanup(server.Close)
 
-	store := &lib.Config{
-		ClientConfig: &configstore.ClientConfig{},
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			probeTestProvider: {
-				Keys: []schemas.Key{{
-					ID:     "probe-key",
-					Name:   "probe",
-					Value:  *schemas.NewSecretVar(probeTestSecret),
-					Models: schemas.WhiteList{"*"},
-					Weight: 1,
-				}},
-				NetworkConfig:            &schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 10, MaxRetries: 2, RetryBackoffInitial: time.Millisecond, RetryBackoffMax: time.Millisecond},
-				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
-				CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
-			},
-			schemas.OpenAI: {
-				Keys:                     []schemas.Key{{ID: "openai-key", Value: *schemas.NewSecretVar("sk-openai"), Models: schemas.WhiteList{"*"}, Weight: 1}},
-				NetworkConfig:            &schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 10},
-				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
-			},
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{
+		probeTestProvider: {
+			NetworkConfig:            &schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 10, MaxRetries: 2, RetryBackoffInitial: time.Millisecond, RetryBackoffMax: time.Millisecond},
+			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+			CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+		},
+		schemas.OpenAI: {
+			NetworkConfig:            &schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 10},
+			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 		},
 	}
-	if configure != nil {
-		configure(store.Providers)
+	keys := map[schemas.ModelProvider][]schemas.Key{
+		probeTestProvider: {{
+			ID:     "probe-key",
+			Name:   "probe",
+			Value:  *schemas.NewSecretVar(probeTestSecret),
+			Models: schemas.WhiteList{"*"},
+			Weight: 1,
+		}},
+		schemas.OpenAI: {{ID: "openai-key", Value: *schemas.NewSecretVar("sk-openai"), Models: schemas.WhiteList{"*"}, Weight: 1}},
 	}
+	if configure != nil {
+		configure(providers, keys)
+	}
+	store := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, providers, keys)
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: lib.NewBaseAccount(store),
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
@@ -130,7 +131,8 @@ func newDecisionProbeHandlerWithConfig(t *testing.T, configure func(map[schemas.
 	}
 	t.Cleanup(client.Shutdown)
 	store.SetBifrostClient(client)
-	return &ProviderHandler{inMemoryStore: store, client: client, modelsManager: &mockModelsManager{}}, upstream
+	// No configStore on the handler: the probe reads the live store the client serves.
+	return &ProviderHandler{config: store, client: client, modelsManager: &mockModelsManager{}}, upstream
 }
 
 // probeDecisionForTest posts body to the probe route of provider and returns
@@ -328,14 +330,15 @@ func TestProbeDecision_ChecksThePinnedKeysAlias(t *testing.T) {
 		{ID: "decision-key", Value: *schemas.NewSecretVar("sk-decision-key"), Models: schemas.WhiteList{"*"}, Weight: 1, Aliases: schemas.KeyAliases{"judge": {ModelID: "gpt-6-luna"}}},
 		{ID: "chat-key", Value: *schemas.NewSecretVar("sk-chat-key"), Models: schemas.WhiteList{"*"}, Weight: 1, Aliases: schemas.KeyAliases{"judge": {ModelID: "gpt-4o"}}},
 	}
-	h, upstream := newDecisionProbeHandlerWithConfig(t, func(providers map[schemas.ModelProvider]configstore.ProviderConfig) {
-		openai := providers[schemas.OpenAI]
-		openai.Keys = keys
-		providers[schemas.OpenAI] = openai
+	h, upstream := newDecisionProbeHandlerWithConfig(t, func(_ map[schemas.ModelProvider]configstore.ProviderConfig, providerKeys map[schemas.ModelProvider][]schemas.Key) {
+		providerKeys[schemas.OpenAI] = keys
 	}, probeUpstreamReply{status: http.StatusOK, body: `{"model":"gpt-6-luna","answers":[{"type":"predicate","name":"probe","probability":0.9}]}`})
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog, err := modelcatalog.NewTestCatalog(nil)
+	if err != nil {
+		t.Fatalf("failed to build test catalog: %v", err)
+	}
 	catalog.SetKeyConfigForProvider(schemas.OpenAI, keys)
-	h.inMemoryStore.ModelCatalog = catalog
+	h.config.ModelCatalog = catalog
 	if target := h.aliasTarget(schemas.OpenAI, "judge"); target != "gpt-4o" {
 		t.Fatalf("catalog alias target got %q, want the chat key's gpt-4o", target)
 	}
@@ -370,7 +373,7 @@ func TestProbeDecision_ChecksThePinnedKeysAlias(t *testing.T) {
 // the probe reads the 1 second timeout configured after them.
 func TestProbeDecision_DeadlineCoversQueueWait(t *testing.T) {
 	release := make(chan struct{})
-	h, _ := newDecisionProbeHandlerWithConfig(t, func(providers map[schemas.ModelProvider]configstore.ProviderConfig) {
+	h, _ := newDecisionProbeHandlerWithConfig(t, func(providers map[schemas.ModelProvider]configstore.ProviderConfig, _ map[schemas.ModelProvider][]schemas.Key) {
 		probe := providers[probeTestProvider]
 		probe.ConcurrencyAndBufferSize = &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1}
 		providers[probeTestProvider] = probe
@@ -392,13 +395,17 @@ func TestProbeDecision_DeadlineCoversQueueWait(t *testing.T) {
 		}()
 	}
 	time.Sleep(200 * time.Millisecond)
-	h.inMemoryStore.Mu.Lock()
-	probe := h.inMemoryStore.Providers[probeTestProvider]
-	network := *probe.NetworkConfig
+	// Written to the store and refreshed into the live store only: the running
+	// client keeps the queue and timeout it started with.
+	probe, ok := h.config.LiveStore.Collections.Providers.Get(string(probeTestProvider))
+	if !ok {
+		t.Fatal("probe provider missing from the live store")
+	}
+	updated := probe.Config
+	network := *updated.NetworkConfig
 	network.DefaultRequestTimeoutInSeconds = 1
-	probe.NetworkConfig = &network
-	h.inMemoryStore.Providers[probeTestProvider] = probe
-	h.inMemoryStore.Mu.Unlock()
+	updated.NetworkConfig = &network
+	libtest.SetProvider(t, h.config, probeTestProvider, updated, nil)
 
 	type probeReply struct {
 		status int
@@ -450,11 +457,11 @@ func TestProbedRoute_ReportsKeyAliasTarget(t *testing.T) {
 // that do not contain it are left alone.
 func TestDecisionProbeErrorFrom_RedactsShortCredentials(t *testing.T) {
 	config := &configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "short", Value: *schemas.NewSecretVar("tok1234")},
-			{ID: "empty", Value: *schemas.NewSecretVar("")},
-		},
 		NetworkConfig: &schemas.NetworkConfig{ExtraHeaders: map[string]schemas.SecretVar{"x-team": *schemas.NewSecretVar("t-42")}},
+	}
+	keys := []schemas.Key{
+		{ID: "short", Value: *schemas.NewSecretVar("tok1234")},
+		{ID: "empty", Value: *schemas.NewSecretVar("")},
 	}
 	got := decisionProbeErrorFrom(&schemas.BifrostError{
 		StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
@@ -463,7 +470,7 @@ func TestDecisionProbeErrorFrom_RedactsShortCredentials(t *testing.T) {
 			Type:    schemas.Ptr("auth_error tok1234"),
 			Code:    schemas.Ptr("bad_key:tok1234"),
 		},
-	}, decisionProbeSecrets(config))
+	}, decisionProbeSecrets(config, keys))
 
 	if want := "key [redacted] for team [redacted] rejected; [redacted] and [redacted] are other ids, t-4 is not"; got.Message != want {
 		t.Fatalf("message got %q, want %q", got.Message, want)
@@ -581,17 +588,15 @@ func TestProbeDecision_RejectsUnusableAnswers(t *testing.T) {
 // inline identity token, and that a provider error echoing one is redacted.
 func TestDecisionProbeSecrets_IncludesEveryKeyCredential(t *testing.T) {
 	secret := func(v string) *schemas.SecretVar { return schemas.NewSecretVar(v) }
-	config := &configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "azure", AzureKeyConfig: &schemas.AzureKeyConfig{ClientSecret: secret("azure-client-secret")}},
-			{ID: "vertex", VertexKeyConfig: &schemas.VertexKeyConfig{AuthCredentials: *secret(`{"type":"service_account","private_key_id":"vertex-private-key-id","private_key":"vertex-private-key-pem"}`)}},
-			{ID: "bedrock", BedrockKeyConfig: &schemas.BedrockKeyConfig{AccessKey: *secret("AKIABEDROCKACCESS"), SecretKey: *secret("bedrock-secret-key"), SessionToken: secret("bedrock-session-token")}},
-			{ID: "mantle", BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{AccessKey: *secret("AKIAMANTLEACCESS"), SecretKey: *secret("mantle-secret-key"), SessionToken: secret("mantle-session-token")}},
-			{ID: "sagemaker", SageMakerKeyConfig: &schemas.SageMakerKeyConfig{AccessKey: *secret("AKIASAGEMAKERACCESS"), SecretKey: *secret("sagemaker-secret-key"), SessionToken: secret("sagemaker-session-token")}},
-			{ID: "databricks", DatabricksKeyConfig: &schemas.DatabricksKeyConfig{ClientSecret: secret("databricks-client-secret")}},
-			{ID: "oauth", OAuthKeyConfig: &schemas.OAuthKeyConfig{ClientSecret: secret("oauth-client-secret"), PrivateKey: secret("oauth-private-key-pem"), ExtraParams: map[string]string{"resource": "oauth-extra-param-secret"}}},
-			{ID: "anthropic", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{IdentitySource: &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: secret("anthropic-identity-token")}}}},
-		},
+	keys := []schemas.Key{
+		{ID: "azure", AzureKeyConfig: &schemas.AzureKeyConfig{ClientSecret: secret("azure-client-secret")}},
+		{ID: "vertex", VertexKeyConfig: &schemas.VertexKeyConfig{AuthCredentials: *secret(`{"type":"service_account","private_key_id":"vertex-private-key-id","private_key":"vertex-private-key-pem"}`)}},
+		{ID: "bedrock", BedrockKeyConfig: &schemas.BedrockKeyConfig{AccessKey: *secret("AKIABEDROCKACCESS"), SecretKey: *secret("bedrock-secret-key"), SessionToken: secret("bedrock-session-token")}},
+		{ID: "mantle", BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{AccessKey: *secret("AKIAMANTLEACCESS"), SecretKey: *secret("mantle-secret-key"), SessionToken: secret("mantle-session-token")}},
+		{ID: "sagemaker", SageMakerKeyConfig: &schemas.SageMakerKeyConfig{AccessKey: *secret("AKIASAGEMAKERACCESS"), SecretKey: *secret("sagemaker-secret-key"), SessionToken: secret("sagemaker-session-token")}},
+		{ID: "databricks", DatabricksKeyConfig: &schemas.DatabricksKeyConfig{ClientSecret: secret("databricks-client-secret")}},
+		{ID: "oauth", OAuthKeyConfig: &schemas.OAuthKeyConfig{ClientSecret: secret("oauth-client-secret"), PrivateKey: secret("oauth-private-key-pem"), ExtraParams: map[string]string{"resource": "oauth-extra-param-secret"}}},
+		{ID: "anthropic", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{IdentitySource: &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: secret("anthropic-identity-token")}}}},
 	}
 	want := []string{
 		"azure-client-secret", "vertex-private-key-id", "vertex-private-key-pem",
@@ -605,7 +610,7 @@ func TestDecisionProbeSecrets_IncludesEveryKeyCredential(t *testing.T) {
 	got := decisionProbeErrorFrom(&schemas.BifrostError{
 		StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
 		Error:      &schemas.ErrorField{Message: text, Type: schemas.Ptr(text), Code: schemas.Ptr(text)},
-	}, decisionProbeSecrets(config))
+	}, decisionProbeSecrets(&configstore.ProviderConfig{}, keys))
 	if got.Type == nil || got.Code == nil {
 		t.Fatalf("type %v, code %v; want both set", got.Type, got.Code)
 	}

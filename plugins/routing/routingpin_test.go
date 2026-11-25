@@ -468,10 +468,11 @@ func TestApplyRoutingRules_DecisionAliasRule(t *testing.T) {
 		Scope:         "global",
 	}
 	require.NoError(t, stored.AfterFind(nil))
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), stored))
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), stored))
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 	require.NoError(t, err)
 
 	decisionReq := &schemas.BifrostRequest{
