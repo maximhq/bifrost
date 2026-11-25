@@ -52,7 +52,7 @@ func vkMCPConfig(clientID, clientName string, tools ...string) configstoreTables
 func vkPermit(t testing.TB, vk *configstoreTables.TableVirtualKey, openClients map[string]string) *grant.Permit {
 	t.Helper()
 	store := fixtureStore(t, &liveFixture{allowedByDefaultClients: openClients})
-	return store.permitForVirtualKey(emptyCtx(), virtualKeyRecord(vk))
+	return store.permitForVirtualKey(emptyCtx(), virtualKeyRecord(store.live, vk))
 }
 
 // storedKeyPermit writes vk to a store of its own and returns the store and the permit it builds

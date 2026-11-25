@@ -850,27 +850,7 @@ func resetTestRecordsStore(tb testing.TB, cfg *configstore.GovernanceConfig) *Lo
 		tb.Fatal(err)
 	}
 	tb.Cleanup(live.Close)
-	g := registry.FromConfig(registry.FileInput{Governance: cfg})
-	cols := live.Collections
-	recs := make([]livestore.Record, 0, len(g.VirtualKeys)+len(g.Teams)+len(g.Customers)+len(g.Budgets)+len(g.RateLimits)+len(g.ModelConfigs))
-	for _, k := range g.VirtualKeys {
-		recs = append(recs, livestore.Rec(cols.VirtualKeys, k))
-	}
-	for _, team := range g.Teams {
-		recs = append(recs, livestore.Rec(cols.Teams, team))
-	}
-	for _, c := range g.Customers {
-		recs = append(recs, livestore.Rec(cols.Customers, c))
-	}
-	for _, b := range g.Budgets {
-		recs = append(recs, livestore.Rec(cols.Budgets, b))
-	}
-	for _, r := range g.RateLimits {
-		recs = append(recs, livestore.Rec(cols.RateLimits, r))
-	}
-	for _, m := range g.ModelConfigs {
-		recs = append(recs, livestore.Rec(cols.ModelConfigs, m))
-	}
+	recs := live.Collections.FileRecords(registry.FromConfig(registry.FileInput{Governance: cfg}))
 	if err := live.LoadRecords(ctx, recs); err != nil {
 		tb.Fatal(err)
 	}

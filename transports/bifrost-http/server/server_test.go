@@ -118,6 +118,16 @@ func governedServer(t *testing.T) (*BifrostHTTPServer, *governance.LocalGovernan
 	return &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config}, gs
 }
 
+// assignedVirtualMCPs is the virtual MCPs the key with this ID is assigned, as governance holds it.
+func assignedVirtualMCPs(t *testing.T, server *BifrostHTTPServer, gs *governance.LocalGovernanceStore, id string) []uint {
+	t.Helper()
+	vk, ok := gs.GetVirtualKeyByID(context.Background(), id)
+	require.True(t, ok)
+	set, ok := server.Config.LiveStore.Collections.GrantSet(vk.Grants)
+	require.True(t, ok, "the key's grant set is held")
+	return set.VirtualMCPIDs
+}
+
 // storeTestVirtualKey writes an active key with this ID, name and value to the server's config
 // store.
 func storeTestVirtualKey(t *testing.T, server *BifrostHTTPServer, id, name, value string) {
@@ -338,23 +348,21 @@ func TestVirtualMCPAssignmentsFollowTheKey(t *testing.T) {
 	reloaded, err := server.ReloadVirtualMCP(ctx, def.ID)
 	require.NoError(t, err)
 	require.Equal(t, "research", reloaded.Name)
-	require.NotNil(t, gs.GetVirtualMCPFromCache(def.ID), "the definition is in memory")
+	_, held := server.Config.LiveStore.Collections.VirtualMCPs.Get(registry.VirtualMCPKey(def.ID))
+	require.True(t, held, "the definition is in memory")
 
 	require.NoError(t, store.AttachVirtualMCPToVirtualKey(ctx, def.ID, "vk-1"))
 	require.NoError(t, server.ReloadVirtualMCPAssignment(ctx, "vk-1", def.ID, true))
-	vk, ok := gs.GetVirtualKeyByID(ctx, "vk-1")
-	require.True(t, ok)
-	require.Equal(t, []uint{def.ID}, vk.VirtualMCPIDs)
+	require.Equal(t, []uint{def.ID}, assignedVirtualMCPs(t, server, gs, "vk-1"))
 
 	require.NoError(t, store.DetachVirtualMCPFromVirtualKey(ctx, def.ID, "vk-1"))
 	require.NoError(t, server.ReloadVirtualMCPAssignment(ctx, "vk-1", def.ID, false))
-	vk, ok = gs.GetVirtualKeyByID(ctx, "vk-1")
-	require.True(t, ok)
-	require.Empty(t, vk.VirtualMCPIDs)
+	require.Empty(t, assignedVirtualMCPs(t, server, gs, "vk-1"))
 
 	require.NoError(t, store.DeleteVirtualMCP(ctx, def.ID))
 	require.NoError(t, server.RemoveVirtualMCP(ctx, def.ID))
-	require.Nil(t, gs.GetVirtualMCPFromCache(def.ID), "the removed definition is gone")
+	_, held = server.Config.LiveStore.Collections.VirtualMCPs.Get(registry.VirtualMCPKey(def.ID))
+	require.False(t, held, "the removed definition is gone")
 }
 
 // perCallerNamesConfigStore counts the reads of the names in per-user discoveries.

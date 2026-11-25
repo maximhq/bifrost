@@ -60,6 +60,12 @@ type LocalGovernanceStore struct {
 	// rateLimitDeletions invalidates captures that might include a deleted rate limit.
 	rateLimitDeletions atomic.Uint64
 
+	// permitViews holds what each grant set confers, keyed by the set's ID. permitGen counts the
+	// changes to what a view reads besides its set (providers, MCP clients and virtual MCPs): a
+	// view from an older generation, or older than permitViewTTL, reads as missing and is rebuilt.
+	permitViews *livestore.Table[livestore.Hash, *permitView]
+	permitGen   atomic.Uint64
+
 	// Config store for refresh operations
 	configStore configstore.ConfigStore
 
@@ -272,6 +278,7 @@ const (
 	modelConfigKeyOfTable = "governance_model_config_keys_of"
 	budgetUsageTable      = "governance_budget_usage"
 	rateLimitUsageTable   = "governance_rate_limit_usage"
+	permitViewsTable      = "governance_permit_views"
 )
 
 // NewLocalGovernanceStore creates a governance store over live, whose collections must already be
@@ -304,16 +311,19 @@ func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configS
 func (gs *LocalGovernanceStore) createTables(ctx context.Context) error {
 	var err error
 	if gs.modelConfigIndex, err = gs.live.NewTable[string, string](ctx, modelConfigKeysTable); err != nil {
-		return fmt.Errorf("failed to create the model config index: %w", err)
+		return err
 	}
 	if gs.modelConfigKeyOf, err = gs.live.NewTable[string, string](ctx, modelConfigKeyOfTable); err != nil {
-		return fmt.Errorf("failed to create the model config index: %w", err)
+		return err
 	}
 	if gs.budgetUsage, err = gs.live.RegisterState[LimitState](ctx, budgetUsageTable, livestore.KindBudget); err != nil {
-		return fmt.Errorf("failed to create the budget usage table: %w", err)
+		return err
 	}
 	if gs.rateLimitUsage, err = gs.live.RegisterState[LimitState](ctx, rateLimitUsageTable, livestore.KindRateLimit); err != nil {
-		return fmt.Errorf("failed to create the rate limit usage table: %w", err)
+		return err
+	}
+	if gs.permitViews, err = gs.live.NewTable[livestore.Hash, *permitView](ctx, permitViewsTable, livestore.WithGeneration(gs.permitGen.Load)); err != nil {
+		return err
 	}
 	return nil
 }
@@ -331,6 +341,9 @@ func (gs *LocalGovernanceStore) dropTables() {
 	}
 	if gs.rateLimitUsage != nil {
 		_ = gs.live.DropTable(context.Background(), gs.rateLimitUsage.Name())
+	}
+	if gs.permitViews != nil {
+		_ = gs.live.DropTable(context.Background(), gs.permitViews.Name())
 	}
 }
 
@@ -387,6 +400,16 @@ func (gs *LocalGovernanceStore) follow() {
 				}
 			}
 			gs.limitsRemoved(ctx, nil, removed)
+		}),
+		// A permit view reads the providers, MCP clients and virtual MCPs as well as its grant set.
+		gs.live.Collections.Providers.Subscribe(func(context.Context, []livestore.Change[registry.Provider]) {
+			gs.permitGen.Add(1)
+		}),
+		gs.live.Collections.MCPClients.Subscribe(func(context.Context, []livestore.Change[registry.MCPClient]) {
+			gs.permitGen.Add(1)
+		}),
+		gs.live.Collections.VirtualMCPs.Subscribe(func(context.Context, []livestore.Change[registry.VirtualMCP]) {
+			gs.permitGen.Add(1)
 		}),
 		gs.live.Collections.ModelConfigs.Subscribe(func(_ context.Context, changes []livestore.Change[registry.ModelConfig]) {
 			for _, c := range changes {
@@ -1458,30 +1481,92 @@ func loadSnapshotSources(ctx context.Context, configStore configstore.ConfigStor
 	return src, nil
 }
 
+// grantKeys is the keys a provider grant names, as a key's view shows them: each key's row ID,
+// name, key_id, models and provider, read from the provider key records. A grant names its keys
+// by key_id only, so the view shows a key as the provider holds it now; a key the provider no
+// longer holds, or one now held by another provider, is left out. A grant of every key lists none.
+func (gs *LocalGovernanceStore) grantKeys(p *registry.ProviderGrant) []configstoreTables.TableKey {
+	keys := make([]configstoreTables.TableKey, 0, len(p.KeyIDs))
+	if p.KeyIDs.IsUnrestricted() || len(p.KeyIDs) == 0 {
+		return keys
+	}
+	for _, id := range p.KeyIDs {
+		rec, ok := gs.live.Collections.ProviderKeys.Get(id)
+		if !ok || string(rec.Provider) != p.Provider {
+			continue
+		}
+		k := configstoreTables.TableKey{ID: rec.RowID, Name: rec.Key.Name, KeyID: rec.Key.ID, Provider: string(rec.Provider), Models: rec.Key.Models,
+			Value: *schemas.NewSecretVar("")}
+		// A config's read of its keys scanned these columns and an empty value, and ran the row's
+		// read hook, which fills the defaults of the columns it left out; build and run it the same
+		// way so the key shows as that read showed it.
+		if err := k.AfterFind(nil); err != nil {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // virtualKeyView is a key's record as a table struct, with its live budgets and rate limit and
-// its provider configs' live ones.
+// its provider configs' live ones. Its grants come from its grant set, which keeps no row identity
+// of their own: MCP configs carry no row ID, and agent and relay grants no creation time.
 func (gs *LocalGovernanceStore) virtualKeyView(ctx context.Context, k *registry.VirtualKey) *configstoreTables.TableVirtualKey {
 	active := k.Active
+	set, ok := gs.live.Collections.GrantSet(k.Grants)
+	if !ok {
+		set = &registry.GrantSet{}
+	}
 	vk := &configstoreTables.TableVirtualKey{
 		ID: k.ID, Name: k.Name, Value: *schemas.NewSecretVar(k.Value), IsActive: &active,
-		CalendarAligned: k.CalendarAligned, AllowAllProviders: k.AllowAllProviders,
+		CalendarAligned: k.CalendarAligned, AllowAllProviders: set.AllowAllProviders,
 		DisableContentLogging: k.DisableContentLogging, Metadata: k.Metadata,
 		TeamID: optionalID(k.TeamID), CustomerID: optionalID(k.CustomerID), BusinessUnitID: optionalID(k.BusinessUnitID),
 		CreatedByUserID: optionalID(k.CreatedByUserID), RateLimitID: optionalID(k.RateLimitID),
-		MCPConfigs: k.MCPConfigs, AgentGrants: k.AgentGrants, RelayGrants: k.RelayGrants,
 		Budgets: gs.liveBudgets(ctx, k.BudgetIDs), RateLimit: gs.LoadRateLimit(ctx, k.RateLimitID),
 	}
 	if k.ExpiresAt != 0 {
 		expires := time.Unix(0, k.ExpiresAt).UTC()
 		vk.ExpiresAt = &expires
 	}
-	vk.ProviderConfigs = make([]configstoreTables.TableVirtualKeyProviderConfig, len(k.ProviderConfigs))
-	for i, pc := range k.ProviderConfigs {
-		pc.Budgets = gs.liveBudgets(ctx, budgetIDs(pc.Budgets))
-		if pc.RateLimitID != nil {
-			pc.RateLimit = gs.LoadRateLimit(ctx, *pc.RateLimitID)
+	vk.ProviderConfigs = make([]configstoreTables.TableVirtualKeyProviderConfig, len(set.Providers))
+	for i := range set.Providers {
+		p := &set.Providers[i]
+		pc := configstoreTables.TableVirtualKeyProviderConfig{
+			VirtualKeyID: k.ID, Provider: p.Provider, Weight: p.Weight, AllowedModels: p.AllowedModels,
+			BlacklistedModels: p.BlacklistedModels, AllowAllKeys: p.KeyIDs.IsUnrestricted(), Keys: gs.grantKeys(p),
+		}
+		if i < len(k.ProviderLimits) {
+			limit := &k.ProviderLimits[i]
+			pc.ID, pc.RateLimitID = limit.ConfigID, optionalID(limit.RateLimitID)
+			pc.Budgets = gs.liveBudgets(ctx, limit.BudgetIDs)
+			if limit.RateLimitID != "" {
+				pc.RateLimit = gs.LoadRateLimit(ctx, limit.RateLimitID)
+			}
 		}
 		vk.ProviderConfigs[i] = pc
+	}
+	if set.MCP != nil {
+		vk.MCPConfigs = make([]configstoreTables.TableVirtualKeyMCPConfig, len(set.MCP))
+	}
+	for i := range set.MCP {
+		m := &set.MCP[i]
+		vk.MCPConfigs[i] = configstoreTables.TableVirtualKeyMCPConfig{
+			VirtualKeyID: k.ID, MCPClientID: m.ClientRowID, ToolsToExecute: m.Tools,
+			MCPClient: configstoreTables.TableMCPClient{ID: m.ClientRowID, ClientID: m.ClientID, Name: m.ClientName},
+		}
+	}
+	if set.Agents != nil {
+		vk.AgentGrants = make([]configstoreTables.TableVirtualKeyAgentGrant, len(set.Agents))
+	}
+	for i, name := range set.Agents {
+		vk.AgentGrants[i] = configstoreTables.TableVirtualKeyAgentGrant{VirtualKeyID: k.ID, AgentName: name}
+	}
+	if set.Relays != nil {
+		vk.RelayGrants = make([]configstoreTables.TableVirtualKeyRelayGrant, len(set.Relays))
+	}
+	for i, name := range set.Relays {
+		vk.RelayGrants[i] = configstoreTables.TableVirtualKeyRelayGrant{VirtualKeyID: k.ID, RelayName: name}
 	}
 	return vk
 }
@@ -1840,86 +1925,12 @@ func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.Bif
 	return DecisionAllow, nil
 }
 
-// permitForVirtualKey builds the permit a virtual key confers: one provider permit per configured
-// provider, and one MCP permit per MCP client the key may execute tools of: its own MCP configs,
-// plus the clients allowed by default.
-//
-// allowedByDefaultClients maps client id to client name, as the in-memory store reports it. A client
-// the key configures explicitly is never widened by that map: the explicit config decides, including
-// when it grants no tool at all.
-//
-// The result is a snapshot for one attempt. Provider permits carry a copy of the config they came
-// from, so a key reloaded mid-attempt cannot change what that attempt has already resolved. A later
-// attempt builds its own and picks the reload up. What funds the key is not here: see HolderLimits
-// and PermitProviderLimits, which read it by the permit's identity when an attempt's provider is known.
-func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *registry.VirtualKey) *grant.Permit {
-	if vk == nil {
-		return nil
-	}
-
-	allowedByDefaultClients := MCPClientsAllowedByDefault(gs.live)
-
-	providerPermits := make([]schemas.ProviderPermit, 0, len(vk.ProviderConfigs))
-	for i := range vk.ProviderConfigs {
-		config := vk.ProviderConfigs[i]
-		providerPermits = append(providerPermits, schemas.ProviderPermit{
-			Provider:          config.Provider,
-			AllowedModels:     config.AllowedModels,
-			BlacklistedModels: config.BlacklistedModels,
-			KeyIDs:            config.KeyIDs(),
-			Weight:            config.Weight,
-		})
-	}
-	if vk.AllowAllProviders {
-		providerPermits = AppendAllProviderPermits(providerPermits, ConfiguredProviderNames(gs.live))
-	}
-
-	// A key's own MCP configs and its Virtual MCPs build one accumulator, so a Virtual MCP grants
-	// exactly like a config: owns the clients it names, unions per client, blocks allowed-by-default.
-	vmcpIDs := vk.VirtualMCPIDs
-	acc := NewMCPToolAccumulator(len(vk.MCPConfigs) + len(vmcpIDs))
-	for i := range vk.MCPConfigs {
-		acc.addMCPConfig(&vk.MCPConfigs[i])
-	}
-	for _, id := range vmcpIDs {
-		def := gs.virtualMCPByID(id)
-		if def == nil || !def.Enabled {
-			continue
-		}
-		acc.AddVirtualMCP(def)
-		// A key's direct assignment makes the vMCP addressable at /mcp/<slug>.
-		RecordGrantedVirtualMCP(ctx, def)
-	}
-	mcpPermits := MCPPermitsFromAccumulator(acc, "virtual key", vk.Name, MCPClientNames(gs.live), gs.logger)
-	mcpPermits = AppendMCPPermitsAllowedByDefault(mcpPermits, acc.ConfiguredClients(), allowedByDefaultClients)
-
-	agentPermits := make([]string, 0, len(vk.AgentGrants))
-	for _, agentGrant := range vk.AgentGrants {
-		agentPermits = append(agentPermits, agentGrant.AgentName)
-	}
-
-	endpointPermits := make([]string, 0, len(vk.RelayGrants))
-	for _, endpointGrant := range vk.RelayGrants {
-		endpointPermits = append(endpointPermits, endpointGrant.RelayName)
-	}
-	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.Active, vk.IsExpiredAt(time.Now()), providerPermits, mcpPermits,
-		grant.WithAgentPermits(agentPermits), grant.WithAllowAllProviders(vk.AllowAllProviders),
-		grant.WithRelayPermits(endpointPermits))
-}
-
 // virtualMCPByID returns the virtual MCP definition with this row ID, nil when there is none.
 func (gs *LocalGovernanceStore) virtualMCPByID(id uint) *configstoreTables.TableVirtualMCP {
 	if v, ok := gs.live.Collections.VirtualMCPs.Get(registry.VirtualMCPKey(id)); ok {
 		return &v.TableVirtualMCP
 	}
 	return nil
-}
-
-// GetVirtualMCPFromCache returns the live cached Virtual MCP definition for id, or nil. Enterprise
-// access-profile / project resolution uses this so it serves the current definition (Enabled and
-// tool specs) rather than a snapshot captured at propagate time, which goes stale on a vMCP edit.
-func (gs *LocalGovernanceStore) GetVirtualMCPFromCache(id uint) *configstoreTables.TableVirtualMCP {
-	return gs.virtualMCPByID(id)
 }
 
 // grantedVirtualMCPsKey keys the per-request set of addressable Virtual MCPs.
@@ -2052,14 +2063,14 @@ func (gs *LocalGovernanceStore) PermitProviderLimits(ctx context.Context, permit
 	if vk == nil || provider == "" {
 		return nil, nil
 	}
-	for i := range vk.ProviderConfigs {
-		config := vk.ProviderConfigs[i]
-		if config.Provider != string(provider) {
+	for i := range vk.ProviderLimits {
+		limit := &vk.ProviderLimits[i]
+		if limit.Provider != string(provider) {
 			continue
 		}
-		holderID := strconv.FormatUint(uint64(config.ID), 10)
-		budgets = append(budgets, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyProviderConfig, holderID, vk.Name, config.Provider, "", budgetIDs(config.Budgets)...)...)
-		rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyProviderConfig, holderID, vk.Name, config.Provider, "", idList(derefString(config.RateLimitID))...)...)
+		holderID := strconv.FormatUint(uint64(limit.ConfigID), 10)
+		budgets = append(budgets, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyProviderConfig, holderID, vk.Name, limit.Provider, "", limit.BudgetIDs...)...)
+		rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderVirtualKeyProviderConfig, holderID, vk.Name, limit.Provider, "", idList(limit.RateLimitID)...)...)
 	}
 	return budgets, rateLimits
 }
@@ -2205,16 +2216,6 @@ func (gs *LocalGovernanceStore) organizationLimitsForVirtualKey(ctx context.Cont
 		rateLimits = append(rateLimits, grant.LimitsHeldBy(grant.LimitHolderCustomer, customer.ID, customer.Name, "", "", idList(customer.RateLimitID)...)...)
 	}
 	return budgets, rateLimits
-}
-
-// budgetIDs names a set of budget rows. Knowing what a budget row looks like is this package's
-// business, not the grant model's, so the rows stop here and only identities travel on.
-func budgetIDs(rows []configstoreTables.TableBudget) []string {
-	ids := make([]string, 0, len(rows))
-	for _, row := range rows {
-		ids = append(ids, row.ID)
-	}
-	return ids
 }
 
 // idList names a holder's single optional limit as the list a grant records. A key, a
@@ -3475,6 +3476,13 @@ type dumpRateGeneration struct {
 	requests     time.Time
 	tokenEpoch   int64
 	requestEpoch int64
+}
+
+// PermitGeneration counts changes to the providers, MCP clients and virtual MCPs a permit view reads.
+// A view a build derives from those records the same way is stale once the count moves, so it can
+// key its own views to this count instead of following the records itself.
+func (gs *LocalGovernanceStore) PermitGeneration() uint64 {
+	return gs.permitGen.Load()
 }
 
 // CaptureDumpResetGeneration returns a check for resets or calendar adoption
