@@ -17,7 +17,9 @@ import type { ColumnOrderState, ColumnPinningState, VisibilityState } from "@tan
 import { ColumnDef, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { shouldShowEmptyState } from "../deliveries.page.utils";
+import { getLocale } from "@/lib/i18n";
 
 export interface DeliveriesPagination {
 	limit: number;
@@ -66,6 +68,8 @@ export function DeliveriesTable({
 	onReorderColumns,
 }: DeliveriesTableProps) {
 	// The expand chevron and the actions button are structural, not user-configurable.
+	const { t } = useTranslation("governance");
+	const { t: tObs } = useTranslation("observability");
 	const fixedColumnIds = useMemo(() => new Set<string>(["expand", "actions"]), []);
 
 	const { headerCellRefs, setHeaderCellRef } = useHeaderCellRefs();
@@ -179,7 +183,7 @@ export function DeliveriesTable({
 										{polling ? (
 											<>
 												<RefreshCw className="h-4 w-4 animate-spin" />
-												Waiting for new deliveries...
+												{t("webhooks.deliveries.table.waiting")}
 											</>
 										) : (
 											<Button
@@ -190,7 +194,7 @@ export function DeliveriesTable({
 												data-testid="webhook-deliveries-table-refresh-btn"
 											>
 												<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-												Refresh
+												{tObs("labels.refresh")}
 											</Button>
 										)}
 									</div>
@@ -242,7 +246,7 @@ export function DeliveriesTable({
 							) : !shouldShowEmptyState({ rowCount: table.getRowModel().rows.length, loading, error }) ? null : (
 								<TableRow>
 									<TableCell colSpan={visibleColumnCount} className="h-24 text-center">
-										No deliveries found. Try adjusting your filters and/or time range.
+										{t("webhooks.deliveries.table.empty")}
 									</TableCell>
 								</TableRow>
 							)}
@@ -252,12 +256,16 @@ export function DeliveriesTable({
 
 				<div className="flex items-center justify-between text-xs" data-testid="pagination">
 					<div className="text-muted-foreground flex items-center gap-2">
-						{startItemDisplay.toLocaleString()}-{endItemDisplay.toLocaleString()} of {totalItems.toLocaleString()} deliveries
+						{t("webhooks.deliveries.table.range", {
+							from: startItemDisplay.toLocaleString(getLocale()),
+							to: endItemDisplay.toLocaleString(getLocale()),
+							total: totalItems.toLocaleString(getLocale()),
+						})}
 					</div>
 
 					<div className="flex items-center gap-2">
 						<div className="flex items-center gap-1.5">
-							<span className="text-muted-foreground">Rows per page</span>
+							<span className="text-muted-foreground">{tObs("logs.rowsPerPage")}</span>
 							<ComboboxSelect
 								options={pageSizeOptions}
 								value={String(pageSizePref)}
@@ -265,7 +273,7 @@ export function DeliveriesTable({
 								disableSearch
 								hideClear
 								className="h-7 w-fit gap-1 text-xs"
-								aria-label="Rows per page"
+								aria-label={tObs("logs.rowsPerPage")}
 								data-testid="page-size-select"
 							/>
 						</div>
@@ -275,15 +283,15 @@ export function DeliveriesTable({
 							onClick={() => goToPage(currentPage - 1)}
 							disabled={currentPage <= 1}
 							data-testid="prev-page"
-							aria-label="Previous page"
+							aria-label={t("webhooks.pagination.previousPage")}
 						>
 							<ChevronLeft className="size-3" />
 						</Button>
 
 						<div className="flex items-center gap-1">
-							<span>Page</span>
+							<span>{t("webhooks.pagination.page")}</span>
 							<span>{currentPage}</span>
-							<span>of {totalPages}</span>
+							<span>{t("webhooks.pagination.ofPages", { total: totalPages })}</span>
 						</div>
 
 						<Button
@@ -292,7 +300,7 @@ export function DeliveriesTable({
 							onClick={() => goToPage(currentPage + 1)}
 							disabled={totalPages === 0 || currentPage >= totalPages}
 							data-testid="next-page"
-							aria-label="Next page"
+							aria-label={t("webhooks.pagination.nextPage")}
 						>
 							<ChevronRight className="size-3" />
 						</Button>

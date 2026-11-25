@@ -1,0 +1,43 @@
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "redis") .Values.vectorStore.redis.enabled (not .Values.vectorStore.redis.external.enabled) .Values.vectorStore.redis.metrics.enabled (dig "serviceMonitor" "enabled" false .Values.vectorStore.redis.metrics) }}
+{{- with .Values.vectorStore.redis.metrics.serviceMonitor }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "bifrost.fullname" $ }}-redis
+  namespace: {{ .namespace | default $.Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: redis
+    {{- with .labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ $.Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "bifrost.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: redis
+  endpoints:
+    - port: metrics
+      path: /metrics
+      {{- with .interval }}
+      interval: {{ . }}
+      {{- end }}
+      {{- with .scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      {{- /* For exporter basic auth set through metrics.extraEnv; without it every scrape gets a 401. */}}
+      {{- $basicAuth := .basicAuth | default dict }}
+      {{- if $basicAuth.enabled }}
+      basicAuth:
+        username:
+          name: {{ $basicAuth.existingSecret }}
+          key: {{ $basicAuth.usernameKey | default "username" }}
+        password:
+          name: {{ $basicAuth.existingSecret }}
+          key: {{ $basicAuth.passwordKey | default "password" }}
+      {{- end }}
+{{- end }}
+{{- end }}

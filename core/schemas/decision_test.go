@@ -163,7 +163,7 @@ func TestDecisionInputPartTextAndAssets(t *testing.T) {
 	assert.Equal(t, []any{"a", "b"}, parts[2].Text.Value())
 	assert.True(t, parts[3].IsAsset())
 	assert.Equal(t, "door", *parts[3].Name)
-	assert.Equal(t, []byte("AAAA"), parts[3].Data, "data is base64 on the wire")
+	assert.Equal(t, []byte("AAAA"), parts[3].Data.File, "data is base64 on the wire")
 	assert.False(t, parts[4].IsAsset(), "an image without an ID is inline evidence")
 	assert.True(t, input.HasAssetParts())
 	assert.False(t, DecisionInput{Messages: []DecisionInputMessage{{Role: "user", Content: DecisionInputContent{Parts: parts[4:]}}}}.HasAssetParts())
@@ -206,6 +206,126 @@ func TestDecisionInputMessagesKeepOpenAIFields(t *testing.T) {
 	out, err := Marshal(messages)
 	require.NoError(t, err)
 	assert.JSONEq(t, body, string(out))
+}
+
+// TestDecisionInputFileParts pins the input_file part: its bytes read from
+// base64 data into the same field an asset's do, its url and mime_type are
+// kept and written back, and url and mime_type sent on any other part are
+// dropped as they were before input_file existed, so providers that forward
+// parts as they are never see them. A bad data value fails with its reason.
+func TestDecisionInputFileParts(t *testing.T) {
+	body := `[{"role":"user","content":[
+		{"type":"input_text","text":"Inspect the evidence.","url":"https://example.com/x","mime_type":"text/plain"},
+		{"type":"input_image","image_url":"https://example.com/box.png","mime_type":"image/png"},
+		{"type":"input_file","data":"JVBERi0xLjcK","mime_type":"application/pdf"},
+		{"type":"input_file","url":"https://example.com/call.mp3","mime_type":"audio/mpeg"},
+		{"type":"input_file","name":"clip","mime_type":"video/mp4","detail":"low"}
+	]}]`
+	var input DecisionInput
+	require.NoError(t, Unmarshal([]byte(body), &input))
+	parts := input.Messages[0].Content.Parts
+	assert.Nil(t, parts[0].URL, "url belongs to input_file only")
+	assert.Nil(t, parts[0].MimeType)
+	assert.Nil(t, parts[1].MimeType)
+	assert.Equal(t, "%PDF-1.7\n", string(parts[2].Data.File), "data is base64 on the wire")
+	assert.Equal(t, "application/pdf", *parts[2].MimeType)
+	assert.Equal(t, "https://example.com/call.mp3", *parts[3].URL)
+	assert.Equal(t, "clip", *parts[4].Name)
+	assert.Equal(t, "low", *parts[4].Detail)
+	textAndFile := DecisionInput{Messages: []DecisionInputMessage{{Role: "user", Content: DecisionInputContent{Parts: []DecisionInputPart{parts[0], parts[2]}}}}}
+	assert.Equal(t, DecisionInputPartTypeFile, textAndFile.NonTextPartType(), "text-only providers reject a file by its type")
+
+	out, err := Marshal(input.Messages[0].Content.Parts[2:4])
+	require.NoError(t, err)
+	assert.Equal(t, `[{"type":"input_file","data":"JVBERi0xLjcK","mime_type":"application/pdf"},{"type":"input_file","url":"https://example.com/call.mp3","mime_type":"audio/mpeg"}]`, string(out))
+
+	var bad DecisionInput
+	err = Unmarshal([]byte(`[{"role":"user","content":[{"type":"input_file","data":"data:application/pdf;base64,JVBERg==","mime_type":"application/pdf"}]}]`), &bad)
+	assert.ErrorContains(t, err, "not a data URL", "the reason reaches the caller")
+}
+
+// TestDecisionInputPartValidateFile pins the input_file rules every provider
+// that reads files shares: a media type that is not an image, and exactly one
+// source of bytes.
+func TestDecisionInputPartValidateFile(t *testing.T) {
+	file := func(edit func(*DecisionInputPart)) DecisionInputPart {
+		part := DecisionInputPart{Type: DecisionInputPartTypeFile, MimeType: Ptr("application/pdf"), Data: DecisionData{File: []byte("%PDF")}}
+		edit(&part)
+		return part
+	}
+	assert.NoError(t, file(func(*DecisionInputPart) {}).ValidateFile())
+	assert.NoError(t, file(func(p *DecisionInputPart) { p.Data.File, p.URL = nil, Ptr("https://example.com/a.pdf") }).ValidateFile())
+	assert.NoError(t, file(func(p *DecisionInputPart) { p.Name = Ptr("doc") }).ValidateFile(), "a multipart file part already moved into data")
+	for name, tc := range map[string]struct {
+		edit func(*DecisionInputPart)
+		want string
+	}{
+		"no media type":    {func(p *DecisionInputPart) { p.MimeType = nil }, "requires mime_type"},
+		"blank media type": {func(p *DecisionInputPart) { p.MimeType = Ptr(" ") }, "requires mime_type"},
+		"image":            {func(p *DecisionInputPart) { p.MimeType = Ptr("Image/PNG") }, "send images as input_image"},
+		"structured data":  {func(p *DecisionInputPart) { p.Data = DecisionData{Structured: map[string]any{}} }, "base64-encoded"},
+		"data and url":     {func(p *DecisionInputPart) { p.URL = Ptr("https://example.com/a.pdf") }, "both data and url"},
+		"nothing":          {func(p *DecisionInputPart) { p.Data.File = nil }, "requires data, url"},
+		"empty data":       {func(p *DecisionInputPart) { p.Data.File = []byte{} }, "requires data, url"},
+		"unattached name":  {func(p *DecisionInputPart) { p.Data.File, p.Name = nil, Ptr("doc") }, "needs a multipart request"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.ErrorContains(t, file(tc.edit).ValidateFile(), tc.want)
+		})
+	}
+}
+
+// TestDecisionInputWireUnchanged pins that messages and parts that existed
+// before conversation items and JSON parts are written byte for byte as they
+// were, so a request that already worked reaches every provider unchanged: a
+// message's type, role, and content in that order, an image's detail, and a
+// Typesafe asset's base64 data between its id and name.
+func TestDecisionInputWireUnchanged(t *testing.T) {
+	for _, body := range []string{
+		`[{"role":"user","content":"I was charged twice."}]`,
+		`[{"type":"message","role":"user","content":[{"type":"input_text","text":"Inspect the box."},{"type":"input_image","image_url":"https://example.com/box.png","detail":"high"},{"type":"input_image","id":"r-cam","data":"QUFBQQ==","name":"door"}]}]`,
+	} {
+		var input DecisionInput
+		require.NoError(t, Unmarshal([]byte(body), &input))
+		out, err := Marshal(input)
+		require.NoError(t, err)
+		assert.Equal(t, body, string(out))
+	}
+	built, err := Marshal(DecisionInputMessage{Role: "user", Content: DecisionInputContent{Text: Ptr("hi")}})
+	require.NoError(t, err)
+	assert.Equal(t, `{"role":"user","content":"hi"}`, string(built), "a message built in Go, as the routing plugin builds one")
+}
+
+// TestDecisionDataJSON pins a part's data, which two part types send under one
+// key: a Typesafe asset's base64 file reads into File and is written back as
+// the same base64, and an input_json object or array reads into Structured,
+// keeps every number exactly (an ID above 2^53 is not rounded), and is written
+// with sorted keys so the same value is always sent as the same bytes. Data of
+// any other kind is rejected.
+func TestDecisionDataJSON(t *testing.T) {
+	for name, tc := range map[string]struct{ in, out, file string }{
+		"asset file":       {in: `"QUFBQQ=="`, out: `"QUFBQQ=="`, file: "AAAA"},
+		"object":           {in: `{"order":"A-1","charges":[49,49]}`, out: `{"charges":[49,49],"order":"A-1"}`},
+		"array of objects": {in: `[{"sku":"B","qty":0},{"sku":"A","qty":2}]`, out: `[{"qty":0,"sku":"B"},{"qty":2,"sku":"A"}]`},
+		"big integer":      {in: `{"order_id":12345678901234567890}`, out: `{"order_id":12345678901234567890}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var data DecisionData
+			require.NoError(t, Unmarshal([]byte(tc.in), &data))
+			assert.Equal(t, tc.file, string(data.File))
+			assert.Equal(t, tc.file == "", data.Structured != nil)
+			out, err := Marshal(data)
+			require.NoError(t, err)
+			assert.Equal(t, tc.out, string(out))
+		})
+	}
+
+	var number DecisionData
+	assert.Error(t, Unmarshal([]byte(`7`), &number))
+	var dataURL DecisionData
+	assert.ErrorContains(t, Unmarshal([]byte(`"data:application/pdf;base64,JVBERg=="`), &dataURL), "not a data URL", "the media type has a field of its own")
+	_, err := Marshal(DecisionData{File: []byte("x"), Structured: map[string]any{}})
+	assert.Error(t, err, "at most one member is set")
 }
 
 // TestDecisionQuestionNames pins the names map-shaped providers send questions
@@ -293,4 +413,25 @@ func TestSupportsDecisions(t *testing.T) {
 	assert.True(t, ResolveModelCaps(OpenAI, "gpt-7-decider").SupportsDecisions(DefaultSupportsDecisions("gpt-7-decider")))
 	assert.False(t, ResolveModelCaps(OpenAI, "gpt-6-luna").SupportsDecisions(DefaultSupportsDecisions("gpt-6-luna")))
 	assert.True(t, ResolveModelCaps(OpenAI, "gpt-6-luna-2026-09-01").SupportsDecisions(DefaultSupportsDecisions("gpt-6-luna-2026-09-01")), "no row: the fallback decides")
+}
+
+// BenchmarkDecisionInputMessagesJSON measures decoding and encoding a typical
+// message input (a user message with text and an image, and an assistant's
+// reply), which every decision request with messages pays on the route and
+// again on the provider's wire.
+func BenchmarkDecisionInputMessagesJSON(b *testing.B) {
+	data := []byte(`[
+		{"role":"user","content":[{"type":"input_text","text":"Is the box in this photo damaged?"},{"type":"input_image","image_url":"https://example.com/box.png","detail":"high"}]},
+		{"role":"assistant","content":"The corner looks dented."}
+	]`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var input DecisionInput
+		if err := Unmarshal(data, &input); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := Marshal(input); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

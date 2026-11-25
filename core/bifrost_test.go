@@ -17,12 +17,17 @@ import (
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
 	"github.com/maximhq/bifrost/core/mcp"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -134,6 +139,101 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 			t.Errorf("Expected no error, got %v", err)
 		}
 	})
+}
+
+// Selecting a provider key stamps its content-logging decision for the post-hooks, which run after
+// selection. The stamp is sticky: once a key that turned content off has been sent the request, a
+// retry onto a key that turns it on does not reopen content, and a request that fails outright keeps
+// the stamp although the selected key itself is cleared.
+func TestExecuteRequestWithRetries_StampsProviderKeyContentLogging(t *testing.T) {
+	logger := NewDefaultLogger(schemas.LogLevelError)
+	keyOff := schemas.Key{ID: "key-off", Name: "off", DisableContentLogging: Ptr(true)}
+	keyOn := schemas.Key{ID: "key-on", Name: "on", DisableContentLogging: Ptr(false)}
+	keyInherit := schemas.Key{ID: "key-inherit", Name: "inherit"}
+	inOrder := func(keys ...schemas.Key) func(map[string]bool, map[string]bool) (schemas.Key, error) {
+		return func(used, _ map[string]bool) (schemas.Key, error) {
+			for _, k := range keys {
+				if !used[k.ID] {
+					return k, nil
+				}
+			}
+			return keys[len(keys)-1], nil
+		}
+	}
+	// failFirst fails the first n attempts with status and records the key each attempt was sent on.
+	failFirst := func(n, status int, sent *[]string) func(schemas.Key) (string, *schemas.BifrostError) {
+		calls := 0
+		return func(key schemas.Key) (string, *schemas.BifrostError) {
+			*sent = append(*sent, key.Name)
+			calls++
+			if calls <= n {
+				return "", createBifrostError("upstream refused", Ptr(status), nil, false)
+			}
+			return "success", nil
+		}
+	}
+	for _, tc := range []struct {
+		name        string
+		keys        []schemas.Key
+		failures    int
+		status      int
+		maxRetries  int
+		wantKeys    []string
+		wantPresent bool
+		wantValue   bool
+	}{
+		{name: "a key that turns content off", keys: []schemas.Key{keyOff}, wantKeys: []string{"off"}, wantPresent: true, wantValue: true},
+		{name: "a key that turns content on", keys: []schemas.Key{keyOn}, wantKeys: []string{"on"}, wantPresent: true, wantValue: false},
+		{name: "a key that inherits stamps nothing", keys: []schemas.Key{keyInherit}, wantKeys: []string{"inherit"}},
+		// A rate limit is a per-key failure, so the retry rotates onto the on key.
+		{name: "off stays off after a retry onto an on key", keys: []schemas.Key{keyOff, keyOn}, failures: 1, status: 429, maxRetries: 2, wantKeys: []string{"off", "on"}, wantPresent: true, wantValue: true},
+		// A 5xx is transient: the retry stays on the same key, which keeps its own decision.
+		{name: "a transient retry stays on the same key", keys: []schemas.Key{keyOff, keyOn}, failures: 1, status: 503, maxRetries: 2, wantKeys: []string{"off", "off"}, wantPresent: true, wantValue: true},
+		{name: "a failed request keeps the stamp", keys: []schemas.Key{keyOff}, failures: 10, status: 503, maxRetries: 0, wantKeys: []string{"off"}, wantPresent: true, wantValue: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			config := createTestConfig(tc.maxRetries, time.Millisecond, time.Millisecond)
+			var sent []string
+			_, _ = executeRequestWithRetries(ctx, config, failFirst(tc.failures, tc.status, &sent), inOrder(tc.keys...), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+			if !slices.Equal(sent, tc.wantKeys) {
+				t.Fatalf("attempts were sent on keys %v, want %v", sent, tc.wantKeys)
+			}
+			value, present := ctx.Value(schemas.BifrostContextKeyProviderKeyDisableContentLogging).(bool)
+			if present != tc.wantPresent || value != tc.wantValue {
+				t.Fatalf("provider key layer = (%v, present %v), want (%v, present %v)", value, present, tc.wantValue, tc.wantPresent)
+			}
+		})
+	}
+}
+
+// Realtime and WebSocket sessions pick their key here rather than through the retry executor, and
+// their turns are logged on the same context, so the key's content-logging decision is stamped at
+// this selection too.
+func TestSelectKeyForProviderRequestType_StampsProviderKeyContentLogging(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 5, 1000)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-off", Name: "Key Off", Value: *schemas.NewSecretVar("sk-off"), Models: schemas.WhiteList{"*"}, Weight: 1, DisableContentLogging: Ptr(true)},
+	})
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(bifrost.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.RealtimeRequest, schemas.OpenAI, "gpt-4o-realtime-preview")
+	if err != nil {
+		t.Fatalf("SelectKeyForProviderRequestType: %v", err)
+	}
+	if key.ID != "key-off" {
+		t.Fatalf("selected %q, want key-off", key.ID)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderKeyDisableContentLogging).(bool); !got {
+		t.Fatalf("provider key layer = %v, want true", ctx.Value(schemas.BifrostContextKeyProviderKeyDisableContentLogging))
+	}
 }
 
 // Test executeRequestWithRetries - retry limits
@@ -656,6 +756,30 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	}
 }
 
+// An integration that decodes a body without messages builds an empty, non-nil Input; it must
+// be rejected as a 400 before dispatch, where the Responses conversion would panic on it.
+func TestChatCompletionRequest_EmptyInputRejected(t *testing.T) {
+	// A bare Bifrost has no request pools, so a request that slips past the guard panics.
+	guard := func(call func() *schemas.BifrostError) (err *schemas.BifrostError, passed bool) {
+		defer func() { passed = recover() != nil }()
+		return call(), false
+	}
+	bifrost := &Bifrost{}
+	for _, input := range [][]schemas.ChatMessage{nil, {}} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-5.6-luna", Input: input}
+
+		err, passed := guard(func() *schemas.BifrostError { _, err := bifrost.ChatCompletionRequest(ctx, req); return err })
+		if passed || err == nil || err.EffectiveHTTPStatus() != http.StatusBadRequest {
+			t.Fatalf("chat: expected 400 for input %#v, got err=%v passedGuard=%v", input, err, passed)
+		}
+		err, passed = guard(func() *schemas.BifrostError { _, err := bifrost.ChatCompletionStreamRequest(ctx, req); return err })
+		if passed || err == nil || err.EffectiveHTTPStatus() != http.StatusBadRequest {
+			t.Fatalf("chat stream: expected 400 for input %#v, got err=%v passedGuard=%v", input, err, passed)
+		}
+	}
+}
+
 // https://github.com/maximhq/bifrost/issues/6784: an OpenAI-compatible upstream that ends
 // generation on finish_reason, never sends [DONE] and then parks the connection behind SSE
 // heartbeats holds the stream open indefinitely — heartbeat bytes reset the idle timer without
@@ -811,6 +935,36 @@ func BenchmarkCalculateBackoff(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		calculateBackoff(i%10, config)
 	}
+}
+
+// BenchmarkReadyHeldStreamCommit measures what the held-stream commit signal adds per stream
+// attempt, on the chunk that commits it. An ungated stream (nothing paused it) pays one context
+// lookup; only a held stream also marks the watch, which the gate then consumes.
+func BenchmarkReadyHeldStreamCommit(b *testing.B) {
+	newCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req")
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace")
+		return ctx
+	}
+	b.Run("ungated", func(b *testing.B) {
+		ctx := newCtx()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			readyHeldStreamCommit(ctx)
+		}
+	})
+	b.Run("held", func(b *testing.B) {
+		ctx := newCtx()
+		ctx.SetValue(schemas.BifrostContextKeyStreamGated, true)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			readyHeldStreamCommit(ctx)
+			ctx.ConsumeStreamCommitWatch()
+		}
+	})
 }
 
 // BenchmarkAgentContinuationChecksOnPlainRequest measures what the MCP agent-loop continuation
@@ -1161,6 +1315,94 @@ func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	if tracer.flushed.Load() != 1 {
 		t.Fatalf("expected trace flush count 1, got %d", tracer.flushed.Load())
 	}
+}
+
+// passthroughBodyRewritingPlugin replaces the request in PreLLMHook with a new passthrough
+// request carrying a different body, the way a guardrail redacts a passthrough turn.
+type passthroughBodyRewritingPlugin struct {
+	body []byte
+}
+
+func (p *passthroughBodyRewritingPlugin) GetName() string { return "passthrough-body-rewriting" }
+func (p *passthroughBodyRewritingPlugin) Cleanup() error  { return nil }
+func (p *passthroughBodyRewritingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *passthroughBodyRewritingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	rewritten := *req.PassthroughRequest
+	rewritten.Body = p.body
+	return &schemas.BifrostRequest{RequestType: req.RequestType, PassthroughRequest: &rewritten}, nil, nil
+}
+func (p *passthroughBodyRewritingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestRunStreamPreHooks_ReturnsPreHookRequest pins that a request a pre-hook replaces comes back
+// on WSStreamHooks.Request, so a websocket relay forwards the rewritten body instead of the frame
+// it received. With no plugin rewriting, the original request comes back unchanged.
+func TestRunStreamPreHooks_ReturnsPreHookRequest(t *testing.T) {
+	original := []byte(`{"type":"response.create","model":"gpt-5","input":"secret"}`)
+	rewrittenBody := []byte(`{"type":"response.create","model":"gpt-5","input":"[redacted]"}`)
+	newRequest := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.PassthroughStreamRequest,
+			PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Method:   "POST",
+				Path:     "/backend-api/codex/responses",
+				Body:     original,
+				Provider: schemas.OpenAI,
+				Model:    "gpt-5",
+			},
+		}
+	}
+
+	t.Run("rewritten", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{
+			Account:    NewMockAccount(),
+			Logger:     NewNoOpLogger(),
+			LLMPlugins: []schemas.LLMPlugin{&passthroughBodyRewritingPlugin{body: rewrittenBody}},
+		})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		defer client.Shutdown()
+
+		req := newRequest()
+		hooks, bifrostErr := client.RunStreamPreHooks(ctx, req)
+		if bifrostErr != nil {
+			t.Fatalf("RunStreamPreHooks returned error: %v", bifrostErr)
+		}
+		defer hooks.Cleanup()
+		if hooks.Request == nil || hooks.Request == req {
+			t.Fatalf("expected the pre-hook's replacement request, got %p (original %p)", hooks.Request, req)
+		}
+		if got := string(hooks.Request.PassthroughRequest.Body); got != string(rewrittenBody) {
+			t.Fatalf("expected rewritten body %s, got %s", rewrittenBody, got)
+		}
+		if got := string(req.PassthroughRequest.Body); got != string(original) {
+			t.Fatalf("original request body changed to %s", got)
+		}
+	})
+
+	t.Run("unchanged", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		client, err := Init(ctx, schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Error initializing Bifrost: %v", err)
+		}
+		defer client.Shutdown()
+
+		req := newRequest()
+		hooks, bifrostErr := client.RunStreamPreHooks(ctx, req)
+		if bifrostErr != nil {
+			t.Fatalf("RunStreamPreHooks returned error: %v", bifrostErr)
+		}
+		defer hooks.Cleanup()
+		if hooks.Request != req {
+			t.Fatalf("expected the original request back when no plugin rewrites it")
+		}
+	})
 }
 
 // mockKVStore implements schemas.KVStore for session stickiness tests.
@@ -3242,6 +3484,161 @@ func TestPluginPipelineStreamingRace(t *testing.T) {
 	wg.Wait()
 }
 
+// streamSpanRecorder records each span's parent, start and end, for checking the
+// shape of streaming post-hook spans.
+type streamSpanRecorder struct {
+	schemas.NoOpTracer
+	mu       sync.Mutex
+	spans    map[string]*streamSpanRecord
+	deferred string // the stream's LLM span, as GetDeferredSpanID returns it
+}
+
+type streamSpanRecord struct {
+	name, parent string
+	start, end   time.Time
+	attrs        map[string]any
+}
+
+func (t *streamSpanRecorder) StartSpanID(ctx context.Context, name string, _ schemas.SpanKind) (string, schemas.SpanHandle) {
+	parent, _ := ctx.Value(schemas.BifrostContextKeySpanID).(string)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	id := fmt.Sprintf("span-%d", len(t.spans)+1)
+	t.spans[id] = &streamSpanRecord{name: name, parent: parent, start: time.Now(), attrs: map[string]any{}}
+	return id, id
+}
+
+func (t *streamSpanRecorder) StartSpan(ctx context.Context, name string, kind schemas.SpanKind) (context.Context, schemas.SpanHandle) {
+	id, h := t.StartSpanID(ctx, name, kind)
+	return context.WithValue(ctx, schemas.BifrostContextKeySpanID, id), h
+}
+
+func (t *streamSpanRecorder) SetAttribute(h schemas.SpanHandle, key string, value any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spans[h.(string)].attrs[key] = value
+}
+
+func (t *streamSpanRecorder) SetSpanStartTime(h schemas.SpanHandle, start time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spans[h.(string)].start = start
+}
+
+func (t *streamSpanRecorder) EndSpan(h schemas.SpanHandle, _ schemas.SpanStatus, _ string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.spans[h.(string)].end = time.Now()
+}
+
+func (t *streamSpanRecorder) GetDeferredSpanID(_ string) string { return t.deferred }
+
+func (t *streamSpanRecorder) byName(name string) (string, *streamSpanRecord) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for id, s := range t.spans {
+		if s.name == name {
+			return id, s
+		}
+	}
+	return "", nil
+}
+
+// slowStreamPlugin takes a fixed time per chunk and, on the final chunk, records a
+// span of its own the way a guardrail writes its result span.
+type slowStreamPlugin struct {
+	fakeRoutingPlugin
+	delay time.Duration
+}
+
+func (p *slowStreamPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	time.Sleep(p.delay)
+	if IsFinalChunk(ctx) {
+		tracer := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+		_, h := tracer.StartSpan(ctx, "plugin.slow.output", schemas.SpanKindPlugin)
+		tracer.EndSpan(h, schemas.SpanStatusOk, "")
+	}
+	return resp, bifrostErr, nil
+}
+
+// Streaming post-hook spans are siblings under the LLM span, each as long as its
+// plugin's summed per-chunk time and ending when its final-chunk hook returns. A span
+// the plugin opens mid-stream nests under that post-hook span and inside its window,
+// even when the client is slow to take the final chunk.
+func TestStreamingPostHookSpans_SiblingsWithRealDuration(t *testing.T) {
+	tracer := &streamSpanRecorder{spans: map[string]*streamSpanRecord{}, deferred: "llm"}
+	slow := &slowStreamPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "slow"}, delay: 10 * time.Millisecond}
+	fast := &fakeRoutingPlugin{name: "fast"}
+	p := &PluginPipeline{
+		llmPlugins: []schemas.LLMPlugin{fast, slow},
+		logger:     NewDefaultLogger(schemas.LogLevelError),
+		tracer:     tracer,
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(tracer))
+	ctx.SetValue(schemas.BifrostContextKeySpanID, "llm")
+	ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+
+	const chunks = 3
+	for i := 0; i < chunks; i++ {
+		if i == chunks-1 {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		}
+		p.RunPostLLMHooks(ctx, &schemas.BifrostResponse{}, nil, len(p.llmPlugins))
+	}
+	hooksDone := time.Now()
+	time.Sleep(50 * time.Millisecond) // a slow client send of the final chunk, before finalizing
+	p.FinalizeStreamingPostHookSpans(ctx)
+
+	slowID, slowSpan := tracer.byName("plugin.slow.posthook")
+	_, fastSpan := tracer.byName("plugin.fast.posthook")
+	_, output := tracer.byName("plugin.slow.output")
+	if slowSpan == nil || fastSpan == nil || output == nil {
+		t.Fatalf("missing spans: slow=%v fast=%v output=%v", slowSpan, fastSpan, output)
+	}
+	if slowSpan.parent != "llm" || fastSpan.parent != "llm" {
+		t.Errorf("posthook parents = slow:%q fast:%q, want both under the LLM span", slowSpan.parent, fastSpan.parent)
+	}
+	got := slowSpan.end.Sub(slowSpan.start)
+	if want := chunks * slow.delay; got < want || got > want+15*time.Millisecond {
+		t.Errorf("slow posthook span lasts %v, want about %v (its summed hook time)", got, want)
+	}
+	if output.parent != slowID {
+		t.Errorf("output span parent = %q, want the slow posthook span %q", output.parent, slowID)
+	}
+	if slowSpan.end.After(hooksDone) {
+		t.Errorf("slow posthook span ends %v after the hooks, want it to end with its final-chunk hook", slowSpan.end.Sub(hooksDone))
+	}
+	if output.start.Before(slowSpan.start) || output.end.After(slowSpan.end) {
+		t.Errorf("output span [%v, %v] lies outside its parent [%v, %v]", output.start, output.end, slowSpan.start, slowSpan.end)
+	}
+}
+
+// BenchmarkStreamingPostHooks runs one 20-chunk stream's post-hooks across 5 plugins,
+// finalizing and releasing the pipeline as a stream does.
+func BenchmarkStreamingPostHooks(b *testing.B) {
+	plugins := make([]schemas.LLMPlugin, 5)
+	for i := range plugins {
+		plugins[i] = &fakeRoutingPlugin{name: fmt.Sprintf("plugin-%d", i)}
+	}
+	resp := &schemas.BifrostResponse{}
+	logger, tracer := NewDefaultLogger(schemas.LogLevelError), &schemas.NoOpTracer{}
+	p := &PluginPipeline{}
+	b.ReportAllocs()
+	for b.Loop() {
+		p.llmPlugins, p.logger, p.tracer = plugins, logger, tracer
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+		ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+		for range 20 {
+			p.RunPostLLMHooks(ctx, resp, nil, len(plugins))
+		}
+		p.FinalizeStreamingPostHookSpans(ctx)
+		p.resetPluginPipeline()
+	}
+}
+
 // TestFilterKeysByID covers the KeyID scoping path for ListModels requests:
 // a hit returns the single matching key, a miss returns an empty slice
 // (which the caller surfaces as "no key found"), and the input slice must
@@ -3309,6 +3706,64 @@ func (f *fakeRoutingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas
 }
 func (f *fakeRoutingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
+}
+
+// panickingPostHookPlugin is an LLM plugin whose PostLLMHook panics after replacing
+// the response, the way a buggy plugin can half-mutate state before it crashes.
+type panickingPostHookPlugin struct{ fakeRoutingPlugin }
+
+func (p *panickingPostHookPlugin) PostLLMHook(_ *schemas.BifrostContext, _ *schemas.BifrostResponse, _ *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	var resp *schemas.BifrostResponse
+	_ = resp.ChatResponse // nil dereference: a runtime.Error panic
+	return nil, nil, nil
+}
+
+// recordingPostHookPlugin records whether its PostLLMHook ran and the response it saw.
+type recordingPostHookPlugin struct {
+	fakeRoutingPlugin
+	ran  bool
+	seen *schemas.BifrostResponse
+}
+
+func (p *recordingPostHookPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.ran, p.seen = true, resp
+	return resp, bifrostErr, nil
+}
+
+// TestRunPostLLMHooksRecoversPluginPanic pins that a panicking PostLLMHook is treated like
+// a plugin error: it is logged and recorded, the response it was handed passes on
+// unchanged, the remaining post-hooks still run, and nothing is returned to the caller.
+// For streams the hooks run per chunk on the provider goroutine, which has no other
+// recover, so an escaped panic ends the process.
+func TestRunPostLLMHooksRecoversPluginPanic(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%v", streaming), func(t *testing.T) {
+			outer := &recordingPostHookPlugin{fakeRoutingPlugin: fakeRoutingPlugin{name: "outer"}}
+			bad := &panickingPostHookPlugin{fakeRoutingPlugin{name: "bad"}}
+			// Post-hooks run in reverse, so "bad" (index 1) runs before "outer" (index 0).
+			p := &PluginPipeline{
+				llmPlugins: []schemas.LLMPlugin{outer, bad},
+				logger:     NewDefaultLogger(schemas.LogLevelError),
+				tracer:     &schemas.NoOpTracer{},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if streaming {
+				ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+			}
+			in := &schemas.BifrostResponse{}
+
+			var out *schemas.BifrostResponse
+			var outErr *schemas.BifrostError
+			require.NotPanics(t, func() { out, outErr = p.RunPostLLMHooks(ctx, in, nil, 2) })
+			assert.Same(t, in, out, "the response handed to the panicking hook passes on unchanged")
+			assert.Nil(t, outErr, "a plugin panic is not returned to the caller")
+			assert.True(t, outer.ran, "post-hooks after the panicking one still run")
+			assert.Same(t, in, outer.seen)
+			require.Len(t, p.postHookErrors, 1)
+			assert.Contains(t, p.postHookErrors[0].Error(), "panic in PostLLMHook for plugin bad")
+			assert.Contains(t, p.postHookErrors[0].Error(), "nil pointer dereference")
+		})
+	}
 }
 
 type postHookResponsePreservingPlugin struct {
@@ -3514,9 +3969,9 @@ func TestRequestedRouteSurvivesPreRequestRewrite(t *testing.T) {
 }
 
 // agentLoopServer is an OpenAI-compatible upstream for one MCP agent loop: the first turn calls
-// the in-process echo tool, and a turn that carries the tool result answers. It records the
-// model of every request it serves.
-func agentLoopServer(t *testing.T) (*httptest.Server, func() []string) {
+// the in-process echo tool, and a turn that carries the tool result answers. Each turn stalls for
+// turnDelay before answering. It records the model of every request it serves.
+func agentLoopServer(t *testing.T, turnDelay time.Duration) (*httptest.Server, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
 	var models []string
@@ -3529,6 +3984,7 @@ func agentLoopServer(t *testing.T) (*httptest.Server, func() []string) {
 		mu.Lock()
 		models = append(models, parsed.Model)
 		mu.Unlock()
+		time.Sleep(turnDelay)
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(string(body), `"role":"tool"`) {
 			fmt.Fprint(w, `{"id":"chatcmpl-2","object":"chat.completion","created":1,"model":"m",`+
@@ -3584,7 +4040,7 @@ func newAgentLoopClient(t *testing.T, account *MockAccount, plugins ...schemas.L
 // the route the caller sent, not the one a routing rule rewrote it to on turn 1, and stay on the
 // routed model.
 func TestAgentLoopContinuationKeepsRequestedRoute(t *testing.T) {
-	server, models := agentLoopServer(t)
+	server, models := agentLoopServer(t, 0)
 	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
 	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
@@ -3629,7 +4085,7 @@ func TestAgentLoopContinuationStaysOnServingFallback(t *testing.T) {
 		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
 	}))
 	t.Cleanup(primary.Close)
-	fallback, models := agentLoopServer(t)
+	fallback, models := agentLoopServer(t, 0)
 
 	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, primary.URL)
@@ -3704,6 +4160,7 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 		{"anthropic integration to bedrock clears", "anthropic", schemas.Bedrock, "anthropic.claude-sonnet-4-20250514-v1:0", nil, true},
 		{"anthropic integration to anthropic preserved", "anthropic", schemas.Anthropic, "claude-sonnet-4-20250514", nil, false},
 		{"anthropic integration to vertex preserved", "anthropic", schemas.Vertex, "claude-sonnet-4@20250514", nil, false},
+		{"anthropic integration to Vertex OpenAI custom deployment clears", "anthropic", schemas.Vertex, "claude-custom", &schemas.ResolvedAlias{Config: &schemas.AliasConfig{ModelFamily: schemas.Ptr(schemas.ModelFamilyAnthropic), VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}}}}, true},
 		{"anthropic integration to azure preserved", "anthropic", schemas.Azure, "claude-sonnet-4-20250514", nil, false},
 		{"anthropic integration to bedrock mantle preserved", "anthropic", schemas.BedrockMantle, "claude-sonnet-4-20250514", nil, false},
 		{"anthropic integration to bedrock mantle openai model clears", "anthropic", schemas.BedrockMantle, "gpt-5-6-luna", nil, true},
@@ -3919,10 +4376,15 @@ func TestShouldContinueWithFallbacksStopsOnNilError(t *testing.T) {
 // Claude Code OAuth key-selection skip applies only when the attempt resolved to Anthropic. A
 // governance routing rule can rewrite provider/model after the transport set the flag, and every
 // non-Anthropic provider authenticates with its own configured key — so it must still get one.
+// OpenAI passthrough is the exception: a ChatGPT token forwarded to the Codex backend is the
+// credential, and a stored API key in its place is refused upstream (api_key_not_supported).
 func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvider(t *testing.T) {
 	account := NewMockAccount()
 	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
 		{ID: "anthropic-key", Name: "anthropic-key", Value: schemas.SecretVar{Val: "sk-ant"}, Models: []string{"*"}, Weight: 1.0},
+	})
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Name: "openai-key", Value: schemas.SecretVar{Val: "sk-openai"}, Models: []string{"*"}, Weight: 1.0},
 	})
 	account.SetKeysForProvider(schemas.Fireworks, []schemas.Key{
 		{ID: "fireworks-key", Name: "fireworks-key", Value: schemas.SecretVar{Val: "fw-key"}, Models: []string{"*"}, Weight: 1.0, UseAnthropicEndpoints: schemas.Ptr(true)},
@@ -3930,13 +4392,17 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
 
 	tests := []struct {
-		name      string
-		provider  schemas.ModelProvider
-		model     string
-		wantKeyID string // "" means the pool must be empty (key selection skipped)
+		name        string
+		requestType schemas.RequestType
+		provider    schemas.ModelProvider
+		model       string
+		wantKeyID   string // "" means the pool must be empty (key selection skipped)
 	}{
-		{"anthropic keeps the skip", schemas.Anthropic, "claude-opus-4-5", ""},
-		{"fireworks selects its own key", schemas.Fireworks, "accounts/fireworks/models/kimi-k2p7-code", "fireworks-key"},
+		{"anthropic keeps the skip", schemas.ResponsesRequest, schemas.Anthropic, "claude-opus-4-5", ""},
+		{"fireworks selects its own key", schemas.ResponsesRequest, schemas.Fireworks, "accounts/fireworks/models/kimi-k2p7-code", "fireworks-key"},
+		{"openai passthrough keeps the skip", schemas.PassthroughRequest, schemas.OpenAI, "", ""},
+		{"openai passthrough stream keeps the skip", schemas.PassthroughStreamRequest, schemas.OpenAI, "gpt-5.5", ""},
+		{"openai inference selects its own key", schemas.ResponsesRequest, schemas.OpenAI, "gpt-5.5", "openai-key"},
 	}
 
 	for _, tt := range tests {
@@ -3944,7 +4410,7 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 
-			keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ResponsesRequest, tt.provider, tt.model, tt.provider)
+			keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, tt.requestType, tt.provider, tt.model, tt.provider)
 			if err != nil {
 				t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
 			}
@@ -3962,7 +4428,7 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 			}
 			// The regression: without a key, UseAnthropicEndpoints is unreadable and the request
 			// is built with the OpenAI schema, which Fireworks rejects for missing max_tokens.
-			if keys[0].UseAnthropicEndpoints == nil || !*keys[0].UseAnthropicEndpoints {
+			if tt.provider == schemas.Fireworks && (keys[0].UseAnthropicEndpoints == nil || !*keys[0].UseAnthropicEndpoints) {
 				t.Error("selected key lost UseAnthropicEndpoints")
 			}
 		})
@@ -4124,6 +4590,362 @@ func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T)
 	}
 	if count != 0 {
 		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
+	}
+}
+
+// deferredStreamTracer models the tracer's deferred-span store for stream tests: one
+// record per trace ID, as the real TraceStore keys it, counting the chunks recorded
+// against it, plus each span's end count, status, attributes and populated outcome.
+type deferredStreamTracer struct {
+	schemas.NoOpTracer
+	mu      sync.Mutex
+	nextID  int
+	records map[string]*deferredStreamRecord
+	spans   map[string]*deferredStreamSpan
+}
+
+type deferredStreamRecord struct {
+	spanID string
+	chunks int
+}
+
+type deferredStreamSpan struct {
+	kind         schemas.SpanKind
+	ends         int
+	status       schemas.SpanStatus
+	attrs        map[string]any
+	populated    *schemas.BifrostResponse
+	populatedErr *schemas.BifrostError
+}
+
+func newDeferredStreamTracer() *deferredStreamTracer {
+	return &deferredStreamTracer{records: map[string]*deferredStreamRecord{}, spans: map[string]*deferredStreamSpan{}}
+}
+
+func (t *deferredStreamTracer) StartSpanID(_ context.Context, _ string, kind schemas.SpanKind) (string, schemas.SpanHandle) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.nextID++
+	id := fmt.Sprintf("span-%d", t.nextID)
+	t.spans[id] = &deferredStreamSpan{kind: kind, attrs: map[string]any{}}
+	return id, id
+}
+
+func (t *deferredStreamTracer) spanFor(handle schemas.SpanHandle) *deferredStreamSpan {
+	id, _ := handle.(string)
+	return t.spans[id]
+}
+
+func (t *deferredStreamTracer) SetAttribute(handle schemas.SpanHandle, key string, value any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.spanFor(handle); s != nil {
+		s.attrs[key] = value
+	}
+}
+
+func (t *deferredStreamTracer) PopulateLLMResponseAttributes(_ *schemas.BifrostContext, handle schemas.SpanHandle, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.spanFor(handle); s != nil {
+		if resp != nil {
+			s.populated = resp
+		}
+		if err != nil {
+			s.populatedErr = err
+		}
+	}
+}
+
+func (t *deferredStreamTracer) EndSpan(handle schemas.SpanHandle, status schemas.SpanStatus, _ string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.spanFor(handle); s != nil {
+		s.ends++
+		s.status = status
+	}
+}
+
+func (t *deferredStreamTracer) StoreDeferredSpan(traceID string, handle schemas.SpanHandle) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	id, _ := handle.(string)
+	t.records[traceID] = &deferredStreamRecord{spanID: id}
+}
+
+func (t *deferredStreamTracer) GetDeferredSpanHandle(traceID string) schemas.SpanHandle {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		return r.spanID
+	}
+	return nil
+}
+
+func (t *deferredStreamTracer) GetDeferredSpanID(traceID string) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		return r.spanID
+	}
+	return ""
+}
+
+func (t *deferredStreamTracer) ClearDeferredSpan(traceID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.records, traceID)
+}
+
+func (t *deferredStreamTracer) AddStreamingChunk(traceID string, _ *schemas.BifrostResponse) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		r.chunks++
+	}
+}
+
+func (t *deferredStreamTracer) GetAccumulatedChunks(traceID string) (*schemas.BifrostResponse, int64, int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r := t.records[traceID]; r != nil {
+		return nil, 0, r.chunks
+	}
+	return nil, 0, 0
+}
+
+// llmSpans returns the LLM-call and retry-attempt spans in start order.
+func (t *deferredStreamTracer) llmSpans() []*deferredStreamSpan {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []*deferredStreamSpan
+	for i := 1; i <= t.nextID; i++ {
+		if s := t.spans[fmt.Sprintf("span-%d", i)]; s != nil && (s.kind == schemas.SpanKindLLMCall || s.kind == schemas.SpanKindRetry) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (t *deferredStreamTracer) recordCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.records)
+}
+
+func newDeferredStreamContext(tracer *deferredStreamTracer) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	return ctx
+}
+
+// responsesStreamChunks returns two text deltas and a response.completed chunk carrying usage.
+func responsesStreamChunks() []*schemas.BifrostResponse {
+	text := "hi"
+	return []*schemas.BifrostResponse{
+		{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: &text}},
+		{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: &text}},
+		{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:     schemas.ResponsesStreamResponseTypeCompleted,
+			Response: &schemas.BifrostResponsesResponse{Usage: &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 7, TotalTokens: 12}},
+		}},
+	}
+}
+
+func passthroughPostHookRunner(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return resp, err
+}
+
+// onceFinalizer mirrors the core's sync.Once-wrapped per-attempt finalizer.
+func onceFinalizer() func(context.Context) {
+	var once sync.Once
+	return func(context.Context) { once.Do(func() {}) }
+}
+
+// startFakeProviderStream runs chunks through ProcessAndSendResponse and closes the
+// stream with the defers a provider goroutine uses. With hold set, nothing reaches the
+// returned channel until the final chunk has been processed, as when a plugin pauses
+// the stream until its last chunk.
+func startFakeProviderStream(ctx *schemas.BifrostContext, chunks []*schemas.BifrostResponse, hold bool) (chan *schemas.BifrostStreamChunk, <-chan struct{}) {
+	finalizer := onceFinalizer()
+	out := make(chan *schemas.BifrostStreamChunk, len(chunks))
+	sendTo := out
+	if hold {
+		sendTo = make(chan *schemas.BifrostStreamChunk, len(chunks))
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, finalizer)
+		defer providerUtils.CloseStream(ctx, out)
+		for i, chunk := range chunks {
+			if i == len(chunks)-1 {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			}
+			providerUtils.ProcessAndSendResponse(ctx, passthroughPostHookRunner, chunk, sendTo, finalizer)
+		}
+		if hold {
+			for range chunks {
+				out <- <-sendTo
+			}
+		}
+	}()
+	return out, done
+}
+
+// drainStream reads a stream to its end and returns how many chunks it carried.
+func drainStream(stream chan *schemas.BifrostStreamChunk) int {
+	n := 0
+	for range stream {
+		n++
+	}
+	return n
+}
+
+// A plugin that holds a stream until its final chunk lets the provider goroutine finish
+// the stream before the retry loop has seen its first chunk. The LLM span must still be
+// completed OK with every chunk counted and the terminal chunk as its outcome.
+func TestExecuteRequestWithRetries_StreamSpanCompletesWhenStreamEndsBeforeFirstChunkCheck(t *testing.T) {
+	for _, hold := range []bool{true, false} {
+		t.Run(fmt.Sprintf("hold=%v", hold), func(t *testing.T) {
+			tracer := newDeferredStreamTracer()
+			ctx := newDeferredStreamContext(tracer)
+			chunks := responsesStreamChunks()
+			var done <-chan struct{}
+			handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				var out chan *schemas.BifrostStreamChunk
+				out, done = startFakeProviderStream(ctx, chunks, hold)
+				return out, nil
+			}
+
+			stream, err := executeRequestWithRetries(ctx, createTestConfig(0, time.Millisecond, time.Millisecond), handler, nil,
+				schemas.ResponsesStreamRequest, schemas.Anthropic, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := drainStream(stream); got != len(chunks) {
+				t.Errorf("client received %d chunks, want %d", got, len(chunks))
+			}
+			<-done
+
+			spans := tracer.llmSpans()
+			if len(spans) != 1 {
+				t.Fatalf("got %d LLM spans, want 1", len(spans))
+			}
+			span := spans[0]
+			if span.ends == 0 || span.status != schemas.SpanStatusOk {
+				t.Errorf("LLM span ended %d times with status %q, want ended with %q", span.ends, span.status, schemas.SpanStatusOk)
+			}
+			if got := span.attrs[schemas.AttrTotalChunks]; got != len(chunks) {
+				t.Errorf("%s = %v, want %d", schemas.AttrTotalChunks, got, len(chunks))
+			}
+			if span.populated != chunks[len(chunks)-1] {
+				t.Error("LLM span was not populated from the stream's terminal chunk")
+			}
+			if n := tracer.recordCount(); n != 0 {
+				t.Errorf("%d deferred span records left behind", n)
+			}
+		})
+	}
+}
+
+// The stream span is registered before each attempt's provider starts. A failed
+// attempt's goroutine that is still unwinding when the retry starts must not touch the
+// retry's span; the retry loop owns the failed attempt's outcome.
+func TestExecuteRequestWithRetries_FailedStreamAttemptLeavesRetrySpanAlone(t *testing.T) {
+	tracer := newDeferredStreamTracer()
+	ctx := newDeferredStreamContext(tracer)
+	chunks := responsesStreamChunks()
+	logger := NewDefaultLogger(schemas.LogLevelError)
+	retryStarted := make(chan struct{})
+	firstDone := make(chan struct{})
+	var retryDone <-chan struct{}
+	attempts := 0
+
+	handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		attempts++
+		if attempts == 1 {
+			finalizer := onceFinalizer()
+			out := make(chan *schemas.BifrostStreamChunk, 1)
+			go func() {
+				defer close(firstDone)
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, passthroughPostHookRunner,
+					createBifrostError("rate limit exceeded", schemas.Ptr(429), nil, false), out, logger, finalizer)
+				providerUtils.CloseStream(ctx, out)
+				// The dead attempt's last defer runs only once the retry is underway.
+				<-retryStarted
+				providerUtils.EnsureStreamFinalizerCalled(ctx, finalizer)
+			}()
+			return out, nil
+		}
+		close(retryStarted)
+		<-firstDone
+		out, done := startFakeProviderStream(ctx, chunks, true)
+		retryDone = done
+		return out, nil
+	}
+
+	stream, err := executeRequestWithRetries(ctx, createTestConfig(1, time.Millisecond, time.Millisecond), handler, nil,
+		schemas.ResponsesStreamRequest, schemas.Anthropic, "test-model", nil, logger)
+	if err != nil {
+		t.Fatalf("expected the retry to succeed, got %v", err)
+	}
+	drainStream(stream)
+	<-retryDone
+
+	if attempts != 2 {
+		t.Fatalf("got %d attempts, want 2", attempts)
+	}
+	spans := tracer.llmSpans()
+	if len(spans) != 2 {
+		t.Fatalf("got %d LLM/retry spans, want 2", len(spans))
+	}
+	if first := spans[0]; first.ends != 1 || first.status != schemas.SpanStatusError || first.populatedErr == nil {
+		t.Errorf("failed attempt's span ended %d times with %q (error recorded: %v), want ended once %q with its error", first.ends, first.status, first.populatedErr != nil, schemas.SpanStatusError)
+	}
+	retry := spans[1]
+	if retry.ends == 0 || retry.status != schemas.SpanStatusOk || retry.populatedErr != nil {
+		t.Errorf("retry's span ended %d times with %q (error recorded: %v), want ended %q without an error", retry.ends, retry.status, retry.populatedErr != nil, schemas.SpanStatusOk)
+	}
+	if got := retry.attrs[schemas.AttrTotalChunks]; got != len(chunks) {
+		t.Errorf("retry %s = %v, want %d", schemas.AttrTotalChunks, got, len(chunks))
+	}
+	if n := tracer.recordCount(); n != 0 {
+		t.Errorf("%d deferred span records left behind", n)
+	}
+}
+
+// A stream that closes before producing a chunk is the retry loop's empty stream: its
+// span ends OK with no error stamped, as it did before spans were registered up front.
+func TestExecuteRequestWithRetries_EmptyStreamSpanEndsOk(t *testing.T) {
+	tracer := newDeferredStreamTracer()
+	ctx := newDeferredStreamContext(tracer)
+	handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		out := make(chan *schemas.BifrostStreamChunk)
+		providerUtils.CloseStream(ctx, out)
+		providerUtils.EnsureStreamFinalizerCalled(ctx, onceFinalizer())
+		return out, nil
+	}
+
+	stream, err := executeRequestWithRetries(ctx, createTestConfig(0, time.Millisecond, time.Millisecond), handler, nil,
+		schemas.ResponsesStreamRequest, schemas.Anthropic, "test-model", nil, NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := drainStream(stream); got != 0 {
+		t.Errorf("empty stream carried %d chunks", got)
+	}
+	spans := tracer.llmSpans()
+	if len(spans) != 1 {
+		t.Fatalf("got %d LLM spans, want 1", len(spans))
+	}
+	if span := spans[0]; span.status != schemas.SpanStatusOk || span.populatedErr != nil {
+		t.Errorf("empty stream's span status %q (error recorded: %v), want %q without an error", span.status, span.populatedErr != nil, schemas.SpanStatusOk)
+	}
+	if n := tracer.recordCount(); n != 0 {
+		t.Errorf("%d deferred span records left behind", n)
 	}
 }
 
@@ -4521,6 +5343,48 @@ func TestPrepareResponsesRequest_NormalizesEmbeddedToolSchemasForKimi(t *testing
 	}
 }
 
+// A Codex thread whose tool definitions changed mid-session carries a second
+// additional_tools item re-declaring functions.exec. Every wire that hoists those items
+// must send exec once, with the later definition, instead of rejecting the request
+// with "tool name \"exec\" is not unique after flattening namespace tools".
+func TestPrepareResponsesRequest_AdditionalToolsRedeclaration(t *testing.T) {
+	first := `[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v1","parameters":{"type":"object"}},{"type":"function","name":"wait","parameters":{"type":"object"}}]}]`
+	second := `[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"exec","description":"v2","parameters":{"type":"object"}}]}]`
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"bedrock converse", schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+		{"anthropic", schemas.Anthropic, "claude-sonnet-4-5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: []schemas.ResponsesMessage{
+				{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(first)},
+				{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(second)},
+			}}
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			if bifrostErr != nil {
+				t.Fatalf("prepare failed: %v", bifrostErr.Error.Message)
+			}
+			var names []string
+			for _, tool := range prepared.Params.Tools {
+				names = append(names, *tool.Name)
+			}
+			if len(names) != 2 || names[0] != "exec" || names[1] != "wait" {
+				t.Fatalf("want [exec wait] on the wire, got %v", names)
+			}
+			if got := *prepared.Params.Tools[0].Description; got != "v2" {
+				t.Fatalf("want the later exec definition, got description %q", got)
+			}
+			if len(prepared.Input) != 0 {
+				t.Fatalf("additional_tools items must be consumed, got %d input items", len(prepared.Input))
+			}
+		})
+	}
+}
+
 // The Chat Completions path reaches kimi-k3 too and must normalize the same way.
 func TestHandleProviderRequest_ChatNormalizesToolSchemasForKimi(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -4587,6 +5451,102 @@ func TestToolSchemaPolicy_DatasheetRowWins(t *testing.T) {
 	}
 	if out := prepareChatRequest(ctx, nil, schemas.Bedrock, req); out != req {
 		t.Fatal("a chat request for an unrestricted model must be returned as-is")
+	}
+}
+
+// zai.glm-5.3 on Bedrock answers Claude Code's ArtifactData tool with "The task request
+// was rejected by the target" over the `(?:...)` pattern on its top-level collection, so
+// its row drops tool-schema patterns on both dispatch paths. There is no name fallback:
+// GLM-5 and 4.7 accept patterns and keep their exact tool bytes.
+func TestToolSchemaPolicy_DropsPatternsOnlyWhenTheRowSaysSo(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "us.zai.glm-5.3" {
+			return &schemas.ModelCapabilities{SupportsSchemaPattern: new(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	if glm := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "us.zai.glm-5.3")); !glm.DropPattern {
+		t.Fatalf("the glm-5.3 row did not turn pattern dropping on: %+v", glm)
+	}
+	for _, model := range []string{"us.zai.glm-5", "us.zai.glm-4.7", "us.moonshotai.kimi-k3"} {
+		if p := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, model)); p.DropPattern {
+			t.Fatalf("%s must keep its patterns without a row: %+v", model, p)
+		}
+	}
+
+	raw := `{"type":"object","properties":{` +
+		`"collection":{"type":"string","pattern":"^[A-Za-z0-9_\\-.~:@+]{1,200}(?:\\/[A-Za-z0-9_\\-.~:@+]{1,200}){0,14}$"},` +
+		`"doc_id":{"type":"string","pattern":"^[A-Za-z0-9_\\-.~:@+]{1,200}$"}}}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	assertDropped := func(t *testing.T, sent *schemas.ToolFunctionParameters) {
+		t.Helper()
+		out, err := json.Marshal(sent)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), "pattern") || !strings.Contains(string(out), `"collection"`) {
+			t.Fatalf("patterns reached the provider or the property was lost: %s", out)
+		}
+		if before, _ := json.Marshal(&params); !strings.Contains(string(before), `(?:`) {
+			t.Fatalf("caller's schema was mutated in place: %s", before)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	t.Run("responses", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.zai.glm-5.3",
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  new("ArtifactData"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &params},
+			}}},
+		}
+		prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Bedrock}, schemas.Key{}, req)
+		if bifrostErr != nil {
+			t.Fatalf("prepare failed: %v", bifrostErr.Error)
+		}
+		assertDropped(t, prepared.Params.Tools[0].ResponsesToolFunction.Parameters)
+	})
+	t.Run("chat", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.zai.glm-5.3",
+			Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "ArtifactData", Parameters: &params},
+			}}},
+		}
+		assertDropped(t, prepareChatRequest(ctx, nil, schemas.Bedrock, req).Params.Tools[0].Function.Parameters)
+	})
+
+	unrestricted := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.zai.glm-5",
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "ArtifactData", Parameters: &params},
+		}}},
+	}
+	if out := prepareChatRequest(ctx, nil, schemas.Bedrock, unrestricted); out != unrestricted {
+		t.Fatal("a model without the row must be returned as-is")
+	}
+}
+
+// A model with no row (the common case) builds the zero policy; the drop-pattern lookup adds nothing to it.
+func BenchmarkToolSchemaPolicy_NoRow(b *testing.B) {
+	caps := schemas.ResolveModelCaps(schemas.Bedrock, "us.zai.glm-5")
+	b.ReportAllocs()
+	for b.Loop() {
+		if !toolSchemaPolicy(caps).IsZero() {
+			b.Fatal("a model with no row must get the zero policy")
+		}
 	}
 }
 
@@ -7737,6 +8697,164 @@ func TestScenarioInferredFallbacksStopOnCallerFault(t *testing.T) {
 	}
 }
 
+// scenarioPolicyRefuser refuses every attempt on one provider the way the governance plugin refuses
+// a provider a virtual key does not allow: a 403 short-circuit that leaves fallbacks allowed.
+type scenarioPolicyRefuser struct{ refuses schemas.ModelProvider }
+
+func (p *scenarioPolicyRefuser) GetName() string { return "scenario-policy-refuser" }
+func (p *scenarioPolicyRefuser) Cleanup() error  { return nil }
+func (p *scenarioPolicyRefuser) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *scenarioPolicyRefuser) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if provider, _, _ := req.GetRequestFields(); provider != p.refuses {
+		return req, nil, nil
+	}
+	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+		Type:       schemas.Ptr("provider_blocked"),
+		StatusCode: schemas.Ptr(http.StatusForbidden),
+		Error:      &schemas.ErrorField{Message: fmt.Sprintf("Provider '%s' is not allowed for virtual key 'vk'", p.refuses)},
+	}}, nil
+}
+func (p *scenarioPolicyRefuser) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestScenarioExhaustedFallbacksReportEachAttempt pins #3261. When the primary and every fallback
+// fail, the caller gets the primary's error, and that error has to say what became of each
+// fallback: a fallback a virtual key refuses never reaches its provider, and without this the
+// caller reads the primary's fast 429 as a routing rule whose fallback never ran. A fallback that
+// could not even be prepared is reported as skipped. Both orchestrator loops are covered.
+func TestScenarioExhaustedFallbacksReportEachAttempt(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+				provA: {scenarioKey("a1", 1)},
+				provB: {scenarioKey("b1", 1)},
+			})
+			// provC has no provider config, so its fallback is skipped before any attempt.
+			router := &scenarioRouter{route: fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, schemas.Fallback{Provider: provB, Model: "m-b"}, schemas.Fallback{Provider: provC, Model: "m-c"})}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{router, &scenarioPolicyRefuser{refuses: provB}},
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+			u.reply("sk-a1", scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`})
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				_, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+			} else {
+				_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+			}
+
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("want the primary's 429 back, got %v", bifrostErr)
+			}
+			if got := u.count("sk-b1"); got != 0 {
+				t.Fatalf("the refused fallback reached its upstream %d times, want 0", got)
+			}
+			attempts := bifrostErr.ExtraFields.FallbackAttempts
+			if len(attempts) != 2 {
+				t.Fatalf("fallback_attempts = %+v, want one entry per fallback (refused, skipped)", attempts)
+			}
+			refused := attempts[0]
+			if refused.Provider != provB || refused.Model != "m-b" || refused.StatusCode == nil || *refused.StatusCode != http.StatusForbidden || refused.Type != "provider_blocked" || !strings.Contains(refused.Message, "not allowed") || refused.Skipped {
+				t.Fatalf("the refused fallback must carry its provider, model, status, type and message: %+v", refused)
+			}
+			skipped := attempts[1]
+			if skipped.Provider != provC || skipped.Model != "m-c" || !skipped.Skipped || skipped.StatusCode != nil {
+				t.Fatalf("the unprepared fallback must be reported as skipped: %+v", skipped)
+			}
+			body, err := json.Marshal(bifrostErr)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !strings.Contains(string(body), `"fallback_attempts":[{"provider":"prov-b","model":"m-b","status_code":403,"type":"provider_blocked"`) {
+				t.Fatalf("the wire error must carry fallback_attempts: %s", body)
+			}
+		})
+	}
+}
+
+// scenarioErrorRetainer keeps the first error its PostLLMHook sees, as the logging plugin does
+// with raw logging on, where the error is serialized later on another goroutine.
+type scenarioErrorRetainer struct {
+	mu       sync.Mutex
+	retained *schemas.BifrostError
+}
+
+func (p *scenarioErrorRetainer) GetName() string { return "scenario-error-retainer" }
+func (p *scenarioErrorRetainer) Cleanup() error  { return nil }
+func (p *scenarioErrorRetainer) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *scenarioErrorRetainer) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *scenarioErrorRetainer) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	p.mu.Lock()
+	if p.retained == nil && bifrostErr != nil {
+		p.retained = bifrostErr
+	}
+	p.mu.Unlock()
+	return resp, bifrostErr, nil
+}
+
+// TestScenarioExhaustedFallbacksLeaveRetainedPrimaryErrorUnchanged pins that reporting the
+// fallbacks' outcomes does not write to the primary's error after its post-hooks ran: a plugin may
+// still hold that pointer, and a write there races its asynchronous serialization.
+func TestScenarioExhaustedFallbacksLeaveRetainedPrimaryErrorUnchanged(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+				provA: {scenarioKey("a1", 1)},
+				provB: {scenarioKey("b1", 1)},
+			})
+			retainer := &scenarioErrorRetainer{}
+			router := &scenarioRouter{route: fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, schemas.Fallback{Provider: provB, Model: "m-b"})}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{router, retainer, &scenarioPolicyRefuser{refuses: provB}},
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+			u.reply("sk-a1", scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`})
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			var bifrostErr *schemas.BifrostError
+			if stream {
+				_, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+			} else {
+				_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+			}
+
+			if bifrostErr == nil || len(bifrostErr.ExtraFields.FallbackAttempts) != 1 {
+				t.Fatalf("want the primary's error with one fallback attempt, got %v", bifrostErr)
+			}
+			retainer.mu.Lock()
+			retained := retainer.retained
+			retainer.mu.Unlock()
+			if retained == nil || retained.StatusCode == nil || *retained.StatusCode != http.StatusTooManyRequests {
+				t.Fatalf("the retainer must have kept the primary's 429, got %v", retained)
+			}
+			if retained.ExtraFields.FallbackAttempts != nil {
+				t.Fatalf("the primary's error a plugin retained was written after its post-hooks ran: %+v", retained.ExtraFields.FallbackAttempts)
+			}
+		})
+	}
+}
+
 // TestScenarioInferredFallbacksPassNoKeySupportsModel pins that a primary whose key pool has no
 // key for the model (400 no_key_supports_model, built before any upstream call) does not stop an
 // inferred chain: that 400 says this provider cannot serve the model, not that the request is
@@ -7825,6 +8943,17 @@ func BenchmarkShouldTryFallbacks(b *testing.B) {
 	}
 }
 
+// BenchmarkFallbackAttemptOf measures summarizing one failed fallback for the primary's error. It
+// runs only on a fallback that already failed, never on a request its primary served.
+func BenchmarkFallbackAttemptOf(b *testing.B) {
+	fallback := schemas.Fallback{Provider: provB, Model: "m"}
+	fallbackErr := &schemas.BifrostError{Type: schemas.Ptr("provider_blocked"), StatusCode: schemas.Ptr(http.StatusForbidden), Error: &schemas.ErrorField{Message: "Provider 'prov-b' is not allowed"}}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = fallbackAttemptOf(fallback, fallbackErr)
+	}
+}
+
 // TestSetMCPManager_ReceivesTheRegisteredFactory: an SDK caller may register
 // the openapi factory before injecting its own manager; the injected manager
 // gets the factory, and the two setters do not race (run with -race).
@@ -7873,11 +9002,11 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 		go func() { defer wg.Done(); _ = b.AddMCPClient(context.Background(), client("a")) }()
 		go func() {
 			defer wg.Done()
-			_, _, _, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
+			_, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
 		}()
 		go func() {
 			defer wg.Done()
-			_, _, _, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
+			_, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
 		}()
 		wg.Wait()
 		b.Shutdown()
@@ -7893,6 +9022,134 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 	_ = b.AddMCPClient(context.Background(), client("d"))
 	if b.MCPManager != mcp.MCPManagerInterface(injected) {
 		t.Fatal("an injected MCP manager was replaced by the lazy one")
+	}
+}
+
+// TestUpdateMCPMaxProtocolVersion_LikeOtherGlobalMCPSettings: the global cap arrives through MCPConfig
+// and is hot-reloaded on the running manager, like the tool sync interval; without a manager the
+// update is refused, and an unsupported value is refused either way.
+func TestUpdateMCPMaxProtocolVersion_LikeOtherGlobalMCPSettings(t *testing.T) {
+	without, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer without.Shutdown()
+	if err := without.UpdateMCPMaxProtocolVersion(schemas.MCPProtocolVersion20250618); err == nil {
+		t.Fatal("without an MCP manager the update must be refused, as UpdateMCPToolSyncInterval is")
+	}
+
+	with, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger(),
+		MCPConfig: &schemas.MCPConfig{MaxProtocolVersion: schemas.MCPProtocolVersion20250618}})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer with.Shutdown()
+	if err := with.UpdateMCPMaxProtocolVersion("latest"); err == nil {
+		t.Fatal("an unsupported version must be refused")
+	}
+	if err := with.UpdateMCPMaxProtocolVersion(schemas.MCPProtocolVersion20251125); err != nil {
+		t.Fatalf("updating the running manager's cap: %v", err)
+	}
+}
+
+// TestSetMCPDiscoveryChangeCallback_ReachesLazyManager: the HTTP transport registers its discovery
+// callback at boot, before a deployment with no mcp block has a manager. The manager created lazily
+// for the first client must still fire it, or that client's discoveries are never persisted.
+func TestSetMCPDiscoveryChangeCallback_ReachesLazyManager(t *testing.T) {
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	fired := make(chan string, 4)
+	b.SetMCPDiscoveryChangeCallback(func(clientID, _ string, _ *schemas.MCPDiscovery) { fired <- clientID })
+	b.SetMCPInProcessServerFactory(func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		s := server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false))
+		s.AddTool(mcpgo.NewTool("ping"), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			return mcpgo.NewToolResultText("pong"), nil
+		})
+		return s, nil
+	})
+	if err := b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{
+		ID:             "first-id",
+		Name:           "first",
+		ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+		ToolsToExecute: schemas.WhiteList{"*"},
+		OpenAPIConfig:  &schemas.MCPOpenAPIConfig{Spec: "unused by the stub"},
+	}); err != nil {
+		t.Fatalf("AddMCPClient: %v", err)
+	}
+	select {
+	case id := <-fired:
+		if id != "first-id" {
+			t.Fatalf("callback fired for %q, want first-id", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lazily created manager never fired the discovery callback registered before it existed")
+	}
+}
+
+// listedToolsManager serves one client whose tool the test holds on to.
+type listedToolsManager struct {
+	mcp.MCPManagerInterface
+	state     schemas.MCPClientState
+	discovery *schemas.MCPDiscovery
+}
+
+// GetClients returns the held client state as the manager would.
+func (m *listedToolsManager) GetClients() []schemas.MCPClientState {
+	return []schemas.MCPClientState{m.state}
+}
+
+// GetClientDiscovery returns the held discovery as the manager's store would.
+func (m *listedToolsManager) GetClientDiscovery(context.Context, string) *schemas.MCPDiscovery {
+	return m.discovery
+}
+
+// TestGetMCPClients_ListedToolsAreOwned: a caller that edits a listed tool's annotations, icons or
+// output schema must not change the tool the manager serves.
+func TestGetMCPClients_ListedToolsAreOwned(t *testing.T) {
+	held := schemas.ChatTool{
+		Type:        schemas.ChatToolTypeFunction,
+		Function:    &schemas.ChatToolFunction{Name: "docs-search"},
+		Annotations: &schemas.MCPToolAnnotations{Title: "Search"},
+		MCP: &schemas.MCPToolMetadata{
+			Icons:        []mcpgo.Icon{{Src: "https://example.com/search.png"}},
+			OutputSchema: json.RawMessage(`{"type":"object"}`),
+		},
+	}
+	manager := &listedToolsManager{
+		state: schemas.MCPClientState{ExecutionConfig: &schemas.MCPClientConfig{ID: "docs-id", Name: "docs"}},
+		discovery: &schemas.MCPDiscovery{
+			Tools:             map[string]schemas.ChatTool{"docs-search": held},
+			Resources:         []mcpgo.Resource{mcpgo.NewResource("file:///b.md", "b"), mcpgo.NewResource("file:///a.md", "a")},
+			ResourceTemplates: []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("repo://{name}", "repo")},
+			Prompts:           []mcpgo.Prompt{mcpgo.NewPrompt("docs-review")},
+		},
+	}
+	b := &Bifrost{MCPManager: manager}
+
+	clients, err := b.GetMCPClients()
+	if err != nil {
+		t.Fatalf("GetMCPClients: %v", err)
+	}
+	listed := clients[0].Tools[0]
+	listed.Annotations.Title = "edited"
+	listed.Icons[0].Src = "edited"
+	listed.OutputSchema[0] = '['
+
+	if held.Annotations.Title != "Search" || held.MCP.Icons[0].Src != "https://example.com/search.png" || string(held.MCP.OutputSchema) != `{"type":"object"}` {
+		t.Fatalf("editing a listed tool changed the served one: annotations %q, icon %q, schema %s", held.Annotations.Title, held.MCP.Icons[0].Src, held.MCP.OutputSchema)
+	}
+
+	// The discovered lists are the caller's own copies too, so sorting or editing one cannot
+	// change what the manager serves.
+	clients[0].Resources[0] = mcpgo.NewResource("file:///edited.md", "edited")
+	clients[0].ResourceTemplates[0].Name = "edited"
+	clients[0].Prompts[0].Name = "edited"
+	served := manager.discovery
+	if served.Resources[0].URI != "file:///b.md" || served.ResourceTemplates[0].Name != "repo" || served.Prompts[0].Name != "docs-review" {
+		t.Fatalf("editing a listed list changed the served one: resource %q, template %q, prompt %q", served.Resources[0].URI, served.ResourceTemplates[0].Name, served.Prompts[0].Name)
 	}
 }
 
@@ -8014,5 +9271,1719 @@ func TestResponsesRequest_GatewayToolSearch(t *testing.T) {
 	}
 	if resp.Usage == nil || resp.Usage.InputTokens != 30 || resp.Usage.OutputTokens != 5 {
 		t.Errorf("want usage summed across both calls, got %+v", resp.Usage)
+	}
+}
+
+// recordingEndpointsPlugin records the order its Relays hooks run in and can
+// short-circuit the call in its pre-hook.
+type recordingEndpointsPlugin struct {
+	name  string
+	order *[]string
+	deny  bool
+}
+
+func (p *recordingEndpointsPlugin) GetName() string { return p.name }
+func (p *recordingEndpointsPlugin) Cleanup() error  { return nil }
+func (p *recordingEndpointsPlugin) PreRelayHook(_ *schemas.BifrostContext, req *schemas.BifrostRelayRequest) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, error) {
+	*p.order = append(*p.order, "pre:"+p.name)
+	if p.deny {
+		return req, &schemas.RelayPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: schemas.Ptr(403), Error: &schemas.ErrorField{Message: "denied"}}}, nil
+	}
+	return req, nil, nil
+}
+func (p *recordingEndpointsPlugin) PostRelayHook(_ *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) (*schemas.BifrostRelayResponse, *schemas.BifrostError, error) {
+	*p.order = append(*p.order, "post:"+p.name)
+	return resp, bErr, nil
+}
+
+func TestRelaysHooksRunInPipelineOrder(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	bifrost.tracer.Store(&tracerWrapper{tracer: &schemas.NoOpTracer{}})
+	bifrost.llmPlugins.Store(&[]schemas.LLMPlugin{})
+	bifrost.mcpPlugins.Store(&[]schemas.MCPPlugin{})
+	bifrost.a2aPlugins.Store(&[]schemas.A2APlugin{})
+	bifrost.relayPlugins.Store(&[]schemas.RelayPlugin{})
+	bifrost.pluginPipelinePool = sync.Pool{New: func() any { return &PluginPipeline{} }}
+
+	var order []string
+	first := &recordingEndpointsPlugin{name: "governance", order: &order}
+	second := &recordingEndpointsPlugin{name: "logging", order: &order}
+	for _, p := range []*recordingEndpointsPlugin{first, second} {
+		if err := bifrost.ReloadPlugin(p, []schemas.PluginType{schemas.PluginTypeRelay}); err != nil {
+			t.Fatalf("ReloadPlugin: %v", err)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	pipeline := bifrost.AcquirePluginPipeline()
+	req := &schemas.BifrostRelayRequest{RelayName: "tavily"}
+	_, shortCircuit, ran := pipeline.RunRelayPreHooks(ctx, req, nil)
+	if shortCircuit != nil {
+		t.Fatalf("unexpected short-circuit")
+	}
+	pipeline.RunRelayPostHooks(ctx, &schemas.BifrostRelayResponse{}, nil, ran)
+	bifrost.ReleasePluginPipeline(pipeline)
+	if got, want := strings.Join(order, ","), "pre:governance,pre:logging,post:logging,post:governance"; got != want {
+		t.Fatalf("hook order = %s, want %s", got, want)
+	}
+
+	// A pre-hook short-circuit stops the chain; only the plugins that entered see the post-hook.
+	order = nil
+	first.deny = true
+	pipeline = bifrost.AcquirePluginPipeline()
+	_, shortCircuit, ran = pipeline.RunRelayPreHooks(ctx, req, nil)
+	if shortCircuit == nil {
+		t.Fatalf("expected a short-circuit")
+	}
+	_, bErr := pipeline.RunRelayPostHooks(ctx, nil, shortCircuit.Error, ran)
+	bifrost.ReleasePluginPipeline(pipeline)
+	if bErr == nil {
+		t.Fatalf("expected the refusal to reach the caller")
+	}
+	if got, want := strings.Join(order, ","), "pre:governance,post:governance"; got != want {
+		t.Fatalf("hook order = %s, want %s", got, want)
+	}
+
+	if err := bifrost.RemovePlugin("logging", []schemas.PluginType{schemas.PluginTypeRelay}); err != nil {
+		t.Fatalf("RemovePlugin: %v", err)
+	}
+	if n := len(*bifrost.relayPlugins.Load()); n != 1 {
+		t.Fatalf("plugins after remove = %d, want 1", n)
+	}
+}
+
+// keyScopedUpstream serves stored responses only to the key that owns them, as OpenAI does across projects,
+// and records which bearer each call carried.
+type keyScopedUpstream struct {
+	mu    sync.Mutex
+	owner string
+	seen  []string
+}
+
+func (u *keyScopedUpstream) handler(w http.ResponseWriter, r *http.Request) {
+	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	u.mu.Lock()
+	u.seen = append(u.seen, auth)
+	owner := u.owner
+	u.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	if auth != owner {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Response with id 'resp_1' not found.","type":"invalid_request_error","param":null,"code":null}}`))
+		return
+	}
+	status := "completed"
+	if strings.HasSuffix(r.URL.Path, "/cancel") {
+		status = "cancelled"
+	}
+	_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"` + status + `","model":"gpt-4o","output":[]}`))
+}
+
+func (u *keyScopedUpstream) calls() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.seen...)
+}
+
+func newKeyScopedClient(t *testing.T, owner string) (*Bifrost, *keyScopedUpstream) {
+	t.Helper()
+	upstream := &keyScopedUpstream{owner: owner}
+	server := httptest.NewServer(http.HandlerFunc(upstream.handler))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "k1", Name: "one", Value: *schemas.NewSecretVar("sk-one"), Models: schemas.WhiteList{"gpt-4o"}, Weight: 1},
+		{ID: "k2", Name: "two", Value: *schemas.NewSecretVar("sk-two"), Models: schemas.WhiteList{"gpt-4o-mini"}, Weight: 1},
+		{ID: "k3", Name: "three", Value: *schemas.NewSecretVar("sk-three"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	return newStreamTestClient(t, account), upstream
+}
+
+// A stored response is found on whichever key created it: the follow-up asks each key in turn and the
+// one that owns it serves, whatever the key weights would have picked.
+func TestResponsesLifecycle_FindsTheOwningKey(t *testing.T) {
+	client, upstream := newKeyScopedClient(t, "sk-three")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, err := client.ResponsesRetrieveRequest(ctx, &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err != nil {
+		t.Fatalf("retrieve failed: %+v", err.Error)
+	}
+	if resp.ID == nil || *resp.ID != "resp_1" {
+		t.Fatalf("retrieve returned %+v", resp)
+	}
+	if got, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); got != "k3" {
+		t.Fatalf("selected key = %q, want k3", got)
+	}
+	if got := upstream.calls(); strings.Join(got, ",") != "sk-one,sk-two,sk-three" {
+		t.Fatalf("upstream calls = %v, want each key once in id order", got)
+	}
+
+	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	cancelled, err := client.ResponsesCancelRequest(ctx, &schemas.BifrostResponsesCancelRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err != nil {
+		t.Fatalf("cancel failed: %+v", err.Error)
+	}
+	if cancelled.Status == nil || *cancelled.Status != "cancelled" {
+		t.Fatalf("cancel returned %+v", cancelled)
+	}
+}
+
+// A response no key owns comes back as the provider's 404 after one call per key, not one per retry.
+func TestResponsesLifecycle_NotFoundOnEveryKey(t *testing.T) {
+	client, upstream := newKeyScopedClient(t, "sk-nobody")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := client.ResponsesRetrieveRequest(ctx, &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusNotFound {
+		t.Fatalf("error = %+v, want 404", err)
+	}
+	if got := upstream.calls(); len(got) != 3 {
+		t.Fatalf("upstream calls = %v, want one per key", got)
+	}
+}
+
+// A caller that pins a key is answered by that key alone, as single-key selection does.
+func TestResponsesLifecycle_PinnedKeyIsTheOnlyOneAsked(t *testing.T) {
+	client, upstream := newKeyScopedClient(t, "sk-three")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "one")
+	_, err := client.ResponsesRetrieveRequest(ctx, &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusNotFound {
+		t.Fatalf("error = %+v, want 404 from the pinned key", err)
+	}
+	if got := upstream.calls(); strings.Join(got, ",") != "sk-one" {
+		t.Fatalf("upstream calls = %v, want only the pinned key", got)
+	}
+}
+
+// videoUpstream owns each video on one key and pages each key's listing one video at a time.
+type videoUpstream struct {
+	mu     sync.Mutex
+	owners map[string][]string // bearer -> video ids it owns, in listing order
+	seen   []string
+}
+
+func (u *videoUpstream) handler(w http.ResponseWriter, r *http.Request) {
+	auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	u.mu.Lock()
+	u.seen = append(u.seen, auth+" "+r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+	owned := u.owners[auth]
+	u.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	notFound := func() {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Video not found","type":"invalid_request_error"}}`))
+	}
+	if r.URL.Path == "/v1/videos" {
+		start := 0
+		if after := r.URL.Query().Get("after"); after != "" {
+			start = -1
+			for i, id := range owned {
+				if id == after {
+					start = i + 1
+				}
+			}
+			if start < 0 {
+				notFound()
+				return
+			}
+		}
+		data, last, more := "", "", false
+		if start < len(owned) {
+			data = `{"id":"` + owned[start] + `","object":"video","status":"completed","model":"sora-2","created_at":1}`
+			last = owned[start]
+			more = start+1 < len(owned)
+		}
+		body := `{"object":"list","data":[` + data + `],"has_more":` + map[bool]string{true: "true", false: "false"}[more]
+		if last != "" {
+			body += `,"last_id":"` + last + `"`
+		}
+		_, _ = w.Write([]byte(body + `}`))
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/videos/")
+	for _, owned := range owned {
+		if owned == id {
+			if r.Method == http.MethodDelete {
+				_, _ = w.Write([]byte(`{"id":"` + id + `","object":"video.deleted","deleted":true}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"` + id + `","object":"video","status":"completed","model":"sora-2","created_at":1}`))
+			return
+		}
+	}
+	notFound()
+}
+
+func (u *videoUpstream) calls() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.seen...)
+}
+
+func newVideoClient(t *testing.T, owners map[string][]string) (*Bifrost, *videoUpstream) {
+	t.Helper()
+	upstream := &videoUpstream{owners: owners}
+	server := httptest.NewServer(http.HandlerFunc(upstream.handler))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "k1", Name: "one", Value: *schemas.NewSecretVar("sk-one"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "k2", Name: "two", Value: *schemas.NewSecretVar("sk-two"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "k3", Name: "three", Value: *schemas.NewSecretVar("sk-three"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	return newStreamTestClient(t, account), upstream
+}
+
+// A video is polled and deleted through whichever key created it.
+func TestVideo_RetrieveAndDeleteFindTheOwningKey(t *testing.T) {
+	client, _ := newVideoClient(t, map[string][]string{"sk-two": {"video_b"}})
+
+	for i := 0; i < 3; i++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, err := client.VideoRetrieveRequest(ctx, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.OpenAI, ID: "video_b"})
+		if err != nil {
+			t.Fatalf("retrieve %d failed: %+v", i, err.Error)
+		}
+		if !strings.HasPrefix(resp.ID, "video_b") {
+			t.Fatalf("retrieve returned %q", resp.ID)
+		}
+		if got, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); got != "k2" {
+			t.Fatalf("selected key = %q, want k2", got)
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, err := client.VideoDeleteRequest(ctx, &schemas.BifrostVideoDeleteRequest{Provider: schemas.OpenAI, ID: "video_b"}); err != nil {
+		t.Fatalf("delete failed: %+v", err.Error)
+	}
+}
+
+// Video listing walks every key's videos once, page by page, ending with has_more false.
+func TestVideo_ListPagesAcrossKeys(t *testing.T) {
+	client, _ := newVideoClient(t, map[string][]string{"sk-one": {"v1", "v2"}, "sk-three": {"v3"}})
+
+	var ids []string
+	var after *string
+	for page := 0; page < 10; page++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, err := client.VideoListRequest(ctx, &schemas.BifrostVideoListRequest{Provider: schemas.OpenAI, After: after})
+		if err != nil {
+			t.Fatalf("page %d failed: %+v", page, err.Error)
+		}
+		for _, v := range resp.Data {
+			ids = append(ids, strings.SplitN(v.ID, ":", 2)[0])
+		}
+		if resp.HasMore == nil || !*resp.HasMore {
+			if resp.After != nil {
+				t.Fatalf("last page carried a cursor %q", *resp.After)
+			}
+			break
+		}
+		if resp.After == nil {
+			t.Fatalf("page %d has more but no cursor", page)
+		}
+		after = resp.After
+	}
+	if strings.Join(ids, ",") != "v1,v2,v3" {
+		t.Fatalf("listed %v, want v1,v2,v3", ids)
+	}
+}
+
+// A provider-native cursor (the last video id, as SDKs send it) resumes on the key that knows that video.
+func TestVideo_ListResumesFromNativeCursor(t *testing.T) {
+	client, _ := newVideoClient(t, map[string][]string{"sk-one": {"v1"}, "sk-two": {"v2", "v3"}})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, err := client.VideoListRequest(ctx, &schemas.BifrostVideoListRequest{Provider: schemas.OpenAI, After: schemas.Ptr("v2")})
+	if err != nil {
+		t.Fatalf("list failed: %+v", err.Error)
+	}
+	if len(resp.Data) != 1 || !strings.HasPrefix(resp.Data[0].ID, "v3") {
+		t.Fatalf("list returned %+v, want v3", resp.Data)
+	}
+	if resp.HasMore == nil || !*resp.HasMore || resp.After == nil {
+		t.Fatalf("expected the listing to continue to the next key, got has_more=%v after=%v", resp.HasMore, resp.After)
+	}
+	decoded, decodeErr := schemas.DecodeSerialCursor(*resp.After)
+	if decodeErr != nil || decoded.KeyIndex != 2 {
+		t.Fatalf("cursor = %+v (%v), want the third key", decoded, decodeErr)
+	}
+}
+
+// snapshotTracer hands a fixed accumulated response to cancelled-stream estimation.
+type snapshotTracer struct {
+	schemas.NoOpTracer
+	snapshot *schemas.BifrostResponse
+}
+
+func (s *snapshotTracer) GetAccumulatedResponse(string) *schemas.BifrostResponse { return s.snapshot }
+
+// usageEstimationTokenizerFor reports the tokenizer a cancelled stream of model is
+// estimated with under the families currently configured.
+func usageEstimationTokenizerFor(t *testing.T, model string) string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(&snapshotTracer{snapshot: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: new("hello world")},
+		}}}},
+	}}}))
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-usage-estimation")
+	failure := &schemas.BifrostError{Error: &schemas.ErrorField{Type: new(schemas.RequestCancelled)}}
+	streamusage.Estimate(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Model: model, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+	}}, model, failure)
+	if failure.ExtraFields.BilledUsage == nil || failure.ExtraFields.BilledUsage.Estimation == nil {
+		t.Fatalf("no estimate for %s: %+v", model, failure.ExtraFields.BilledUsage)
+	}
+	return failure.ExtraFields.BilledUsage.Estimation.Tokenizer
+}
+
+// UsageEstimationTokenizers reaches cancelled-stream estimation from every path that
+// carries it: Init, ReloadConfig (the path a saved config takes) and the runtime update.
+func TestUsageEstimationTokenizersFollowConfig(t *testing.T) {
+	t.Cleanup(func() { streamusage.Configure(nil) })
+	const model = "claude-opus-4-5"
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: NewNoOpLogger(), UsageEstimationTokenizers: []string{"anthropic"},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	expect := func(step, want string) {
+		t.Helper()
+		if got := usageEstimationTokenizerFor(t, model); got != want {
+			t.Fatalf("%s: %s estimated with %q, want %q", step, model, got, want)
+		}
+	}
+
+	expect("Init with anthropic", "anthropic")
+
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	expect("ReloadConfig with no families", "cl100k_base")
+
+	if err := client.ReloadConfig(schemas.BifrostConfig{Account: account, UsageEstimationTokenizers: []string{"llama3", "Anthropic"}}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	expect("ReloadConfig with anthropic", "anthropic")
+
+	client.UpdateUsageEstimationTokenizers([]string{"deepseek"})
+	expect("update to another family", "cl100k_base")
+
+	client.UpdateUsageEstimationTokenizers([]string{"all"})
+	expect("update to all", "anthropic")
+
+	// An unknown name is ignored with a warning; it must not enable anything.
+	client.UpdateUsageEstimationTokenizers([]string{"gpt2"})
+	expect("update to an unknown family", "cl100k_base")
+}
+
+// TestPatternKeyAliasRoutesAndNamesModel pins that a regex: key alias sends the expanded template upstream and sets no model name.
+func TestPatternKeyAliasRoutesAndNamesModel(t *testing.T) {
+	server, models := agentLoopServer(t, 0)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"regex:claude-.*"}, Weight: 100,
+		Aliases: schemas.KeyAliases{"regex:(claude-.*)": {ModelID: "global.anthropic.$1"}},
+	}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "claude-fable-5",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if got := models(); !reflect.DeepEqual(got, []string{"global.anthropic.claude-fable-5"}) {
+		t.Fatalf("upstream models = %v, want [global.anthropic.claude-fable-5]", got)
+	}
+	alias := resp.ExtraFields.RoutingInfo.ResolvedKeyAlias
+	if alias == nil || alias.ModelID != "global.anthropic.claude-fable-5" || alias.ModelName != nil {
+		t.Fatalf("ResolvedKeyAlias = %+v, want model_id global.anthropic.claude-fable-5 and no model_name", alias)
+	}
+
+	_, bifrostErr = client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+	if bifrostErr == nil {
+		t.Error("a model outside the key's allow list was served; a pattern alias must not widen the allow list")
+	}
+}
+
+// patternAliasServer records the bearer token and model of each upstream call and answers 429 for a "fail." model.
+func patternAliasServer(t *testing.T) (*httptest.Server, func() [][2]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls [][2]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		model := gjson.GetBytes(body, "model").String()
+		mu.Lock()
+		calls = append(calls, [2]string{strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), model})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(model, "fail.") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"m",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(server.Close)
+	return server, func() [][2]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([][2]string(nil), calls...)
+	}
+}
+
+// patternAliasChat sends one chat request for model on the OpenAI mock provider.
+func patternAliasChat(client *Bifrost, model string) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	return client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    model,
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	})
+}
+
+// TestPatternKeyAliasBlockListChecksRequestedName pins that a blocked name is refused without falling through to a pattern, and that the upstream id is never checked.
+func TestPatternKeyAliasBlockListChecksRequestedName(t *testing.T) {
+	server, calls := patternAliasServer(t)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100,
+		BlacklistedModels: schemas.BlackList{"claude-opus-5", "regex:claude-haiku-.*", "global.anthropic.claude-sonnet-5"},
+		Aliases: schemas.KeyAliases{
+			"claude-opus-5":     {ModelID: "exact-target"},
+			"regex:(claude-.*)": {ModelID: "global.anthropic.$1"},
+		},
+	}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	for _, model := range []string{"claude-opus-5", "CLAUDE-OPUS-5", "claude-haiku-5"} {
+		if _, bifrostErr := patternAliasChat(client, model); bifrostErr == nil {
+			t.Errorf("blocked model %q was served", model)
+		}
+	}
+	if got := calls(); len(got) != 0 {
+		t.Fatalf("blocked requests reached upstream: %v", got)
+	}
+	resp, bifrostErr := patternAliasChat(client, "claude-sonnet-5")
+	if bifrostErr != nil {
+		t.Fatalf("claude-sonnet-5 failed: %s", bifrostErr.Error.Message)
+	}
+	if alias := resp.ExtraFields.RoutingInfo.ResolvedKeyAlias; alias == nil || alias.ModelID != "global.anthropic.claude-sonnet-5" {
+		t.Errorf("ResolvedKeyAlias = %+v, want global.anthropic.claude-sonnet-5", alias)
+	}
+	if got := calls(); len(got) != 1 || got[0][1] != "global.anthropic.claude-sonnet-5" {
+		t.Errorf("upstream calls = %v, want one for global.anthropic.claude-sonnet-5", got)
+	}
+}
+
+// TestPatternKeyAliasTemplateFollowsSelectedKey pins that every attempt sends the template of the key it used, across key selection and retries.
+func TestPatternKeyAliasTemplateFollowsSelectedKey(t *testing.T) {
+	server, calls := patternAliasServer(t)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 2
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Millisecond
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = 2 * time.Millisecond
+	templates := map[string]string{"sk-us": "us.", "sk-eu": "eu.", "sk-fail": "fail."}
+	keys := make([]schemas.Key, 0, len(templates))
+	for value, prefix := range templates {
+		keys = append(keys, schemas.Key{
+			ID: value, Name: value, Value: *schemas.NewSecretVar(value), Models: schemas.WhiteList{"regex:claude-.*"}, Weight: 1,
+			Aliases: schemas.KeyAliases{"regex:(claude-.*)": {ModelID: prefix + "$1"}},
+		})
+	}
+	account.SetKeysForProvider(schemas.OpenAI, keys)
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	served := map[string]int{}
+	for i := 0; i < 60; i++ {
+		model := fmt.Sprintf("claude-fable-%d", i)
+		resp, bifrostErr := patternAliasChat(client, model)
+		got := calls()
+		last := got[len(got)-1]
+		if bifrostErr != nil {
+			if last[1] != "fail."+model {
+				t.Fatalf("request %d failed after upstream call %v", i, last)
+			}
+			continue
+		}
+		alias := resp.ExtraFields.RoutingInfo.ResolvedKeyAlias
+		if alias == nil || alias.ModelID != last[1] || resp.ExtraFields.RoutingInfo.Key != last[0] {
+			t.Fatalf("request %d: routing info key=%q alias=%+v, upstream call %v", i, resp.ExtraFields.RoutingInfo.Key, alias, last)
+		}
+		served[last[0]]++
+	}
+	for _, call := range calls() {
+		prefix, ok := templates[call[0]]
+		if !ok || !strings.HasPrefix(call[1], prefix+"claude-fable-") {
+			t.Errorf("key %q sent %q, want its own template %q", call[0], call[1], prefix)
+		}
+	}
+	if served["sk-us"] == 0 || served["sk-eu"] == 0 || served["sk-fail"] != 0 {
+		t.Errorf("served per key = %v, want both healthy keys used and the failing key never", served)
+	}
+}
+
+// TestKeyAliasResolvesAdvisorToolModel pins that advisor tool models follow the attempt key's alias.
+func TestKeyAliasResolvesAdvisorToolModel(t *testing.T) {
+	var mu sync.Mutex
+	var calls [][3]string // key, request model, advisor model
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		model := gjson.GetBytes(body, "model").String()
+		mu.Lock()
+		calls = append(calls, [3]string{r.Header.Get("x-api-key"), model, gjson.GetBytes(body, "tools.0.model").String()})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(model, "fail.") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"m",`+
+			`"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	t.Cleanup(server.Close)
+	lastCall := func() [3]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls[len(calls)-1]
+	}
+
+	const requested = "anthropic.claude-opus-5"
+	newRequest := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    requested,
+			Input: []schemas.ResponsesMessage{{
+				Role:    new(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")},
+			}},
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type:                 schemas.ResponsesToolTypeAdvisor,
+				ResponsesToolAdvisor: &schemas.ResponsesToolAdvisor{Model: requested},
+			}}},
+			RawRequestBody: []byte(`{"model":"` + requested + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}],` +
+				`"tools":[{"type":"advisor_20260301","name":"advisor","model":"` + requested + `"}]}`),
+		}
+	}
+	send := func(client *Bifrost, request *schemas.BifrostResponsesRequest, raw bool) *schemas.BifrostError {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+		defer ctx.Cancel()
+		if raw {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		}
+		_, bifrostErr := client.ResponsesRequest(ctx, request)
+		return bifrostErr
+	}
+
+	t.Run("single key", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, server.URL)
+		account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+		account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{
+			ID: "sk-alias", Value: *schemas.NewSecretVar("sk-alias"), Models: schemas.WhiteList{"*"}, Weight: 100,
+			Aliases: schemas.KeyAliases{requested: {ModelID: "claude-opus-5"}},
+		}})
+		client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(client.Shutdown)
+
+		for _, raw := range []bool{false, true} {
+			request := newRequest()
+			if bifrostErr := send(client, request, raw); bifrostErr != nil {
+				t.Fatalf("raw=%v: request failed: %s", raw, bifrostErr.Error.Message)
+			}
+			if got := lastCall(); got[1] != "claude-opus-5" || got[2] != "claude-opus-5" {
+				t.Errorf("raw=%v: upstream model=%q advisor model=%q, want both claude-opus-5", raw, got[1], got[2])
+			}
+			if got := request.Params.Tools[0].ResponsesToolAdvisor.Model; got != requested {
+				t.Errorf("raw=%v: caller's advisor model rewritten to %q", raw, got)
+			}
+			if got := gjson.GetBytes(request.RawRequestBody, "tools.0.model").String(); got != requested {
+				t.Errorf("raw=%v: caller's raw advisor model rewritten to %q", raw, got)
+			}
+		}
+
+		// An advisor declared in an additional_tools item is hoisted into the tools during prep.
+		declared := json.RawMessage(`[{"type":"advisor","model":"` + requested + `"}]`)
+		request := newRequest()
+		request.Params = nil
+		request.RawRequestBody = nil
+		request.Input = append(request.Input, schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: declared})
+		if bifrostErr := send(client, request, false); bifrostErr != nil {
+			t.Fatalf("additional_tools: request failed: %s", bifrostErr.Error.Message)
+		}
+		if got := lastCall(); got[2] != "claude-opus-5" {
+			t.Errorf("additional_tools: upstream advisor model=%q, want claude-opus-5", got[2])
+		}
+		if got := string(request.Input[1].AdditionalTools); got != string(declared) {
+			t.Errorf("additional_tools: caller's declaration rewritten to %s", got)
+		}
+	})
+
+	t.Run("each retry follows its key", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, server.URL)
+		account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 2
+		account.configs[schemas.Anthropic].NetworkConfig.RetryBackoffInitial = time.Millisecond
+		account.configs[schemas.Anthropic].NetworkConfig.RetryBackoffMax = 2 * time.Millisecond
+		account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+			{ID: "sk-fail", Value: *schemas.NewSecretVar("sk-fail"), Models: schemas.WhiteList{"*"}, Weight: 1,
+				Aliases: schemas.KeyAliases{requested: {ModelID: "fail.claude-opus-5"}}},
+			{ID: "sk-plain", Value: *schemas.NewSecretVar("sk-plain"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		})
+		client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(client.Shutdown)
+
+		for i := 0; i < 20; i++ {
+			for _, raw := range []bool{false, true} {
+				if bifrostErr := send(client, newRequest(), raw); bifrostErr != nil {
+					t.Fatalf("raw=%v: request %d failed: %s", raw, i, bifrostErr.Error.Message)
+				}
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, call := range calls {
+			if call[0] == "sk-fail" && call[2] != "fail.claude-opus-5" || call[0] == "sk-plain" && call[2] != requested {
+				t.Errorf("key %q sent advisor model %q with request model %q", call[0], call[2], call[1])
+			}
+		}
+	})
+}
+
+// customToolProvider answers with a function call to apply_patch, the way a wire that
+// took the rewritten custom tool does, and records what it was sent.
+type customToolProvider struct {
+	stubProvider
+	gotResponses *schemas.BifrostResponsesRequest
+	gotChat      *schemas.BifrostChatRequest
+}
+
+func applyPatchFunctionCallResponse() *schemas.BifrostResponsesResponse {
+	return &schemas.BifrostResponsesResponse{
+		Status: schemas.Ptr(schemas.ResponsesResponseStatusCompleted),
+		Output: []schemas.ResponsesMessage{{
+			ID:   schemas.Ptr("fc_1"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    schemas.Ptr("call_1"),
+				Name:      schemas.Ptr("apply_patch"),
+				Arguments: schemas.Ptr(`{"input":"*** Begin Patch"}`),
+			},
+		}},
+	}
+}
+
+func (p *customToolProvider) Responses(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	p.gotResponses = req
+	return applyPatchFunctionCallResponse(), nil
+}
+
+func (p *customToolProvider) ChatCompletion(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	p.gotChat = req
+	return applyPatchFunctionCallResponse().ToBifrostChatResponse(), nil
+}
+
+// ResponsesStream replays a function-call stream through the runner it was handed and
+// records what the post hooks received.
+func (p *customToolProvider) ResponsesStream(ctx *schemas.BifrostContext, runner schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.gotResponses = req
+	item := applyPatchFunctionCallResponse().Output[0]
+	item.Arguments = schemas.Ptr("")
+	events := []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &item},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, ItemID: item.ID, Delta: schemas.Ptr(`{"input":"*** Begin`)},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, ItemID: item.ID, Delta: schemas.Ptr(` Patch"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, ItemID: item.ID, Arguments: schemas.Ptr(`{"input":"*** Begin Patch"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: applyPatchFunctionCallResponse()},
+	}
+	out := make(chan *schemas.BifrostStreamChunk, len(events))
+	for _, event := range events {
+		result, bifrostErr := runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+		if bifrostErr != nil {
+			continue
+		}
+		out <- &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: result.ResponsesStreamResponse}
+	}
+	close(out)
+	return out, nil
+}
+
+// stubCustomToolsRows gives openai/gpt-5 a supports_custom_tools true row; nothing else has one.
+func stubCustomToolsRows(t *testing.T) {
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.OpenAI && model == "gpt-5" {
+			return &schemas.ModelCapabilities{SupportsCustomTools: schemas.Ptr(true)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+}
+
+func applyPatchResponsesRequest(provider schemas.ModelProvider, model string) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("patch it")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type:        schemas.ResponsesToolTypeCustom,
+			Name:        schemas.Ptr("apply_patch"),
+			Description: schemas.Ptr("Apply a patch"),
+			ResponsesToolCustom: &schemas.ResponsesToolCustom{Format: &schemas.ResponsesToolCustomFormat{
+				Type: "grammar", Syntax: schemas.Ptr("lark"), Definition: schemas.Ptr("start: /.+/"),
+			}},
+		}}},
+	}
+}
+
+// Without a supports_custom_tools true row, every provider gets the custom tool as a
+// function tool and the client gets a custom_tool_call back, on the native Responses
+// route and on the chat fallback, which used to drop the tool.
+func TestDispatchResponses_CustomToolsAsFunctionsByDefault(t *testing.T) {
+	stubCustomToolsRows(t)
+	for _, tc := range []struct {
+		name         string
+		provider     schemas.ModelProvider
+		model        string
+		chatFallback bool
+	}{
+		{"anthropic native", schemas.Anthropic, "claude-sonnet-4-5", false},
+		{"openai without a row", schemas.OpenAI, "gpt-4.1-mini", false},
+		{"groq chat fallback", schemas.Groq, "openai/gpt-oss-120b", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.chatFallback {
+				ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+			}
+			provider := &customToolProvider{stubProvider: stubProvider{key: tc.provider}}
+			req := applyPatchResponsesRequest(tc.provider, tc.model)
+			resp, bifrostErr := (&Bifrost{}).dispatchResponses(ctx, provider, &schemas.ProviderConfig{}, schemas.Key{}, req, req)
+			if bifrostErr != nil {
+				t.Fatalf("dispatch failed: %v", bifrostErr.Error.Message)
+			}
+
+			var sentType, sentName string
+			if tc.chatFallback {
+				if provider.gotChat == nil || len(provider.gotChat.Params.Tools) != 1 {
+					t.Fatalf("the chat fallback must keep the tool, got %+v", provider.gotChat)
+				}
+				sentType, sentName = string(provider.gotChat.Params.Tools[0].Type), provider.gotChat.Params.Tools[0].Function.Name
+			} else {
+				sentType, sentName = string(provider.gotResponses.Params.Tools[0].Type), *provider.gotResponses.Params.Tools[0].Name
+			}
+			if sentType != "function" || sentName != "apply_patch" {
+				t.Fatalf("want function apply_patch on the wire, got %s %s", sentType, sentName)
+			}
+			if req.Params.Tools[0].Type != schemas.ResponsesToolTypeCustom {
+				t.Fatal("the caller's request must stay untouched")
+			}
+
+			var call *schemas.ResponsesMessage
+			for i := range resp.Output {
+				if resp.Output[i].Type != nil && *resp.Output[i].Type == schemas.ResponsesMessageTypeCustomToolCall {
+					call = &resp.Output[i]
+				}
+			}
+			if call == nil || call.ResponsesCustomToolCall == nil || call.ResponsesCustomToolCall.Input != "*** Begin Patch" {
+				t.Fatalf("want a restored custom_tool_call with the raw input, got %+v", resp.Output)
+			}
+		})
+	}
+}
+
+// A stored response created with a rewritten custom tool is restored on GET /v1/responses/{id},
+// plain and streamed, with no prepared request to carry the names.
+func TestResponsesRetrieve_RestoresCustomToolCalls(t *testing.T) {
+	rewritten := providerUtils.RewriteResponsesCustomTools(nil, schemas.OpenAI, applyPatchResponsesRequest(schemas.OpenAI, "gpt-4.1"))
+	tools, err := providerUtils.MarshalSorted(rewritten.Params.Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := `{"id":"fc_1","type":"function_call","call_id":"call_1","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\"}","status":"completed"}`
+	stored := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4.1","tools":` + string(tools) + `,"output":[` + call + `]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("stream") != "true" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(stored))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range []string{
+			`{"type":"response.created","sequence_number":0,"response":` + strings.Replace(stored, `"output":[`+call+`]`, `"output":[]`, 1) + `}`,
+			`{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":` + strings.Replace(call, `{\"input\":\"*** Begin Patch\"}`, "", 1) + `}`,
+			`{"type":"response.function_call_arguments.done","sequence_number":2,"output_index":0,"item_id":"fc_1","arguments":"{\"input\":\"*** Begin Patch\"}"}`,
+			`{"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":` + call + `}`,
+			`{"type":"response.completed","sequence_number":4,"response":` + stored + `}`,
+		} {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", event)
+		}
+	}))
+	t.Cleanup(server.Close)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("sk-one"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+	client := newStreamTestClient(t, account)
+	isRestored := func(item *schemas.ResponsesMessage) bool {
+		return item != nil && item.Type != nil && *item.Type == schemas.ResponsesMessageTypeCustomToolCall &&
+			item.ResponsesCustomToolCall != nil && item.ResponsesCustomToolCall.Input == "*** Begin Patch"
+	}
+
+	resp, bifrostErr := client.ResponsesRetrieveRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1"})
+	if bifrostErr != nil {
+		t.Fatalf("retrieve failed: %+v", bifrostErr.Error)
+	}
+	if len(resp.Output) != 1 || !isRestored(&resp.Output[0]) {
+		t.Fatalf("want a restored custom_tool_call, got %+v", resp.Output)
+	}
+
+	stream, bifrostErr := client.ResponsesRetrieveStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_1", Stream: schemas.Ptr(true)})
+	if bifrostErr != nil {
+		t.Fatalf("retrieve stream failed: %+v", bifrostErr.Error)
+	}
+	var inputDone, itemDone, completed bool
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		switch event.Type {
+		case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone:
+			t.Fatalf("a restored call must not stream function argument events: %+v", event)
+		case schemas.ResponsesStreamResponseTypeCustomToolCallInputDone:
+			inputDone = event.Input != nil && *event.Input == "*** Begin Patch"
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			itemDone = isRestored(event.Item)
+		case schemas.ResponsesStreamResponseTypeCompleted:
+			completed = event.Response != nil && len(event.Response.Output) == 1 && isRestored(&event.Response.Output[0])
+		}
+	}
+	if !inputDone || !itemDone || !completed {
+		t.Fatalf("stream not restored: input_done=%v item_done=%v completed=%v", inputDone, itemDone, completed)
+	}
+}
+
+// A model whose row says true gets the custom tool unchanged and its call is not touched.
+func TestDispatchResponses_CustomToolsPassThroughWithTrueRow(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := &customToolProvider{stubProvider: stubProvider{key: schemas.OpenAI}}
+	req := applyPatchResponsesRequest(schemas.OpenAI, "gpt-5")
+	resp, bifrostErr := (&Bifrost{}).dispatchResponses(ctx, provider, &schemas.ProviderConfig{}, schemas.Key{}, req, req)
+	if bifrostErr != nil {
+		t.Fatalf("dispatch failed: %v", bifrostErr.Error.Message)
+	}
+	if got := provider.gotResponses.Params.Tools[0].Type; got != schemas.ResponsesToolTypeCustom {
+		t.Fatalf("want the custom tool forwarded, got %s", got)
+	}
+	if got := *resp.Output[0].Type; got != schemas.ResponsesMessageTypeFunctionCall {
+		t.Fatalf("a function call to a tool that was not rewritten must stay as-is, got %s", got)
+	}
+}
+
+func TestDispatchResponsesStream_RestoresCustomToolCallEvents(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := &customToolProvider{stubProvider: stubProvider{key: schemas.Bedrock}}
+	req := applyPatchResponsesRequest(schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+	identity := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, e
+	}
+	stream, bifrostErr := (&Bifrost{}).dispatchResponsesStream(ctx, provider, &schemas.ProviderConfig{}, schemas.Key{}, req, identity, nil)
+	if bifrostErr != nil {
+		t.Fatalf("dispatch failed: %v", bifrostErr.Error.Message)
+	}
+	var types []schemas.ResponsesStreamResponseType
+	input := ""
+	for chunk := range stream {
+		event := chunk.BifrostResponsesStreamResponse
+		types = append(types, event.Type)
+		if event.Type == schemas.ResponsesStreamResponseTypeCustomToolCallInputDone {
+			input = *event.Input
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeCompleted && *event.Response.Output[0].Type != schemas.ResponsesMessageTypeCustomToolCall {
+			t.Fatalf("the completed response must carry the custom_tool_call, got %s", *event.Response.Output[0].Type)
+		}
+	}
+	want := []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		schemas.ResponsesStreamResponseTypeCustomToolCallInputDone,
+		schemas.ResponsesStreamResponseTypeCompleted,
+	}
+	if !slices.Equal(types, want) {
+		t.Fatalf("event types:\n got  %v\n want %v", types, want)
+	}
+	if input != "*** Begin Patch" {
+		t.Fatalf("the done event must carry the raw input, got %q", input)
+	}
+}
+
+// Codex sends its exec custom tool inside an additional_tools item, nested in the
+// "functions" namespace. OpenAI takes additional_tools items, but a model without a
+// true row must still get exec as a function tool, so the item is lifted first.
+func TestPrepareResponsesRequest_CodexCustomToolInAdditionalTools(t *testing.T) {
+	stubCustomToolsRows(t)
+	tools := `[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec","description":"Run JavaScript","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}]}]`
+	for _, tc := range []struct {
+		model     string
+		rewritten bool
+	}{{"gpt-4.1-mini", true}, {"gpt-5", false}} {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: tc.model, Input: []schemas.ResponsesMessage{
+				{Type: schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(tools)},
+			}}
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.OpenAI}, schemas.Key{}, req)
+			if bifrostErr != nil {
+				t.Fatalf("prepare failed: %v", bifrostErr.Error.Message)
+			}
+			if !tc.rewritten {
+				if prepared.CustomToolNames != nil || len(prepared.Input) != 1 {
+					t.Fatalf("a model with a true row keeps the additional_tools item, got %+v", prepared)
+				}
+				return
+			}
+			if len(prepared.Input) != 0 || prepared.Params == nil || len(prepared.Params.Tools) != 1 {
+				t.Fatalf("want exec lifted to the top level, got input %d tools %+v", len(prepared.Input), prepared.Params)
+			}
+			exec := prepared.Params.Tools[0]
+			if exec.Type != schemas.ResponsesToolTypeFunction || *exec.Name != "exec" {
+				t.Fatalf("want function exec, got %s %v", exec.Type, exec.Name)
+			}
+			if _, ok := prepared.CustomToolNames["exec"]; !ok {
+				t.Fatalf("exec must be restored on the way out, got %v", prepared.CustomToolNames)
+			}
+		})
+	}
+}
+
+// The chat route rewrites too, for every provider without a true row.
+func TestPrepareChatRequest_CustomToolsAsFunctionsByDefault(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	chat := func(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: provider, Model: model, Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:   schemas.ChatToolTypeCustom,
+			Custom: &schemas.ChatToolCustom{Name: "ApplyPatch", Format: &schemas.ChatToolCustomFormat{Type: "text"}},
+		}}}}
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Groq, schemas.Gemini, schemas.Bedrock} {
+		prepared := prepareChatRequest(ctx, nil, provider, chat(provider, "some-model"))
+		tool := prepared.Params.Tools[0]
+		if tool.Type != schemas.ChatToolTypeFunction || tool.Function == nil || tool.Function.Name != "ApplyPatch" {
+			t.Fatalf("%s: want function ApplyPatch, got %+v", provider, tool)
+		}
+	}
+	supported := chat(schemas.OpenAI, "gpt-5")
+	if got := prepareChatRequest(ctx, nil, schemas.OpenAI, supported).Params.Tools[0].Type; got != schemas.ChatToolTypeCustom {
+		t.Fatalf("a model with a true row keeps the custom tool, got %s", got)
+	}
+}
+
+// countTokensProvider records the count tokens and compaction requests it was sent.
+type countTokensProvider struct {
+	stubProvider
+	gotCount      *schemas.BifrostResponsesRequest
+	gotCompaction *schemas.BifrostCompactionRequest
+	compactOutput []schemas.ResponsesMessage
+}
+
+func (p *countTokensProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	p.gotCount = req
+	return &schemas.BifrostCountTokensResponse{}, nil
+}
+
+func (p *countTokensProvider) Compaction(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	p.gotCompaction = req
+	return &schemas.BifrostCompactionResponse{Output: p.compactOutput}, nil
+}
+
+// handleCountTokens runs one count tokens attempt and returns what the provider received.
+func handleCountTokens(t *testing.T, ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	t.Helper()
+	provider := &countTokensProvider{stubProvider: stubProvider{key: req.Provider}}
+	msg := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.CountTokensRequest, CountTokensRequest: req}}
+	if _, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, config, msg, schemas.Key{}, nil); bifrostErr != nil {
+		t.Fatalf("count tokens failed: %v", bifrostErr.Error.Message)
+	}
+	if provider.gotCount == nil {
+		t.Fatal("the provider never received the count tokens request")
+	}
+	return provider.gotCount
+}
+
+// Count tokens must measure the request dispatch would send. It used to reach OpenAI's
+// converter, which rewrote custom tools for pre-GPT-5 models; moving the rewrite to
+// prepareResponsesRequest left count tokens sending custom tools those models reject.
+func TestCountTokens_CustomToolsAsFunctionsByDefault(t *testing.T) {
+	stubCustomToolsRows(t)
+	for _, tc := range []struct {
+		provider  schemas.ModelProvider
+		model     string
+		rewritten bool
+	}{
+		{schemas.OpenAI, "gpt-4.1-mini", true},
+		{schemas.Anthropic, "claude-sonnet-4-5", true},
+		{schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", true},
+		{schemas.OpenAI, "gpt-5", false},
+	} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := applyPatchResponsesRequest(tc.provider, tc.model)
+			req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+				Type: schemas.ResponsesToolChoiceTypeCustom, Name: schemas.Ptr("apply_patch"),
+			}}
+			req.Input = append(req.Input, schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("apply_patch"),
+					ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "*** Begin Patch"},
+				},
+			})
+			got := handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+
+			tool, choice, call := got.Params.Tools[0], got.Params.ToolChoice.ResponsesToolChoiceStruct, got.Input[1]
+			if !tc.rewritten {
+				if tool.Type != schemas.ResponsesToolTypeCustom || *call.Type != schemas.ResponsesMessageTypeCustomToolCall {
+					t.Fatalf("a model with a true row keeps custom tools and calls, got %s / %s", tool.Type, *call.Type)
+				}
+				return
+			}
+			if tool.Type != schemas.ResponsesToolTypeFunction || *tool.Name != "apply_patch" {
+				t.Fatalf("want function apply_patch counted, got %s %v", tool.Type, tool.Name)
+			}
+			if choice.Type != schemas.ResponsesToolChoiceTypeFunction {
+				t.Fatalf("want the custom choice pointed at the function, got %s", choice.Type)
+			}
+			if *call.Type != schemas.ResponsesMessageTypeFunctionCall || call.Arguments == nil || *call.Arguments != `{"input":"*** Begin Patch"}` {
+				t.Fatalf("want the replayed call counted as a function call, got %s %v", *call.Type, call.Arguments)
+			}
+			if req.Params.Tools[0].Type != schemas.ResponsesToolTypeCustom || *req.Input[1].Type != schemas.ResponsesMessageTypeCustomToolCall {
+				t.Fatal("the caller's request must stay untouched, since fallbacks re-run the preparation")
+			}
+		})
+	}
+}
+
+// Codex declares exec inside an additional_tools item; count tokens lifts it out and
+// rewrites it, like dispatch, instead of sending the custom tool in the raw item.
+func TestCountTokens_CodexCustomToolInAdditionalTools(t *testing.T) {
+	stubCustomToolsRows(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	tools := `[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec","description":"Run JavaScript","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}]}]`
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4.1-mini", Input: []schemas.ResponsesMessage{
+		{Type: schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: []byte(tools)},
+	}}
+	got := handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+	if len(got.Input) != 0 || got.Params == nil || len(got.Params.Tools) != 1 {
+		t.Fatalf("want exec lifted to the top level, got input %d params %+v", len(got.Input), got.Params)
+	}
+	if exec := got.Params.Tools[0]; exec.Type != schemas.ResponsesToolTypeFunction || *exec.Name != "exec" {
+		t.Fatalf("want function exec, got %s %v", exec.Type, exec.Name)
+	}
+}
+
+// Namespaces are flattened for count tokens on wires without namespace support, as for dispatch.
+func TestCountTokens_FlattensNamespaceTools(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5", Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+		Type: schemas.ResponsesToolTypeNamespace,
+		Name: schemas.Ptr("clock"),
+		ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{
+			Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("sleep"), ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+		}}},
+	}}}}
+	got := handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+	for _, tool := range got.Params.Tools {
+		if tool.Type == schemas.ResponsesToolTypeNamespace {
+			t.Fatalf("namespace sent to a wire without namespace support: %+v", got.Params.Tools)
+		}
+	}
+}
+
+// Prompt-cache breakpoints change no token count, so count tokens does not inject them;
+// the billing header is part of the measured request, so it is restored.
+func TestCountTokens_SkipsPromptCacheInjectionKeepsBillingHeader(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	got := handleCountTokens(t, ctx, promptCacheOn(), responsesReqWithText("stable prefix"))
+	if got.Input[0].Content.ContentBlocks[0].CacheControl != nil {
+		t.Fatal("count tokens must not inject prompt-cache breakpoints")
+	}
+
+	ctx, req := billingHeaderRequest(t)
+	req.Provider, req.Model = schemas.Anthropic, "claude-sonnet-4"
+	got = handleCountTokens(t, ctx, &schemas.ProviderConfig{}, req)
+	if blocks := got.Input[0].Content.ContentBlocks; len(blocks) != 2 || *blocks[0].Text != billingHeaderFixture {
+		t.Fatalf("want the billing header restored into the counted system message, got %+v", blocks)
+	}
+}
+
+// Compaction replays the conversation, so custom calls in it are sent as function calls
+// to a model without a true row, and come back as custom calls.
+func TestCompaction_ReplayedCustomCallsAsFunctions(t *testing.T) {
+	stubCustomToolsRows(t)
+	customCall := func() schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("apply_patch"),
+				ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "*** Begin Patch"},
+			},
+		}
+	}
+	for _, tc := range []struct {
+		provider  schemas.ModelProvider
+		model     string
+		rewritten bool
+	}{{schemas.XAI, "grok-4", true}, {schemas.OpenAI, "gpt-5", false}} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostCompactionRequest{Provider: tc.provider, Model: tc.model, Input: []schemas.ResponsesMessage{customCall()}}
+			echoed := applyPatchFunctionCallResponse().Output
+			provider := &countTokensProvider{stubProvider: stubProvider{key: tc.provider}, compactOutput: echoed}
+			msg := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.CompactionRequest, CompactionRequest: req}}
+			resp, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, &schemas.ProviderConfig{}, msg, schemas.Key{}, nil)
+			if bifrostErr != nil {
+				t.Fatalf("compaction failed: %v", bifrostErr.Error.Message)
+			}
+			sent, out := *provider.gotCompaction.Input[0].Type, *resp.CompactionResponse.Output[0].Type
+			if !tc.rewritten {
+				if sent != schemas.ResponsesMessageTypeCustomToolCall || out != schemas.ResponsesMessageTypeFunctionCall {
+					t.Fatalf("a model with a true row is left alone, sent %s got %s", sent, out)
+				}
+				return
+			}
+			if sent != schemas.ResponsesMessageTypeFunctionCall {
+				t.Fatalf("want the replayed custom call sent as a function call, got %s", sent)
+			}
+			if out != schemas.ResponsesMessageTypeCustomToolCall || resp.CompactionResponse.Output[0].ResponsesCustomToolCall.Input != "*** Begin Patch" {
+				t.Fatalf("want a function call kept by compaction restored, got %+v", resp.CompactionResponse.Output[0])
+			}
+			if *req.Input[0].Type != schemas.ResponsesMessageTypeCustomToolCall {
+				t.Fatal("the caller's request must stay untouched")
+			}
+		})
+	}
+}
+
+// grammarLimitRequest is a chat request for the structured-output grammar-limit retry tests.
+func grammarLimitRequest(requestType schemas.RequestType) *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{
+		RequestType: requestType,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Invent an invoice.")}}},
+		},
+	}
+}
+
+func grammarLimitError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(400),
+		Error:      &schemas.ErrorField{Message: "The model returned the following errors: The compiled grammar is too large, which would cause performance issues."},
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitRetriesOnceWithTool pins the one re-send after a provider
+// marks a native structured-output request as rejected for grammar size: granted at MaxRetries 0,
+// immediate, on the same key, with the context switched to force the synthetic tool.
+func TestExecuteRequestWithRetries_GrammarLimitRetriesOnceWithTool(t *testing.T) {
+	for _, requestType := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest} {
+		t.Run(string(requestType), func(t *testing.T) {
+			config := createTestConfig(0, 3*time.Second, 3*time.Second)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			logger := NewDefaultLogger(schemas.LogLevelError)
+
+			callCount := 0
+			var secondState any
+			handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+				callCount++
+				if callCount == 1 {
+					ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+					return "", grammarLimitError()
+				}
+				secondState = ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry)
+				return "success", nil
+			}
+
+			start := time.Now()
+			result, err := executeRequestWithRetries(ctx, config, handler, nil,
+				requestType, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(requestType), logger)
+			elapsed := time.Since(start)
+
+			if err != nil {
+				t.Fatalf("expected the tool-path retry to succeed, got %v", err)
+			}
+			if result != "success" || callCount != 2 {
+				t.Fatalf("expected success on the 2nd attempt, got %q after %d attempts", result, callCount)
+			}
+			if secondState != schemas.StructuredOutputForceTool {
+				t.Fatalf("second attempt must force the synthetic tool, context held %v", secondState)
+			}
+			if elapsed > time.Second {
+				t.Fatalf("the tool-path retry must skip the %s backoff, took %s", config.NetworkConfig.RetryBackoffInitial, elapsed)
+			}
+			if got := ctx.Value(schemas.BifrostContextKeyNumberOfRetries); got != 1 {
+				t.Fatalf("expected number_of_retries 1, got %v", got)
+			}
+		})
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitRetryRunsOnce: a tool-path attempt that fails too returns
+// its own error, and the provider cannot re-mark it since it carries no outputConfig.
+func TestExecuteRequestWithRetries_GrammarLimitRetryRunsOnce(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	second := &schemas.BifrostError{StatusCode: schemas.Ptr(400), Error: &schemas.ErrorField{Message: "tool path failed"}}
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == nil {
+			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+			return "", grammarLimitError()
+		}
+		return "", second
+	}
+
+	_, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ChatCompletionRequest, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(schemas.ChatCompletionRequest), logger)
+	if err == nil || err.Error == nil || err.Error.Message != "tool path failed" {
+		t.Fatalf("expected the tool-path attempt's error, got %+v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected exactly 2 attempts, got %d", callCount)
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitRetryBoundedWhenRemarked: a body the converter does not
+// build (raw body, outputConfig passed through extra params) is marked again; it still gets one retry.
+func TestExecuteRequestWithRetries_GrammarLimitRetryBoundedWhenRemarked(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount > 10 {
+			return "stopped a runaway loop", nil
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+		return "", grammarLimitError()
+	}
+
+	_, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ChatCompletionRequest, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(schemas.ChatCompletionRequest), logger)
+	if callCount != 2 {
+		t.Fatalf("expected exactly 2 attempts, got %d", callCount)
+	}
+	if err == nil {
+		t.Fatal("expected the second rejection to be returned")
+	}
+}
+
+// TestExecuteRequestWithRetries_GrammarLimitUnmarkedNotRetried: the same 400 without the provider's
+// mark (a tool-path request, or any other client error) is returned as is.
+func TestExecuteRequestWithRetries_GrammarLimitUnmarkedNotRetried(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		return "", grammarLimitError()
+	}
+
+	if _, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ChatCompletionRequest, schemas.Bedrock, "us.anthropic.claude-sonnet-4-5-20250929-v1:0", grammarLimitRequest(schemas.ChatCompletionRequest), logger); err == nil {
+		t.Fatal("expected the 400 to be returned")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected a single attempt, got %d", callCount)
+	}
+}
+
+// plainFileProvider is a provider that does not stream uploads (no FileSourceUploader).
+type plainFileProvider struct{ schemas.Provider }
+
+// streamingFileProvider is a provider that streams BifrostFileUploadRequest.FileSource.
+type streamingFileProvider struct{ schemas.Provider }
+
+func (streamingFileProvider) UploadsFileSource() {}
+
+// openCountingSource is a BodySource that counts Open calls, to assert a file is not read.
+type openCountingSource struct {
+	schemas.BodySource
+	opens int
+}
+
+func (s *openCountingSource) Open() (io.ReadCloser, error) {
+	s.opens++
+	return s.BodySource.Open()
+}
+
+// TestPrepareFileUploadContent asserts an upload passed as a FileSource is read into File only
+// for a provider that needs the bytes, and is left as a handle for one that streams it.
+func TestPrepareFileUploadContent(t *testing.T) {
+	newReq := func() *schemas.BifrostFileUploadRequest {
+		return &schemas.BifrostFileUploadRequest{FileSource: schemas.NewBytesBodySource([]byte("file-bytes"))}
+	}
+
+	req := newReq()
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider: %v", err.Error.Message)
+	}
+	if string(req.File) != "file-bytes" {
+		t.Errorf("plain provider: File = %q, want the source read into memory", req.File)
+	}
+
+	source := &openCountingSource{BodySource: schemas.NewBytesBodySource([]byte("file-bytes"))}
+	req = &schemas.BifrostFileUploadRequest{FileSource: source}
+	if err := prepareFileUploadContent(streamingFileProvider{}, req); err != nil {
+		t.Fatalf("streaming provider: %v", err.Error.Message)
+	}
+	if req.File != nil {
+		t.Errorf("streaming provider: File = %q, want nil (the file must stay a stream)", req.File)
+	}
+	if req.FileSource != schemas.BodySource(source) {
+		t.Errorf("streaming provider: FileSource = %v, want the caller's source kept for the provider to stream", req.FileSource)
+	}
+	if source.opens != 0 {
+		t.Errorf("streaming provider: the source was opened %d times, want 0 (preparation must not read the file)", source.opens)
+	}
+
+	req = &schemas.BifrostFileUploadRequest{File: []byte("sdk-bytes")}
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil || string(req.File) != "sdk-bytes" {
+		t.Errorf("File set by a Go SDK caller must be left as is, got %q", req.File)
+	}
+
+	// FileSource is used instead of File, for every provider: a provider that needs bytes must
+	// read the source even when File already holds other bytes, as OpenAI streams the source.
+	// The source is cleared once read, so a retry or fallback reuses File instead of reading again.
+	req = &schemas.BifrostFileUploadRequest{File: []byte("stale"), FileSource: schemas.NewBytesBodySource([]byte("from source"))}
+	if err := prepareFileUploadContent(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider with File and FileSource: %v", err.Error.Message)
+	}
+	if string(req.File) != "from source" || req.FileSource != nil {
+		t.Errorf("plain provider with File and FileSource: File = %q, FileSource set = %v; want the source's bytes and the source cleared", req.File, req.FileSource != nil)
+	}
+	got, readErr := schemas.ReadBodySource(providerUtils.FileUploadSource(req))
+	if readErr != nil || string(got) != "from source" {
+		t.Errorf("a fallback to a streaming provider would send %q, want the same bytes", got)
+	}
+}
+
+func (streamingFileProvider) SendsPassthroughBodySource() {}
+
+// TestPreparePassthroughBody asserts a passthrough body passed as a BodySource is read into Body
+// only for a provider that needs the bytes, and stays a stream for one that sends it.
+func TestPreparePassthroughBody(t *testing.T) {
+	newReq := func() *schemas.BifrostPassthroughRequest {
+		return &schemas.BifrostPassthroughRequest{BodySource: schemas.NewBytesBodySource([]byte("form-bytes"))}
+	}
+
+	req := newReq()
+	if err := preparePassthroughBody(plainFileProvider{}, req); err != nil {
+		t.Fatalf("plain provider: %v", err.Error.Message)
+	}
+	if string(req.Body) != "form-bytes" {
+		t.Errorf("plain provider: Body = %q, want the source read into memory", req.Body)
+	}
+
+	req = newReq()
+	if err := preparePassthroughBody(streamingFileProvider{}, req); err != nil {
+		t.Fatalf("streaming provider: %v", err.Error.Message)
+	}
+	if req.Body != nil {
+		t.Errorf("streaming provider: Body = %q, want nil (the body must stay a stream)", req.Body)
+	}
+
+	req = &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"gpt-4o"}`)}
+	if err := preparePassthroughBody(plainFileProvider{}, req); err != nil || string(req.Body) != `{"model":"gpt-4o"}` {
+		t.Errorf("a JSON Body must be left as is, got %q", req.Body)
+	}
+}
+
+// Pin image delivery through real core dispatch, including custom/built-in
+// Responses fallback and both streaming modes, against a strict Chat wire.
+func TestChatToolImages(t *testing.T) {
+	const firstImage = "data:image/png;base64,aW1hZ2UtYQ=="
+	const secondImage = "data:image/png;base64,aW1hZ2UtYg=="
+	type capturedRequest struct {
+		path string
+		body []byte
+	}
+	captures := make(chan capturedRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// Never block the handler: a subtest that fails before reading its capture
+		// would otherwise stall every later request.
+		select {
+		case captures <- capturedRequest{r.URL.Path, body}:
+		default:
+		}
+		for _, message := range gjson.GetBytes(body, "messages").Array() {
+			if message.Get("role").String() != "tool" || !message.Get("content").IsArray() {
+				continue
+			}
+			for _, part := range message.Get("content").Array() {
+				if part.Get("type").String() != "text" {
+					w.WriteHeader(http.StatusBadRequest)
+					fmt.Fprint(w, `{"error":{"message":"tool content must contain text only"}}`)
+					return
+				}
+			}
+		}
+		streaming := gjson.GetBytes(body, "stream").Bool()
+		if r.URL.Path == "/v1/responses" {
+			response := `{"id":"resp_capture","object":"response","created_at":1,"model":"vision","status":"completed","output":[{"type":"message","id":"msg_capture","role":"assistant","status":"completed","content":[{"type":"output_text","text":"captured","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+			if streaming {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":%s}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":%s}\n\n", response, response)
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, response)
+			}
+			return
+		}
+		if streaming {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, `data: {"id":"chatcmpl_capture","object":"chat.completion.chunk","created":1,"model":"vision","choices":[{"index":0,"delta":{"role":"assistant","content":"captured"},"finish_reason":null}]}`+"\n\n")
+			fmt.Fprint(w, `data: {"id":"chatcmpl_capture","object":"chat.completion.chunk","created":1,"model":"vision","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\ndata: [DONE]\n\n")
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"id":"chatcmpl_capture","object":"chat.completion","created":1,"model":"vision","choices":[{"index":0,"message":{"role":"assistant","content":"captured"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	// Ollama and SGL serve text-only models too; with no datasheet record saying
+	// the model takes images they keep the placeholder and get no extra user turn.
+	cases := []struct {
+		name                           string
+		provider                       schemas.ModelProvider
+		responses, native, placeholder bool
+	}{
+		{"custom direct Chat", "custom_chat", false, false, false},
+		{"custom Responses fallback", "custom_chat", true, false, false},
+		{"strict OpenAI Chat", schemas.OpenAI, false, false, false},
+		{"Ollama Responses fallback", schemas.Ollama, true, false, true},
+		{"SGL Responses fallback", schemas.SGL, true, false, true},
+		{"custom native Responses", "custom_native", true, true, false},
+	}
+	account := NewMockAccount()
+	for _, tc := range cases {
+		account.AddProviderWithBaseURL(tc.provider, 1, 10, upstream.URL)
+		account.configs[tc.provider].NetworkConfig.MaxRetries = 0
+		account.configs[tc.provider].NetworkConfig.AllowPrivateNetwork = true
+		key := schemas.Key{ID: "key-" + string(tc.provider), Value: *schemas.NewSecretVar("dummy-test-key"), Models: schemas.WhiteList{"*"}, Weight: 1}
+		switch tc.provider {
+		case "custom_chat", "custom_native":
+			account.SetCustomProviderConfig(tc.provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, AllowedRequests: &schemas.AllowedRequests{ChatCompletion: true, ChatCompletionStream: true, Responses: tc.native, ResponsesStream: tc.native}})
+		case schemas.Ollama:
+			key.OllamaKeyConfig = &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar(upstream.URL)}
+		case schemas.SGL:
+			key.SGLKeyConfig = &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar(upstream.URL)}
+		}
+		account.SetKeysForProvider(tc.provider, []schemas.Key{key})
+	}
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	for _, tc := range cases {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, streaming), func(t *testing.T) {
+				select {
+				case <-captures: // a capture left by an earlier failed subtest
+				default:
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+				defer ctx.Cancel()
+				assistant := &schemas.ChatAssistantMessage{}
+				chat := &schemas.BifrostChatRequest{Provider: tc.provider, Model: "vision", Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Read both images")}},
+					{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: assistant},
+				}}
+				for _, image := range []struct{ id, url string }{{"call_a", firstImage}, {"call_b", secondImage}} {
+					assistant.ToolCalls = append(assistant.ToolCalls, schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr(image.id), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("read"), Arguments: `{}`}})
+					chat.Input = append(chat.Input, schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(image.id)}, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: image.url}}}}})
+				}
+				before, err := schemas.MarshalSorted(chat.Input)
+				require.NoError(t, err)
+				if streaming {
+					var stream chan *schemas.BifrostStreamChunk
+					var bifrostErr *schemas.BifrostError
+					if tc.responses {
+						stream, bifrostErr = client.ResponsesStreamRequest(ctx, chat.ToResponsesRequest())
+					} else {
+						stream, bifrostErr = client.ChatCompletionStreamRequest(ctx, chat)
+					}
+					require.Nil(t, bifrostErr)
+					completed := false
+					for chunk := range stream {
+						require.Nil(t, chunk.BifrostError)
+						if response := chunk.BifrostResponsesStreamResponse; response != nil && response.Type == schemas.ResponsesStreamResponseTypeCompleted {
+							completed = true
+						}
+						if response := chunk.BifrostChatResponse; response != nil {
+							for _, choice := range response.Choices {
+								if choice.FinishReason != nil && *choice.FinishReason == "stop" {
+									completed = true
+								}
+							}
+						}
+					}
+					require.True(t, completed, "stream closed without completion")
+				} else {
+					var response any
+					var bifrostErr *schemas.BifrostError
+					if tc.responses {
+						response, bifrostErr = client.ResponsesRequest(ctx, chat.ToResponsesRequest())
+					} else {
+						response, bifrostErr = client.ChatCompletionRequest(ctx, chat)
+					}
+					require.Nil(t, bifrostErr)
+					wire, err := schemas.MarshalSorted(response)
+					require.NoError(t, err)
+					require.Contains(t, string(wire), "captured")
+				}
+				var captured capturedRequest
+				select {
+				case captured = <-captures:
+				case <-ctx.Done():
+					t.Fatal("no upstream request captured")
+				}
+				var images []string
+				if tc.native {
+					require.Equal(t, "/v1/responses", captured.path)
+					require.False(t, gjson.GetBytes(captured.body, "messages").Exists())
+					for _, item := range gjson.GetBytes(captured.body, "input").Array() {
+						if item.Get("type").String() != "function_call_output" {
+							continue
+						}
+						for _, part := range item.Get("output").Array() {
+							if part.Get("type").String() == "input_image" {
+								images = append(images, part.Get("image_url").String())
+							}
+						}
+					}
+				} else if tc.placeholder {
+					require.Equal(t, "/v1/chat/completions", captured.path)
+					messages := gjson.GetBytes(captured.body, "messages").Array()
+					require.Len(t, messages, 4, "no user turn may be added: %s", captured.body)
+					for i, id := range []string{"call_a", "call_b"} {
+						tool := messages[2+i]
+						require.Equal(t, id, tool.Get("tool_call_id").String())
+						require.Equal(t, "[image/png, 9 bytes returned by the tool, not shown]", tool.Get("content").String(), string(captured.body))
+					}
+					require.NotContains(t, string(captured.body), "image_url")
+					after, err := schemas.MarshalSorted(chat.Input)
+					require.NoError(t, err)
+					require.Equal(t, string(before), string(after), "dispatch mutated the caller's history")
+					return
+				} else {
+					require.Equal(t, "/v1/chat/completions", captured.path)
+					messages := gjson.GetBytes(captured.body, "messages").Array()
+					require.Len(t, messages, 5, string(captured.body))
+					require.Equal(t, "tool", messages[2].Get("role").String())
+					require.Equal(t, "call_a", messages[2].Get("tool_call_id").String())
+					require.Equal(t, "tool", messages[3].Get("role").String())
+					require.Equal(t, "call_b", messages[3].Get("tool_call_id").String())
+					require.Equal(t, "user", messages[4].Get("role").String())
+					parts := messages[4].Get("content").Array()
+					require.Len(t, parts, 4)
+					require.Equal(t, "Images returned by tool call call_a:", parts[0].Get("text").String())
+					require.Equal(t, "Images returned by tool call call_b:", parts[2].Get("text").String())
+					for _, part := range parts {
+						if part.Get("type").String() == "image_url" {
+							images = append(images, part.Get("image_url.url").String())
+						}
+					}
+				}
+				require.Equal(t, []string{firstImage, secondImage}, images, string(captured.body))
+				after, err := schemas.MarshalSorted(chat.Input)
+				require.NoError(t, err)
+				require.Equal(t, string(before), string(after), "dispatch mutated the caller's history")
+			})
+		}
 	}
 }

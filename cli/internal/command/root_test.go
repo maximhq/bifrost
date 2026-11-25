@@ -5,15 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/cli/internal/browserauth"
 	"github.com/maximhq/bifrost/cli/internal/client"
 	"github.com/maximhq/bifrost/cli/internal/config"
 	"github.com/maximhq/bifrost/cli/internal/operations"
@@ -478,6 +484,227 @@ func TestAuthPrintTokenRefreshesBeforeOutput(t *testing.T) {
 	}
 	if secretStore["test:agent-token"] != "ck-bf-agent-new" || secretStore["test:agent-refresh-token"] != "refresh-new" {
 		t.Fatalf("stored rotated credentials = %#v", secretStore)
+	}
+}
+
+// TestAuthPrintTokenBrowserLogin verifies browser sign-in persists the session
+// while keeping stdout limited to the validated agent token.
+func TestAuthPrintTokenBrowserLogin(t *testing.T) {
+	runner, outputBuffer, secretStore := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/api/agent/auth/status":
+			return jsonResponse(request, `{"idp_configured":true}`), nil
+		case "/api/agent/auth/token":
+			return jsonResponse(request, `{"agent_access_token":"ck-bf-agent-login","refresh_token":"refresh-login","user":{"email":"user@example.com"}}`), nil
+		case "/api/agent/virtual-keys":
+			return jsonResponse(request, `{"virtual_keys":[]}`), nil
+		case "/v1/models":
+			if got := request.Header.Get("Authorization"); got != "Bearer ck-bf-agent-login" {
+				t.Fatalf("authorization = %q", got)
+			}
+			return jsonResponse(request, `{"data":[]}`), nil
+		default:
+			t.Fatalf("unexpected path %q", request.URL.Path)
+			return nil, nil
+		}
+	}))
+	env, err := runner.resolveEnvironment(globalOptions{Output: "json"}, credentialAgentToken|credentialAgentVirtualKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := false
+	env.BrowserAuth.OpenBrowser = func(target string) error {
+		opened = true
+		authorization, err := url.Parse(target)
+		if err != nil {
+			return err
+		}
+		callback, err := url.Parse(authorization.Query().Get("redirect_uri"))
+		if err != nil {
+			return err
+		}
+		query := callback.Query()
+		query.Set("state", authorization.Query().Get("state"))
+		query.Set("code", "test-code")
+		callback.RawQuery = query.Encode()
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callback.String(), nil)
+		if err != nil {
+			return err
+		}
+		callbackClient := &http.Client{Timeout: 5 * time.Second}
+		response, err := callbackClient.Do(request)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return fmt.Errorf("callback status = %d", response.StatusCode)
+		}
+		return nil
+	}
+	if err := runner.authPrintToken(context.Background(), env, []string{"--browser-login"}); err != nil {
+		t.Fatal(err)
+	}
+	if !opened {
+		t.Fatal("browser was not opened")
+	}
+	if got := outputBuffer.String(); got != "ck-bf-agent-login\n" {
+		t.Fatalf("stdout = %q", got)
+	}
+	if secretStore["test:agent-token"] != "ck-bf-agent-login" || secretStore["test:agent-refresh-token"] != "refresh-login" {
+		t.Fatalf("login credentials were not persisted: %#v", secretStore)
+	}
+}
+
+// TestAuthLoginCallbackPort verifies the SSO callback port comes from
+// --callback-port, falls back to BIFROST_CALLBACK_PORT, and rejects bad values
+// before any listener is opened.
+func TestAuthLoginCallbackPort(t *testing.T) {
+	reservePort := func(t *testing.T) int {
+		t.Helper()
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		_ = listener.Close()
+		return port
+	}
+	type loginCase struct {
+		env      string
+		args     []string
+		wantPort int
+		wantErr  string
+	}
+	for _, test := range []struct {
+		name  string
+		build func(envPort, flagPort int) loginCase
+	}{
+		{name: "environment", build: func(envPort, _ int) loginCase {
+			return loginCase{env: strconv.Itoa(envPort), wantPort: envPort}
+		}},
+		{name: "flag overrides environment", build: func(envPort, flagPort int) loginCase {
+			return loginCase{env: strconv.Itoa(envPort), args: []string{"--callback-port", strconv.Itoa(flagPort)}, wantPort: flagPort}
+		}},
+		{name: "invalid environment", build: func(int, int) loginCase {
+			return loginCase{env: "70000", wantErr: "invalid callback port \"70000\""}
+		}},
+		{name: "invalid flag", build: func(int, int) loginCase {
+			return loginCase{args: []string{"--callback-port", "abc"}, wantErr: "invalid callback port \"abc\""}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			login := func(c loginCase) (int, error) {
+				t.Setenv(browserauth.CallbackPortEnv, c.env)
+				runner, _, _ := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+					switch request.URL.Path {
+					case "/api/agent/auth/status":
+						return jsonResponse(request, `{"idp_configured":true}`), nil
+					case "/api/agent/auth/token":
+						return jsonResponse(request, `{"agent_access_token":"ck-bf-agent-login","refresh_token":"refresh-login","user":{"email":"user@example.com"}}`), nil
+					case "/api/agent/virtual-keys":
+						return jsonResponse(request, `{"virtual_keys":[]}`), nil
+					default:
+						t.Fatalf("unexpected path %q", request.URL.Path)
+						return nil, nil
+					}
+				}))
+				env, err := runner.resolveEnvironment(globalOptions{Output: "json", Quiet: true}, credentialAgentToken|credentialAgentVirtualKeyID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				gotPort := 0
+				env.BrowserAuth.OpenBrowser = func(target string) error {
+					authorization, err := url.Parse(target)
+					if err != nil {
+						return err
+					}
+					callback, err := url.Parse(authorization.Query().Get("redirect_uri"))
+					if err != nil {
+						return err
+					}
+					gotPort, _ = strconv.Atoi(callback.Port())
+					callback.RawQuery = url.Values{"state": {authorization.Query().Get("state")}, "code": {"test-code"}}.Encode()
+					go func() {
+						response, getErr := http.Get(callback.String())
+						if getErr == nil {
+							_ = response.Body.Close()
+						}
+					}()
+					return nil
+				}
+				return gotPort, runner.authLogin(context.Background(), env, c.args)
+			}
+			// Reserved ports are released before the login binds them, so another
+			// process can take one in between; only that case gets fresh ports.
+			for attempt := 1; ; attempt++ {
+				c := test.build(reservePort(t), reservePort(t))
+				gotPort, err := login(c)
+				if c.wantErr != "" {
+					if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+						t.Fatalf("error = %v, want %q", err, c.wantErr)
+					}
+					return
+				}
+				if errors.Is(err, syscall.EADDRINUSE) && attempt < 5 {
+					continue
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if gotPort != c.wantPort {
+					t.Fatalf("callback port = %d, want %d", gotPort, c.wantPort)
+				}
+				return
+			}
+		})
+	}
+}
+
+// TestAuthPrintTokenBrowserLoginConditions verifies login is opt-in, existing
+// tokens bypass browser sign-in, and invalid requests fail without token output.
+func TestAuthPrintTokenBrowserLoginConditions(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		args      []string
+		token     string
+		wantError string
+	}{
+		{name: "missing without flag", wantError: "no Enterprise SSO session"},
+		{name: "existing with flag", args: []string{"--browser-login"}, token: "ck-bf-agent-existing"},
+		{name: "login unavailable", args: []string{"--browser-login"}, wantError: "browser SSO is not enabled"},
+		{name: "unexpected argument", args: []string{"unexpected"}, wantError: "usage:"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner, outputBuffer, secretStore := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				switch {
+				case test.name == "existing with flag" && request.URL.Path == "/v1/models":
+					return jsonResponse(request, `{"data":[]}`), nil
+				case test.name == "login unavailable" && request.URL.Path == "/api/agent/auth/status":
+					return jsonResponse(request, `{"idp_configured":false}`), nil
+				default:
+					t.Fatalf("unexpected request %s", request.URL)
+					return nil, nil
+				}
+			}))
+			secretStore["test:agent-token"] = test.token
+			err := runner.Run(context.Background(), append([]string{"auth", "print-token"}, test.args...))
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("error = %v, want %q", err, test.wantError)
+				}
+				if outputBuffer.Len() != 0 {
+					t.Fatalf("unexpected stdout = %q", outputBuffer.String())
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := outputBuffer.String(); got != test.token+"\n" {
+					t.Fatalf("stdout = %q", got)
+				}
+			}
+		})
 	}
 }
 
@@ -1610,5 +1837,148 @@ func TestResourcesListWorksOffline(t *testing.T) {
 	}
 	if !strings.Contains(outputBuffer.String(), `"name": "access-profiles"`) {
 		t.Fatalf("resources output = %q", outputBuffer.String())
+	}
+}
+
+// TestSupplementalManagementOperationsDispatch covers every audited route with
+// real CLI parsing, parameter escaping, method dispatch and credential selection.
+func TestSupplementalManagementOperationsDispatch(t *testing.T) {
+	body, err := os.ReadFile("../operations/management.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Paths map[string]map[string]struct {
+			ID   string `json:"operationId"`
+			Auth string `json:"x-cli-auth"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(body, &document); err != nil {
+		t.Fatal(err)
+	}
+	for path, item := range document.Paths {
+		for method, operation := range item {
+			t.Run(operation.ID, func(t *testing.T) {
+				calls := 0
+				runner, _, store := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+					calls++
+					wantPath := pathParameterPattern.ReplaceAllString(path, "value%2Fpart")
+					if req.Method != strings.ToUpper(method) || req.URL.EscapedPath() != wantPath {
+						t.Fatalf("request = %s %s, want %s %s", req.Method, req.URL.EscapedPath(), strings.ToUpper(method), wantPath)
+					}
+					wantAuth := "Bearer management-secret"
+					if operation.Auth == "agent" {
+						wantAuth = "Bearer agent-secret"
+					}
+					if operation.Auth == "none" {
+						wantAuth = ""
+					}
+					if req.Header.Get("Authorization") != wantAuth {
+						t.Fatalf("incorrect credential mode: %s", operation.Auth)
+					}
+					return jsonResponse(req, `{}`), nil
+				}))
+				store["test:management-key"], store["test:agent-token"], store["test:virtual-key"] = "management-secret", "agent-secret", "inference-secret"
+				args := []string{"api", "call", operation.ID, "--yes", "--body", `{}`, "--output", "raw"}
+				for _, match := range pathParameterPattern.FindAllStringSubmatch(path, -1) {
+					args = append(args, "--param", match[1]+"=value/part")
+				}
+				if err := runner.Run(context.Background(), args); err != nil {
+					t.Fatal(err)
+				}
+				if calls != 1 {
+					t.Fatalf("calls = %d, want 1", calls)
+				}
+			})
+		}
+	}
+}
+
+// TestProjectInferenceHeaders exercises the command boundary for buffered and streamed calls.
+func TestProjectInferenceHeaders(t *testing.T) {
+	for _, args := range [][]string{
+		{"chat", "--model", "test", "--message", "hello", "--project-id", "p-one"},
+		{"chat", "--model", "test", "--message", "hello", "--project-id", "p-one", "--stream"},
+		{"infer", "responses", "--body", `{"model":"test","input":"hello"}`, "--project-id", "p-one", "--header", "X-BF-PROJECT-NAME: old", "--header", "X-Trace: keep"},
+		{"request", "POST", "/v1/responses", "--body", `{}`, "--project-id", "p-one", "--stream"},
+	} {
+		t.Run(strings.Join(args[:2], "-"), func(t *testing.T) {
+			calls := 0
+			runner, _, secrets := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				if req.Header.Get("x-bf-project-id") != "p-one" || req.Header.Get("x-bf-project-name") != "" {
+					t.Fatalf("wrong project headers: %v", req.Header)
+				}
+				if req.Header.Get("x-bf-vk") != "sk-bf-test" {
+					t.Fatalf("lost identity: %v", req.Header)
+				}
+				return jsonResponse(req, `{}`), nil
+			}))
+			secrets["test:virtual-key"] = "sk-bf-test"
+			if err := runner.Run(context.Background(), args); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("calls=%d", calls)
+			}
+		})
+	}
+}
+
+// TestInvalidProjectSelectionMakesNoRequests rejects ambiguous and injectable input early.
+func TestInvalidProjectSelectionMakesNoRequests(t *testing.T) {
+	for _, flags := range [][]string{{"--project-id", ""}, {"--project-name", " "}, {"--project-id", "one", "--project-name", "two"}, {"--project-name", "one\r\nX-Other: bad"}} {
+		runner, _, _ := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) { t.Fatal("unexpected request"); return nil, nil }))
+		args := append([]string{"chat", "--model", "test", "--message", "hello"}, flags...)
+		if err := runner.Run(context.Background(), args); err == nil {
+			t.Fatalf("accepted %q", flags)
+		}
+	}
+}
+
+// TestDesktopProjectHelper emits exactly the documented token-plus-headers contract.
+func TestDesktopProjectHelper(t *testing.T) {
+	runner, out, secrets := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Header.Get("x-bf-project-name") != "customer-alpha" {
+			t.Fatalf("unscoped helper validation: %v", req.Header)
+		}
+		return jsonResponse(req, `{"data":[]}`), nil
+	}))
+	secrets["test:agent-token"] = "ck-bf-agent-test"
+	if err := runner.Run(context.Background(), []string{"auth", "print-token", "--format", "claude-desktop", "--project-name", "customer-alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Token   string            `json:"token"`
+		Headers map[string]string `json:"headers"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Token != "ck-bf-agent-test" || payload.Headers["x-bf-project-name"] != "customer-alpha" {
+		t.Fatalf("wrong helper output: %#v", payload)
+	}
+}
+
+// TestProjectAliasFlagsStayWithWrapper preserves native passthrough after the separator.
+func TestProjectAliasFlagsStayWithWrapper(t *testing.T) {
+	got := normalizeHarnessAliasArgs([]string{"--project-name", "alpha", "--", "--project-id", "native"})
+	want := []string{"--project-name", "alpha", "--", "--project-id", "native"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got=%v", got)
+	}
+}
+
+// TestDesktopHelperDenialPrintsNoCredential prevents rejected project selections leaking a usable helper result.
+func TestDesktopHelperDenialPrintsNoCredential(t *testing.T) {
+	runner, out, secrets := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		response := jsonResponse(req, `{"type":"access_blocked"}`)
+		response.StatusCode = http.StatusForbidden
+		return response, nil
+	}))
+	secrets["test:agent-token"] = "ck-bf-agent-test"
+	err := runner.Run(context.Background(), []string{"auth", "print-token", "--format", "claude-desktop", "--project-id", "denied"})
+	if err == nil || out.Len() != 0 {
+		t.Fatalf("err=%v stdout=%q", err, out.String())
 	}
 }

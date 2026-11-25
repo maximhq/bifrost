@@ -14,6 +14,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -22,8 +23,32 @@ import (
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+func TestDocumentCitationsConverseRouteRoundTrip(t *testing.T) {
+	for _, route := range []RouteConfig{
+		createBedrockConverseRouteConfig("/bedrock", &mockHandlerStore{}),
+		createBedrockConverseStreamRouteConfig("/bedrock", &mockHandlerStore{}),
+	} {
+		t.Run(route.Path, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			in := &bedrock.BedrockConverseRequest{ModelID: "global.anthropic.claude-haiku-5-5"}
+			require.NoError(t, sonic.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"name":"pack","source":{"content":[{"text":"Budget: $4.2M."}]},"citations":{"enabled":true}}},{"text":"Cite it."}]}]}`), in))
+			req, err := route.RequestConverter(ctx, in)
+			require.NoError(t, err)
+			req.ResponsesRequest.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")}
+			req.ResponsesRequest.Params.MaxOutputTokens = schemas.Ptr(128)
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, req.ResponsesRequest)
+			require.NoError(t, err)
+			wire, err := providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			require.Equal(t, "Budget: $4.2M.", gjson.GetBytes(wire, "messages.0.content.0.document.source.content.0.text").Str)
+			require.True(t, gjson.GetBytes(wire, "messages.0.content.0.document.citations.enabled").Bool())
+		})
+	}
+}
 
 // mockHandlerStore implements lib.HandlerStore for testing
 type mockHandlerStore struct {
@@ -31,6 +56,13 @@ type mockHandlerStore struct {
 	availableProviders         []schemas.ModelProvider
 	mcpHeaderCombinedAllowlist schemas.WhiteList
 	modelCatalog               *modelcatalog.ModelCatalog
+	customProviders            map[schemas.ModelProvider]mockCustomProvider
+}
+
+// mockCustomProvider is what GetCustomProviderPassthrough reports for one custom provider.
+type mockCustomProvider struct {
+	base        schemas.ModelProvider
+	passthrough bool
 }
 
 func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -73,6 +105,10 @@ func (m *mockHandlerStore) ShouldSendExtraFieldsInHeaders() bool {
 	return false
 }
 
+func (m *mockHandlerStore) ShouldCaptureClientIP() bool {
+	return false
+}
+
 func (m *mockHandlerStore) IsProviderConfigured(provider schemas.ModelProvider) bool {
 	for _, p := range m.availableProviders {
 		if p == provider {
@@ -80,6 +116,11 @@ func (m *mockHandlerStore) IsProviderConfigured(provider schemas.ModelProvider) 
 		}
 	}
 	return false
+}
+
+func (m *mockHandlerStore) GetCustomProviderPassthrough(provider schemas.ModelProvider) (schemas.ModelProvider, bool, bool) {
+	custom, ok := m.customProviders[provider]
+	return custom.base, custom.passthrough, ok
 }
 
 func (m *mockHandlerStore) GetMCPExternalServerURL() string {
@@ -97,7 +138,7 @@ func (m *mockHandlerStore) GetModelCatalog() *modelcatalog.ModelCatalog {
 // Ensure mockHandlerStore implements lib.HandlerStore
 var _ lib.HandlerStore = (*mockHandlerStore)(nil)
 
-func TestGenericRouter_MarkDeprecatedListModelsResponseUsesCatalog(t *testing.T) {
+func TestGenericRouter_ModelCatalogMarksDeprecatedListModels(t *testing.T) {
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
 	pricingJSON := []byte(`{
 		"deprecated-model": {"provider":"openai","mode":"chat","base_model":"deprecated-model","is_deprecated":true},
@@ -113,7 +154,7 @@ func TestGenericRouter_MarkDeprecatedListModelsResponseUsesCatalog(t *testing.T)
 		{ID: "openai/provider-deprecated", IsDeprecated: true},
 	}}
 
-	router.markDeprecatedListModelsResponse(resp)
+	router.modelCatalog().EnrichListModelsResponse(resp)
 
 	// No models are removed; deprecated ones are flagged instead.
 	require.Len(t, resp.Data, 3)

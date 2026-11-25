@@ -56,6 +56,7 @@ func (a *Accumulator) putChatStreamChunk(chunk *ChatStreamChunk) {
 	chunk.TokenUsage = nil
 	chunk.ServiceTier = nil
 	chunk.RawResponse = nil
+	chunk.RawResponseFormat = ""
 	a.chatStreamChunkPool.Put(chunk)
 }
 
@@ -111,6 +112,7 @@ func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
 	chunk.TokenUsage = nil
 	chunk.ServiceTier = nil
 	chunk.RawResponse = nil
+	chunk.RawResponseFormat = ""
 	a.responsesStreamChunkPool.Put(chunk)
 }
 
@@ -605,7 +607,7 @@ func (a *Accumulator) ResetStreamAccumulator(requestID string) {
 	accumulator.MaxAudioChunkIndex = -1
 	accumulator.TerminalErrorChunkIndex = -1
 	accumulator.TerminalResponseChunkIndex = -1
-	accumulator.PassthroughBody = nil
+	accumulator.PassthroughChunks = nil
 	accumulator.PassthroughStatusCode = 0
 	accumulator.PassthroughHeaders = nil
 	accumulator.PassthroughPath = ""

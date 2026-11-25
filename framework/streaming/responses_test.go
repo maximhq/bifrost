@@ -8,6 +8,7 @@ import (
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
@@ -17,6 +18,64 @@ func testResponsesAccumulator(tb testing.TB) *Accumulator {
 	acc := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	tb.Cleanup(acc.Cleanup)
 	return acc
+}
+
+func TestBedrockDocumentCitationsMultipleTextItems(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.Model = schemas.Ptr("global.anthropic.claude-haiku-5-5")
+	var chunks []*ResponsesStreamChunk
+	sequence := 0
+	emit := func(event *bedrock.BedrockStreamEvent) {
+		responses, err, _ := event.ToBifrostResponsesStream(sequence, state)
+		require.Nil(t, err)
+		for _, response := range responses {
+			chunks = append(chunks, &ResponsesStreamChunk{ChunkIndex: sequence, StreamResponse: response})
+			sequence++
+		}
+	}
+	emit(&bedrock.BedrockStreamEvent{Role: schemas.Ptr("assistant")})
+	for i, text := range []string{"Budget: $4.2M.", "Audit: March."} {
+		emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(i), Delta: &bedrock.BedrockContentBlockDelta{
+			Citation: &bedrock.BedrockCitation{
+				Title:         schemas.Ptr("pack"),
+				SourceContent: []bedrock.BedrockDocumentContentBlock{{Text: &text}},
+				Location: bedrock.BedrockCitationLocation{DocumentChunk: &bedrock.BedrockDocumentCitationLocation{
+					DocumentIndex: schemas.Ptr(0), Start: &i, End: schemas.Ptr(i + 1),
+				}},
+			},
+		}})
+		emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(i), Delta: &bedrock.BedrockContentBlockDelta{Text: &text}})
+		emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(i), ContentBlockStop: true})
+	}
+	messages := BuildResponsesMessagesFromChunks(chunks)
+	require.Len(t, messages, 2)
+	for i, text := range []string{"Budget: $4.2M.", "Audit: March."} {
+		require.Len(t, messages[i].Content.ContentBlocks, 1, "each output item has one content part at index zero")
+		block := messages[i].Content.ContentBlocks[0]
+		require.Equal(t, text, *block.Text)
+		require.Len(t, block.Annotations, 1)
+		require.Equal(t, i, *block.Annotations[0].StartBlockIndex)
+	}
+}
+
+func TestDocumentCitationsCopyIsolation(t *testing.T) {
+	annotation := schemas.ResponsesOutputMessageContentTextAnnotation{Type: "content_block_location", SourceContent: []string{"Budget: $4.2M."}}
+	part := schemas.ResponsesMessageContentBlock{
+		Type: schemas.ResponsesOutputMessageContentTypeText,
+		ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+			Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{annotation},
+		},
+	}
+	copiedPart := deepCopyResponsesMessageContentBlock(part)
+	copiedPart.Annotations[0].SourceContent[0] = "changed"
+	require.Equal(t, "Budget: $4.2M.", part.Annotations[0].SourceContent[0])
+	original := &schemas.BifrostResponsesStreamResponse{Annotation: &annotation, BedrockContentBlockIndex: schemas.Ptr(1)}
+	copiedEvent := deepCopyResponsesStreamResponse(original)
+	copiedEvent.Annotation.SourceContent[0] = "changed"
+	require.Equal(t, "Budget: $4.2M.", original.Annotation.SourceContent[0])
+	require.NotNil(t, copiedEvent.BedrockContentBlockIndex)
+	*copiedEvent.BedrockContentBlockIndex = 2
+	require.Equal(t, 1, *original.BedrockContentBlockIndex)
 }
 
 func TestDeepCopyResponsesMessageCopiesStructuredErrorPointers(t *testing.T) {
@@ -757,6 +816,32 @@ func TestResponsesStreamRetainsStopReason(t *testing.T) {
 	}
 }
 
+// TestAccumulatedResponsesStreamKeepsRawResponseFormat verifies the joined raw keeps the format its events declared,
+// so an event without a declaration (a synthetic tail) does not clear it.
+func TestAccumulatedResponsesStreamKeepsRawResponseFormat(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "responses-raw-format")
+	declared := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("Hello"), ContentIndex: schemas.Ptr(0),
+	}}
+	declared.ResponsesStreamResponse.ExtraFields.RawResponse = `{"type":"response.output_text.delta","delta":"Hello"}`
+	declared.ResponsesStreamResponse.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIResponsesStreamEvent
+	_, err := acc.processResponsesStreamingResponse(ctx, declared, nil)
+	require.NoError(t, err)
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	tail := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{}}
+	tail.ResponsesStreamResponse.ExtraFields.ChunkIndex = 1
+	tail.ResponsesStreamResponse.ExtraFields.RawResponse = `{"type":"response.completed"}`
+	got, err := acc.processResponsesStreamingResponse(ctx, tail, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, got.Data.RawResponse)
+	require.Equal(t, `{"type":"response.output_text.delta","delta":"Hello"}`+"\n\n"+`{"type":"response.completed"}`, *got.Data.RawResponse)
+	require.Equal(t, schemas.RawResponseFormatOpenAIResponsesStreamEvent, got.Data.RawResponseFormat)
+}
+
 // TestBuildResponsesMessagesFromChunksWithoutAccumulator pins the exported builder used to rebuild
 // recorded streams outside a live Accumulator: it must sort out-of-order chunks itself and match
 // what the Accumulator method produces for the same input.
@@ -779,4 +864,26 @@ func TestBuildResponsesMessagesFromChunksWithoutAccumulator(t *testing.T) {
 
 	viaAccumulator := testResponsesAccumulator(t).buildCompleteMessageFromResponsesStreamChunks(makeChunks())
 	require.Equal(t, viaAccumulator, msgs)
+}
+
+func TestPassthroughStreamCarriesServiceTierFromUsage(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "passthrough-service-tier")
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	tier := schemas.BifrostServiceTierDefault
+
+	processed, err := acc.processPassthroughStreamingResponse(ctx, &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200,
+			PassthroughUsage: &schemas.BifrostPassthroughUsage{
+				LLMUsage:    &schemas.BifrostLLMUsage{TotalTokens: 10},
+				ServiceTier: &tier,
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, processed.Data)
+	require.NotNil(t, processed.Data.ServiceTier)
+	require.Equal(t, schemas.BifrostServiceTierDefault, *processed.Data.ServiceTier)
 }

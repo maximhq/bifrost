@@ -193,21 +193,23 @@ export function isRedacted(value: string): boolean {
 }
 
 const PASSWORD_REQUIREMENTS = [
-	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
-	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
-	{ label: "one lowercase letter", test: (password: string) => /[a-z]/.test(password) },
-	{ label: "one number", test: (password: string) => /\d/.test(password) },
-	{ label: "one special character", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
-];
+	{ key: "minLength", test: (password: string) => password.length >= 12 },
+	{ key: "uppercase", test: (password: string) => /[A-Z]/.test(password) },
+	{ key: "lowercase", test: (password: string) => /[a-z]/.test(password) },
+	{ key: "number", test: (password: string) => /\d/.test(password) },
+	{ key: "special", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
+] as const;
 
 /**
  * Returns the password-policy requirements that are not satisfied.
  * Existing credentials are skipped only when the caller explicitly confirms
  * that the password field has not been edited.
  */
-export function getPasswordPolicyFailures(password?: string, isUnchanged = false): string[] {
+export type PasswordRequirementKey = (typeof PASSWORD_REQUIREMENTS)[number]["key"];
+
+export function getPasswordPolicyFailures(password?: string, isUnchanged = false): PasswordRequirementKey[] {
 	if (!password || isUnchanged) return [];
-	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.label);
+	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.key);
 }
 
 /**
@@ -615,15 +617,4 @@ export function cleanPathOverrides(overrides?: Record<string, string | undefined
 		.filter(([, v]) => v && v !== "");
 
 	return entries.length ? (Object.fromEntries(entries) as Record<string, string>) : undefined;
-}
-
-// hasCopilotApiToken reports whether a Copilot API token is present on a provider key.
-//
-// key.value is a bare string in the provider-level form and a SecretVar object in the
-// per-key form, so both shapes have to be understood. Getting this wrong makes the GitHub
-// App fields claim to be required while the section note says they can be left blank.
-export function hasCopilotApiToken(value: string | { value?: string; ref?: string; type?: string } | null | undefined): boolean {
-	if (!value) return false;
-	if (typeof value === "string") return value.trim() !== "";
-	return !!value.value?.trim() || !!value.ref?.trim();
 }

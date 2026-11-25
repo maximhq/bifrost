@@ -26,6 +26,12 @@
   "bin": {
     "bifrost": "bin.js"
   },
+  "files": [
+    "bin.js"
+  ],
+  "scripts": {
+    "test": "node test/bin.test.js"
+  },
   "type": "module",
   "dependencies": {}
 }

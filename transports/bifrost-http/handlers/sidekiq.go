@@ -20,13 +20,14 @@ const (
 
 // SidekiqJobsStore is the read surface the generic jobs endpoint needs from the job store.
 type SidekiqJobsStore interface {
-	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error)
+	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error)
 }
 
 // SidekiqJobsRunner is the slice of *sidekiq.Runner the generic jobs endpoint uses.
 type SidekiqJobsRunner interface {
 	Cancel(ctx context.Context, id string) (bool, error)
 	Summarize(kind, metadata string) (sidekiq.JobSummary, bool)
+	QuietOnSuccessKinds() []string
 }
 
 // SidekiqHandler exposes every sidekiq job, whatever its kind, so one UI surface can show
@@ -97,7 +98,8 @@ func (h *SidekiqHandler) listJobs(ctx *fasthttp.RequestCtx) {
 		}
 		since = parsed
 	}
-	rows, err := h.store.ListSidekiqJobs(ctx, since, sidekiqJobsLimit)
+	// Routine kinds' completed runs are left out; their failures still show.
+	rows, err := h.store.ListSidekiqJobs(ctx, since, sidekiqJobsLimit, h.runner.QuietOnSuccessKinds())
 	if err != nil {
 		logger.Error("failed to list sidekiq jobs: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to list background jobs")
@@ -152,6 +154,9 @@ func (h *SidekiqHandler) cancelJob(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to cancel sidekiq job %s: %v", id, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to cancel the job")
 		return
+	}
+	if cancelled {
+		lib.RecordAuditChange(ctx, "sidekiq_job.cancelled", "sidekiq_job", id, id, nil, map[string]any{"job_id": id})
 	}
 	SendJSON(ctx, map[string]bool{"cancelled": cancelled})
 }

@@ -82,7 +82,7 @@ func buildOverMarkedRequest() *BedrockConverseRequest {
 				textBlock("second turn"), cachePointBlock(),
 			}},
 			{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{
-				textBlock("<system-reminder>\nstay concise\n</system-reminder>\n"), cachePointBlock(),
+				textBlock("<system-reminder>\nstay concise\n</system-reminder>"), cachePointBlock(),
 			}},
 		},
 	}
@@ -195,7 +195,7 @@ func TestClampBedrockCachePoints_CountsNestedToolResultMarkers(t *testing.T) {
 				cachePointBlock(),
 			}},
 			{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{
-				textBlock("<system-reminder>\nstay concise\n</system-reminder>\n"), cachePointBlock(),
+				textBlock("<system-reminder>\nstay concise\n</system-reminder>"), cachePointBlock(),
 			}},
 		},
 	}

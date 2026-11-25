@@ -3,13 +3,16 @@ package configstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -37,6 +40,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableRoutingRule{},
 		&tables.TableRoutingTarget{},
 		&tables.TablePricingOverride{},
+		&tables.TableDatasheetOverride{},
 		&tables.TableVirtualKey{},
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyProviderConfigKey{},
@@ -45,6 +49,8 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableTeam{},
 		&tables.TableClientConfig{},
 		&tables.TableGovernanceConfig{},
+		&tables.TableModelRouter{},
+		&tables.TableModelRouterTarget{},
 		&tables.TablePlugin{},
 		&tables.TableMCPClient{},
 		&tables.TableMCPLibrary{},
@@ -62,12 +68,14 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableMCPOauthFlow{},
 		&tables.TableMCPPerUserHeaderCredential{},
 		&tables.TableMCPPerUserHeaderFlow{},
+		&tables.TableMCPPerUserDiscovery{},
 		&tables.TableOAuth2RefreshToken{},
 		&tables.TableWebhookEndpoint{},
 		&tables.TableWebhookJob{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 	require.NoError(t, migrationAddAgentGatewayTables(context.Background(), db, testMigrationLogger), "Failed to migrate Agent Gateway tables")
+	require.NoError(t, migrationAddRelaysTables(context.Background(), db, testMigrationLogger), "Failed to migrate relay tables")
 
 	// Virtual MCP tables (separate call: the in-batch AutoMigrate above does not create
 	// enterprise_mcp_tool_groups reliably). MCP client create now cross-checks slugs against them.
@@ -450,6 +458,48 @@ func TestUpsertMCPLibraryEntry(t *testing.T) {
 	require.Equal(t, int64(1), totalCount)
 	require.Len(t, entries, 1)
 	require.Equal(t, "updated", entries[0].Description)
+}
+
+// TestCreateCustomMCPLibraryEntry_ReplacesADeletedRemoteEntry checks that a
+// deleted remote entry frees its name for a custom entry, that the custom entry
+// keeps the remote sync off the slug, and that a live entry still blocks it.
+func TestCreateCustomMCPLibraryEntry_ReplacesADeletedRemoteEntry(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	remote := &tables.TableMCPLibrary{Slug: "notes", Name: "Notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://remote.example/mcp", Source: "remote"}
+	require.NoError(t, store.UpsertMCPLibraryEntry(ctx, remote))
+
+	live := &tables.TableMCPLibrary{Slug: "notes", Name: "Notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://custom.example/mcp"}
+	require.ErrorIs(t, store.CreateCustomMCPLibraryEntry(ctx, live), ErrAlreadyExists, "a live remote entry keeps its name")
+
+	require.NoError(t, store.DeleteMCPLibraryEntry(ctx, remote.ID))
+
+	custom := &tables.TableMCPLibrary{Slug: "notes", Name: "Notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://custom.example/mcp"}
+	require.NoError(t, store.CreateCustomMCPLibraryEntry(ctx, custom))
+
+	entries, totalCount, err := store.GetMCPLibraryPaginated(ctx, MCPLibraryQueryParams{})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), totalCount)
+	require.Len(t, entries, 1)
+	assert.Equal(t, custom.ID, entries[0].ID)
+	assert.Equal(t, "custom", entries[0].Source)
+	assert.Equal(t, "https://custom.example/mcp", entries[0].ConnectionURL)
+
+	protected, err := store.GetProtectedMCPLibrarySlugs(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, protected, "notes")
+
+	// A sync that still lists the remote entry leaves the custom one in place.
+	require.NoError(t, store.UpsertMCPLibraryEntry(ctx, &tables.TableMCPLibrary{Slug: "notes", Name: "Notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://remote.example/mcp", Source: "remote"}))
+	entries, _, err = store.GetMCPLibraryPaginated(ctx, MCPLibraryQueryParams{})
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "custom", entries[0].Source)
+	assert.Equal(t, "https://custom.example/mcp", entries[0].ConnectionURL)
+
+	again := &tables.TableMCPLibrary{Slug: "notes", Name: "Notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://other.example/mcp"}
+	require.ErrorIs(t, store.CreateCustomMCPLibraryEntry(ctx, again), ErrAlreadyExists, "a live custom entry keeps its name")
 }
 
 func TestValidateSkillVersionIncrementRequiresGreaterVersion(t *testing.T) {
@@ -850,6 +900,20 @@ func TestProviderKeyCRUD(t *testing.T) {
 	require.NotNil(t, storedKey)
 	assert.Equal(t, "sk-test-key-v2", storedKey.Value.Val)
 	assert.Equal(t, 2.0, storedKey.Weight)
+
+	// Content logging is tri-state and every state must survive create, read and update, including
+	// clearing a decision back to inherit.
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		key.DisableContentLogging = decision
+		require.NoError(t, store.UpdateProviderKey(ctx, "openai", key.ID, key))
+		storedKey, err = store.GetProviderKey(ctx, "openai", key.ID)
+		require.NoError(t, err)
+		assert.Equal(t, decision, storedKey.DisableContentLogging)
+		keys, err = store.GetProviderKeys(ctx, "openai")
+		require.NoError(t, err)
+		require.Len(t, keys, 1)
+		assert.Equal(t, decision, keys[0].DisableContentLogging, "the list path converts keys separately")
+	}
 
 	err = store.DeleteProviderKey(ctx, "openai", key.ID)
 	require.NoError(t, err)
@@ -2075,6 +2139,35 @@ func TestDeleteVirtualKey(t *testing.T) {
 	assert.Error(t, err, "Should not find deleted virtual key")
 }
 
+// Warp's settings name a virtual key its model calls present for a caller with no
+// identity of their own. Like every other reference to a key, it must not outlive
+// the key: left behind, every such caller's Warp turn was refused with "Warp's
+// virtual key no longer exists" until an administrator noticed and chose another.
+// Deleting the key clears it, and leaves a setting naming a different key alone.
+func TestDeleteVirtualKey_ClearsWarpVirtualKey(t *testing.T) {
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableWarpConfig{}))
+	ctx := context.Background()
+
+	for _, id := range []string{"vk-warp", "vk-other"} {
+		require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+			ID: id, Name: id, Value: *schemas.NewSecretVar(id + "-value"), IsActive: schemas.Ptr(true),
+		}))
+	}
+	require.NoError(t, store.UpsertWarpConfig(ctx, &tables.TableWarpConfig{Enabled: true, Provider: "openai", Model: "gpt-4o", VirtualKeyID: "vk-warp"}))
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, "vk-other"))
+	config, err := store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "vk-warp", config.VirtualKeyID, "deleting another key leaves Warp's alone")
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, "vk-warp"))
+	config, err = store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, config.VirtualKeyID, "Warp must not keep naming a deleted key")
+	assert.Equal(t, "gpt-4o", config.Model, "only the reference is cleared")
+}
+
 func TestDeleteVirtualKey_RevokesInboundVKGrants(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2107,6 +2200,56 @@ func TestDeleteVirtualKey_RevokesInboundVKGrants(t *testing.T) {
 	var got tables.TableOAuth2RefreshToken
 	require.NoError(t, store.DB().WithContext(ctx).First(&got, "id = ?", "rt-vk-grant").Error)
 	assert.NotNil(t, got.RevokedAt, "vk-mode grant should be revoked when its VK is deleted")
+}
+
+func TestDeleteVirtualKey_LogsGrantRevocationOnlyOnceCommitted(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ml := newMockLogger()
+	store.logger = ml
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-log",
+		Name:     "Log VK",
+		Value:    *schemas.NewSecretVar("vk-log-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableOAuth2RefreshToken{
+		ID: "rt-vk-log", TokenHash: "hash-vk-log", FamilyID: "fam-vk-log", ClientID: "client-1",
+		BfMode: string(schemas.MCPAuthModeVK), BfSub: vk.ID, Scope: "mcp", Resource: "https://example.test/mcp", CreatedAt: time.Now(),
+	}).Error)
+	revocationLogs := func() int {
+		ml.mu.Lock()
+		defer ml.mu.Unlock()
+		n := 0
+		for _, msg := range ml.debugMessages {
+			if strings.Contains(msg, "reason=virtual_key_deleted") {
+				n++
+			}
+		}
+		return n
+	}
+	tokenRevoked := func() bool {
+		var got tables.TableOAuth2RefreshToken
+		require.NoError(t, store.DB().WithContext(ctx).First(&got, "id = ?", "rt-vk-log").Error)
+		return got.RevokedAt != nil
+	}
+
+	// Inside a caller's transaction that rolls back: nothing is revoked and nothing is logged.
+	rollback := errors.New("caller rolls back")
+	err := store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID, tx))
+		return rollback
+	})
+	require.ErrorIs(t, err, rollback)
+	assert.False(t, tokenRevoked(), "the rolled-back delete must leave the grant active")
+	assert.Zero(t, revocationLogs(), "a rolled-back revocation must not be logged")
+
+	// On its own transaction the revocation commits and is logged once.
+	require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID))
+	assert.True(t, tokenRevoked())
+	assert.Equal(t, 1, revocationLogs())
 }
 
 func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {
@@ -2712,6 +2855,135 @@ func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
 	assert.NotEqual(t, onHash, offHash)
 }
 
+// TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip pins that the two
+// access-profile user-key settings persist independently, and that only an opt-in is hashed so a
+// config written before the fields existed keeps its hash.
+func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	off := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &off))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyCreation)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyDeletion)
+
+	creationOnly := off
+	creationOnly.SkipAccessProfileUserVirtualKeyCreation = true
+	require.NoError(t, store.UpdateClientConfig(ctx, &creationOnly))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.SkipAccessProfileUserVirtualKeyCreation)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyDeletion, "the settings are independent")
+
+	deletionOnly := off
+	deletionOnly.SkipAccessProfileUserVirtualKeyDeletion = true
+	require.NoError(t, store.UpdateClientConfig(ctx, &deletionOnly))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyCreation, "the settings are independent")
+	assert.True(t, result.SkipAccessProfileUserVirtualKeyDeletion)
+
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	creationHash, err := creationOnly.GenerateClientConfigHash()
+	require.NoError(t, err)
+	deletionHash, err := deletionOnly.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, offHash, creationHash)
+	assert.NotEqual(t, offHash, deletionHash)
+	assert.NotEqual(t, creationHash, deletionHash)
+}
+
+// TestUpdateClientConfig_MCPClientMetadataURLRoundTrip pins that the hosted Client ID Metadata Document URL
+// persists with its env reference, is hashed only when set, and is masked when it comes from env.
+func TestUpdateClientConfig_MCPClientMetadataURLRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	t.Setenv("BIFROST_TEST_CIMD_URL", "https://public.example.com/bifrost/client.json")
+
+	unset := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	hosted := unset
+	hosted.MCPClientMetadataURL = schemas.NewSecretVar("env.BIFROST_TEST_CIMD_URL")
+	require.NoError(t, store.UpdateClientConfig(ctx, &hosted))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.MCPClientMetadataURL)
+	assert.True(t, result.MCPClientMetadataURL.IsFromEnv(), "the env reference is stored, not its value")
+	assert.Equal(t, "https://public.example.com/bifrost/client.json", result.MCPClientMetadataURL.GetValue())
+	assert.NotEqual(t, "https://public.example.com/bifrost/client.json", result.Redacted().MCPClientMetadataURL.GetValue(), "an env-backed URL is masked")
+
+	unsetHash, err := unset.GenerateClientConfigHash()
+	require.NoError(t, err)
+	emptyHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true, MCPClientMetadataURL: schemas.NewSecretVar("")}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	hostedHash, err := hosted.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, unsetHash, emptyHash, "configs written before the field existed keep their hash")
+	assert.NotEqual(t, unsetHash, hostedHash)
+}
+
+func TestUpdateClientConfig_MCPOpenAPIMaxSpecMBRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, result.MCPOpenAPIMaxSpecMB, "unset reads back as 0, the built-in limit")
+
+	sized := base
+	sized.MCPOpenAPIMaxSpecMB = 64
+	require.NoError(t, store.UpdateClientConfig(ctx, &sized))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 64, result.MCPOpenAPIMaxSpecMB)
+
+	// Only a set value is hashed, so configs written before the field existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	sizedHash, err := sized.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, sizedHash)
+	unsetHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
+}
+
+func TestUpdateClientConfig_BifrostURLAndBifrostMCPRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, result.BifrostURL.GetValue())
+	assert.Nil(t, result.BifrostMCPAllowWrites, "unset reads back nil: writes on")
+
+	set := base
+	set.BifrostURL = schemas.NewSecretVar("https://gateway.example.com")
+	set.BifrostMCPAllowWrites = new(false)
+	require.NoError(t, store.UpdateClientConfig(ctx, &set))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "https://gateway.example.com", result.BifrostURL.GetValue())
+	require.NotNil(t, result.BifrostMCPAllowWrites)
+	assert.False(t, *result.BifrostMCPAllowWrites, "false is stored, not replaced by a default")
+
+	// Only set values are hashed, so configs written before the fields existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	setHash, err := set.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, setHash)
+	unsetHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
+}
+
 func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2773,6 +3045,79 @@ func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
 	result, err = store.GetClientConfig(ctx)
 	require.NoError(t, err)
 	assert.Nil(t, result.MCPCodeModeLimits, "clearing the limits must persist")
+}
+
+func TestUpdateClientConfig_UsageEstimationTokenizersRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:             new(true),
+		InitialPoolSize:           100,
+		LogRetentionDays:          30,
+		MaxRequestBodySizeMB:      50,
+		UsageEstimationTokenizers: []string{"anthropic", "llama3"},
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3"}, result.UsageEstimationTokenizers)
+}
+
+// The upgrade path: a database whose config_client predates usage_estimation_tokenizers_json
+// already holds a row. The migration must add the column without touching that row, the row
+// must still read (with no tokenizer families), and running the step again must be a no-op.
+func TestMigrationAddUsageEstimationTokenizersJSONColumn_ExistingRow(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	db := store.DB()
+	const column = "usage_estimation_tokenizers_json"
+
+	require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      137,
+		LogRetentionDays:     45,
+		MaxRequestBodySizeMB: 50,
+	}))
+	// Return the table to its shape before this migration.
+	require.NoError(t, db.Exec("ALTER TABLE config_client DROP COLUMN "+column).Error)
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, column), "precondition: the old table has no tokenizer column")
+
+	require.NoError(t, migrationAddUsageEstimationTokenizersJSONColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, column))
+
+	existing, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, existing, "the pre-migration row is still readable")
+	assert.Equal(t, 137, existing.InitialPoolSize, "the row's other settings survive the migration")
+	assert.Equal(t, 45, existing.LogRetentionDays)
+	assert.Empty(t, existing.UsageEstimationTokenizers, "an upgraded row estimates with the base encodings")
+
+	existing.UsageEstimationTokenizers = []string{"anthropic", "llama3"}
+	require.NoError(t, store.UpdateClientConfig(ctx, existing))
+	saved, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3"}, saved.UsageEstimationTokenizers, "the new column stores a list")
+
+	require.NoError(t, migrationAddUsageEstimationTokenizersJSONColumn(ctx, db, testMigrationLogger), "a second run is a no-op")
+	again, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3"}, again.UsageEstimationTokenizers, "a second run leaves the stored list")
+}
+
+func TestGenerateClientConfigHash_UsageEstimationTokenizers(t *testing.T) {
+	hash := func(families []string) string {
+		h, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, UsageEstimationTokenizers: families}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	baseHash, err := (&ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, hash(nil), "unset tokenizers must not change existing hashes")
+	assert.NotEqual(t, baseHash, hash([]string{"anthropic"}))
+	assert.NotEqual(t, hash([]string{"anthropic"}), hash([]string{"llama3"}))
+	assert.Equal(t, hash([]string{"anthropic", "llama3"}), hash([]string{"llama3", "anthropic"}), "order must not change the hash")
 }
 
 func TestGenerateClientConfigHash_MCPCodeModeLimits(t *testing.T) {
@@ -2920,6 +3265,85 @@ func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
 	urlHash, err := withURL.GenerateClientConfigHash()
 	require.NoError(t, err)
 	assert.NotEqual(t, baseHash, urlHash)
+}
+
+func TestGenerateClientConfigHash_ClaudeCodeGateway(t *testing.T) {
+	withGateway := func(cc *tables.ClaudeCodeGatewayConfig) *ClientConfig {
+		return &ClientConfig{
+			InitialPoolSize:    100,
+			LogRetentionDays:   30,
+			MCPServerAuthMode:  tables.MCPServerAuthModeBoth,
+			OAuth2ServerConfig: &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar("https://bifrost.test"), Gateways: &tables.ClientGatewaysConfig{ClaudeCode: cc}},
+		}
+	}
+	hashOf := func(cc *tables.ClaudeCodeGatewayConfig) string {
+		h, err := withGateway(cc).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+
+	unset := hashOf(nil)
+	enabled := hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true})
+	assert.NotEqual(t, unset, enabled, "turning the gateway on is a config change")
+	assert.NotEqual(t, enabled, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: false}))
+
+	policyA := hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"A": "1", "B": "2"}}})
+	assert.NotEqual(t, enabled, policyA, "managed settings are part of the config")
+	assert.Equal(t, policyA, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"B": "2", "A": "1"}}}),
+		"the hash does not depend on map ordering")
+	assert.NotEqual(t, policyA, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"A": "1"}}}))
+
+	withTelemetry := func(endpoint, header string) *tables.ClaudeCodeGatewayConfig {
+		return &tables.ClaudeCodeGatewayConfig{Enabled: true, Telemetry: &tables.ClientGatewayTelemetryConfig{
+			Enabled: true,
+			Destinations: []tables.ClientGatewayTelemetryDestination{{
+				Endpoint: schemas.NewSecretVar(endpoint),
+				Headers:  map[string]*schemas.SecretVar{"authorization": schemas.NewSecretVar(header)},
+			}},
+		}}
+	}
+	t.Setenv("BIFROST_TEST_HASH_OTEL_TOKEN", "first")
+	telemetry := hashOf(withTelemetry("https://otel.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN"))
+	assert.NotEqual(t, enabled, telemetry, "telemetry is part of the config")
+	assert.NotEqual(t, telemetry, hashOf(withTelemetry("https://other.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN")), "a changed endpoint is a config change")
+	t.Setenv("BIFROST_TEST_HASH_OTEL_TOKEN", "rotated")
+	assert.Equal(t, telemetry, hashOf(withTelemetry("https://otel.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN")),
+		"a header is hashed by its reference, so rotating the secret behind it is not a config change")
+}
+
+func TestUpdateClientConfig_ClaudeCodeGatewayRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	cfg := &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      100,
+		LogRetentionDays:     30,
+		MaxRequestBodySizeMB: 50,
+		MCPServerAuthMode:    tables.MCPServerAuthModeBoth,
+		OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+			IssuerURL: schemas.NewSecretVar("https://bifrost.test"),
+			Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{
+				Enabled:         true,
+				ManagedSettings: map[string]any{"permissions": map[string]any{"deny": []any{"WebFetch"}}},
+			}},
+		},
+	}
+	require.NoError(t, store.UpdateClientConfig(ctx, cfg))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.OAuth2ServerConfig)
+	assert.True(t, result.OAuth2ServerConfig.IsClaudeCodeGatewayEnabled())
+	assert.Equal(t, map[string]any{"permissions": map[string]any{"deny": []any{"WebFetch"}}}, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+
+	// An empty policy is a policy: {} must come back as {}, not as "no policy".
+	cfg.OAuth2ServerConfig.Gateways.ClaudeCode.ManagedSettings = map[string]any{}
+	require.NoError(t, store.UpdateClientConfig(ctx, cfg))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.OAuth2ServerConfig.ClaudeCodeGateway())
+	assert.NotNil(t, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+	assert.Empty(t, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
 }
 
 func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {
@@ -3142,6 +3566,72 @@ func TestCreateCustomer(t *testing.T) {
 	assert.Equal(t, "Test Customer", result.Name)
 }
 
+// TestUpdateCustomerLeavesChildRowsAlone checks that saving a customer read earlier does not pull a
+// team that has since moved to another customer back onto it.
+func TestUpdateCustomerLeavesChildRowsAlone(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"cust-a", "cust-b"} {
+		require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: id, Name: id}))
+	}
+	a := "cust-a"
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "team-1", CustomerID: &a}))
+
+	customer, err := store.GetCustomer(ctx, "cust-a")
+	require.NoError(t, err)
+	require.Len(t, customer.Teams, 1)
+
+	team, err := store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	b := "cust-b"
+	team.CustomerID = &b
+	require.NoError(t, store.UpdateTeam(ctx, team))
+
+	customer.Name = "cust-a renamed"
+	require.NoError(t, store.UpdateCustomer(ctx, customer))
+
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.CustomerID)
+	assert.Equal(t, "cust-b", *team.CustomerID)
+
+	renamed, err := store.GetCustomer(ctx, "cust-a")
+	require.NoError(t, err)
+	assert.Equal(t, "cust-a renamed", renamed.Name)
+}
+
+// TestUpdateTeamChangesAndClearsCustomer checks that a team read with its customer preloaded can be
+// moved to another customer and detached, as the team update handler does.
+func TestUpdateTeamChangesAndClearsCustomer(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"cust-a", "cust-b"} {
+		require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: id, Name: id}))
+	}
+	a := "cust-a"
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "team-1", CustomerID: &a}))
+
+	team, err := store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.Customer, "GetTeam preloads the customer")
+	b := "cust-b"
+	team.CustomerID = &b
+	require.NoError(t, store.UpdateTeam(ctx, team))
+
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.CustomerID)
+	assert.Equal(t, "cust-b", *team.CustomerID)
+
+	team.CustomerID = nil
+	require.NoError(t, store.UpdateTeam(ctx, team))
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	assert.Nil(t, team.CustomerID)
+}
+
 func TestCreateTeam(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -3169,6 +3659,17 @@ func TestCreateTeam(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Test Team", result.Name)
 	assert.Equal(t, "customer-for-team", *result.CustomerID)
+	assert.Nil(t, result.DisableContentLogging, "a team created without a decision inherits")
+
+	// Content logging is tri-state and every state must survive an update, including clearing a
+	// decision back to NULL: an update that skipped nil would leave a team stuck on its old choice.
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		team.DisableContentLogging = decision
+		require.NoError(t, store.UpdateTeam(ctx, team))
+		result, err = store.GetTeam(ctx, "team-test")
+		require.NoError(t, err)
+		assert.Equal(t, decision, result.DisableContentLogging)
+	}
 }
 
 // =============================================================================
@@ -3962,6 +4463,64 @@ func TestUpsertModelPricesBatch_TimeOfDayColumns_SurviveResync(t *testing.T) {
 // pricingSyncUpdateColumns regression for the decision rate columns: both
 // values change on the second upsert so a column missing from the list fails
 // here instead of keeping its first value.
+// TestUpsertModelPricesBatch_VoiceLiveColumns_SurviveResync pins the Azure Voice Live rates in
+// pricingSyncUpdateColumns: the next datasheet sync must update them, not keep the first values.
+func TestUpsertModelPricesBatch_VoiceLiveColumns_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{{
+		Model:                            "gpt-realtime",
+		Provider:                         "azure",
+		Mode:                             "responses",
+		InputCostPerTokenVoiceLive:       cost(0.000004),
+		OutputCostPerTokenVoiceLive:      cost(0.000016),
+		CacheReadInputTokenCostVoiceLive: cost(0.0000004),
+		InputCostPerAudioTokenVoiceLive:  cost(0.000032),
+		OutputCostPerAudioTokenVoiceLive: cost(0.000064),
+		InputCostPerStandardSpeechAudioTokenVoiceLive:  cost(0.000017),
+		OutputCostPerStandardSpeechAudioTokenVoiceLive: cost(0.000031),
+		InputCostPerCustomSpeechAudioTokenVoiceLive:    cost(0.00004),
+		OutputCostPerCustomSpeechAudioTokenVoiceLive:   cost(0.000055),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+	pricing[0].InputCostPerTokenVoiceLive = cost(0.00000066)
+	pricing[0].OutputCostPerTokenVoiceLive = cost(0.00000264)
+	pricing[0].CacheReadInputTokenCostVoiceLive = cost(0.00000033)
+	pricing[0].InputCostPerAudioTokenVoiceLive = cost(0.000011)
+	pricing[0].OutputCostPerAudioTokenVoiceLive = cost(0.000022)
+	pricing[0].InputCostPerStandardSpeechAudioTokenVoiceLive = cost(0.000015)
+	pricing[0].OutputCostPerStandardSpeechAudioTokenVoiceLive = cost(0.000026)
+	pricing[0].InputCostPerCustomSpeechAudioTokenVoiceLive = cost(0.000039)
+	pricing[0].OutputCostPerCustomSpeechAudioTokenVoiceLive = cost(0.00005)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	row := got[0]
+	require.NotNil(t, row.InputCostPerTokenVoiceLive)
+	require.NotNil(t, row.OutputCostPerTokenVoiceLive)
+	require.NotNil(t, row.CacheReadInputTokenCostVoiceLive)
+	require.NotNil(t, row.InputCostPerAudioTokenVoiceLive)
+	require.NotNil(t, row.OutputCostPerAudioTokenVoiceLive)
+	require.NotNil(t, row.InputCostPerStandardSpeechAudioTokenVoiceLive)
+	require.NotNil(t, row.OutputCostPerStandardSpeechAudioTokenVoiceLive)
+	require.NotNil(t, row.InputCostPerCustomSpeechAudioTokenVoiceLive)
+	require.NotNil(t, row.OutputCostPerCustomSpeechAudioTokenVoiceLive)
+	assert.InDelta(t, 0.00000066, *row.InputCostPerTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.00000264, *row.OutputCostPerTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.00000033, *row.CacheReadInputTokenCostVoiceLive, 1e-12)
+	assert.InDelta(t, 0.000011, *row.InputCostPerAudioTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.000022, *row.OutputCostPerAudioTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.000015, *row.InputCostPerStandardSpeechAudioTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.000026, *row.OutputCostPerStandardSpeechAudioTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.000039, *row.InputCostPerCustomSpeechAudioTokenVoiceLive, 1e-12)
+	assert.InDelta(t, 0.00005, *row.OutputCostPerCustomSpeechAudioTokenVoiceLive, 1e-12)
+}
+
 func TestUpsertModelPricesBatch_DecisionRateColumns_SurviveResync(t *testing.T) {
 	s := setupRDBTestStore(t)
 	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
@@ -5189,6 +5748,75 @@ func TestUpsertModelPricesBatch_VideoResolutionColumnsSurviveResync(t *testing.T
 	assert.Equal(t, 0.60, *found.OutputCostPerVideoPerSecond4k)
 }
 
+func TestUpsertModelPricesBatch_VideoTokenColumnSurvivesResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	rate := 0.000007
+
+	row := tables.TableModelPricing{Model: "dreamina-seedance-2-0-260128", Provider: "byteplus", Mode: "video_generation"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.OutputCostPerVideoToken = &rate
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "dreamina-seedance-2-0-260128" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	require.NotNil(t, found.OutputCostPerVideoToken, "output_cost_per_video_token missing from pricingSyncUpdateColumns")
+	assert.Equal(t, rate, *found.OutputCostPerVideoToken)
+}
+
+func TestUpsertModelPricesBatch_CacheCreationAbove12hrColumnsSurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+	ctx := context.Background()
+
+	row := tables.TableModelPricing{Model: "gpt-5.6-sol", Provider: "openai", Mode: "chat"}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	row.CacheCreationInputTokenCostAbove12hr = schemas.Ptr(0.00001)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokens = schemas.Ptr(0.00002)
+	row.CacheCreationInputTokenCostAbove12hrPriority = schemas.Ptr(0.00002)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority = schemas.Ptr(0.00004)
+	row.CacheCreationInputTokenCostAbove12hrFlex = schemas.Ptr(0.000005)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex = schemas.Ptr(0.00001)
+	row.CacheCreationInputTokenCostAbove12hrUltrafast = schemas.Ptr(0.00015)
+	row.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast = schemas.Ptr(0.0003)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, []tables.TableModelPricing{row}))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	var found *tables.TableModelPricing
+	for i := range got {
+		if got[i].Model == "gpt-5.6-sol" {
+			found = &got[i]
+			break
+		}
+	}
+	require.NotNil(t, found)
+	for name, v := range map[string]*float64{
+		"cache_creation_input_token_cost_above_12hr":                      found.CacheCreationInputTokenCostAbove12hr,
+		"cache_creation_input_token_cost_above_12hr_above_272k_tokens":    found.CacheCreationInputTokenCostAbove12hrAbove272kTokens,
+		"cache_creation_input_token_cost_above_12hr_priority":             found.CacheCreationInputTokenCostAbove12hrPriority,
+		"cache_creation_input_token_cost_above_12hr_above_272k_priority":  found.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority,
+		"cache_creation_input_token_cost_above_12hr_flex":                 found.CacheCreationInputTokenCostAbove12hrFlex,
+		"cache_creation_input_token_cost_above_12hr_above_272k_flex":      found.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex,
+		"cache_creation_input_token_cost_above_12hr_ultrafast":            found.CacheCreationInputTokenCostAbove12hrUltrafast,
+		"cache_creation_input_token_cost_above_12hr_above_272k_ultrafast": found.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast,
+	} {
+		assert.NotNil(t, v, "%s missing from pricingSyncUpdateColumns", name)
+	}
+}
+
 // TestRDBConfigStore_CreatedAtSurvivesConfigSync is the general form of
 // TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate. GORM's Save selects every
 // column, so any entity rebuilt from config.json — which carries no created_at —
@@ -5572,6 +6200,41 @@ func TestProviderInjectedToolsRoundTrip(t *testing.T) {
 	assert.Empty(t, got.InjectedTools, "an empty list clears the stored column too")
 }
 
+// TestProviderPassthroughRoundTrip pins passthrough through every provider write path and
+// both read paths. An empty allowlist must come back as a policy: it forwards nothing,
+// which is not the same as no policy, which forwards every route.
+func TestProviderPassthroughRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	policy := &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+		{Methods: []string{"POST"}, Path: "/v1/chat/completions"},
+		{Methods: []string{"GET", "DELETE"}, Path: "/v1/files/*"},
+	}}
+
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		schemas.OpenAI: {Passthrough: policy},
+	}))
+	all, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, policy, all[schemas.OpenAI].Passthrough)
+
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, ProviderConfig{Passthrough: policy}))
+	got, err := store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Equal(t, policy, got.Passthrough)
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{}}}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	require.NotNil(t, got.Passthrough, "an empty allowlist must survive the round trip as a policy")
+	assert.Empty(t, got.Passthrough.AllowedRoutes)
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Nil(t, got.Passthrough, "updating with a nil policy must clear the stored column")
+}
+
 func TestUpdateClientConfig_CompatConvertDecisionToResponsesRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -5687,6 +6350,17 @@ func TestGenerateClientConfigHash_SkillsExternalClientURL(t *testing.T) {
 	require.Equal(t, "env.BIFROST_SKILLS_URL_TEST", redacted.SkillsExternalClientURL.GetRawRef())
 }
 
+// TestValidateOpenAPIURL accepts the default (empty), an http(s) URL, or a path
+// that stays inside the app directory, and refuses everything else.
+func TestValidateOpenAPIURL(t *testing.T) {
+	for _, value := range []string{"", "  ", "https://raw.githubusercontent.com/maximhq/bifrost/refs/heads/dev/docs/openapi/openapi.json", "http://mirror.internal:8080/openapi.json", "openapi.json", "specs/openapi.yaml", "./specs/../openapi.json"} {
+		require.NoError(t, ValidateOpenAPIURL(value), value)
+	}
+	for _, value := range []string{"/etc/bifrost/openapi.json", "../openapi.json", "specs/../../openapi.json", "ftp://example.com/spec", "file:///etc/passwd", "https://", strings.Repeat("a", MaxOpenAPIURLLength+1)} {
+		require.Error(t, ValidateOpenAPIURL(value), value)
+	}
+}
+
 // TestValidatePublicBaseURL permits public base paths and rejects credential-bearing components without echoing input.
 func TestValidatePublicBaseURL(t *testing.T) {
 	for _, value := range []string{"", "https://skills.example/path", "http://localhost:8080", "https://example.com/path%23section", "http://[::1]:8080"} {
@@ -5696,6 +6370,24 @@ func TestValidatePublicBaseURL(t *testing.T) {
 		err := ValidatePublicBaseURL(value)
 		require.Error(t, err, value)
 		require.NotContains(t, err.Error(), value)
+	}
+}
+
+// The public URL settings accept exactly what their varchar columns store: a URL
+// of MaxPublicURLLength characters is accepted, one longer is refused before it
+// reaches UpdateClientConfig, and every column holding one is that wide.
+func TestValidatePublicBaseURLLengthMatchesColumns(t *testing.T) {
+	prefix := "https://example.com/"
+	require.NoError(t, ValidatePublicBaseURL(prefix+strings.Repeat("a", MaxPublicURLLength-len(prefix))))
+	err := ValidatePublicBaseURL(prefix + strings.Repeat("a", MaxPublicURLLength-len(prefix)+1))
+	require.ErrorContains(t, err, "at most 512 characters")
+
+	columns := map[string]string{"BifrostURL": "", "MCPExternalClientURL": "", "SkillsExternalClientURL": "", "A2AExternalClientURL": ""}
+	typ := reflect.TypeOf(tables.TableClientConfig{})
+	for name := range columns {
+		field, ok := typ.FieldByName(name)
+		require.True(t, ok, name)
+		require.Contains(t, field.Tag.Get("gorm"), fmt.Sprintf("varchar(%d)", MaxPublicURLLength), "%s's column width must match the limit validation applies", name)
 	}
 }
 
@@ -5721,26 +6413,7 @@ func vkMetadataStoreBackends(t *testing.T) map[string]*RDBConfigStore {
 // dialect-specific metadata filter cannot go untested while the run still passes on SQLite.
 func trySetupPostgresVKMetadataStore(t *testing.T) *RDBConfigStore {
 	t.Helper()
-	db, err := gorm.Open(postgres.Open(strings.Replace(postgresDSN, pgTestSchema, vkMetadataPGSchema, 1)), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		return nil
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil
-	}
-	if sqlDB.Ping() != nil {
-		_ = sqlDB.Close()
-		return nil
-	}
-	// Registered before the schema statements so the connection is closed even if they fail.
-	t.Cleanup(func() {
-		_ = db.Exec("DROP SCHEMA IF EXISTS " + vkMetadataPGSchema + " CASCADE").Error
-		_ = sqlDB.Close()
-	})
-	require.NoError(t, db.Exec("DROP SCHEMA IF EXISTS "+vkMetadataPGSchema+" CASCADE").Error)
-	require.NoError(t, db.Exec("CREATE SCHEMA "+vkMetadataPGSchema).Error)
-	require.NoError(t, db.AutoMigrate(
+	s := trySetupPostgresSchemaStore(t, vkMetadataPGSchema,
 		&tables.TableCustomer{},
 		&tables.TableTeam{},
 		&tables.TableBudget{},
@@ -5754,8 +6427,40 @@ func trySetupPostgresVKMetadataStore(t *testing.T) *RDBConfigStore {
 		&tables.TableVirtualKeyMCPConfig{},
 		&tables.TableAgentRegistration{},
 		&tables.TableVirtualKeyAgentGrant{},
-	))
-	require.NoError(t, db.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{}))
+		&tables.TableRelay{},
+		&tables.TableVirtualKeyRelayGrant{},
+	)
+	if s == nil {
+		return nil
+	}
+	require.NoError(t, s.DB().SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{}))
+	return s
+}
+
+// trySetupPostgresSchemaStore returns a Postgres store whose tables for models live in their own
+// schema, dropped on cleanup, or nil when the local test Postgres is not reachable.
+func trySetupPostgresSchemaStore(t *testing.T, schema string, models ...interface{}) *RDBConfigStore {
+	t.Helper()
+	db, err := gorm.Open(postgres.Open(strings.Replace(postgresDSN, pgTestSchema, schema, 1)), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		return nil
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil
+	}
+	if sqlDB.Ping() != nil {
+		_ = sqlDB.Close()
+		return nil
+	}
+	// Registered before the schema statements so the connection is closed even if they fail.
+	t.Cleanup(func() {
+		_ = db.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE").Error
+		_ = sqlDB.Close()
+	})
+	require.NoError(t, db.Exec("DROP SCHEMA IF EXISTS "+schema+" CASCADE").Error)
+	require.NoError(t, db.Exec("CREATE SCHEMA "+schema).Error)
+	require.NoError(t, db.AutoMigrate(models...))
 	s := &RDBConfigStore{logger: nil}
 	s.db.Store(db)
 	s.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
@@ -5815,4 +6520,1116 @@ func TestGetVirtualKeysPaginated_MetadataFiltersAndSearch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDeleteAbandonedOauthConfigs pins which oauth_configs rows the sweep may
+// remove: only 'pending'/'failed' rows past the grace period with no MCP
+// client, live flow, or token pointing at them.
+func TestDeleteAbandonedOauthConfigs(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	db := store.DB().WithContext(ctx)
+	require.NoError(t, db.AutoMigrate(&tables.TableOauthConfig{}))
+
+	old := time.Now().Add(-2 * time.Hour)
+	seedConfig := func(id, status string, createdAt time.Time) {
+		require.NoError(t, db.Create(&tables.TableOauthConfig{
+			ID: id, Status: status, RedirectURI: "http://localhost/api/oauth/callback", CreatedAt: createdAt,
+		}).Error)
+	}
+	seedFlow := func(id, configID string, expiresAt time.Time) {
+		require.NoError(t, db.Create(&tables.TableMCPOauthFlow{
+			ID: id, State: "state-" + id, OauthConfigID: configID, FlowMode: "admin", Status: "pending", ExpiresAt: expiresAt,
+		}).Error)
+	}
+
+	seedConfig("abandoned-pending", "pending", old)
+	seedConfig("abandoned-failed", "failed", old)
+	seedConfig("expired-flow", "pending", old)
+	seedFlow("flow-expired", "expired-flow", old)
+	seedConfig("young-pending", "pending", time.Now())
+	seedConfig("live-flow", "pending", old)
+	seedFlow("flow-live", "live-flow", time.Now().Add(10*time.Minute))
+	seedConfig("authorized", "authorized", old)
+	seedConfig("has-token", "failed", old)
+	require.NoError(t, db.Create(&tables.TableMCPOauthToken{
+		ID: "tok-1", AuthMode: "shared", OauthConfigID: "has-token", Status: "active", AccessToken: "x", TokenType: "Bearer",
+	}).Error)
+	seedConfig("linked", "pending", old)
+	linkedID := "linked"
+	require.NoError(t, db.Create(&tables.TableMCPClient{
+		ClientID: "linked-client", Name: "linked", ConnectionType: "http", AuthType: "oauth", OauthConfigID: &linkedID,
+	}).Error)
+
+	n, err := store.DeleteAbandonedOauthConfigs(ctx, 0)
+	require.NoError(t, err)
+	assert.Zero(t, n, "non-positive grace must be a no-op")
+
+	n, err = store.DeleteAbandonedOauthConfigs(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), n)
+
+	var remaining []string
+	require.NoError(t, db.Model(&tables.TableOauthConfig{}).Order("id").Pluck("id", &remaining).Error)
+	assert.Equal(t, []string{"authorized", "has-token", "linked", "live-flow", "young-pending"}, remaining)
+}
+
+// TestDeleteAbandonedOauthConfigs_BoundedBatch pins that one call removes at
+// most one batch, so a backlog larger than the database's bound-parameter
+// limit cannot wedge the sweep; later ticks drain the rest.
+func TestDeleteAbandonedOauthConfigs_BoundedBatch(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	db := store.DB().WithContext(ctx)
+	require.NoError(t, db.AutoMigrate(&tables.TableOauthConfig{}))
+
+	old := time.Now().Add(-2 * time.Hour)
+	configs := make([]tables.TableOauthConfig, abandonedOauthConfigSweepBatch+1)
+	for i := range configs {
+		configs[i] = tables.TableOauthConfig{
+			ID: fmt.Sprintf("abandoned-%04d", i), Status: "pending", RedirectURI: "http://localhost/api/oauth/callback", CreatedAt: old,
+		}
+	}
+	require.NoError(t, db.CreateInBatches(configs, 100).Error)
+
+	n, err := store.DeleteAbandonedOauthConfigs(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, int64(abandonedOauthConfigSweepBatch), n, "one call must delete at most one batch")
+
+	n, err = store.DeleteAbandonedOauthConfigs(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "the next call drains the remainder")
+}
+
+// oauthSweepPGSchema keeps the abandoned-config race test's tables apart from
+// the shared test schema.
+const oauthSweepPGSchema = "configstore_oauth_sweep_test"
+
+// TestDeleteAbandonedOauthConfigs_ConcurrentClientLinkSurvives reproduces the
+// Postgres READ COMMITTED race: an MCP client linking an abandoned config is
+// inserted but not yet committed when the sweep starts, so the sweep's
+// NOT EXISTS check cannot see it and the sweep blocks on the row lock the
+// client's foreign key holds. Once the client commits, the sweep must re-check
+// and keep the row; deleting it would cascade and delete the new client.
+func TestDeleteAbandonedOauthConfigs_ConcurrentClientLinkSurvives(t *testing.T) {
+	store := trySetupPostgresSchemaStore(t, oauthSweepPGSchema,
+		&tables.TableOauthConfig{}, &tables.TableMCPClient{}, &tables.TableMCPOauthFlow{}, &tables.TableMCPOauthToken{})
+	if store == nil {
+		t.Skip("test Postgres not reachable")
+	}
+	ctx := context.Background()
+	db := store.DB().WithContext(ctx)
+	require.NoError(t, db.Create(&tables.TableOauthConfig{
+		ID: "racing", Status: "pending", RedirectURI: "http://localhost/api/oauth/callback", CreatedAt: time.Now().Add(-2 * time.Hour),
+	}).Error)
+
+	linker := db.Begin()
+	require.NoError(t, linker.Error)
+	defer linker.Rollback()
+	racingID := "racing"
+	require.NoError(t, linker.Create(&tables.TableMCPClient{
+		ClientID: "racing-client", Name: "racing", ConnectionType: "http", AuthType: "oauth", OauthConfigID: &racingID,
+	}).Error)
+
+	type sweepResult struct {
+		n   int64
+		err error
+	}
+	done := make(chan sweepResult, 1)
+	go func() {
+		n, err := store.DeleteAbandonedOauthConfigs(ctx, time.Hour)
+		done <- sweepResult{n, err}
+	}()
+
+	require.Eventually(t, func() bool {
+		var waiting int64
+		_ = db.Raw("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'").Scan(&waiting).Error
+		return waiting > 0
+	}, 5*time.Second, 20*time.Millisecond, "sweep must block on the linking client's row lock")
+	require.NoError(t, linker.Commit().Error)
+
+	res := <-done
+	require.NoError(t, res.err)
+	assert.Zero(t, res.n, "a config linked while the sweep waited must not be deleted")
+	var clients int64
+	require.NoError(t, db.Model(&tables.TableMCPClient{}).Where("client_id = ?", "racing-client").Count(&clients).Error)
+	assert.Equal(t, int64(1), clients, "the sweep must never cascade-delete a just-linked MCP client")
+}
+
+// samplePerUserDiscovery builds a row with bare tool names: rows store the
+// upstream names without the client prefix, which is added from the client's
+// current name when a discovery is read, so a rename rewrites no row.
+func samplePerUserDiscovery(mode schemas.MCPAuthMode, identity, clientID string, toolNames ...string) *tables.TableMCPPerUserDiscovery {
+	tools := make(map[string]schemas.ChatTool, len(toolNames))
+	for _, name := range toolNames {
+		tools[name] = schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: name}}
+	}
+	discovery := &tables.TableMCPPerUserDiscovery{
+		MCPClientID:   clientID,
+		AuthMode:      string(mode),
+		Tools:         tools,
+		Instructions:  "Rules for " + identity + ".",
+		DiscoveryHash: "hash-" + identity,
+		DiscoveredAt:  time.Now().Add(-time.Minute),
+	}
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		id := identity
+		discovery.UserID = &id
+	case schemas.MCPAuthModeVK:
+		id := identity
+		discovery.VirtualKeyID = &id
+	}
+	return discovery
+}
+
+func TestPerUserDiscovery_UpsertGetDelete(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	discovery := samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "list", "admin")
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, discovery))
+
+	got, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "alice", "notes")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "alice", got.Identity())
+	assert.Equal(t, string(schemas.MCPAuthModeUser), got.AuthMode)
+	assert.Len(t, got.Tools, 2)
+	assert.Equal(t, "admin", got.Tools["admin"].Function.Name)
+	assert.Equal(t, "Rules for alice.", got.Instructions, "the instructions travel with the tools they were discovered with")
+	assert.Equal(t, "hash-alice", got.DiscoveryHash)
+
+	// Same identity string in another mode is a different binding.
+	other, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeVK, "alice", "notes")
+	require.NoError(t, err)
+	assert.Nil(t, other)
+
+	// Re-upsert replaces wholesale and keeps one row.
+	rediscovered := samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "list")
+	rediscovered.Instructions = ""
+	rediscovered.DiscoveryHash = "hash-2"
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, rediscovered))
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "alice", "notes")
+	require.NoError(t, err)
+	assert.Len(t, got.Tools, 1)
+	assert.Empty(t, got.Instructions, "an upstream that stopped advertising instructions drops them, like a withdrawn tool")
+	assert.Equal(t, "hash-2", got.DiscoveryHash)
+	var count int64
+	require.NoError(t, store.DB().Model(&tables.TableMCPPerUserDiscovery{}).Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+
+	// A discovery with no tools is a real discovery, not an absence.
+	empty := samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes")
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, empty))
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeVK, "vk-1", "notes")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Empty(t, got.Tools)
+
+	require.NoError(t, store.DeleteMCPPerUserDiscovery(ctx, schemas.MCPAuthModeUser, "alice", "notes"))
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "alice", "notes")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	// Deleting again is not an error.
+	require.NoError(t, store.DeleteMCPPerUserDiscovery(ctx, schemas.MCPAuthModeUser, "alice", "notes"))
+
+	// Only users and virtual keys keep a discovery, so every other mode is
+	// refused: a per-user-discovery client stores no admin credential and does
+	// no admin discovery, and a session-bound caller keeps no discovery.
+	for _, mode := range []schemas.MCPAuthMode{schemas.MCPAuthModeAdmin, schemas.MCPAuthModeSession} {
+		_, err = store.GetMCPPerUserDiscoveryByMode(ctx, mode, "x", "notes")
+		require.Error(t, err, "get, mode %s", mode)
+		require.Error(t, store.DeleteMCPPerUserDiscovery(ctx, mode, "x", "notes"), "delete, mode %s", mode)
+		require.Error(t, store.UpsertMCPPerUserDiscovery(ctx, &tables.TableMCPPerUserDiscovery{MCPClientID: "notes", AuthMode: string(mode), DiscoveryHash: "h"}), "upsert, mode %s", mode)
+	}
+	require.Error(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeAdmin, "x", "notes")))
+}
+
+// A caller's discovery keeps everything its upstream answered with: the tools'
+// annotations, titles, icons and output schemas (which ChatTool's JSON leaves
+// out), and the server's resources, resource templates and prompts.
+func TestPerUserDiscovery_KeepsToolDetailsResourcesAndPrompts(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	discovery := samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "search")
+	search := discovery.Tools["search"]
+	search.Annotations = &schemas.MCPToolAnnotations{Title: "Search", ReadOnlyHint: schemas.Ptr(true)}
+	search.MCP = &schemas.MCPToolMetadata{
+		Title:        "Search notes",
+		Icons:        []mcpgo.Icon{{Src: "https://example.com/search.png"}},
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+	}
+	discovery.Tools["search"] = search
+	discovery.Resources = []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")}
+	discovery.ResourceTemplates = []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("repo://{name}", "repo")}
+	discovery.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("review")}
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, discovery))
+
+	got, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeVK, "vk-1", "notes")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, search.Annotations, got.Tools["search"].Annotations)
+	assert.Equal(t, search.MCP, got.Tools["search"].MCP)
+	require.Len(t, got.Resources, 1)
+	assert.Equal(t, "file:///handbook.md", got.Resources[0].URI)
+	require.Len(t, got.ResourceTemplates, 1)
+	assert.Equal(t, "repo://{name}", got.ResourceTemplates[0].URITemplate.Raw())
+	require.Len(t, got.Prompts, 1)
+	assert.Equal(t, "review", got.Prompts[0].Name)
+
+	// A server that offers none keeps none, rather than an empty list.
+	plain := samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-2", "notes", "search")
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, plain))
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeVK, "vk-2", "notes")
+	require.NoError(t, err)
+	assert.Nil(t, got.Resources)
+	assert.Nil(t, got.ResourceTemplates)
+	assert.Nil(t, got.Prompts)
+	assert.Nil(t, got.Tools["search"].Annotations)
+}
+
+func TestPerUserDiscovery_DeleteByClient(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "a")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "b")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "a")))
+
+	require.NoError(t, store.DeleteMCPPerUserDiscoveriesByClient(ctx, "notes"))
+	var count int64
+	require.NoError(t, store.DB().Model(&tables.TableMCPPerUserDiscovery{}).Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+	got, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "alice", "wiki")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+}
+
+func TestPerUserDiscovery_CascadesWithClientAndVirtualKey(t *testing.T) {
+	store := setupMCPSessionsTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableMCPPerUserDiscovery{}))
+	seedMCPSessionsFixture(t, store)
+	ctx := context.Background()
+
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-alpha", "github-prod", "t")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "user-42", "github-prod", "t")))
+
+	// Deleting the virtual key removes the discoveries made with it and no other.
+	require.NoError(t, store.DeleteVirtualKey(ctx, "vk-alpha"))
+	got, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeVK, "vk-alpha", "github-prod")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "user-42", "github-prod")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+
+	// Deleting the client removes the rest.
+	require.NoError(t, store.DeleteMCPClientConfig(ctx, "github-prod"))
+	got, err = store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "user-42", "github-prod")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+// seedCredentialDiscoveries stores clients "notes" (OAuth config "cfg-notes")
+// and "wiki" (OAuth config "cfg-wiki"), the virtual key vk-1, OAuth tokens and
+// header credentials for alice and vk-1 on notes and for alice on wiki, and a
+// discovery for each of those bindings.
+func seedCredentialDiscoveries(t *testing.T) *RDBConfigStore {
+	t.Helper()
+	store := setupMCPSessionsTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableMCPPerUserDiscovery{}))
+	ctx := context.Background()
+	for _, name := range []string{"notes", "wiki"} {
+		require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableOauthConfig{
+			ID: "cfg-" + name, ClientID: schemas.NewSecretVar("bifrost"), TokenURL: "https://idp.invalid/token",
+			AuthorizeURL: "https://idp.invalid/authorize", RedirectURI: "http://localhost/api/oauth/callback", Status: "authorized",
+		}).Error)
+		require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableMCPClient{
+			ClientID: name, Name: name, EndpointSlug: name, ConnectionType: "http", OauthConfigID: schemas.Ptr("cfg-" + name),
+		}).Error)
+	}
+	require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableVirtualKey{ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1")}).Error)
+	alice, vk := "alice", "vk-1"
+	for _, token := range []*tables.TableMCPOauthToken{
+		{ID: "tok-alice", MCPClientID: "notes", UserID: &alice, AuthMode: "user", Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-notes"},
+		{ID: "tok-vk", MCPClientID: "notes", VirtualKeyID: &vk, AuthMode: "vk", Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-notes"},
+		{ID: "tok-wiki", MCPClientID: "wiki", UserID: &alice, AuthMode: "user", Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-wiki"},
+	} {
+		require.NoError(t, store.DB().WithContext(ctx).Create(token).Error)
+	}
+	for _, cred := range []*tables.TableMCPPerUserHeaderCredential{
+		{ID: "cred-alice", MCPClientID: "notes", UserID: &alice, AuthMode: "user", Status: "active", HeadersJSON: "{}"},
+		{ID: "cred-vk", MCPClientID: "notes", VirtualKeyID: &vk, AuthMode: "vk", Status: "active", HeadersJSON: "{}"},
+		{ID: "cred-wiki", MCPClientID: "wiki", UserID: &alice, AuthMode: "user", Status: "active", HeadersJSON: "{}"},
+	} {
+		require.NoError(t, store.DB().WithContext(ctx).Create(cred).Error)
+	}
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "search")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "read")))
+	return store
+}
+
+// storedDiscoveries lists the bindings holding a discovery, as mode/identity/client.
+func storedDiscoveries(t *testing.T, store *RDBConfigStore) []string {
+	t.Helper()
+	var rows []tables.TableMCPPerUserDiscovery
+	require.NoError(t, store.DB().Find(&rows).Error)
+	bindings := make([]string, 0, len(rows))
+	for _, row := range rows {
+		bindings = append(bindings, row.AuthMode+"/"+row.Identity()+"/"+row.MCPClientID)
+	}
+	return bindings
+}
+
+// orphanSince marks a credential row orphaned since age ago, without the update
+// moving updated_at to now.
+func orphanSince(t *testing.T, store *RDBConfigStore, model any, id string, age time.Duration) {
+	t.Helper()
+	require.NoError(t, store.DB().Model(model).Where("id = ?", id).UpdateColumns(map[string]any{"status": "orphaned", "updated_at": time.Now().Add(-age)}).Error)
+}
+
+// TestPerUserDiscovery_GoesWithItsCredential deletes a caller's discovery in the
+// same write that deletes or invalidates the credential it was made with, and no
+// other caller's.
+func TestPerUserDiscovery_GoesWithItsCredential(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, store *RDBConfigStore)
+		kept   []string
+	}{
+		{
+			name: "oauth token revoked",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.DeleteOauthUserToken(ctx, "tok-alice"))
+			},
+			kept: []string{"vk/vk-1/notes", "user/alice/wiki"},
+		},
+		{
+			name: "header credential revoked",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.DeleteMCPPerUserHeaderCredential(ctx, "cred-vk"))
+			},
+			kept: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			name: "token refresh rejected",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.MarkOauthUserTokenNeedsReauthByID(ctx, "tok-alice", "invalid_grant"))
+			},
+			kept: []string{"vk/vk-1/notes", "user/alice/wiki"},
+		},
+		{
+			name: "oauth client credentials rotated",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.MarkTokensNeedsReauthByConfigID(ctx, "cfg-notes", "rotated"))
+			},
+			kept: []string{"user/alice/wiki"},
+		},
+		{
+			name: "token exchange settings changed",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx, "notes", "audience changed"))
+			},
+			kept: []string{"user/alice/wiki"},
+		},
+		{
+			name: "required header keys added",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx, "notes"))
+			},
+			kept: []string{"user/alice/wiki"},
+		},
+		{
+			name: "orphaned token swept",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				orphanSince(t, store, &tables.TableMCPOauthToken{}, "tok-vk", 48*time.Hour)
+				_, err := store.DeleteOrphanedOauthUserTokens(ctx, 24*time.Hour)
+				require.NoError(t, err)
+			},
+			kept: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			name: "orphaned header credential swept",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				orphanSince(t, store, &tables.TableMCPPerUserHeaderCredential{}, "cred-alice", 48*time.Hour)
+				_, err := store.DeleteOrphanedMCPPerUserHeaderCredentials(ctx, 24*time.Hour)
+				require.NoError(t, err)
+			},
+			kept: []string{"vk/vk-1/notes", "user/alice/wiki"},
+		},
+		{
+			name: "orphaned too recently to sweep",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				orphanSince(t, store, &tables.TableMCPOauthToken{}, "tok-vk", time.Hour)
+				orphanSince(t, store, &tables.TableMCPPerUserHeaderCredential{}, "cred-vk", time.Hour)
+				_, err := store.DeleteOrphanedOauthUserTokens(ctx, 24*time.Hour)
+				require.NoError(t, err)
+				_, err = store.DeleteOrphanedMCPPerUserHeaderCredentials(ctx, 24*time.Hour)
+				require.NoError(t, err)
+			},
+			kept: []string{"user/alice/notes", "vk/vk-1/notes", "user/alice/wiki"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := seedCredentialDiscoveries(t)
+			tc.change(t, store)
+			assert.ElementsMatch(t, tc.kept, storedDiscoveries(t, store))
+		})
+	}
+}
+
+func TestPerUserDiscovery_BindingsListsUserAndVirtualKeyHoldersOfOneClient(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "search")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "bob", "wiki", "read")))
+
+	rows, err := store.GetMCPPerUserDiscoveryBindings(ctx, "notes")
+	require.NoError(t, err)
+	got := map[string]string{}
+	for _, row := range rows {
+		got[row.AuthMode+"/"+row.Identity()] = row.DiscoveryHash
+		assert.Empty(t, row.Tools, "listing bindings must not load the tool schemas")
+	}
+	assert.Equal(t, map[string]string{"user/alice": "hash-alice", "vk/vk-1": "hash-vk-1"}, got, "another client's rows are left out")
+
+	rows, err = store.GetMCPPerUserDiscoveryBindings(ctx, "missing")
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+// TestPerUserDiscovery_SummariesOfBindings reads the counts and discovery time
+// of exactly the bindings asked for, the way the sessions listing reads the
+// discoveries behind a page of credential rows.
+func TestPerUserDiscovery_SummariesOfBindings(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	alice := samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search", "read")
+	alice.Resources = []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")}
+	alice.ResourceTemplates = []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("notes://note/{id}", "note")}
+	alice.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("review")}
+	for _, discovery := range []*tables.TableMCPPerUserDiscovery{
+		alice,
+		samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes"),
+		// Same user and client ids as two asked bindings, but not a binding asked for.
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "read"),
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "bob", "wiki", "read"),
+	} {
+		require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, discovery))
+	}
+
+	aliceNotes := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthModeUser, Identity: "alice", MCPClientID: "notes"}
+	vkNotes := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthModeVK, Identity: "vk-1", MCPClientID: "notes"}
+	bobWiki := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthModeUser, Identity: "bob", MCPClientID: "wiki"}
+	sessionNotes := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthModeSession, Identity: "sess-1", MCPClientID: "notes"}
+	carolNotes := MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthModeUser, Identity: "carol", MCPClientID: "notes"}
+
+	got, err := store.GetMCPPerUserDiscoverySummaries(ctx, []MCPPerUserDiscoveryBinding{aliceNotes, vkNotes, bobWiki, sessionNotes, carolNotes})
+	require.NoError(t, err)
+	held := make([]MCPPerUserDiscoveryBinding, 0, len(got))
+	for binding := range got {
+		held = append(held, binding)
+	}
+	require.ElementsMatch(t, []MCPPerUserDiscoveryBinding{aliceNotes, vkNotes, bobWiki}, held,
+		"alice on wiki was not asked for, a session binding keeps no discovery, and carol holds none")
+
+	assert.Equal(t, 2, got[aliceNotes].ToolCount)
+	assert.Equal(t, 1, got[aliceNotes].PromptCount)
+	assert.Equal(t, 2, got[aliceNotes].ResourceCount, "resource templates count as resources")
+	assert.WithinDuration(t, alice.DiscoveredAt, got[aliceNotes].DiscoveredAt, time.Second)
+	assert.Empty(t, got[aliceNotes].Tools, "a summary must not load the tool schemas")
+	assert.Zero(t, got[vkNotes].ToolCount, "a discovery with no tools still counts as held")
+
+	// A re-discovery replaces the counts and the time.
+	rediscovered := samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search")
+	rediscovered.DiscoveredAt = time.Now()
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, rediscovered))
+	got, err = store.GetMCPPerUserDiscoverySummaries(ctx, []MCPPerUserDiscoveryBinding{aliceNotes})
+	require.NoError(t, err)
+	assert.Equal(t, 1, got[aliceNotes].ToolCount)
+	assert.Zero(t, got[aliceNotes].PromptCount)
+	assert.Zero(t, got[aliceNotes].ResourceCount)
+	assert.WithinDuration(t, rediscovered.DiscoveredAt, got[aliceNotes].DiscoveredAt, time.Second)
+
+	got, err = store.GetMCPPerUserDiscoverySummaries(ctx, nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+// TestPerUserDiscovery_ToolCallerCountsOfEachClient counts, for each client, how
+// many user and virtual-key callers' discoveries include each tool. Callers
+// holding the same discovery are each counted, though only one of their rows is
+// read.
+func TestPerUserDiscovery_ToolCallerCountsOfEachClient(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	shared := func(discovery *tables.TableMCPPerUserDiscovery) *tables.TableMCPPerUserDiscovery {
+		discovery.DiscoveryHash = "hash-shared"
+		return discovery
+	}
+	for _, discovery := range []*tables.TableMCPPerUserDiscovery{
+		shared(samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search", "read")),
+		shared(samplePerUserDiscovery(schemas.MCPAuthModeUser, "bob", "notes", "search", "read")),
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "carol", "notes", "search", "write"),
+		samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "search"),
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "read"),
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "jira", "issues"),
+	} {
+		require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, discovery))
+	}
+
+	counts, err := store.GetMCPPerUserDiscoveryToolCallerCounts(ctx, []string{"notes", "wiki", "missing"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]map[string]int{
+		"notes": {"search": 4, "read": 2, "write": 1},
+		"wiki":  {"read": 1},
+	}, counts, "clients not asked for and clients with no discoveries are left out")
+
+	counts, err = store.GetMCPPerUserDiscoveryToolCallerCounts(ctx, nil)
+	require.NoError(t, err)
+	assert.Empty(t, counts)
+}
+
+// TestPerUserDiscovery_NamesOfEachClient: the union of what user and virtual-key
+// callers' discoveries of a client hold, sorted: tool and prompt names bare,
+// resource and template URIs as listed. Session rows and clients not asked for
+// are left out.
+func TestPerUserDiscovery_NamesOfEachClient(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	alice := samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search", "read")
+	alice.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("review")}
+	alice.Resources = []mcpgo.Resource{mcpgo.NewResource("file:///alice.md", "alice")}
+	alice.ResourceTemplates = []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("notes://{id}", "note")}
+	key := samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "search", "export")
+	key.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("review"), mcpgo.NewPrompt("summarize")}
+	for _, discovery := range []*tables.TableMCPPerUserDiscovery{
+		alice,
+		key,
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "read"),
+	} {
+		require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, discovery))
+	}
+
+	names, err := store.GetMCPPerUserDiscoveryNames(ctx, []string{"notes", "missing"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]MCPPerUserDiscoveryNames{
+		"notes": {
+			Tools:             []string{"export", "read", "search"},
+			Prompts:           []string{"review", "summarize"},
+			Resources:         []string{"file:///alice.md"},
+			ResourceTemplates: []string{"notes://{id}"},
+		},
+	}, names)
+
+	names, err = store.GetMCPPerUserDiscoveryNames(ctx, nil)
+	require.NoError(t, err)
+	assert.Empty(t, names)
+}
+
+// TestMCPClientPendingVerification_OnlyItsSetterClearsIt: for a client read
+// from the record (one with per_user_discovery on), the record is stored at
+// create and read back on every load, an ordinary update leaves it as it is
+// whatever the row it is handed says, and ClearMCPClientPendingVerification
+// clears it together with the OAuth bootstrap stash.
+func TestMCPClientPendingVerification_OnlyItsSetterClearsIt(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:                  "pending-client",
+		Name:                "pending_client",
+		ConnectionType:      schemas.MCPConnectionTypeHTTP,
+		ConnectionString:    schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:            schemas.MCPAuthTypePerUserOauth,
+		PendingOAuthConfig:  &schemas.OAuth2Config{},
+		PendingVerification: true,
+		PerUserDiscovery:    schemas.Ptr(true),
+	}))
+	loaded := func() *schemas.MCPClientConfig {
+		config, err := store.GetMCPClientConfigByID(ctx, "pending-client")
+		require.NoError(t, err)
+		return config
+	}
+	require.True(t, loaded().PendingVerification, "stored at create")
+	// Read back on load, both before and after the deployment has a client
+	// config row, which the load reads through separately.
+	for _, withClientConfig := range []bool{false, true} {
+		if withClientConfig {
+			require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{}))
+		}
+		mcpConfig, err := store.GetMCPConfig(ctx)
+		require.NoError(t, err)
+		require.Len(t, mcpConfig.ClientConfigs, 1)
+		assert.True(t, mcpConfig.ClientConfigs[0].PendingVerification, "read back on load (client config row: %v)", withClientConfig)
+	}
+
+	row, err := store.GetMCPClientByID(ctx, "pending-client")
+	require.NoError(t, err)
+	row.PendingVerification = false
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "pending-client", row))
+	assert.True(t, loaded().PendingVerification, "an update is not the admin step")
+
+	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, "pending-client"))
+	cleared := loaded()
+	assert.False(t, cleared.PendingVerification)
+	assert.Nil(t, cleared.PendingOAuthConfig, "the bootstrap stash goes with the record")
+
+	row, err = store.GetMCPClientByID(ctx, "pending-client")
+	require.NoError(t, err)
+	row.PendingVerification = true
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "pending-client", row))
+	assert.False(t, loaded().PendingVerification, "nor does an update set it again")
+
+	assert.ErrorIs(t, store.ClearMCPClientPendingVerification(ctx, "missing"), ErrNotFound)
+}
+
+// TestMCPClientPendingVerification_ReadFromTheOldSignalsWithoutTheFlag: a client
+// without per_user_discovery is read from the signals its admin step changes,
+// not the record, so a row a node from before the record changed reads right:
+// a step it completed (stash cleared, or tools stored) leaves no client parked,
+// and a client it created pending (stash kept, or no tools) stays parked.
+func TestMCPClientPendingVerification_ReadFromTheOldSignalsWithoutTheFlag(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	create := func(id string, authType schemas.MCPAuthType, perUser bool) {
+		config := &schemas.MCPClientConfig{
+			ID: id, Name: id, ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"), AuthType: authType,
+			PendingVerification: true, PerUserDiscovery: schemas.Ptr(perUser),
+		}
+		switch authType {
+		case schemas.MCPAuthTypePerUserOauth:
+			config.PendingOAuthConfig = &schemas.OAuth2Config{}
+		case schemas.MCPAuthTypePerUserHeaders:
+			config.PerUserHeaderKeys = []string{"x-api-key"}
+		}
+		require.NoError(t, store.CreateMCPClientConfig(ctx, config))
+	}
+	pending := func(id string) bool {
+		config, err := store.GetMCPClientConfigByID(ctx, id)
+		require.NoError(t, err)
+		return config.PendingVerification
+	}
+	setColumns := func(id string, columns map[string]any) {
+		require.NoError(t, store.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", id).Updates(columns).Error)
+	}
+
+	// Completing the sign-in stores the tools it discovered and clears the stash.
+	create("oauth_done_elsewhere", schemas.MCPAuthTypePerUserOauth, false)
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, "oauth_done_elsewhere", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}))
+	setColumns("oauth_done_elsewhere", map[string]any{"pending_oauth_config_json": nil})
+	assert.False(t, pending("oauth_done_elsewhere"), "the stash cleared and tools stored without the record: verified")
+
+	// Registered but holding no admin discovery, as turning per_user_discovery off leaves it.
+	create("oauth_turned_off", schemas.MCPAuthTypePerUserOauth, false)
+	setColumns("oauth_turned_off", map[string]any{"pending_oauth_config_json": nil, "pending_verification": true})
+	assert.True(t, pending("oauth_turned_off"), "no stash and no tools, recorded: pending")
+
+	// The same without the record, as a row from before it can be: read as it always was.
+	create("oauth_without_tools", schemas.MCPAuthTypePerUserOauth, false)
+	setColumns("oauth_without_tools", map[string]any{"pending_oauth_config_json": nil, "pending_verification": false})
+	assert.False(t, pending("oauth_without_tools"), "no stash and no tools, not recorded: verified")
+
+	create("oauth_created_elsewhere", schemas.MCPAuthTypePerUserOauth, false)
+	setColumns("oauth_created_elsewhere", map[string]any{"pending_verification": false})
+	assert.True(t, pending("oauth_created_elsewhere"), "a stash without the record: still pending")
+
+	create("headers_done_elsewhere", schemas.MCPAuthTypePerUserHeaders, false)
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, "headers_done_elsewhere", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}))
+	assert.False(t, pending("headers_done_elsewhere"), "tools stored without the record: verified")
+
+	create("headers_created_elsewhere", schemas.MCPAuthTypePerUserHeaders, false)
+	setColumns("headers_created_elsewhere", map[string]any{"pending_verification": false})
+	assert.True(t, pending("headers_created_elsewhere"), "no tools and no record: still pending")
+
+	// A client with per_user_discovery on keeps no tools, so only the record can tell.
+	create("per_user", schemas.MCPAuthTypePerUserHeaders, true)
+	assert.True(t, pending("per_user"))
+	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, "per_user"))
+	assert.False(t, pending("per_user"), "verified with no tools stored")
+}
+
+// TestUpdateMCPClientConfig_TurningPerUserDiscoveryOnOrOff: turning the flag on
+// deletes the client's admin credential and its stored tools and keeps its
+// callers' credentials; turning it off deletes its callers' discoveries and its
+// stored tools. Either way the record of the admin step is taken from what that
+// step leaves behind, and an update that keeps the flag changes none of it.
+func TestUpdateMCPClientConfig_TurningPerUserDiscoveryOnOrOff(t *testing.T) {
+	ctx := context.Background()
+	alice := "alice"
+	for _, tc := range []struct {
+		name            string
+		authType        schemas.MCPAuthType
+		from, to        bool
+		tools, record   bool
+		wantCredentials []string
+		wantDiscoveries []string
+		wantPending     bool
+		wantTools       bool
+	}{
+		{
+			name: "on, a verified per_user_oauth client", authType: schemas.MCPAuthTypePerUserOauth, from: false, to: true, tools: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			// Verified by a node that does not keep the record, which is still set.
+			name: "on, a per_user_headers client verified elsewhere", authType: schemas.MCPAuthTypePerUserHeaders, from: false, to: true, tools: true, record: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			name: "on, a client still pending", authType: schemas.MCPAuthTypePerUserHeaders, from: false, to: true, record: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"}, wantPending: true,
+		},
+		{
+			// One from before the record, with no tool list: verified, as it always read.
+			name: "on, a per_user_oauth client with no tools and no record", authType: schemas.MCPAuthTypePerUserOauth, from: false, to: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			name: "on, a per_user_oauth client turned off and not verified since", authType: schemas.MCPAuthTypePerUserOauth, from: false, to: true, record: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"}, wantPending: true,
+		},
+		{
+			name: "off, a per_user_headers client goes back to its admin step", authType: schemas.MCPAuthTypePerUserHeaders, from: true, to: false,
+			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"}, wantPending: true,
+		},
+		{
+			name: "off, a per_user_oauth client goes back to its admin step", authType: schemas.MCPAuthTypePerUserOauth, from: true, to: false,
+			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"}, wantPending: true,
+		},
+		{
+			name: "kept, an ordinary edit", authType: schemas.MCPAuthTypePerUserHeaders, from: false, to: false, tools: true,
+			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"}, wantTools: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := setupMCPSessionsTestStore(t)
+			require.NoError(t, store.DB().AutoMigrate(&tables.TableMCPPerUserDiscovery{}))
+			for _, client := range []*schemas.MCPClientConfig{
+				{ID: "notes", Name: "notes", AuthType: tc.authType, PerUserDiscovery: schemas.Ptr(tc.from), PendingVerification: tc.record},
+				{ID: "wiki", Name: "wiki", AuthType: schemas.MCPAuthTypePerUserOauth, PerUserDiscovery: schemas.Ptr(true)},
+			} {
+				client.ConnectionType = schemas.MCPConnectionTypeHTTP
+				client.ConnectionString = schemas.NewSecretVar("https://example.invalid/mcp")
+				if client.AuthType == schemas.MCPAuthTypePerUserHeaders {
+					client.PerUserHeaderKeys = []string{"x-api-key"}
+				}
+				require.NoError(t, store.CreateMCPClientConfig(ctx, client))
+			}
+			if tc.tools {
+				tools := map[string]schemas.ChatTool{"notes-search": {
+					Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "notes-search"},
+					Annotations: &schemas.MCPToolAnnotations{Title: "Search"},
+				}}
+				require.NoError(t, store.UpdateMCPClientDiscovery(ctx, "notes", &schemas.MCPDiscovery{
+					Tools: tools, Instructions: "Rules.",
+					Resources:         []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
+					ResourceTemplates: []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("notes://{id}", "note")},
+					Prompts:           []mcpgo.Prompt{mcpgo.NewPrompt("notes-review")},
+				}))
+			}
+			for _, token := range []*tables.TableMCPOauthToken{
+				{ID: "tok-admin", MCPClientID: "notes", AuthMode: "admin", Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-notes"},
+				{ID: "tok-alice", MCPClientID: "notes", UserID: &alice, AuthMode: "user", Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-notes"},
+			} {
+				require.NoError(t, store.DB().WithContext(ctx).Create(token).Error)
+			}
+			for _, cred := range []*tables.TableMCPPerUserHeaderCredential{
+				{ID: "cred-admin", MCPClientID: "notes", AuthMode: "admin", Status: "active", HeadersJSON: "{}"},
+				{ID: "cred-alice", MCPClientID: "notes", UserID: &alice, AuthMode: "user", Status: "active", HeadersJSON: "{}"},
+			} {
+				require.NoError(t, store.DB().WithContext(ctx).Create(cred).Error)
+			}
+			require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search")))
+			require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "read")))
+
+			// The row as read, tools included, the way an edit hands it back.
+			row, err := store.GetMCPClientByID(ctx, "notes")
+			require.NoError(t, err)
+			row.PerUserDiscovery = schemas.Ptr(tc.to)
+			require.NoError(t, store.UpdateMCPClientConfig(ctx, "notes", row))
+
+			var tokens []tables.TableMCPOauthToken
+			require.NoError(t, store.DB().Find(&tokens).Error)
+			var creds []tables.TableMCPPerUserHeaderCredential
+			require.NoError(t, store.DB().Find(&creds).Error)
+			credentials := make([]string, 0, len(tokens)+len(creds))
+			for _, token := range tokens {
+				credentials = append(credentials, token.ID)
+			}
+			for _, cred := range creds {
+				credentials = append(credentials, cred.ID)
+			}
+			assert.ElementsMatch(t, tc.wantCredentials, credentials)
+			assert.ElementsMatch(t, tc.wantDiscoveries, storedDiscoveries(t, store))
+			config, err := store.GetMCPClientConfigByID(ctx, "notes")
+			require.NoError(t, err)
+			assert.Equal(t, schemas.Ptr(tc.to), config.PerUserDiscovery)
+			assert.Equal(t, tc.wantPending, config.PendingVerification, "record of the admin step")
+			assert.Equal(t, tc.wantTools, config.DiscoveredTools != nil, "stored tools")
+			// The resources, templates and prompts came from the same discovery and go with it.
+			assert.Equal(t, tc.wantTools, config.DiscoveredResources != nil, "stored resources")
+			assert.Equal(t, tc.wantTools, config.DiscoveredResourceTemplates != nil, "stored resource templates")
+			assert.Equal(t, tc.wantTools, config.DiscoveredPrompts != nil, "stored prompts")
+			if !tc.wantTools {
+				assert.Empty(t, config.DiscoveredInstructions)
+				var details string
+				require.NoError(t, store.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", "notes").Pluck("discovered_tool_details_json", &details).Error)
+				assert.Empty(t, details, "stored tool details")
+			}
+		})
+	}
+}
+
+// TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset: the update writes
+// per_user_discovery only when the row it is handed sets it, the same rule as
+// needs_session_stickiness, so a row that leaves it unset (a config.json
+// entry that omits it, a caller that does not carry it) keeps the stored value.
+func TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:                "pud-client",
+		Name:              "pud_client",
+		ConnectionType:    schemas.MCPConnectionTypeHTTP,
+		ConnectionString:  schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:          schemas.MCPAuthTypePerUserHeaders,
+		PerUserHeaderKeys: []string{"x-api-key"},
+		PerUserDiscovery:  schemas.Ptr(true),
+	}))
+	stored := func() *bool {
+		row, err := store.GetMCPClientByID(ctx, "pud-client")
+		require.NoError(t, err)
+		return row.PerUserDiscovery
+	}
+	require.Equal(t, schemas.Ptr(true), stored(), "fixture check: created with the flag on")
+
+	row, err := store.GetMCPClientByID(ctx, "pud-client")
+	require.NoError(t, err)
+	row.PerUserDiscovery = nil
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "pud-client", row))
+	assert.Equal(t, schemas.Ptr(true), stored(), "an update that leaves the flag unset keeps the stored value")
+
+	row.PerUserDiscovery = schemas.Ptr(false)
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "pud-client", row))
+	assert.Equal(t, schemas.Ptr(false), stored(), "an update can turn the flag off")
+}
+
+// TestUpdateMCPClientConfigHash pins that the hash upgrade writes config_hash alone, and only from the
+// expected old value, so a concurrent edit or an earlier upgrade by another node is never overwritten.
+func TestUpdateMCPClientConfigHash(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "hash-client",
+		Name:             "hash_client",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ToolsToExecute:   []string{"*"},
+		ConfigHash:       "legacy",
+	}))
+	// Another node edits the client after this node read it.
+	edited, err := store.GetMCPClientByID(ctx, "hash-client")
+	require.NoError(t, err)
+	edited.ToolsToExecute = []string{"echo"}
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "hash-client", edited))
+
+	moved, err := store.UpdateMCPClientConfigHash(ctx, "hash-client", "stale", "current")
+	require.NoError(t, err)
+	assert.False(t, moved, "a hash that is no longer the expected old value is left alone")
+
+	moved, err = store.UpdateMCPClientConfigHash(ctx, "hash-client", "legacy", "current")
+	require.NoError(t, err)
+	assert.True(t, moved)
+	row, err := store.GetMCPClientByID(ctx, "hash-client")
+	require.NoError(t, err)
+	assert.Equal(t, "current", row.ConfigHash)
+	assert.Equal(t, []string{"echo"}, []string(row.ToolsToExecute), "the concurrent edit survives the hash upgrade")
+}
+
+// TestMCPClientServerTypeOnSlugRoundTrip pins that the slug override is stored as given, including
+// clearing it back to inherit, unlike the keep-when-unset flags above.
+func TestMCPClientServerTypeOnSlugRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "scm-client",
+		Name:             "scm_client",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		IsCodeModeClient: true,
+		ServerTypeOnSlug: schemas.MCPServerTypeOnSlugDisabled,
+	}))
+	stored := func() schemas.MCPServerTypeOnSlug {
+		row, err := store.GetMCPClientByID(ctx, "scm-client")
+		require.NoError(t, err)
+		return row.ServerTypeOnSlug
+	}
+	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, stored(), "created with the override")
+
+	config, err := store.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	var loaded *schemas.MCPClientConfig
+	for _, client := range config.ClientConfigs {
+		if client.ID == "scm-client" {
+			loaded = client
+		}
+	}
+	require.NotNil(t, loaded)
+	assert.Equal(t, schemas.MCPServerTypeOnSlugDisabled, loaded.ServerTypeOnSlug, "the loaded client config carries the override")
+
+	row, err := store.GetMCPClientByID(ctx, "scm-client")
+	require.NoError(t, err)
+	row.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugEnabled
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "scm-client", row))
+	assert.Equal(t, schemas.MCPServerTypeOnSlugEnabled, stored(), "an update can change the override")
+
+	row.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugInherit
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, "scm-client", row))
+	assert.Equal(t, schemas.MCPServerTypeOnSlugInherit, stored(), "an update can clear the override back to inherit")
+}
+
+// Saving by target updates the existing row in place: same ID and created_at,
+// new patches. Delete reports a missing row as ErrNotFound.
+func TestDatasheetOverride_UpsertByTargetAndDelete(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+
+	first := &tables.TableDatasheetOverride{
+		ID: "first", Provider: "openai", Model: "gpt-4o", Mode: "chat",
+		PricingPatch: json.RawMessage(`{"context_length":64000}`),
+	}
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, first))
+	other := &tables.TableDatasheetOverride{
+		ID: "other", Provider: "openai", Model: "gpt-4o", Mode: "responses",
+		ParamsPatch: json.RawMessage(`{"supports_mcp":true}`),
+	}
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, other))
+
+	again := &tables.TableDatasheetOverride{
+		ID: "ignored-new-id", Provider: "openai", Model: "gpt-4o", Mode: "chat",
+		PricingPatch: json.RawMessage(`{"context_length":32000}`),
+		Baseline:     json.RawMessage(`{"pricing":{"context_length":128000}}`),
+	}
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, again))
+	assert.Equal(t, "first", again.ID, "a save for an existing target keeps that row's ID")
+
+	rows, err := store.GetDatasheetOverrides(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	got, err := store.GetDatasheetOverrideByID(ctx, "first")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"context_length":32000}`, string(got.PricingPatch))
+	assert.JSONEq(t, `{"pricing":{"context_length":128000}}`, string(got.Baseline))
+	assert.Nil(t, got.ParamsPatch)
+	assert.Equal(t, first.CreatedAt.Unix(), got.CreatedAt.Unix())
+
+	require.NoError(t, store.DeleteDatasheetOverride(ctx, "first"))
+	require.ErrorIs(t, store.DeleteDatasheetOverride(ctx, "first"), ErrNotFound)
+	_, err = store.GetDatasheetOverrideByID(ctx, "first")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// Two overrides whose pricing patches target the same folded pricing row
+// cannot both be stored, whichever node writes them; overrides without a claim
+// never conflict, and re-saving the claim holder is not a conflict.
+func TestDatasheetOverride_PricingClaimIsUnique(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	claim := "m|bedrock|chat"
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "bedrock", Provider: "bedrock", Model: "m", Mode: "chat", PricingClaim: &claim,
+		PricingPatch: json.RawMessage(`{"input_cost_per_token":5}`),
+	}))
+	err := store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "mantle", Provider: "bedrock_mantle", Model: "m", Mode: "chat", PricingClaim: &claim,
+		PricingPatch: json.RawMessage(`{"input_cost_per_token":6}`),
+	})
+	require.ErrorIs(t, err, ErrDatasheetPricingClaimTaken)
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "mantle-params", Provider: "bedrock_mantle", Model: "m", Mode: "chat",
+		ParamsPatch: json.RawMessage(`{"max_output_tokens":200}`),
+	}), "an override without a pricing claim does not conflict")
+	require.NoError(t, store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "bedrock", Provider: "bedrock", Model: "m", Mode: "chat", PricingClaim: &claim,
+		PricingPatch: json.RawMessage(`{"input_cost_per_token":7}`),
+	}), "re-saving the claim holder is not a conflict")
+
+	rows, err := store.GetDatasheetOverrides(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	for _, r := range rows {
+		if r.ID == "bedrock" {
+			require.NotNil(t, r.PricingClaim)
+			assert.Equal(t, claim, *r.PricingClaim)
+		} else {
+			assert.Nil(t, r.PricingClaim)
+		}
+	}
+}
+
+// A context cancelled between the insert and the ID readback must not leave
+// the row saved behind an error: the caller would skip its cache refresh and
+// peer notification for a write that did land.
+func TestDatasheetOverride_UpsertCancelledAfterInsertSavesNothing(t *testing.T) {
+	// File-backed: a cancelled tx can discard its connection, and a fresh
+	// :memory: connection would be an empty database.
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/datasheet.db"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableDatasheetOverride{}))
+	store := &RDBConfigStore{}
+	store.db.Store(db)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, store.DB().Callback().Create().After("gorm:create").Register("test:cancel_after_datasheet_insert", func(db *gorm.DB) {
+		if db.Statement.Table == (tables.TableDatasheetOverride{}).TableName() {
+			cancel()
+		}
+	}))
+
+	err = store.UpsertDatasheetOverride(ctx, &tables.TableDatasheetOverride{
+		ID: "cancelled", Provider: "openai", Model: "gpt-4o", Mode: "chat",
+		PricingPatch: json.RawMessage(`{"context_length":64000}`),
+	})
+	require.Error(t, err, "the readback runs on a cancelled context")
+
+	rows, err := store.GetDatasheetOverrides(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, rows, "an upsert that returns an error must not have committed the row")
+}
+
+// TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite pins that a budget a business unit
+// holds stays the unit's when a write names no owner, as an edit of the budget's limits alone does.
+// Saving that row as given would null the owner, and the unit would silently stop being capped. A
+// write that names an owner is an ownership change and wins.
+func TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	buID := "bu-1"
+	require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 100, ResetDuration: "1M", BusinessUnitID: &buID}))
+
+	// The file's edit: a new limit, no owner named.
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 200, ResetDuration: "1M"}))
+	edited, err := store.GetBudget(ctx, "bud-bu")
+	require.NoError(t, err)
+	assert.Equal(t, 200.0, edited.MaxLimit)
+	require.NotNil(t, edited.BusinessUnitID, "an ownerless write must not detach the budget from its business unit")
+	assert.Equal(t, buID, *edited.BusinessUnitID)
+
+	// Another unit named outright takes it.
+	other := "bu-2"
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{ID: "bud-bu", MaxLimit: 200, ResetDuration: "1M", BusinessUnitID: &other}))
+	moved, err := store.GetBudget(ctx, "bud-bu")
+	require.NoError(t, err)
+	require.NotNil(t, moved.BusinessUnitID)
+	assert.Equal(t, other, *moved.BusinessUnitID)
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -50,12 +51,14 @@ func TestProviderConfig_Redacted_NestedSecretVars(t *testing.T) {
 						AzureAliasCfg:   &schemas.AzureAliasCfg{Endpoint: secret()},
 						VertexAliasCfg:  &schemas.VertexAliasCfg{ProjectNumber: secret()},
 						BedrockAliasCfg: &schemas.BedrockAliasCfg{InferenceProfileARN: secret()},
+						BasetenAliasCfg: &schemas.BasetenAliasCfg{DeploymentURL: secret()},
 					},
 					"legacy-project": {ModelID: "legacy-model", VertexAliasCfg: &schemas.VertexAliasCfg{ProjectID: secret()}},
 					"simple":         {ModelID: "simple-model"},
 				},
 				BedrockKeyConfig:       &schemas.BedrockKeyConfig{ProjectID: secret(), Endpoints: endpoints()},
 				BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{ProjectID: secret(), Endpoints: endpoints()},
+				SageMakerKeyConfig:     &schemas.SageMakerKeyConfig{Region: secret(), Endpoints: &schemas.SageMakerEndpoints{Runtime: secret()}},
 			}}}
 			fields := func(key schemas.Key) map[string]*schemas.SecretVar {
 				alias := key.Aliases["rich"]
@@ -63,9 +66,12 @@ func TestProviderConfig_Redacted_NestedSecretVars(t *testing.T) {
 					"alias.region": alias.Region, "alias.project_id": alias.ProjectID,
 					"alias.endpoint": alias.AzureAliasCfg.Endpoint, "alias.project_number": alias.VertexAliasCfg.ProjectNumber,
 					"alias.inference_profile_arn": alias.BedrockAliasCfg.InferenceProfileARN,
+					"alias.deployment_url":        alias.BasetenAliasCfg.DeploymentURL,
 					"alias.legacy_project_id":     key.Aliases["legacy-project"].VertexAliasCfg.ProjectID,
 					"bedrock.project_id":          key.BedrockKeyConfig.ProjectID,
 					"mantle.project_id":           key.BedrockMantleKeyConfig.ProjectID,
+					"sagemaker.region":            key.SageMakerKeyConfig.Region,
+					"sagemaker.runtime":           key.SageMakerKeyConfig.Endpoints.Runtime,
 				}
 				for name, ep := range map[string]*schemas.BedrockEndpoints{
 					"bedrock": key.BedrockKeyConfig.Endpoints, "mantle": key.BedrockMantleKeyConfig.Endpoints,
@@ -195,6 +201,48 @@ func TestProviderConfig_Redacted_OAuthExtraParamsMaskTheLiteralString(t *testing
 	assert.Equal(t, "env."+strings.Repeat("*", 24)+"tion", got["resource"], "the literal string is masked, not the variable it names")
 }
 
+// TestProviderConfig_Redacted_AnthropicKeyConfig pins the workload identity redaction: literal
+// identifiers and the token file path stay readable, an env-backed identifier is masked, and the
+// identity token is always masked, without touching or aliasing the live config.
+func TestProviderConfig_Redacted_AnthropicKeyConfig(t *testing.T) {
+	t.Setenv("REDACTION_TEST_ANTHROPIC_SVAC", "svac_from_environment_0123")
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
+	cfg := &ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:   "k1",
+			Name: "anthropic-wif",
+			AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
+				WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+					FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+					OrganizationID:   *schemas.NewSecretVar("8c1d0f5e-0000-4000-8000-000000000001"),
+					ServiceAccountID: *schemas.NewSecretVar("env.REDACTION_TEST_ANTHROPIC_SVAC"),
+					WorkspaceID:      schemas.NewSecretVar("wrkspc_01ghi"),
+					IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar(jwt)},
+				},
+			},
+		}},
+	}
+
+	redacted := cfg.Redacted()
+	require.Len(t, redacted.Keys, 1)
+	require.True(t, redacted.Keys[0].AnthropicKeyConfig.HasWorkloadIdentity())
+	got := redacted.Keys[0].AnthropicKeyConfig.WorkloadIdentity
+	assert.Equal(t, "fdrl_01abc", got.FederationRuleID.GetValue())
+	assert.Equal(t, "8c1d0f5e-0000-4000-8000-000000000001", got.OrganizationID.GetValue())
+	assert.Equal(t, "wrkspc_01ghi", got.WorkspaceID.GetValue())
+	assert.Equal(t, schemas.IdentitySourceInline, got.IdentitySource.Type)
+	assert.NotContains(t, got.ServiceAccountID.GetValue(), "from_environment", "an env-backed identifier must be masked")
+	assert.Equal(t, "env.REDACTION_TEST_ANTHROPIC_SVAC", got.ServiceAccountID.GetRawRef(), "the reference stays visible")
+	assert.NotEqual(t, jwt, got.IdentitySource.Token.GetValue())
+	assert.True(t, got.IdentitySource.Token.IsMaskedPlaceholder(), "the token mask must be recognised so an update restores the stored token")
+
+	live := cfg.Keys[0].AnthropicKeyConfig.WorkloadIdentity
+	assert.Equal(t, jwt, live.IdentitySource.Token.GetValue(), "the original is untouched")
+	assert.NotSame(t, live.IdentitySource, got.IdentitySource)
+	assert.NotSame(t, live, got)
+	assert.NotSame(t, live.WorkspaceID, got.WorkspaceID)
+}
+
 func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	t.Setenv("MY_AZURE_ENDPOINT_SECRET", "https://secret-resource.openai.azure.com")
 
@@ -269,6 +317,18 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 	assert.Equal(t, "https://foo.openai.azure.com", out.Value,
 		"plain Endpoint was incorrectly redacted")
 	assert.Equal(t, out.SecretType, string(schemas.SecretTypePlainText))
+}
+
+// The redacted config is what the providers API serves and what the UI edits, and it rebuilds each
+// key field by field, so a key's content-logging decision must be carried over as is (nil stays
+// inherit, not false).
+func TestProviderConfig_Redacted_KeepsContentLoggingDecision(t *testing.T) {
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		config := ProviderConfig{Keys: []schemas.Key{{ID: "k1", Name: "test", Value: *schemas.NewSecretVar("sk-test"), DisableContentLogging: decision}}}
+		redacted := config.Redacted()
+		require.Len(t, redacted.Keys, 1)
+		assert.Equal(t, decision, redacted.Keys[0].DisableContentLogging)
+	}
 }
 
 // TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex verifies that
@@ -434,6 +494,9 @@ func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
 				SecretKey: schemas.SecretVar{Val: ""},
 				Region:    schemas.NewSecretVar("us-east-1"),
 			},
+			SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+				Region: schemas.NewSecretVar("us-west-2"),
+			},
 			VLLMKeyConfig: &schemas.VLLMKeyConfig{
 				URL: *schemas.NewSecretVar("http://vllm.internal.example.com:8000"),
 			},
@@ -457,6 +520,7 @@ func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
 	assert.Equal(t, "us-central1", key.VertexKeyConfig.Region.GetValue())
 	assert.Equal(t, "us-east-1", key.BedrockKeyConfig.Region.GetValue())
 	assert.Equal(t, "us-east-1", key.BedrockMantleKeyConfig.Region.GetValue())
+	assert.Equal(t, "us-west-2", key.SageMakerKeyConfig.Region.GetValue())
 	assert.Equal(t, "http://vllm.internal.example.com:8000", key.VLLMKeyConfig.URL.GetValue())
 	assert.Equal(t, "http://ollama.internal.example.com:11434", key.OllamaKeyConfig.URL.GetValue())
 	assert.Equal(t, "http://sgl.internal.example.com:30000", key.SGLKeyConfig.URL.GetValue())
@@ -467,6 +531,34 @@ func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
 	// caller edit the running configuration.
 	assert.NotSame(t, config.Keys[0].BedrockKeyConfig.Region, key.BedrockKeyConfig.Region)
 	assert.NotSame(t, config.Keys[0].BedrockMantleKeyConfig.Region, key.BedrockMantleKeyConfig.Region)
+	assert.NotSame(t, config.Keys[0].SageMakerKeyConfig.Region, key.SageMakerKeyConfig.Region)
+}
+
+// TestProviderConfig_Redacted_SageMakerCredentials pins that SageMaker's AWS credentials are
+// masked even as literals, while the non-secret region reads back verbatim.
+func TestProviderConfig_Redacted_SageMakerCredentials(t *testing.T) {
+	config := ProviderConfig{Keys: []schemas.Key{{
+		ID: "sm", Name: "sm",
+		SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+			AccessKey:       *schemas.NewSecretVar("AKIAEXAMPLESAGEMAKER1"),
+			SecretKey:       *schemas.NewSecretVar("wJalrXUtnFEMI-sagemaker-secret-example"),
+			SessionToken:    schemas.NewSecretVar("session-token-sagemaker-example"),
+			Region:          schemas.NewSecretVar("us-east-1"),
+			RoleARN:         schemas.NewSecretVar("arn:aws:iam::123456789012:role/sagemaker-example"),
+			ExternalID:      schemas.NewSecretVar("external-id-sagemaker-example"),
+			RoleSessionName: schemas.NewSecretVar("session-name-sagemaker-example"),
+		},
+	}}}
+
+	redacted := config.Redacted()
+	data, err := json.Marshal(redacted)
+	require.NoError(t, err)
+	for _, secret := range []string{"AKIAEXAMPLESAGEMAKER1", "wJalrXUtnFEMI-sagemaker-secret-example", "session-token-sagemaker-example",
+		"arn:aws:iam::123456789012:role/sagemaker-example", "external-id-sagemaker-example", "session-name-sagemaker-example"} {
+		assert.NotContains(t, string(data), secret)
+	}
+	assert.Equal(t, "us-east-1", redacted.Keys[0].SageMakerKeyConfig.Region.GetValue())
+	assert.Equal(t, "AKIAEXAMPLESAGEMAKER1", config.Keys[0].SageMakerKeyConfig.AccessKey.GetValue(), "redaction must not modify live config")
 }
 
 // TestProviderConfig_Redacted_MasksSecretBackedIdentifiers is the other half of
@@ -537,4 +629,76 @@ func TestProviderConfig_InjectedToolsSurvivesRedactionAndHash(t *testing.T) {
 	empty, err := (&ProviderConfig{InjectedTools: []schemas.InjectedTool{}}).GenerateConfigHash("openai")
 	require.NoError(t, err)
 	assert.Equal(t, without, empty, "an empty list is the same config as none")
+}
+
+// TestProviderConfig_PassthroughSurvivesRedactionAndHash covers Redacted and the config
+// hash. A nil policy writes nothing to the hash, so existing providers keep their hash;
+// an empty allowlist hashes differently because it forwards nothing.
+func TestProviderConfig_PassthroughSurvivesRedactionAndHash(t *testing.T) {
+	cfg := ProviderConfig{Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+		{Methods: []string{"POST"}, Path: "/v1/chat/completions"},
+	}}}
+	assert.Equal(t, cfg.Passthrough, cfg.Redacted().Passthrough)
+
+	withPolicy, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	without, err := (&ProviderConfig{}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, without, withPolicy)
+
+	cfg.Passthrough.AllowedRoutes = append(cfg.Passthrough.AllowedRoutes, schemas.PassthroughRouteRule{Path: "/v1/files/**"})
+	widened, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, withPolicy, widened)
+
+	off, err := (&ProviderConfig{Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{}}}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, without, off, "an empty allowlist is a different config from no policy")
+}
+
+// TestClientConfig_Redacted_ClientGatewayTelemetry pins that the config API never
+// returns a client gateway telemetry credential: header values and an env-backed
+// endpoint are fully masked with their references kept, a plain endpoint URL
+// stays readable, and the live configuration is not modified.
+func TestClientConfig_Redacted_ClientGatewayTelemetry(t *testing.T) {
+	const canary = "synthetic-otel-token-canary-0123456789"
+	t.Setenv("BIFROST_TEST_OTEL_TOKEN", canary)
+	t.Setenv("BIFROST_TEST_OTEL_ENDPOINT", "https://collector.internal.example.com")
+	live := &ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+		IssuerURL: schemas.NewSecretVar("https://bifrost.example.com"),
+		Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{
+			Enabled: true,
+			Telemetry: &tables.ClientGatewayTelemetryConfig{
+				Enabled: true,
+				Destinations: []tables.ClientGatewayTelemetryDestination{
+					{Endpoint: schemas.NewSecretVar("https://otel.example.com"), Headers: map[string]*schemas.SecretVar{"authorization": schemas.NewSecretVar("env.BIFROST_TEST_OTEL_TOKEN")}},
+					{Endpoint: schemas.NewSecretVar("env.BIFROST_TEST_OTEL_ENDPOINT")},
+				},
+			},
+		}},
+	}}
+
+	redacted := live.Redacted()
+	out, err := json.Marshal(redacted)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), canary, "a header credential leaked")
+	assert.NotContains(t, string(out), "collector.internal.example.com", "an env-backed endpoint leaked")
+	assert.Contains(t, string(out), "https://otel.example.com", "a plain endpoint URL stays readable")
+	assert.Contains(t, string(out), "env.BIFROST_TEST_OTEL_TOKEN", "the header reference stays visible")
+
+	liveTelemetry := live.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry
+	assert.Equal(t, canary, liveTelemetry.Destinations[0].Headers["authorization"].GetValue(), "redaction modified the live config")
+	assert.Equal(t, "https://collector.internal.example.com", liveTelemetry.Destinations[1].Endpoint.GetValue())
+
+	// A redacted header read back from the dashboard resolves from its reference again.
+	var roundTrip tables.ClientGatewayTelemetryDestination
+	require.NoError(t, json.Unmarshal(mustMarshal(t, redacted.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry.Destinations[0]), &roundTrip))
+	assert.Equal(t, canary, roundTrip.Headers["authorization"].GetValue())
+}
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
 }

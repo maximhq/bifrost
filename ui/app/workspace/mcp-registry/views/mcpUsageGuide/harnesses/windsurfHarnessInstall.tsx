@@ -1,9 +1,12 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { buildWindsurfConfig } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { HarnessInstallProps } from "../types";
 import { getRegistrationLabel, getUserHomePrefix } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
+/** Install panel for Windsurf: the generated config or command for the selected MCP servers. */
 export function WindsurfHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
@@ -13,6 +16,7 @@ export function WindsurfHarnessInstall({
 	selectedServers,
 	serverScope,
 }: HarnessInstallProps) {
+	const { t } = useTranslation("mcp");
 	const configPath = `${getUserHomePrefix(platform)}/.codeium/windsurf/mcp_config.json`;
 
 	const config = useMemo(
@@ -30,11 +34,11 @@ export function WindsurfHarnessInstall({
 			canCopyCommand={canGenerateCommand}
 			command={config}
 			controls={null}
-			copySuccessMessage="Config copied"
+			copySuccessMessage={t("common.configCopied")}
 			emptyMessage={emptyMessage}
 			harnessName="Windsurf (Devin)"
-			label="Config"
-			logoSrc="/images/harness/windsurf.svg"
+			label={t("common.config")}
+			logoSrc={withBasePath("/images/harness/windsurf.svg")}
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>
 	);

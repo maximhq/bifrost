@@ -1,15 +1,19 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"mime"
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -192,8 +196,11 @@ func urlSourceScheme(rawURL string) string {
 // text/plain (or "txt") file_type means file_data is plain text, and anything else without a
 // data: prefix is base64. A data URL is left as it is, and so is a payload that is not valid
 // base64, since there is no basis to guess what it is.
+//
+// An empty text/plain payload is still a document (Anthropic accepts a text source with
+// data ""), so it becomes the empty data URL rather than a bare "" no OpenAI surface parses.
 func fileDataAsDataURL(fileData string, fileType *string) string {
-	if fileData == "" || strings.HasPrefix(fileData, "data:") {
+	if strings.HasPrefix(fileData, "data:") {
 		return fileData
 	}
 
@@ -203,6 +210,9 @@ func fileDataAsDataURL(fileData string, fileType *string) string {
 	}
 	if mediaType == "text/plain" {
 		return "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte(fileData))
+	}
+	if fileData == "" {
+		return fileData
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(fileData)
@@ -254,8 +264,241 @@ func sniffFileMediaType(data []byte) string {
 	return detected
 }
 
+// isEmptyInlineTextFile reports whether file data is an empty text document: file_data ""
+// with a text/plain file_type, or the empty text data URL. Anthropic accepts such a document,
+// but OpenAI-shaped surfaces reject "data:text/plain;base64," ("missing mime type or base64
+// content"), so the marshalers drop it when the message has anything else to send. Callers
+// check the block carries no file_id or file_url first, so a reference is never dropped.
+func isEmptyInlineTextFile(fileData, fileType *string) bool {
+	if fileData == nil {
+		return false
+	}
+	if *fileData == "data:text/plain;base64," {
+		return true
+	}
+	return *fileData == "" && fileType != nil && normalizeFileType(*fileType) == "text/plain"
+}
+
+// isEmptyChatTextFile reports whether a chat file block is an empty text document with no
+// file reference beside it.
+func isEmptyChatTextFile(f *schemas.ChatInputFile) bool {
+	return f != nil && (f.FileID == nil || *f.FileID == "") && (f.FileURL == nil || *f.FileURL == "") &&
+		!fileContentPresent(f.FileContent) && isEmptyInlineTextFile(f.FileData, f.FileType)
+}
+
+// isEmptyResponsesTextFile is isEmptyChatTextFile for Responses blocks, which carry file_id on
+// the block rather than inside the file object.
+func isEmptyResponsesTextFile(block *schemas.ResponsesMessageContentBlock) bool {
+	f := block.ResponsesInputMessageContentBlockFile
+	return f != nil && (block.FileID == nil || *block.FileID == "") && (f.FileURL == nil || *f.FileURL == "") &&
+		!fileContentPresent(f.FileContent) && isEmptyInlineTextFile(f.FileData, f.FileType)
+}
+
+// chatEmptyTextFilesToDrop reports whether blocks hold an empty text document and something
+// else, i.e. whether the document can be dropped without leaving the message empty.
+func chatEmptyTextFilesToDrop(blocks []schemas.ChatContentBlock) bool {
+	sawEmpty, sawOther := false, false
+	for _, block := range blocks {
+		if isEmptyChatTextFile(block.File) {
+			sawEmpty = true
+		} else {
+			sawOther = true
+		}
+	}
+	return sawEmpty && sawOther
+}
+
+// responsesEmptyTextFilesToDrop is chatEmptyTextFilesToDrop for Responses blocks. rendered_content
+// does not count as something else: the marshaler always removes it.
+func responsesEmptyTextFilesToDrop(blocks []schemas.ResponsesMessageContentBlock) bool {
+	sawEmpty, sawOther := false, false
+	for i := range blocks {
+		block := &blocks[i]
+		if isEmptyResponsesTextFile(block) {
+			sawEmpty = true
+		} else if block.Type != schemas.ResponsesOutputMessageContentTypeRenderedContent {
+			sawOther = true
+		}
+	}
+	return sawEmpty && sawOther
+}
+
 // fileDataNeedsDataURL reports whether file_data is set without a data: prefix, so the
 // marshal gates copy the block even when the caller sent no file_type to strip.
 func fileDataNeedsDataURL(fileData *string) bool {
 	return fileData != nil && *fileData != "" && !strings.HasPrefix(*fileData, "data:")
+}
+
+// fileNeedsWireRewrite reports whether a file block carries something openAIWireFile has to
+// change before it can go out: a file_type to fold into file_data, bare file_data, or inline
+// file_data with no filename beside it.
+func fileNeedsWireRewrite(fileData, filename, fileType *string) bool {
+	return fileType != nil || fileDataNeedsDataURL(fileData) ||
+		(fileData != nil && *fileData != "" && (filename == nil || *filename == ""))
+}
+
+// openAIWireFile returns file_data as a data URL and a filename to go with it. OpenAI rejects
+// inline file_data without a filename, and validates the filename's extension against the
+// payload, so a missing name is synthesized from the data URL's media type. Ingress converters
+// leave a missing name missing, so a document routed to a provider without the requirement
+// (Anthropic, where it would surface as a title) keeps the shape the client sent.
+func openAIWireFile(fileData, filename, fileType *string) (*string, *string) {
+	if fileData == nil {
+		return nil, filename
+	}
+	data := fileDataAsDataURL(*fileData, fileType)
+	if data != "" && (filename == nil || *filename == "") {
+		filename = schemas.Ptr(defaultInlineFilename(data, fileType))
+	}
+	return &data, filename
+}
+
+// officeDocumentExtensions maps Office media types, whose subtypes are not usable extensions,
+// onto the extensions OpenAI accepts for file inputs.
+var officeDocumentExtensions = map[string]string{
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document":   ".docx",
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         ".xlsx",
+	"application/msword":            ".doc",
+	"application/vnd.ms-powerpoint": ".ppt",
+	"application/vnd.ms-excel":      ".xls",
+}
+
+// defaultInlineFilename names an inline file after its media type: the data URL's when it has
+// one, otherwise the caller's file_type, otherwise PDF, which is what the native converters
+// assume for an untyped document.
+func defaultInlineFilename(fileData string, fileType *string) string {
+	mediaType := ""
+	if rest, ok := strings.CutPrefix(fileData, "data:"); ok {
+		mediaType, _, _ = strings.Cut(rest, ",")
+		mediaType, _, _ = strings.Cut(mediaType, ";")
+		mediaType = normalizeFileType(mediaType)
+	}
+	if mediaType == "" && fileType != nil {
+		mediaType = normalizeFileType(*fileType)
+	}
+	if ext, ok := mediaTypeExtensions[mediaType]; ok {
+		return "document" + ext
+	}
+	if ext, ok := officeDocumentExtensions[mediaType]; ok {
+		return "document" + ext
+	}
+	// "application/vnd.ms-excel+xml" -> ".xml", "image/png" -> ".png".
+	if _, subtype, found := strings.Cut(mediaType, "/"); found && subtype != "" {
+		if _, suffix, hasSuffix := strings.Cut(subtype, "+"); hasSuffix && suffix != "" {
+			subtype = suffix
+		}
+		return "document." + subtype
+	}
+	return "document.pdf"
+}
+
+// fileContentText joins custom document content (file_content: a string or an array of text
+// blocks, the Anthropic/Bedrock citation-document shape) into plain text, one chunk per line.
+// It reports false for anything else, so the caller drops the field instead of guessing.
+func fileContentText(raw json.RawMessage) (string, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return "", false
+	}
+	if raw[0] == '"' {
+		var text string
+		if err := sonic.Unmarshal(raw, &text); err != nil {
+			return "", false
+		}
+		return text, true
+	}
+	var blocks []struct {
+		Type string  `json:"type"`
+		Text *string `json:"text"`
+	}
+	if err := sonic.Unmarshal(raw, &blocks); err != nil || len(blocks) == 0 {
+		return "", false
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type != "text" || block.Text == nil {
+			return "", false
+		}
+		parts = append(parts, *block.Text)
+	}
+	return strings.Join(parts, "\n"), true
+}
+
+// openAIChatFileContentBlock rewrites a chat file block carrying file_content, which no
+// OpenAI-shaped wire accepts: a block with no other source becomes a text block holding the
+// document, otherwise file_content is dropped beside the source that remains. The caller's
+// block is not modified, since fallbacks reuse the request.
+func openAIChatFileContentBlock(block schemas.ChatContentBlock) schemas.ChatContentBlock {
+	file := block.File
+	if file == nil || len(file.FileContent) == 0 {
+		return block
+	}
+	hasOtherSource := fileDataIsSource(file.FileData) || (file.FileURL != nil && *file.FileURL != "") || (file.FileID != nil && *file.FileID != "")
+	if !hasOtherSource {
+		if text, ok := fileContentText(file.FileContent); ok {
+			return schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: &text, CacheControl: block.CacheControl, PromptCacheBreakpoint: block.PromptCacheBreakpoint}
+		}
+	}
+	fileCopy := *file
+	fileCopy.FileContent = nil
+	block.File = &fileCopy
+	return block
+}
+
+// openAIResponsesFileContentBlock is openAIChatFileContentBlock for Responses input_file blocks.
+// It reports whether the block changed.
+func openAIResponsesFileContentBlock(block schemas.ResponsesMessageContentBlock) (schemas.ResponsesMessageContentBlock, bool) {
+	file := block.ResponsesInputMessageContentBlockFile
+	if file == nil || len(file.FileContent) == 0 {
+		return block, false
+	}
+	hasOtherSource := fileDataIsSource(file.FileData) || (file.FileURL != nil && *file.FileURL != "") || (block.FileID != nil && *block.FileID != "")
+	if !hasOtherSource {
+		if text, ok := fileContentText(file.FileContent); ok {
+			return schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: &text, CacheControl: block.CacheControl, PromptCacheBreakpoint: block.PromptCacheBreakpoint}, true
+		}
+	}
+	fileCopy := *file
+	fileCopy.FileContent = nil
+	block.ResponsesInputMessageContentBlockFile = &fileCopy
+	return block, true
+}
+
+// chatBlockHasFileContent reports whether a block carries file_content for the OpenAI wire to rewrite.
+func chatBlockHasFileContent(block *schemas.ChatContentBlock) bool {
+	return block.File != nil && len(block.File.FileContent) > 0
+}
+
+// responsesBlockHasFileContent is chatBlockHasFileContent for Responses blocks.
+func responsesBlockHasFileContent(block *schemas.ResponsesMessageContentBlock) bool {
+	return block.ResponsesInputMessageContentBlockFile != nil && len(block.ResponsesInputMessageContentBlockFile.FileContent) > 0
+}
+
+// fileContentPresent reports whether file_content carries a document, treating a JSON null as
+// absent. A present one keeps the block out of the empty-text-document drop, so the file_content
+// rewrite sees it.
+func fileContentPresent(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	return len(raw) > 0 && !bytes.Equal(raw, []byte("null"))
+}
+
+// rewriteResponsesFileContentBlocks applies openAIResponsesFileContentBlock to every block,
+// copying the slice only when one carries file_content. It runs before the function_call_output
+// flatten check, so an output that becomes text-only is still flattened to a string.
+func rewriteResponsesFileContentBlocks(blocks []schemas.ResponsesMessageContentBlock) ([]schemas.ResponsesMessageContentBlock, bool) {
+	if !slices.ContainsFunc(blocks, func(b schemas.ResponsesMessageContentBlock) bool { return responsesBlockHasFileContent(&b) }) {
+		return blocks, false
+	}
+	out := make([]schemas.ResponsesMessageContentBlock, len(blocks))
+	for i := range blocks {
+		out[i], _ = openAIResponsesFileContentBlock(blocks[i])
+	}
+	return out, true
+}
+
+// fileDataIsSource reports whether file_data carries bytes: empty, and the empty text data URL
+// isEmptyInlineTextFile also recognizes, are no source beside file_content.
+func fileDataIsSource(fileData *string) bool {
+	return fileData != nil && *fileData != "" && *fileData != "data:text/plain;base64,"
 }

@@ -1,6 +1,13 @@
 import { EmbeddingSupportedProviders } from "@/lib/constants/logs";
+import i18n from "@/lib/i18n";
 import type { ModelProvider } from "@/lib/types/config";
-import type { WarpConfig, WarpConfigInput } from "@/lib/types/warp";
+import {
+	WARP_MANAGEMENT_WRITES,
+	type WarpConfig,
+	type WarpConfigInput,
+	type WarpManagementToolSize,
+	type WarpManagementWrite,
+} from "@/lib/types/warp";
 import { v4 as uuid } from "uuid";
 
 export interface WarpEmbeddingFields {
@@ -21,13 +28,13 @@ export const supportsWarpEmbedding = (provider: ModelProvider): boolean => {
 
 export const validateWarpEmbedding = (fields: WarpEmbeddingFields, enabled: boolean, vectorStoreConnected: boolean): string | null => {
 	if (!enabled) return null;
-	if (!vectorStoreConnected) return "Connect a vector store before enabling Warp.";
-	if (!fields.embeddingProvider) return "Choose an embedding provider.";
-	if (!fields.embeddingModel.trim()) return "Choose an embedding model.";
-	if (fields.embeddingDimension <= 0) return "Embedding dimension must be positive.";
-	if (!fields.namespace.trim()) return "Vector store namespace is required.";
-	if (fields.threshold <= 0 || fields.threshold > 1) return "Similarity threshold must be greater than 0 and at most 1.";
-	if (fields.searchLimit < 1 || fields.searchLimit > 25) return "Search limit must be between 1 and 25.";
+	if (!vectorStoreConnected) return i18n.t("warp.validation.vectorStore", { ns: "config" });
+	if (!fields.embeddingProvider) return i18n.t("warp.validation.embeddingProvider", { ns: "config" });
+	if (!fields.embeddingModel.trim()) return i18n.t("warp.validation.embeddingModel", { ns: "config" });
+	if (fields.embeddingDimension <= 0) return i18n.t("warp.validation.dimension", { ns: "config" });
+	if (!fields.namespace.trim()) return i18n.t("warp.validation.namespace", { ns: "config" });
+	if (fields.threshold <= 0 || fields.threshold > 1) return i18n.t("warp.validation.threshold", { ns: "config" });
+	if (fields.searchLimit < 1 || fields.searchLimit > 25) return i18n.t("warp.validation.searchLimit", { ns: "config" });
 	return null;
 };
 
@@ -123,13 +130,60 @@ export const validateWarpModelRows = (rows: WarpModelValues[], enabled: boolean)
 		const provider = row.provider.trim();
 		const model = row.model.trim();
 		if (!provider || !model) {
-			if (index === 0) return enabled ? "Choose a provider and model to enable Warp." : null;
-			return "Choose a provider and model, or remove this model.";
+			if (index === 0) return enabled ? i18n.t("warp.validation.modelRequired", { ns: "config" }) : null;
+			return i18n.t("warp.validation.modelOrRemove", { ns: "config" });
 		}
 		// The pair is how a question names its model, so a repeat would be ambiguous between two keys.
 		const pair = `${provider}\u0000${model}`;
-		if (seen.has(pair)) return "This provider and model is already listed.";
+		if (seen.has(pair)) return i18n.t("warp.validation.modelDuplicate", { ns: "config" });
 		seen.add(pair);
 		return null;
 	});
 };
+/** Turns one kind of configuration change on or off, keeping WARP_MANAGEMENT_WRITES order so equal sets compare equal. */
+export const setWarpManagementWrite = (
+	writes: readonly WarpManagementWrite[],
+	kind: WarpManagementWrite,
+	on: boolean,
+): WarpManagementWrite[] => WARP_MANAGEMENT_WRITES.filter((candidate) => (candidate === kind ? on : writes.includes(candidate)));
+
+/** Whether the chosen kinds differ from the saved ones, order aside. */
+export const warpManagementWritesChanged = (
+	current: readonly WarpManagementWrite[],
+	saved: readonly WarpManagementWrite[] | undefined,
+): boolean => {
+	const stored = saved ?? [];
+	return current.length !== stored.length || current.some((kind) => !stored.includes(kind));
+};
+
+/**
+ * Roughly how many tokens the management tools add to every Warp request with
+ * these kinds on: reads always, plus each chosen kind. Null while the sizes are
+ * unknown (the Bifrost MCP is not loaded).
+ */
+export const warpManagementTokens = (
+	sizes: readonly WarpManagementToolSize[] | undefined,
+	writes: readonly WarpManagementWrite[],
+): number | null => {
+	if (!sizes || sizes.length === 0) return null;
+	return sizes.reduce((total, size) => (size.kind === "read" || writes.includes(size.kind) ? total + size.estimated_tokens : total), 0);
+};
+/**
+ * Whether a configuration-tool switch is locked. Without access every switch is.
+ * Otherwise only turning a kind on needs the Bifrost MCP to serve writes and the
+ * kind to exist in its catalog: a kind that is on can always be turned off, so a
+ * deployment whose writes were switched off at the ceiling can still clear it.
+ */
+export const warpManagementWriteSwitchDisabled = ({
+	disabled,
+	checked,
+	writesAvailable,
+	loaded,
+	offered,
+}: {
+	disabled: boolean;
+	checked: boolean;
+	writesAvailable: boolean;
+	loaded: boolean;
+	offered: boolean;
+}): boolean => disabled || (!checked && (!writesAvailable || (loaded && !offered)));

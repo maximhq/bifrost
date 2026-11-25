@@ -13,7 +13,6 @@ SkillFileEntry:
   required:
     - path
     - source_type
-    - mime_type
   properties:
     path:
       type: string
@@ -43,7 +42,7 @@ SkillFileEntry:
       description: Database blob ID used when object storage is not configured.
     mime_type:
       type: string
-      description: MIME type for the file.
+      description: MIME type for the file. Optional; for `url` sources it is inferred from the URL and any supplied value is replaced.
       example: text/markdown
 
 SkillFile:
