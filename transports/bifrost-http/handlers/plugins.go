@@ -552,6 +552,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, pluginLoadFailureStatus(err), fmt.Sprintf("Plugin update was not applied, it failed to load and the previous configuration was kept: %v", err))
 			return
 		}
+		rec.SetAfter(h.auditPlugin(plugin)) // the config can be redacted only once the plugin is loaded
 	} else {
 		ctx.SetUserValue(PluginDisabledKey, true)
 		if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {

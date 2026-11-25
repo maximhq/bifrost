@@ -1325,6 +1325,26 @@ func TestCommitPoint_ModelRouterUpdateFallbackKeepsStoredTargets(t *testing.T) {
 	}
 }
 
+func TestCommitPoint_ModelRouterCreateFallbackHasDefaultRouting(t *testing.T) {
+	h, manager, store := modelRouterHandler(t)
+	manager.serveErr = errors.New("plugin is restarting")
+
+	ctx := runWithParams(h.createModelRouter, routerBody("support", "Support"), nil)
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "model_router.created", "name", "Support")
+	saved, err := store.GetModelRouter(context.Background(), "support")
+	if err != nil || saved.Routing == nil {
+		t.Fatalf("stored router = %+v, %v", saved, err)
+	}
+	var after configstore.ModelRouter
+	if err := json.Unmarshal(change.After, &after); err != nil {
+		t.Fatalf("decode after: %v", err)
+	}
+	if !reflect.DeepEqual(after.Routing, saved.Routing) {
+		t.Fatalf("after = %s, want the stored routing %+v", change.After, *saved.Routing)
+	}
+}
+
 func TestCommitPoint_ModelRouterResetFallbackKeepsTargetsAndRouting(t *testing.T) {
 	h, manager, _ := modelRouterHandler(t)
 	modelRouterOK(t, h.createModelRouter, routerBody("support", "Support"), nil)
@@ -1719,9 +1739,8 @@ func TestCommitPoint_PluginCreate(t *testing.T) {
 // droppingReloadWebhookManager reports a clean reload but leaves the endpoint out of memory.
 type droppingReloadWebhookManager struct{ configWebhookManager }
 
-func (m droppingReloadWebhookManager) ReloadWebhookEndpoint(_ context.Context, id string) error {
-	m.config.RemoveWebhookEndpoint(id)
-	return nil
+func (m droppingReloadWebhookManager) ReloadWebhookEndpoint(ctx context.Context, id string) error {
+	return m.RemoveWebhookEndpoint(ctx, id)
 }
 
 func TestCommitPoint_WebhookUpdate(t *testing.T) {
@@ -1761,7 +1780,7 @@ func TestCommitPoint_ConfigCompatReloadFailure(t *testing.T) {
 			if tc.failRestore {
 				cfgStore = failingRestoreStore{store, &writes}
 			}
-			cfg := newTestOAuth2Config(cfgStore, configstoreTables.MCPServerAuthModeHeaders, false)
+			cfg := newTestOAuth2Config(t, cfgStore, configstoreTables.MCPServerAuthModeHeaders, false)
 			cfg.ClientConfig.Compat = configstore.CompatConfig{ConvertTextToChat: true}
 			if err := store.UpdateClientConfig(context.Background(), cfg.ClientConfig); err != nil {
 				t.Fatalf("seed config: %v", err)
