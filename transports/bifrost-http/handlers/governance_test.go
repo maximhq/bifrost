@@ -18,6 +18,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -203,10 +204,7 @@ func (m *budgetOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Conte
 func (m *budgetOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m *budgetOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m *budgetOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m *budgetOverrideTestGovernanceManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m *budgetOverrideTestGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -219,10 +217,7 @@ func (m *mockRotateGovernanceManager) ReloadVirtualMCP(ctx context.Context, id u
 func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m *mockRotateGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m *mockRotateGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m *mockRotateGovernanceManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m *mockRotateGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -235,10 +230,7 @@ func (m pricingOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Conte
 func (m pricingOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m pricingOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m pricingOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m pricingOverrideTestGovernanceManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m pricingOverrideTestGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -251,10 +243,7 @@ func (m *providerGovernanceAdoptionManager) ReloadVirtualMCP(ctx context.Context
 func (m *providerGovernanceAdoptionManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m *providerGovernanceAdoptionManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m *providerGovernanceAdoptionManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m *providerGovernanceAdoptionManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m *providerGovernanceAdoptionManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -1966,7 +1955,7 @@ func TestRotateVirtualKey_UpdateFailureDoesNotReload(t *testing.T) {
 	}
 }
 
-func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
+func TestRotateVirtualKey_ReloadFailureStillReturnsNewValue(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	store := &mockRotateConfigStore{
@@ -1982,20 +1971,109 @@ func TestRotateVirtualKey_ReloadFailureReturnsErrorAfterUpdate(t *testing.T) {
 
 	h.rotateVirtualKey(ctx)
 
-	if ctx.Response.StatusCode() != 500 {
-		t.Fatalf("expected status 500, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if store.updates != 1 {
-		t.Fatalf("expected one update, got %d", store.updates)
+	newValue := store.virtualKeys["vk-1"].Value.GetValue()
+	if store.updates != 1 || newValue == "sk-bf-old" {
+		t.Fatalf("expected one update to a new value, got %d updates, value %q", store.updates, newValue)
 	}
-	if store.virtualKeys["vk-1"].Value.GetValue() == "sk-bf-old" {
-		t.Fatal("expected value to rotate before reload failure")
+	body := string(ctx.Response.Body())
+	if !strings.Contains(body, newValue) {
+		t.Fatalf("expected the new value in the response, got %s", body)
 	}
-	if len(manager.reloadIDs) != 1 || manager.reloadIDs[0] != "vk-1" {
-		t.Fatalf("expected reload for vk-1, got %#v", manager.reloadIDs)
+	if !strings.Contains(body, "in-memory reload failed") {
+		t.Fatalf("expected the reload failure in the message, got %s", body)
 	}
-	if !strings.Contains(string(ctx.Response.Body()), "failed to reload in-memory state") {
-		t.Fatalf("expected reload failure in response, got %s", string(ctx.Response.Body()))
+	changes, _ := ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+	if len(changes) != 1 || changes[0].EventName != "virtual_key.rotated" {
+		t.Fatalf("expected a virtual_key.rotated audit change, got %#v", changes)
+	}
+}
+
+// TestRotateVirtualKey_ReloadFailureReturnsPlaintext runs the save through the encryption hook, which rewrites the row's value in place.
+func TestRotateVirtualKey_ReloadFailureReturnsPlaintext(t *testing.T) {
+	SetLogger(&mockLogger{})
+	encrypt.Init("rotation-reload-test-encryption-key", &mockLogger{})
+	t.Cleanup(func() { encrypt.Init("", &mockLogger{}) })
+	store := setupPricingOverrideHandlerStore(t)
+	bg := context.Background()
+	if err := store.CreateVirtualKey(bg, &configstoreTables.TableVirtualKey{ID: "vk-enc", Name: "enc", Value: *schemas.NewSecretVar("sk-bf-old")}); err != nil {
+		t.Fatalf("create virtual key: %v", err)
+	}
+	scopeID := "vk-enc"
+	if err := store.CreateModelConfig(bg, &configstoreTables.TableModelConfig{
+		ID: "mc-enc", ModelName: configstoreTables.ModelConfigAllModels, Scope: configstoreTables.ModelConfigScopeVirtualKey, ScopeID: &scopeID,
+		Budgets: []configstoreTables.TableBudget{{ID: "budget-enc", MaxLimit: 100, ResetDuration: "1d"}},
+	}); err != nil {
+		t.Fatalf("create model config: %v", err)
+	}
+	h := &GovernanceHandler{configStore: store, governanceManager: &mockRotateGovernanceManager{reloadErr: errors.New("reload failed")}}
+
+	ctx := newTestRequestCtx("")
+	ctx.SetUserValue("vk_id", "vk-enc")
+	h.rotateVirtualKey(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	stored, err := store.GetVirtualKey(bg, "vk-enc")
+	if err != nil {
+		t.Fatalf("read virtual key: %v", err)
+	}
+	if stored.EncryptionStatus != configstoreTables.EncryptionStatusEncrypted {
+		t.Fatalf("encryption status = %q, want the row encrypted", stored.EncryptionStatus)
+	}
+	var resp struct {
+		Warning    string `json:"warning"`
+		VirtualKey struct {
+			Value   string                          `json:"value"`
+			Budgets []configstoreTables.TableBudget `json:"budgets"`
+		} `json:"virtual_key"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.VirtualKey.Value != stored.Value.GetValue() || resp.VirtualKey.Value == "sk-bf-old" || resp.Warning == "" {
+		t.Fatalf("response = %s, want the new plaintext value and a warning", ctx.Response.Body())
+	}
+	if len(resp.VirtualKey.Budgets) != 1 || resp.VirtualKey.Budgets[0].ID != "budget-enc" {
+		t.Fatalf("response = %s, want the key's model config budget", ctx.Response.Body())
+	}
+}
+
+func TestRotateVirtualKeys_ReloadFailureCountsAsRotated(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockRotateConfigStore{
+		virtualKeys: map[string]*configstoreTables.TableVirtualKey{
+			"vk-1": {ID: "vk-1", Name: "One", Value: *schemas.NewSecretVar("sk-bf-old")},
+		},
+	}
+	manager := &mockRotateGovernanceManager{store: store, reloadErr: errors.New("reload failed")}
+	h := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody([]byte(`{"ids":["vk-1"]}`))
+	h.rotateVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp struct {
+		VirtualKeys []json.RawMessage `json:"virtual_keys"`
+		Errors      map[string]string `json:"errors"`
+		Warnings    map[string]string `json:"warnings"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.VirtualKeys) != 1 || len(resp.Errors) != 0 || resp.Warnings["vk-1"] == "" {
+		t.Fatalf("expected vk-1 rotated with a warning, got %s", string(ctx.Response.Body()))
+	}
+	changes, _ := ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+	if len(changes) != 1 {
+		t.Fatalf("expected one audit change, got %#v", changes)
 	}
 }
 
@@ -6209,4 +6287,55 @@ func TestTeamContentLoggingRoundTrip(t *testing.T) {
 
 	putTeam(t, `{"disable_content_logging":null}`)
 	assert.Nil(t, read(t), "null clears the decision back to inherit")
+}
+
+// deleteOrderGovernanceManager records, for each team or customer removed from memory, what
+// reading its row returned at that moment: ErrNotFound once the row is deleted, nil while it is
+// still there, and any other error when the read itself failed.
+type deleteOrderGovernanceManager struct {
+	pricingOverrideTestGovernanceManager
+	store   configstore.ConfigStore
+	readErr map[string]error
+}
+
+// RemoveTeam records what reading the team's row returned.
+func (m *deleteOrderGovernanceManager) RemoveTeam(ctx context.Context, id string) error {
+	_, err := m.store.GetTeam(ctx, id)
+	m.readErr["team:"+id] = err
+	return nil
+}
+
+// RemoveCustomer records what reading the customer's row returned.
+func (m *deleteOrderGovernanceManager) RemoveCustomer(ctx context.Context, id string) error {
+	_, err := m.store.GetCustomer(ctx, id)
+	m.readErr["customer:"+id] = err
+	return nil
+}
+
+// TestDeleteTeamAndCustomerDeleteTheRowBeforeRemovingTheRecord checks that the delete routes
+// delete the row before they remove the record, so the removal re-reads the keys and teams under it
+// with the reference the delete cleared.
+func TestDeleteTeamAndCustomerDeleteTheRowBeforeRemovingTheRecord(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &deleteOrderGovernanceManager{store: store, readErr: map[string]error{}}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	require.NoError(t, store.CreateCustomer(ctx, &configstoreTables.TableCustomer{ID: "cust-1", Name: "Acme"}))
+	require.NoError(t, store.CreateTeam(ctx, &configstoreTables.TableTeam{ID: "team-1", Name: "Platform"}))
+
+	teamCtx := newGovernanceTeamIDCtx("team-1", "")
+	handler.deleteTeam(teamCtx)
+	require.Equal(t, fasthttp.StatusOK, teamCtx.Response.StatusCode(), string(teamCtx.Response.Body()))
+	readErr, removed := manager.readErr["team:team-1"]
+	require.True(t, removed, "the team is removed from memory")
+	require.ErrorIs(t, readErr, configstore.ErrNotFound, "the team's row is deleted before its record is removed")
+
+	customerCtx := newTestRequestCtx("")
+	customerCtx.SetUserValue("customer_id", "cust-1")
+	handler.deleteCustomer(customerCtx)
+	require.Equal(t, fasthttp.StatusOK, customerCtx.Response.StatusCode(), string(customerCtx.Response.Body()))
+	readErr, removed = manager.readErr["customer:cust-1"]
+	require.True(t, removed, "the customer is removed from memory")
+	require.ErrorIs(t, readErr, configstore.ErrNotFound, "the customer's row is deleted before its record is removed")
 }

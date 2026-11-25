@@ -4,10 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/bytedance/sonic"
-	"github.com/fasthttp/websocket"
-	bifrost "github.com/maximhq/bifrost/core"
-	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"io"
 	"net"
 	"net/http"
@@ -17,14 +13,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
+	"github.com/fasthttp/websocket"
+	bifrost "github.com/maximhq/bifrost/core"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
+
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -51,7 +52,7 @@ func (s testWSHandlerStore) GetAsyncJobResultTTL() int {
 	return 0
 }
 
-func (s testWSHandlerStore) GetKVStore() *kvstore.Store {
+func (s testWSHandlerStore) GetSharedTables() *lib.SharedTables {
 	return nil
 }
 
@@ -79,20 +80,18 @@ func (timeoutNetError) Timeout() bool   { return true }
 func (timeoutNetError) Temporary() bool { return false }
 
 func TestResolveWSStreamIdleTimeoutUsesProviderOverride(t *testing.T) {
-	cfg := &lib.Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {
-				NetworkConfig: &schemas.NetworkConfig{StreamIdleTimeoutInSeconds: 7},
-			},
+	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {
+			NetworkConfig: &schemas.NetworkConfig{StreamIdleTimeoutInSeconds: 7},
 		},
-	}
+	}, nil)
 
 	timeout := resolveWSStreamIdleTimeout(cfg, schemas.OpenAI)
 	assert.Equal(t, 7*time.Second, timeout)
 }
 
 func TestResolveWSStreamIdleTimeoutFallsBackToDefault(t *testing.T) {
-	timeout := resolveWSStreamIdleTimeout(&lib.Config{}, schemas.OpenAI)
+	timeout := resolveWSStreamIdleTimeout(&lib.Config{LiveStore: liveStoreForTest(t)}, schemas.OpenAI)
 	assert.Equal(t, time.Duration(schemas.DefaultStreamIdleTimeoutInSeconds)*time.Second, timeout)
 }
 
@@ -492,6 +491,21 @@ func (a wsTwoKeyAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas
 	}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a wsTwoKeyAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a wsTwoKeyAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a wsTwoKeyAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // fakeOpenAIResponses serves both Responses surfaces from one base URL: the WS mode socket and
 // the HTTP stream the bridge uses. With refuseEncrypted set, either surface refuses a turn that
 // replays encrypted_content, the way OpenAI refuses ciphertext another organization minted.
@@ -585,7 +599,7 @@ func newTwoKeyWSResponsesHarness(t *testing.T, fake *fakeOpenAIResponses) (*WSRe
 
 	h := &WSResponsesHandler{
 		client:       client,
-		config:       &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}},
+		config:       libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, nil),
 		handlerStore: testWSHandlerStore{},
 		pool:         pool,
 		sessions:     bfws.NewSessionManager(10),

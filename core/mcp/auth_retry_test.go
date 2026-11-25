@@ -1386,7 +1386,7 @@ func TestAcquireClientConn_RejectedPerCallConnectionRefreshesAndRedials(t *testi
 
 	t.Run("a refresh that succeeds", func(t *testing.T) {
 		store := &rotatingCredStore{authRetryCredStore: authRetryCredStore{requiresPerCall: true}, token: "revoked", next: "fresh"}
-		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, store, &MockLogger{}, nil)
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), store, &MockLogger{}, nil)
 		t.Cleanup(func() { _ = m.Cleanup() })
 		conn, release, err := m.AcquireClientConn(ctx, newState())
 		if err != nil {
@@ -1404,7 +1404,7 @@ func TestAcquireClientConn_RejectedPerCallConnectionRefreshesAndRedials(t *testi
 	t.Run("a refresh that fails", func(t *testing.T) {
 		reauth := &schemas.MCPAuthRequiredError{MCPClientName: "rotating"}
 		store := &rotatingCredStore{authRetryCredStore: authRetryCredStore{requiresPerCall: true}, token: "revoked", refreshFails: true, reauth: reauth}
-		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, store, &MockLogger{}, nil)
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), store, &MockLogger{}, nil)
 		t.Cleanup(func() { _ = m.Cleanup() })
 		_, _, err := m.AcquireClientConn(ctx, newState())
 		if !errors.Is(err, reauth) {

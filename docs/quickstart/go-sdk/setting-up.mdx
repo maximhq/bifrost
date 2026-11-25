@@ -43,12 +43,12 @@ import (
 
 type MyAccount struct{}
 
-// Account interface needs to implement these 3 methods
+// Account interface needs to implement these 6 methods
 func (a *MyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
     return []schemas.ModelProvider{schemas.OpenAI}, nil
 }
 
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     if provider == schemas.OpenAI {
     return []schemas.Key{{
         Value:  os.Getenv("OPENAI_API_KEY"),
@@ -68,6 +68,19 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
         }, nil
     }
     return nil, fmt.Errorf("provider %s not supported", provider)
+}
+
+// This app connects no MCP clients, so the three MCP methods serve none.
+func (a *MyAccount) GetConfiguredMCPClients() ([]string, error) {
+    return nil, nil
+}
+
+func (a *MyAccount) GetConfigForMCPClient(id string) (*schemas.MCPClientConfig, error) {
+    return nil, fmt.Errorf("MCP client %s not configured", id)
+}
+
+func (a *MyAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+    return nil, fmt.Errorf("MCP client %s not configured", name)
 }
 
 // Main function implement to initialize bifrost and make a request
@@ -114,7 +127,7 @@ go run main.go
 
 ### What Just Happened?
 
-1. **Account Interface**: `MyAccount` provides API keys and list of providers to Bifrost for initialisation and key lookups.
+1. **Account Interface**: `MyAccount` provides API keys and list of providers to Bifrost for initialisation and key lookups, and the MCP clients to connect (none here; see [Tool Calling](./tool-calling)).
 2. **Provider Resolution**: `schemas.OpenAI` tells Bifrost to use OpenAI as the provider.
 3. **Model Selection**: `"gpt-4o-mini"` specifies which model to use.
 4. **Unified API**: Same interface works for any provider/model combination (OpenAI, Anthropic, Vertex etc.)

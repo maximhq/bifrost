@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/temptoken"
 )
 
@@ -62,18 +63,21 @@ type Provider struct {
 	onCredentialWritten atomic.Pointer[func(ctx context.Context, credentialID string)]
 }
 
-// NewProvider constructs a configstore-backed MCPHeadersProvider. Mirrors
-// oauth2.NewOAuth2Provider so the wiring in transports/bifrost-http stays
+// NewProvider constructs a configstore-backed MCPHeadersProvider, with its credential cache in live,
+// which is required. Mirrors oauth2.NewOAuth2Provider so the wiring in transports/bifrost-http stays
 // symmetric between the two per-user auth surfaces.
-func NewProvider(configStore configstore.ConfigStore, logger schemas.Logger) *Provider {
+func NewProvider(configStore configstore.ConfigStore, live *livestore.Store, logger schemas.Logger) (*Provider, error) {
+	if live == nil {
+		return nil, fmt.Errorf("mcp headers: %w", livestore.ErrNoLiveStore)
+	}
 	if logger == nil {
 		logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 	}
-	return &Provider{
-		configStore: configStore,
-		logger:      logger,
-		credentials: newHeaderCredentialCache(defaultCredentialCacheCapacity),
+	credentials, err := newHeaderCredentialCache(live)
+	if err != nil {
+		return nil, err
 	}
+	return &Provider{configStore: configStore, logger: logger, credentials: credentials}, nil
 }
 
 // SetTempTokenService installs the temp-token service used by
