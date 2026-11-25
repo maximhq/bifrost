@@ -20963,6 +20963,77 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.NotEmpty(t, normalizedTable.ConfigHash)
 	})
 
+	t.Run("a restart keeps each url under the rule it was stored with", func(t *testing.T) {
+		// config.json names a mirror on the operator's network. First start: no row yet.
+		mirror := "http://127.0.0.1:9000/pricing.json"
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{PricingURL: &mirror, PricingSyncInterval: &fileSyncSeconds},
+		}
+		firstTable, firstCatalog, _ := ResolveFrameworkPricingConfig(nil, fileConfig)
+		require.Equal(t, mirror, *firstTable.PricingURL)
+		require.False(t, firstTable.PricingURLPublicOnly)
+		require.False(t, firstCatalog.PricingURLPublicOnly)
+		require.False(t, firstCatalog.ModelParametersURLPublicOnly)
+		require.False(t, firstCatalog.MCPLibraryURLPublicOnly)
+
+		// Restart with the same config.json: the mirror keeps the config.json rule.
+		secondTable, secondCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(firstTable, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, mirror, *secondCatalog.PricingURL)
+		require.False(t, secondTable.PricingURLPublicOnly)
+		require.False(t, secondCatalog.PricingURLPublicOnly)
+
+		// The API then replaces all three URLs; the handler stores them as public-only.
+		apiURL := "https://api-saved.example.com/feed.json"
+		apiRow := *secondTable
+		apiRow.PricingURL, apiRow.ModelParametersURL, apiRow.MCPLibraryURL = &apiURL, &apiURL, &apiURL
+		apiRow.PricingURLPublicOnly, apiRow.ModelParametersURLPublicOnly, apiRow.MCPLibraryURLPublicOnly = true, true, true
+
+		// Restart with the same config.json: the stored URLs win and stay public-only,
+		// in the row and in the catalog config.
+		thirdTable, thirdCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(&apiRow, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, apiURL, *thirdCatalog.PricingURL)
+		require.True(t, thirdTable.PricingURLPublicOnly)
+		require.True(t, thirdTable.ModelParametersURLPublicOnly)
+		require.True(t, thirdTable.MCPLibraryURLPublicOnly)
+		require.True(t, thirdCatalog.PricingURLPublicOnly)
+		require.True(t, thirdCatalog.ModelParametersURLPublicOnly)
+		require.True(t, thirdCatalog.MCPLibraryURLPublicOnly)
+
+		// A startup repair of another column rewrites the row; the marks go with it.
+		repairRow := apiRow
+		repairRow.LiveModelsSyncInterval = nil
+		repairedTable, _, needsDBUpdate := ResolveFrameworkPricingConfig(&repairRow, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.True(t, repairedTable.PricingURLPublicOnly)
+		require.True(t, repairedTable.ModelParametersURLPublicOnly)
+		require.True(t, repairedTable.MCPLibraryURLPublicOnly)
+
+		// config.json changes its pricing_url: that URL goes back to the config.json
+		// rule; the URLs config.json does not set keep the stored value and mark.
+		otherMirror := "http://10.0.0.5/pricing.json"
+		changedFile := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{PricingURL: &otherMirror, PricingSyncInterval: &fileSyncSeconds},
+		}
+		fourthTable, fourthCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(&apiRow, changedFile)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, otherMirror, *fourthTable.PricingURL)
+		require.False(t, fourthTable.PricingURLPublicOnly)
+		require.False(t, fourthCatalog.PricingURLPublicOnly)
+		require.Equal(t, apiURL, *fourthTable.ModelParametersURL)
+		require.True(t, fourthTable.ModelParametersURLPublicOnly)
+		require.True(t, fourthCatalog.ModelParametersURLPublicOnly)
+		require.True(t, fourthTable.MCPLibraryURLPublicOnly)
+		require.True(t, fourthCatalog.MCPLibraryURLPublicOnly)
+
+		// No config.json at all: the stored URLs and marks still load.
+		fifthTable, fifthCatalog, _ := ResolveFrameworkPricingConfig(&apiRow, nil)
+		require.True(t, fifthTable.PricingURLPublicOnly)
+		require.True(t, fifthCatalog.PricingURLPublicOnly)
+		require.True(t, fifthCatalog.MCPLibraryURLPublicOnly)
+	})
+
 	t.Run("db wins when file hash matches stored hash (user edited via UI)", func(t *testing.T) {
 		// File is unchanged since last write. User may have edited DB via UI.
 		// DB should take precedence so UI edits are respected.

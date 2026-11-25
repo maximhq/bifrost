@@ -57,10 +57,13 @@ type ModelCatalog struct {
 	maxOutputTokens *livestore.Table[string, int]
 
 	// MCP library sync configuration (protected by syncMu)
-	mcpLibraryURL          string
-	mcpLibrarySyncInterval time.Duration
-	lastMCPLibrarySyncedAt time.Time
-	syncMu                 sync.RWMutex
+	mcpLibraryURL string
+	// mcpLibraryURLPublicOnly is true when mcpLibraryURL was saved through the
+	// API: it is then fetched under the public-address rule it was accepted under.
+	mcpLibraryURLPublicOnly bool
+	mcpLibrarySyncInterval  time.Duration
+	lastMCPLibrarySyncedAt  time.Time
+	syncMu                  sync.RWMutex
 
 	shouldSyncGate func(ctx context.Context) bool
 	afterSyncHook  func(ctx context.Context)
@@ -95,6 +98,26 @@ func resolveMCPLibrarySyncInterval(config *Config) time.Duration {
 	}
 }
 
+// catalogURLRules says, per catalog URL, whether it is fetched under the
+// public-address rule (true) or the config.json rule (false).
+type catalogURLRules struct {
+	pricing, modelParameters, mcpLibrary bool
+}
+
+// resolveURLRules reads the public-only flags for the effective URLs. A flag
+// applies only to the URL it was stored with: when the effective URL is the
+// built-in default the flag is dropped.
+func resolveURLRules(config *Config, pricingURL, modelParametersURL, mcpLibraryURL string) catalogURLRules {
+	if config == nil {
+		return catalogURLRules{}
+	}
+	return catalogURLRules{
+		pricing:         config.PricingURLPublicOnly && pricingURL != DefaultPricingURL,
+		modelParameters: config.ModelParametersURLPublicOnly && modelParametersURL != DefaultModelParametersURL,
+		mcpLibrary:      config.MCPLibraryURLPublicOnly && mcpLibraryURL != DefaultMCPLibraryURL,
+	}
+}
+
 // Init builds the model catalog over live, whose tables hold its memos, and loads pricing from
 // configStore when there is one. A nil live store is an error.
 func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, live *livestore.Store, logger schemas.Logger) (*ModelCatalog, error) {
@@ -113,6 +136,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	if config != nil && config.MCPLibraryURL != nil && *config.MCPLibraryURL != "" {
 		mcpLibraryURL = *config.MCPLibraryURL
 	}
+	urlRules := resolveURLRules(config, pricingURL, modelParametersURL, mcpLibraryURL)
 	mcpLibrarySyncInterval := resolveMCPLibrarySyncInterval(config)
 	syncInterval := DefaultSyncInterval
 	if config != nil && config.PricingSyncInterval != nil {
@@ -124,18 +148,21 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	logger.Info("pricing sync interval set to %v (scheduler checks every %v)", syncInterval, syncWorkerTickerPeriod)
 
 	mc := &ModelCatalog{
-		mcpLibraryURL:          mcpLibraryURL,
-		mcpLibrarySyncInterval: mcpLibrarySyncInterval,
-		configStore:            configStore,
-		logger:                 logger,
-		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
-		done:                   make(chan struct{}),
+		mcpLibraryURL:           mcpLibraryURL,
+		mcpLibraryURLPublicOnly: urlRules.mcpLibrary,
+		mcpLibrarySyncInterval:  mcpLibrarySyncInterval,
+		configStore:             configStore,
+		logger:                  logger,
+		distributedLockManager:  configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
+		done:                    make(chan struct{}),
 	}
 	var err error
 	if mc.datasheet, err = datasheet.New(configStore, live, logger, datasheet.Config{
-		URL:                pricingURL,
-		ModelParametersURL: modelParametersURL,
-		SyncInterval:       syncInterval,
+		URL:                          pricingURL,
+		ModelParametersURL:           modelParametersURL,
+		SyncInterval:                 syncInterval,
+		URLPublicOnly:                urlRules.pricing,
+		ModelParametersURLPublicOnly: urlRules.modelParameters,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to create the datasheet: %w", err)
 	}
@@ -368,9 +395,11 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 	if config != nil && config.MCPLibraryURL != nil && *config.MCPLibraryURL != "" {
 		mcpLibraryURL = *config.MCPLibraryURL
 	}
+	urlRules := resolveURLRules(config, pricingURL, modelParametersURL, mcpLibraryURL)
 	mcpLibrarySyncInterval := resolveMCPLibrarySyncInterval(config)
 	mc.syncMu.Lock()
 	mc.mcpLibraryURL = mcpLibraryURL
+	mc.mcpLibraryURLPublicOnly = urlRules.mcpLibrary
 	mc.mcpLibrarySyncInterval = mcpLibrarySyncInterval
 	mc.syncMu.Unlock()
 
@@ -379,9 +408,11 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 		syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
 	}
 	mc.datasheet.UpdateSyncConfig(datasheet.Config{
-		URL:                pricingURL,
-		ModelParametersURL: modelParametersURL,
-		SyncInterval:       syncInterval,
+		URL:                          pricingURL,
+		ModelParametersURL:           modelParametersURL,
+		SyncInterval:                 syncInterval,
+		URLPublicOnly:                urlRules.pricing,
+		ModelParametersURLPublicOnly: urlRules.modelParameters,
 	})
 
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)

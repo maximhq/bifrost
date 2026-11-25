@@ -5077,6 +5077,67 @@ func TestMigrationAddFrameworkConfigOpenAPIURLColumn(t *testing.T) {
 	require.NoError(t, migrationAddFrameworkConfigOpenAPIURLColumn(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddFrameworkConfigURLPublicOnlyColumns: the three columns are
+// added, an existing row reads back false for each (the config.json rule, so an
+// upgrade changes no fetch), and the values survive a save and a load.
+func TestMigrationAddFrameworkConfigURLPublicOnlyColumns(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableFrameworkConfig{}))
+	mirror := "http://10.0.0.5/pricing.json"
+	require.NoError(t, db.Create(&tables.TableFrameworkConfig{PricingURL: &mirror}).Error)
+	mg := db.Migrator()
+	columns := []string{"pricing_url_public_only", "model_parameters_url_public_only", "mcp_library_url_public_only"}
+	for _, column := range columns {
+		require.NoError(t, mg.DropColumn(&tables.TableFrameworkConfig{}, column))
+		require.False(t, mg.HasColumn(&tables.TableFrameworkConfig{}, column))
+	}
+
+	require.NoError(t, migrationAddFrameworkConfigURLPublicOnlyColumns(ctx, db, testMigrationLogger))
+	for _, column := range columns {
+		assert.True(t, mg.HasColumn(&tables.TableFrameworkConfig{}, column))
+	}
+
+	store := &RDBConfigStore{logger: testMigrationLogger}
+	store.db.Store(db)
+	cfg, err := store.GetFrameworkConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, mirror, *cfg.PricingURL)
+	assert.False(t, cfg.PricingURLPublicOnly)
+	assert.False(t, cfg.ModelParametersURLPublicOnly)
+	assert.False(t, cfg.MCPLibraryURLPublicOnly)
+
+	// Save and load: each flag is stored on its own.
+	cfg.PricingURLPublicOnly = true
+	cfg.MCPLibraryURLPublicOnly = true
+	require.NoError(t, store.UpdateFrameworkConfig(ctx, cfg))
+	loaded, err := store.GetFrameworkConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, loaded.PricingURLPublicOnly)
+	assert.False(t, loaded.ModelParametersURLPublicOnly)
+	assert.True(t, loaded.MCPLibraryURLPublicOnly)
+	loaded.PricingURLPublicOnly = false
+	require.NoError(t, store.UpdateFrameworkConfig(ctx, loaded))
+	loaded, err = store.GetFrameworkConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, loaded.PricingURLPublicOnly)
+	assert.True(t, loaded.MCPLibraryURLPublicOnly)
+
+	// The flags are stored state, not part of the config a client reads or sends.
+	loaded.PricingURLPublicOnly = true
+	encoded, err := json.Marshal(loaded)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "public_only")
+	var decoded tables.TableFrameworkConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"pricing_url_public_only":true,"PricingURLPublicOnly":true}`), &decoded))
+	assert.False(t, decoded.PricingURLPublicOnly)
+
+	// Idempotent: a re-run with the columns already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_framework_config_url_public_only_columns").Error)
+	require.NoError(t, migrationAddFrameworkConfigURLPublicOnlyColumns(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()
@@ -6372,4 +6433,31 @@ func TestUsageResetEpochMigrationLeavesUnknown(t *testing.T) {
 	require.True(t, budget.LastReset.Equal(boundary))
 	require.True(t, rate.TokenLastReset.Equal(boundary))
 	require.True(t, rate.RequestLastReset.Equal(boundary.Add(-time.Hour)))
+}
+
+// The public-only marks are the only record of which catalog URLs were saved through the API.
+// Dropping the columns and adding them back would bring every mark back as false while the
+// URLs stayed, so an API-saved URL would then be fetched as if config.json had set it,
+// private addresses included. The rollback refuses and leaves the marks in place.
+func TestRollbackFrameworkConfigURLPublicOnlyColumnsKeepsTheMarks(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableFrameworkConfig{}))
+	saved := "https://catalog.example.com/pricing.json"
+	require.NoError(t, db.Create(&tables.TableFrameworkConfig{PricingURL: &saved, PricingURLPublicOnly: true}).Error)
+
+	err := rollbackFrameworkConfigURLPublicOnlyColumns(ctx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-rollbackable")
+
+	mg := db.Migrator()
+	for _, column := range []string{"pricing_url_public_only", "model_parameters_url_public_only", "mcp_library_url_public_only"} {
+		assert.True(t, mg.HasColumn(&tables.TableFrameworkConfig{}, column), "%s is kept", column)
+	}
+	store := &RDBConfigStore{logger: testMigrationLogger}
+	store.db.Store(db)
+	cfg, err := store.GetFrameworkConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.True(t, cfg.PricingURLPublicOnly, "the mark on the API-saved URL survives")
 }

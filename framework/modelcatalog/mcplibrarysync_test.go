@@ -16,6 +16,8 @@ import (
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,7 +26,7 @@ func TestFetchMCPLibraryFromFileURL(t *testing.T) {
 	payload := `{"servers":[{"name":"Filesystem","connection_type":"stdio","auth_type":"none"}]}`
 	require.NoError(t, os.WriteFile(path, []byte(payload), 0o600))
 
-	entries, err := fetchMCPLibrary(context.Background(), "file://"+path)
+	entries, err := fetchMCPLibrary(context.Background(), "file://"+path, false)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	require.Equal(t, "Filesystem", entries[0].Name)
@@ -54,7 +56,7 @@ func TestFetchMCPLibraryFromRelativeFileURL(t *testing.T) {
 		"file://localhost" + path,
 	} {
 		t.Run(rawURL, func(t *testing.T) {
-			entries, err := fetchMCPLibrary(context.Background(), rawURL)
+			entries, err := fetchMCPLibrary(context.Background(), rawURL, false)
 			require.NoError(t, err)
 			require.Len(t, entries, 1)
 			require.Equal(t, "Filesystem", entries[0].Name)
@@ -260,7 +262,7 @@ func TestFetchMCPLibraryRefusesRedirectToLinkLocal(t *testing.T) {
 	}))
 	defer redirect.Close()
 
-	_, err := fetchMCPLibrary(context.Background(), redirect.URL)
+	_, err := fetchMCPLibrary(context.Background(), redirect.URL, false)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "link-local")
 }
@@ -277,7 +279,7 @@ func TestFetchMCPLibraryUsesGlobalProxy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	// A public IP literal: ValidateExternalURL resolves the host before any request.
-	_, _ = fetchMCPLibrary(ctx, "https://203.0.113.10/mcp-library.json")
+	_, _ = fetchMCPLibrary(ctx, "https://203.0.113.10/mcp-library.json", false)
 	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "203.0.113.10:443", nil)
 }
 
@@ -347,4 +349,93 @@ func TestSyncMCPLibrarySkipsEntriesThePublishAPIRejects(t *testing.T) {
 		names = append(names, e.Name)
 	}
 	require.Equal(t, []string{"Valid HTTP", "Valid STDIO"}, names)
+}
+
+// TestMCPLibraryHoldsAPISavedURLToPublicAddresses: an MCP library URL saved
+// through the API is fetched under the public-address rule it was accepted
+// under, so a loopback host and a file:// URL are refused. The same server set
+// in config.json still syncs.
+func TestMCPLibraryHoldsAPISavedURLToPublicAddresses(t *testing.T) {
+	ctx := context.Background()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"servers":[{"name":"Local","connection_type":"http","connection_url":"https://a.example/mcp"}]}`))
+	}))
+	defer srv.Close()
+
+	_, err := fetchMCPLibrary(ctx, srv.URL, true)
+	require.ErrorContains(t, err, "non-public address")
+	_, err = fetchMCPLibrary(ctx, "file://"+filepath.Join(t.TempDir(), "servers.json"), true)
+	require.ErrorIs(t, err, datasheet.ErrFileURLNeedsConfigFile)
+	require.Zero(t, hits.Load())
+
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+
+	// The exported one-shot syncs: SyncMCPLibraryPublicOnly applies the API rule,
+	// SyncMCPLibrary the config.json rule.
+	_, err = SyncMCPLibraryPublicOnly(ctx, "file://"+filepath.Join(t.TempDir(), "servers.json"), store)
+	require.ErrorIs(t, err, datasheet.ErrFileURLNeedsConfigFile)
+	count, err := SyncMCPLibrary(ctx, srv.URL, store)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	require.Equal(t, int32(1), hits.Load())
+}
+
+// TestCatalogCarriesURLRulesFromConfig: the catalog takes each URL's rule from
+// its config at Init and on every update, and never applies the public-address
+// rule to a built-in default URL.
+func TestCatalogCarriesURLRulesFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	pricingURL := "file://" + filepath.Join(dir, "pricing.json")
+	paramsURL := "file://" + filepath.Join(dir, "params.json")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pricing.json"), []byte(`{}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "params.json"), []byte(`{}`), 0o600))
+	mirror := "https://catalog.example/feed.json"
+	disabled := MCPLibrarySyncDisabled
+
+	liveStore, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(liveStore.Close)
+	mc, err := Init(t.Context(), &Config{
+		PricingURL: &pricingURL, ModelParametersURL: &paramsURL,
+		MCPLibraryURL: &mirror, MCPLibraryURLPublicOnly: true, MCPLibrarySyncInterval: &disabled,
+	}, nil, liveStore, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = mc.Cleanup() })
+	gotURL, publicOnly := mc.getMCPLibraryURL()
+	require.Equal(t, mirror, gotURL)
+	require.True(t, publicOnly)
+	require.False(t, mc.datasheet.URLPublicOnly())
+	require.False(t, mc.datasheet.ModelParametersURLPublicOnly())
+
+	// A cancelled context stops the sync that follows an update; the new rules
+	// are already in place by then.
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	_ = mc.UpdateSyncConfig(cancelled, &Config{
+		PricingURL: &mirror, PricingURLPublicOnly: true,
+		ModelParametersURL: &mirror, ModelParametersURLPublicOnly: true,
+		MCPLibraryURL: &mirror, MCPLibrarySyncInterval: &disabled,
+	})
+	_, publicOnly = mc.getMCPLibraryURL()
+	require.False(t, publicOnly)
+	require.True(t, mc.datasheet.URLPublicOnly())
+	require.True(t, mc.datasheet.ModelParametersURLPublicOnly())
+
+	// Unset URLs resolve to the built-in defaults, which keep the config.json rule.
+	_ = mc.UpdateSyncConfig(cancelled, &Config{
+		PricingURLPublicOnly: true, ModelParametersURLPublicOnly: true, MCPLibraryURLPublicOnly: true,
+		MCPLibrarySyncInterval: &disabled,
+	})
+	_, publicOnly = mc.getMCPLibraryURL()
+	require.False(t, publicOnly)
+	require.False(t, mc.datasheet.URLPublicOnly())
+	require.False(t, mc.datasheet.ModelParametersURLPublicOnly())
 }

@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -161,7 +160,7 @@ func (s *Store) LoadModelParamsFromURLIntoMemory(ctx context.Context) error {
 // datasheet at the configured URL.
 func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json.RawMessage, error) {
 	s.syncCfgMu.RLock()
-	rawURL := s.modelParametersURL
+	rawURL, publicOnly := s.modelParametersURL, s.paramsURLPublicOnly
 	s.syncCfgMu.RUnlock()
 
 	parsed, err := url.Parse(rawURL)
@@ -172,15 +171,18 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 	var data []byte
 
 	if parsed.Scheme == "file" {
+		if publicOnly {
+			return nil, fmt.Errorf("model parameters URL: %w", ErrFileURLNeedsConfigFile)
+		}
 		data, err = os.ReadFile(FilePathFromURL(parsed))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read model parameters file: %w", err)
 		}
 	} else {
-		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		if err := CheckFeedURL(rawURL, publicOnly); err != nil {
 			return nil, fmt.Errorf("model parameters URL validation failed: %w", err)
 		}
-		client := NewHTTPClient(DefaultModelParametersTimeout)
+		client := FeedHTTPClient(DefaultModelParametersTimeout, publicOnly)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
