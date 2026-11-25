@@ -4305,6 +4305,26 @@ func TestRedactedKeys_RedactsAnthropicWorkloadIdentity(t *testing.T) {
 	assert.Equal(t, jwt, cfg.GetProviderKeys(schemas.Anthropic)[0].AnthropicKeyConfig.WorkloadIdentity.IdentitySource.Token.GetValue(), "the live config is untouched")
 }
 
+// TestRedactedKeys_IncludesRapidMLXServerURL pins that /api/keys returns the Rapid-MLX server URL
+// so the UI can show and edit it.
+func TestRedactedKeys_IncludesRapidMLXServerURL(t *testing.T) {
+	cfg := libtest.FileOnly(t, &lib.Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.RapidMLX: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.RapidMLX: {{ID: "rapidmlx-key", Name: "local", RapidMLXKeyConfig: &schemas.RapidMLXKeyConfig{
+			URL: *schemas.NewSecretVar("http://localhost:8000/v1"),
+		}}},
+	})
+
+	keys := redactedKeys(map[schemas.ModelProvider][]schemas.Key{schemas.RapidMLX: cfg.GetProviderKeys(schemas.RapidMLX)})
+	require.Len(t, keys, 1)
+	require.NotNil(t, keys[0].RapidMLXKeyConfig)
+	body, err := json.Marshal(keys[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"rapidmlx_key_config"`)
+	assert.Contains(t, string(body), "localhost:8000")
+}
+
 // TestRedactedKeys_MasksBedrockBatchRoleAndEndpoints pins that /api/keys masks a Bedrock key the
 // way the providers API does: the batch role ARN, the env-backed endpoints and project ID, and the
 // credentials come back masked, while the key ID, name, provider and region stay readable.
