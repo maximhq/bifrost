@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -120,6 +121,74 @@ func ToOpenAIImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Open
 	}
 
 	return req
+}
+
+// hasImageURLReference reports whether any input image is given only by URL, which multipart cannot carry.
+func hasImageURLReference(openaiReq *OpenAIImageEditRequest) bool {
+	for _, img := range openaiReq.Input.Images {
+		if len(img.Image) == 0 && img.URL != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// ToOpenAIImageEditJSONRequest builds the application/json form of an image edit. Byte inputs
+// become base64 data URLs so they can sit in the same images array as URL references.
+func ToOpenAIImageEditJSONRequest(openaiReq *OpenAIImageEditRequest) *OpenAIImageEditJSONRequest {
+	images := make([]OpenAIImageReference, 0, len(openaiReq.Input.Images))
+	for _, img := range openaiReq.Input.Images {
+		if len(img.Image) > 0 {
+			images = append(images, OpenAIImageReference{ImageURL: providerUtils.FileBytesToBase64DataURL(img.Image)})
+		} else {
+			images = append(images, OpenAIImageReference{ImageURL: img.URL})
+		}
+	}
+	jsonReq := &OpenAIImageEditJSONRequest{
+		Model:             openaiReq.Model,
+		Prompt:            openaiReq.Input.Prompt,
+		Images:            images,
+		Stream:            openaiReq.Stream,
+		N:                 openaiReq.N,
+		Size:              openaiReq.Size,
+		ResponseFormat:    openaiReq.ResponseFormat,
+		Quality:           openaiReq.Quality,
+		Background:        openaiReq.Background,
+		InputFidelity:     openaiReq.InputFidelity,
+		PartialImages:     openaiReq.PartialImages,
+		OutputFormat:      openaiReq.OutputFormat,
+		OutputCompression: openaiReq.OutputCompression,
+		User:              openaiReq.User,
+		ExtraParams:       openaiReq.ExtraParams,
+	}
+	if len(openaiReq.Mask) > 0 {
+		jsonReq.Mask = &OpenAIImageReference{ImageURL: providerUtils.FileBytesToBase64DataURL(openaiReq.Mask)}
+	}
+	return jsonReq
+}
+
+// buildImageEditBody encodes an image edit as multipart, or as JSON when an input image is a URL.
+// It returns the body and its Content-Type.
+func buildImageEditBody(ctx *schemas.BifrostContext, openaiReq *OpenAIImageEditRequest, providerName schemas.ModelProvider) ([]byte, string, *schemas.BifrostError) {
+	if hasImageURLReference(openaiReq) {
+		jsonBody, err := providerUtils.MarshalProviderRequest(ToOpenAIImageEditJSONRequest(openaiReq))
+		if err != nil {
+			return nil, "", providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+		}
+		if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); passthrough && len(openaiReq.ExtraParams) > 0 {
+			jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, openaiReq.ExtraParams)
+			if err != nil {
+				return nil, "", providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+			}
+		}
+		return jsonBody, "application/json", nil
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if bifrostErr := parseImageEditFormDataBodyFromRequest(writer, openaiReq, providerName); bifrostErr != nil {
+		return nil, "", bifrostErr
+	}
+	return body.Bytes(), writer.FormDataContentType(), nil
 }
 
 func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIImageEditRequest, providerName schemas.ModelProvider) *schemas.BifrostError {

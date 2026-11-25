@@ -353905,6 +353905,241 @@
           }
         }
       ]
+    },
+    {
+      "name": "382. Image edits by URL reference reach OpenAI and Azure (image edit url reference)",
+      "description": "Reference images given by URL never reached OpenAI's /v1/images/edits. The OpenAI provider (shared by Azure) wrote every reference as a multipart image[] file from ImageInput.Image bytes and ignored ImageInput.URL, so a URL went upstream as an empty text/plain part and OpenAI answered 400 unsupported_file_mimetype. Multipart has no URL field; OpenAI and Azure take URLs only in the application/json form, images: [{\"image_url\": ...}]. The provider now sends that JSON form whenever a reference is a URL (bytes in the same request become data URLs; byte-only edits stay multipart). /v1/images/edits also reads OpenAI's own {\"image_url\": ...} entry shape (it used to drop it and answer 'at least one image or image_url is required'), and the native /openai/v1/images/edits route now accepts the JSON body instead of failing multipart parsing. Each case was a 400 before the fix and is a 200 with image data after.",
+      "item": [
+        {
+          "name": "openai/gpt-image-2 /v1/images/edits JSON images[].image_url returns an edited image - image edit url reference",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('URL reference image reaches the provider and an edited image comes back', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'URL reference was uploaded as an empty file part: ' + raw.slice(0, 400)).to.not.include('unsupported_file_mimetype');",
+                  "  pm.expect(raw, 'image_url reference was not read: ' + raw.slice(0, 400)).to.not.include('at least one image');",
+                  "  pm.expect(raw, 'JSON body was parsed as multipart: ' + raw.slice(0, 400)).to.not.include('not multipart/form-data');",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var d = pm.response.json().data;",
+                  "  pm.expect(d && d[0] && d[0].b64_json, 'no b64_json: ' + raw.slice(0, 400)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-image-2\",\"prompt\":\"make the scones look frosted\",\"quality\":\"low\",\"size\":\"1024x1024\",\"images\":[{\"image_url\":\"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-image-2 /v1/images/edits JSON images[].url returns an edited image - image edit url reference",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('URL reference image reaches the provider and an edited image comes back', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'URL reference was uploaded as an empty file part: ' + raw.slice(0, 400)).to.not.include('unsupported_file_mimetype');",
+                  "  pm.expect(raw, 'image_url reference was not read: ' + raw.slice(0, 400)).to.not.include('at least one image');",
+                  "  pm.expect(raw, 'JSON body was parsed as multipart: ' + raw.slice(0, 400)).to.not.include('not multipart/form-data');",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var d = pm.response.json().data;",
+                  "  pm.expect(d && d[0] && d[0].b64_json, 'no b64_json: ' + raw.slice(0, 400)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-image-2\",\"prompt\":\"make the scones look frosted\",\"quality\":\"low\",\"size\":\"1024x1024\",\"images\":[{\"url\":\"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-image-2 /v1/images/edits JSON images[].image_url streaming completes - image edit url reference",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed URL reference edit completes', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'URL reference was uploaded as an empty file part: ' + raw.slice(0, 400)).to.not.include('unsupported_file_mimetype');",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'expected SSE').to.include('text/event-stream');",
+                  "  pm.expect(raw, 'no completed event: ' + raw.slice(0, 400)).to.include('image_edit.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-image-2\",\"prompt\":\"make the scones look frosted\",\"quality\":\"low\",\"size\":\"1024x1024\",\"stream\":true,\"images\":[{\"image_url\":\"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-image-2 /openai/v1/images/edits native route JSON images[].image_url returns an edited image - image edit url reference",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('URL reference image reaches the provider and an edited image comes back', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'URL reference was uploaded as an empty file part: ' + raw.slice(0, 400)).to.not.include('unsupported_file_mimetype');",
+                  "  pm.expect(raw, 'image_url reference was not read: ' + raw.slice(0, 400)).to.not.include('at least one image');",
+                  "  pm.expect(raw, 'JSON body was parsed as multipart: ' + raw.slice(0, 400)).to.not.include('not multipart/form-data');",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var d = pm.response.json().data;",
+                  "  pm.expect(d && d[0] && d[0].b64_json, 'no b64_json: ' + raw.slice(0, 400)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-image-2\",\"prompt\":\"make the scones look frosted\",\"quality\":\"low\",\"size\":\"1024x1024\",\"images\":[{\"image_url\":\"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure/gpt-image-2 /v1/images/edits JSON images[].image_url returns an edited image - image edit url reference",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('URL reference image reaches the provider and an edited image comes back', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(raw, 'URL reference was uploaded as an empty file part: ' + raw.slice(0, 400)).to.not.include('unsupported_file_mimetype');",
+                  "  pm.expect(raw, 'image_url reference was not read: ' + raw.slice(0, 400)).to.not.include('at least one image');",
+                  "  pm.expect(raw, 'JSON body was parsed as multipart: ' + raw.slice(0, 400)).to.not.include('not multipart/form-data');",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 400)).to.equal(200);",
+                  "  var d = pm.response.json().data;",
+                  "  pm.expect(d && d[0] && d[0].b64_json, 'no b64_json: ' + raw.slice(0, 400)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/gpt-image-2\",\"prompt\":\"make the scones look frosted\",\"quality\":\"low\",\"size\":\"1024x1024\",\"images\":[{\"image_url\":\"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

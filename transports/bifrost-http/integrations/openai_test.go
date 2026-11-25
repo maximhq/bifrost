@@ -1322,3 +1322,37 @@ func TestOpenAISpeechRouteLabelsTheAudioItReturns(t *testing.T) {
 		})
 	}
 }
+
+// OpenAI's /v1/images/edits also takes application/json with images referenced by image_url, so
+// the native route must read that form instead of failing multipart parsing.
+func TestParseOpenAIImageEditRequest_JSONImageURL(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(`{"model":"gpt-image-2","prompt":"make it frosted","size":"1024x1024","stream":true,` +
+		`"images":[{"image_url":"https://example.com/scones.jpg"},{"image_url":"data:image/png;base64,aGk="}],` +
+		`"mask":{"image_url":"data:image/png;base64,bWFzaw=="}}`)
+
+	req := &openai.OpenAIImageEditRequest{}
+	require.NoError(t, parseOpenAIImageEditMultipartRequest(ctx, req))
+	assert.Equal(t, "gpt-image-2", req.Model)
+	require.NotNil(t, req.Input)
+	assert.Equal(t, "make it frosted", req.Input.Prompt)
+	require.Len(t, req.Input.Images, 2)
+	assert.Equal(t, "https://example.com/scones.jpg", req.Input.Images[0].URL)
+	assert.Equal(t, "data:image/png;base64,aGk=", req.Input.Images[1].URL)
+	assert.Equal(t, []byte("mask"), req.Mask)
+	require.NotNil(t, req.Size)
+	assert.Equal(t, "1024x1024", *req.Size)
+	require.NotNil(t, req.Stream)
+	assert.True(t, *req.Stream)
+}
+
+// A file_id reference cannot be carried through Bifrost, so it is refused rather than dropped.
+func TestParseOpenAIImageEditRequest_JSONFileIDRefused(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(`{"model":"gpt-image-2","prompt":"p","images":[{"file_id":"file-abc"}]}`)
+	err := parseOpenAIImageEditMultipartRequest(ctx, &openai.OpenAIImageEditRequest{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "file_id")
+}
