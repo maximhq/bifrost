@@ -65,9 +65,13 @@ func withRequestRoutingMetadata(ctx *schemas.BifrostContext, resp *schemas.Bifro
 }
 
 // withErrorCost returns err with its cost attached, or err unchanged when the
-// setting is off, the cost is already set, or nothing is billable.
+// setting is off, the cost is already set, nothing is billable, or err only
+// tells the stream to drop a chunk (a plugin's skip), which no client receives.
 func (bifrost *Bifrost) withErrorCost(ctx *schemas.BifrostContext, err *schemas.BifrostError) *schemas.BifrostError {
 	if err == nil || !bifrost.responseCostEnabled(ctx) || err.ExtraFields.Cost != nil {
+		return err
+	}
+	if err.StreamControl != nil && err.StreamControl.SkipStream != nil && *err.StreamControl.SkipStream {
 		return err
 	}
 	cost := ctx.CalculateErrorCostBreakdown(err)

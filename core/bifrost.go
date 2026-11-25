@@ -6372,6 +6372,11 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	defer func() {
 		bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, directKey, bifrostErr)
 	}()
+	// Send back cost on an error returned before the stream started. One the stream
+	// runner already priced (a billed startup error) keeps its cost.
+	defer func() {
+		bifrostErr = bifrost.withErrorCost(ctx, bifrostErr)
+	}()
 	stampRequestedRoute(ctx, requested)
 
 	ctx.ResetUpstreamLatency()
@@ -6916,7 +6921,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
-			return newBifrostMessageChan(resp), nil
+			return newBifrostMessageChan(bifrost.withResponseCost(ctx, resp)), nil
 		}
 		// Handle short-circuit with stream
 		if shortCircuit.Stream != nil {
@@ -6936,14 +6941,20 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					err.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
 				}
 				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
-				if IsFinalChunk(ctx) {
+				// Read after the hooks: a replaying plugin (semantic cache) marks its last
+				// chunk inside its own PostLLMHook.
+				finalChunk := IsFinalChunk(ctx)
+				if finalChunk {
 					drainAndAttachPluginLogs(ctx)
 				}
 				if bifrostErr != nil {
 					bifrostErr.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
-					return nil, bifrostErr
+					return nil, bifrost.withErrorCost(ctx, bifrostErr)
 				} else if resp != nil {
 					resp.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
+					if finalChunk {
+						resp = bifrost.withResponseCost(ctx, resp)
+					}
 				}
 				return resp, nil
 			}
@@ -7019,7 +7030,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
-			return newBifrostMessageChan(resp), nil
+			return newBifrostMessageChan(bifrost.withResponseCost(ctx, resp)), nil
 		}
 	}
 	if preReq == nil {
@@ -7117,7 +7128,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			return nil, recoveredErr
 		}
 		if recoveredResp != nil {
-			return newBifrostMessageChan(recoveredResp), nil
+			return newBifrostMessageChan(bifrost.withResponseCost(ctx, recoveredResp)), nil
 		}
 		return nil, &bifrostErrVal
 	}
@@ -8644,18 +8655,25 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						streamusage.Estimate(ctx, &schemas.BifrostRequest{ChatRequest: attemptChat, ResponsesRequest: attemptResponses, TextCompletionRequest: attemptText}, attemptResolvedModel, err)
 					}
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
-					if IsFinalChunk(ctx) {
+					finalChunk := IsFinalChunk(ctx)
+					if finalChunk {
 						drainAndAttachPluginLogs(ctx)
 						heldBackError.Store(false)
 						streamEnded.Store(true)
 					}
+					// Send back cost rides on what the client receives: an error chunk, or the
+					// stream's last chunk, priced after the hooks on a copy plugins never see.
 					if bifrostErr != nil {
 						bifrostErr.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						bifrostErr.PopulateRoutingInfo(perAttemptRoutingInfo)
+						bifrostErr = bifrost.withErrorCost(ctx, bifrostErr)
 						resp = nil // Errors take precedence in the emitted chunk.
 					} else if resp != nil {
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
+						if finalChunk {
+							resp = bifrost.withResponseCost(ctx, resp)
+						}
 					}
 					if startup.ObserveResult(ctx, resp, bifrostErr) {
 						readyHeldStreamCommit(ctx)
@@ -8760,7 +8778,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				req.streamPostHooksRan = true
 			} else {
 				recovered.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), originalModelRequested, resolvedModel)
-				stream, bifrostError = newBifrostMessageChan(recovered), nil
+				stream, bifrostError = newBifrostMessageChan(bifrost.withResponseCost(req.Context, recovered)), nil
 			}
 		}
 
@@ -8880,7 +8898,7 @@ func (bifrost *Bifrost) rejectUnqueuedStreamRequest(ctx *schemas.BifrostContext,
 	if recoveredErr != nil {
 		return nil, recoveredErr
 	}
-	return newBifrostMessageChan(resp), nil
+	return newBifrostMessageChan(bifrost.withResponseCost(ctx, resp)), nil
 }
 
 // sendWorkerError hands an error the worker produced without a provider call
