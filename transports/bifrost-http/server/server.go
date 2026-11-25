@@ -4066,6 +4066,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// supply or translate the credentials they read (see schemas.HTTPTransportPreAuthHook).
 	// Skipped entirely when no transport plugin is loaded.
 	authStart := len(inferenceMiddlewares) // the gateway bearer check runs here: after tracing and metrics, before auth
+	// A browser request from another site is turned away here, before any plugin or credential
+	// check, when inference requires no credential. See RefuseCrossOriginOnOpenInference.
+	inferenceMiddlewares = append(inferenceMiddlewares, handlers.RefuseCrossOriginOnOpenInference(s.Config))
 	inferenceMiddlewares = append(inferenceMiddlewares, handlers.TransportPreAuthInterceptorMiddleware(s.Config))
 	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil && s.AuthMiddleware != nil {
 		inferenceMiddlewares = append(inferenceMiddlewares, s.AuthMiddleware.InferenceMiddleware())

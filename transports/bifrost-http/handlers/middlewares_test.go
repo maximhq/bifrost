@@ -6646,3 +6646,104 @@ func BenchmarkTransportInterceptorMiddlewareBody(b *testing.B) {
 		}
 	})
 }
+
+// With inference auth off the gateway answers anyone who can route to it, on the
+// assumption that network position is the control. A web page open in a browser
+// on that network has the same position, so a browser request (one carrying an
+// Origin header) reaches an inference route only from the gateway's own origin,
+// a localhost origin, or an origin the operator listed by name. The bare "*"
+// does not count. Non-browser clients and deployments that require a credential
+// are unaffected.
+func TestRefuseCrossOriginOnOpenInference(t *testing.T) {
+	tests := []struct {
+		name        string
+		enforceAuth bool
+		allowed     []string
+		origin      string
+		host        string
+		proto       string // X-Forwarded-Proto, when a proxy in front terminates TLS
+		wantStatus  int
+	}{
+		{name: "no origin header passes", allowed: []string{"*"}, origin: "", host: "gateway.internal:8080", wantStatus: fasthttp.StatusOK},
+		// http://host and https://host are different origins. A gateway reached over HTTPS does
+		// not take a plain-http page on its own host for its own origin.
+		{name: "a plain-http page on an https gateway's host is refused", allowed: []string{"*"}, origin: "http://gateway.example", host: "gateway.example", proto: "https", wantStatus: fasthttp.StatusForbidden},
+		{name: "the https gateway's own origin passes", allowed: []string{"*"}, origin: "https://gateway.example", host: "gateway.example", proto: "https", wantStatus: fasthttp.StatusOK},
+		// A proxy that terminates TLS without saying so leaves the request looking like http.
+		// The dashboard's https origin is still its own.
+		{name: "an https origin passes when the proxy does not report the scheme", allowed: []string{"*"}, origin: "https://gateway.example", host: "gateway.example", wantStatus: fasthttp.StatusOK},
+		{name: "another site is refused under the wildcard", allowed: []string{"*"}, origin: "https://example.com", host: "gateway.internal:8080", wantStatus: fasthttp.StatusForbidden},
+		{name: "another site is refused with no origins configured", allowed: nil, origin: "https://example.com", host: "gateway.internal:8080", wantStatus: fasthttp.StatusForbidden},
+		{name: "the gateway's own origin passes", allowed: []string{"*"}, origin: "http://gateway.internal:8080", host: "gateway.internal:8080", wantStatus: fasthttp.StatusOK},
+		{name: "a localhost origin passes", allowed: []string{"*"}, origin: "http://localhost:3000", host: "gateway.internal:8080", wantStatus: fasthttp.StatusOK},
+		{name: "an origin listed by name passes", allowed: []string{"*", "https://app.example.com"}, origin: "https://app.example.com", host: "gateway.internal:8080", wantStatus: fasthttp.StatusOK},
+		{name: "a listed wildcard pattern passes", allowed: []string{"https://*.example.com"}, origin: "https://app.example.com", host: "gateway.internal:8080", wantStatus: fasthttp.StatusOK},
+		{name: "with auth enforced the configured origins apply as before", enforceAuth: true, allowed: []string{"*"}, origin: "https://example.com", host: "gateway.internal:8080", wantStatus: fasthttp.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: tt.enforceAuth, AllowedOrigins: tt.allowed}}
+			reached := false
+			handler := RefuseCrossOriginOnOpenInference(config)(func(ctx *fasthttp.RequestCtx) {
+				reached = true
+				ctx.SetStatusCode(fasthttp.StatusOK)
+			})
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.SetRequestURI("/v1/chat/completions")
+			req.Header.SetHost(tt.host)
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			if tt.proto != "" {
+				req.Header.Set("X-Forwarded-Proto", tt.proto)
+			}
+			var ctx fasthttp.RequestCtx
+			ctx.Init(&req, nil, nil)
+			handler(&ctx)
+			if got := ctx.Response.StatusCode(); got != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", got, tt.wantStatus, ctx.Response.Body())
+			}
+			if reached != (tt.wantStatus == fasthttp.StatusOK) {
+				t.Fatalf("next handler reached = %v", reached)
+			}
+		})
+	}
+}
+
+// The origin rule runs on every inference request. A request with no Origin header, which
+// is every SDK, CLI and server call, pays one header lookup.
+func BenchmarkRefuseCrossOriginOnOpenInference(b *testing.B) {
+	cases := []struct {
+		name        string
+		enforceAuth bool
+		origin      string
+	}{
+		{"no_origin", false, ""},
+		{"same_origin_auth_off", false, "http://bifrost.internal:8080"},
+		{"listed_origin_auth_off", false, "https://app.example.com"},
+		{"origin_auth_enforced", true, "https://example.com"},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: tc.enforceAuth, AllowedOrigins: []string{"*", "https://app.example.com"}}}
+			handler := RefuseCrossOriginOnOpenInference(config)(func(*fasthttp.RequestCtx) {})
+			// fasthttp reuses one RequestCtx per connection; so does the benchmark.
+			ctx := &fasthttp.RequestCtx{}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx.Request.Reset()
+				ctx.Response.Reset()
+				ctx.Request.SetRequestURI("/v1/chat/completions")
+				ctx.Request.Header.SetHost("bifrost.internal:8080")
+				if tc.origin != "" {
+					ctx.Request.Header.Set("Origin", tc.origin)
+				}
+				handler(ctx)
+				if ctx.Response.StatusCode() == fasthttp.StatusForbidden {
+					b.Fatalf("%s was refused: %s", tc.name, ctx.Response.Body())
+				}
+			}
+		})
+	}
+}

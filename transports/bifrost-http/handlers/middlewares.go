@@ -1950,6 +1950,18 @@ func isSameOrigin(origin, host string) bool {
 	return ok && originPort == requestPort && strings.EqualFold(originHost, requestHost)
 }
 
+// isOwnOrigin reports whether origin is the origin this request was sent to: isSameOrigin on
+// the host, plus the scheme where the request's is known. http://host and https://host are
+// different origins, so a request that arrived over HTTPS does not take a plain-http page on
+// the same host for its own. The reverse is not refused: a proxy that terminates TLS without
+// reporting it leaves the request looking like http while the dashboard's origin is https.
+func isOwnOrigin(ctx *fasthttp.RequestCtx, origin string) bool {
+	if len(origin) >= 7 && strings.EqualFold(origin[:7], "http://") && lib.RequestIsHTTPS(ctx) {
+		return false
+	}
+	return isSameOrigin(origin, string(ctx.Host()))
+}
+
 // splitOriginHostPort splits a host[:port] (an IPv6 host in brackets) into the host and its port,
 // defaultPort when none is given. ok is false for an empty host or a port that is not a number.
 func splitOriginHostPort(hostport, defaultPort string) (host, port string, ok bool) {
@@ -2017,11 +2029,48 @@ func refuseCrossOriginOnOpenAPI(ctx *fasthttp.RequestCtx, allowedOrigins []strin
 	if origin == "" {
 		return false
 	}
-	if originExplicitlyAllowed(origin, allowedOrigins) || isSameOrigin(origin, string(ctx.Host())) {
+	if originExplicitlyAllowed(origin, allowedOrigins) || isOwnOrigin(ctx, origin) {
 		return false
 	}
 	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Cross-origin requests to the management API from %q are refused while dashboard auth is disabled; enable dashboard authentication, or list the origin explicitly in client_config.allowed_origins (localhost origins are always allowed).", origin))
 	return true
+}
+
+// RefuseCrossOriginOnOpenInference applies to inference routes the rule the management API and
+// /mcp already follow while no credential is required. With enforce_auth_on_inference off the
+// gateway answers anyone who can route to it, on the assumption that network position is the
+// control. A web page open in a browser on that network has the same position, and the default
+// allowed_origins of "*" would let any site call the gateway, and through it any auto-executed
+// tool, from the visitor's browser. So while no credential is required, a request carrying an
+// Origin header reaches an inference route only from the gateway's own origin (the bundled
+// dashboard), a localhost origin, or an origin the operator listed by name; the bare "*" does
+// not count.
+//
+// Requests without an Origin (SDKs, CLIs, servers) are unaffected, and so is every deployment
+// that requires a credential: there allowed_origins applies exactly as configured. The settings
+// are read per request, so a change takes effect without a restart.
+func RefuseCrossOriginOnOpenInference(config *lib.Config) schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			origin := string(ctx.Request.Header.Peek("Origin"))
+			if origin == "" || config == nil {
+				next(ctx)
+				return
+			}
+			config.Mu.RLock()
+			enforceAuth := config.ClientConfig == nil || config.ClientConfig.EnforceAuthOnInference
+			var allowed []string
+			if config.ClientConfig != nil {
+				allowed = config.ClientConfig.AllowedOrigins
+			}
+			config.Mu.RUnlock()
+			if enforceAuth || originExplicitlyAllowed(origin, allowed) || isOwnOrigin(ctx, origin) {
+				next(ctx)
+				return
+			}
+			SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Requests from origin %q are refused while enforce_auth_on_inference is off; require authentication on inference, or list the origin explicitly in client_config.allowed_origins (localhost origins are always allowed).", origin))
+		}
+	}
 }
 
 // UpdateTempTokenAuthEnabled updates whether scoped temp-token fallback auth is accepted.
