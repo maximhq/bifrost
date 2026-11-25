@@ -23,7 +23,16 @@ import { getErrorMessage, useUpdateRelayMutation } from "@/lib/store";
 import type { Relay } from "@/lib/types/relays";
 import { cn } from "@/lib/utils";
 import type { OpenAPIImport } from "@/lib/utils/openapiImport";
-import { cleanUsage, describePricing, displayOrder, locateRoute, mergeUsage, routeBillableByDefault, routeKey, toRelayForm } from "@/lib/utils/relayForm";
+import {
+	cleanUsage,
+	describePricing,
+	displayOrder,
+	locateRoute,
+	mergeUsage,
+	routeBillableByDefault,
+	routeKey,
+	toRelayForm,
+} from "@/lib/utils/relayForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { EllipsisIcon, FileUpIcon, HourglassIcon, PencilIcon, PlusIcon, SlidersHorizontalIcon, TrashIcon } from "lucide-react";
 import { useState } from "react";
@@ -78,6 +87,9 @@ function RouteActionsMenu({
 }
 
 /** The routes of a relay, with their own toolbar for adding and importing routes. */
+// The route's own enforced body fields, by path; hovering the chip lists them.
+const forcedFields = (route: RouteForm) => (route.body_overrides ?? []).map((o) => o.name).filter(Boolean);
+
 export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 	const { t } = useTranslation("config");
 	const canUpdate = useRbac(RbacResource.Relays, RbacOperation.Update);
@@ -238,14 +250,9 @@ export function EndpointRoutesTable({ endpoint }: { endpoint: Relay }) {
 													{t("relays.routes.jobBadge")}
 												</Badge>
 											)}
-											{!!route.body_overrides?.some((o) => o.name) && (
-												<Badge variant="outline" data-testid={`relay-route-body-badge-${index}`}>
-													{t("relays.routes.bodyBadge")}
-												</Badge>
-											)}
-											{route.inherit_body_overrides === false && (
-												<Badge variant="outline" data-testid={`relay-route-body-off-badge-${index}`}>
-													{t("relays.routes.relayBodyOffBadge")}
+											{forcedFields(route).length > 0 && (
+												<Badge variant="outline" title={forcedFields(route).join(", ")} data-testid={`relay-route-body-badge-${index}`}>
+													{t("relays.routes.bodyBadge", { count: forcedFields(route).length })}
 												</Badge>
 											)}
 										</div>

@@ -859,7 +859,7 @@
 			"startsJob": "Avvia il job {{id}}",
 			"jobUnpriced": "Senza prezzo: {{reason}}",
 			"jobFailed": "Non riuscito: {{status}}",
-			"jobBadge": "JOB",
+			"jobBadge": "Job",
 			"noRoute": "Nessuna route",
 			"route": "Route {{route}}",
 			"settled": "Saldato: {{status}}",

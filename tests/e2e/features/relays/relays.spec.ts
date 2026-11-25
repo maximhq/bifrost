@@ -60,7 +60,7 @@ test.describe("Relays", () => {
     await page.page.getByTestId("relay-route-usage-cost-per-unit").fill("0.008");
     await page.page.getByTestId("relay-route-save").click();
     await expect(page.page.getByTestId("relay-route-row-0")).toContainText("/search");
-    await expect(page.page.getByTestId("relay-route-row-0")).toContainText("override");
+    await expect(page.page.getByTestId("relay-route-row-0")).toContainText("Override");
     await expect(page.page.getByTestId("relay-route-enabled-switch-0")).toBeChecked();
 
     // Test a call against the saved mapping: 0.001 + 4 * 0.008.
@@ -594,7 +594,11 @@ test.describe("Relays", () => {
     await page.page.getByTestId("relay-route-body-override-value-0").fill('"advanced"');
     await page.fillBodyOverrides("relay-route-body-override", [{ path: "options.max_results", value: "5" }]);
     await page.saveRoute();
-    await expect(page.page.getByTestId("relay-route-body-badge-0")).toBeVisible();
+    // The chip counts the route's enforced fields and lists them on hover.
+    const bodyBadge = page.page.getByTestId("relay-route-body-badge-0");
+    await expect(bodyBadge).toHaveText("2 enforced fields");
+    await expect(bodyBadge).toHaveAttribute("title", /search_depth/);
+    await expect(bodyBadge).toHaveAttribute("title", /options\.max_results/);
     let relay = await getRelay(request, name);
     expect(relay.routes[0].body_overrides).toEqual({ search_depth: "advanced", "options.max_results": 5 });
 
@@ -612,12 +616,11 @@ test.describe("Relays", () => {
     await expect(page.page.getByTestId("relay-route-body-override-name-0")).toHaveValue("options.max_results");
     await expect(page.page.getByTestId("relay-route-body-override-value-1")).toHaveValue('"advanced"');
 
-    // Turning the relay's fields off on this route is saved and shown in the table.
+    // Turning the relay's fields off on this route is saved.
     await expect(page.page.getByTestId("relay-route-inherit-body-overrides")).toBeChecked();
     await page.page.getByTestId("relay-route-inherit-body-overrides").click();
     await expect(page.page.getByTestId("relay-route-body-override-inherited")).toHaveCount(0);
     await page.saveRoute();
-    await expect(page.page.getByTestId("relay-route-body-off-badge-0")).toBeVisible();
     relay = await getRelay(request, name);
     expect(relay.routes[0].inherit_body_overrides).toBe(false);
     expect(relay.routes[0].body_overrides).toEqual({ search_depth: "advanced", "options.max_results": 5 });

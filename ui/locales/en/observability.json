@@ -859,7 +859,7 @@
 			"startsJob": "Starts job {{id}}",
 			"jobUnpriced": "Unpriced: {{reason}}",
 			"jobFailed": "Failed: {{status}}",
-			"jobBadge": "JOB",
+			"jobBadge": "Job",
 			"noRoute": "No route",
 			"route": "Route {{route}}",
 			"settled": "Settled: {{status}}",
