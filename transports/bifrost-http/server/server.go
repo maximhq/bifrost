@@ -2815,6 +2815,10 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	if err := s.Client.RemovePlugin(name, InferPluginTypes(plugin)); err != nil {
 		logger.Warn("failed to reload bifrost config after plugin removal: %v", err)
 	}
+	// The relay sweeper holds the governance reporter, so it restarts without the removed plugin.
+	if s.Ctx != nil && name == s.getGovernancePluginName() {
+		s.startEndpointJobSweeper(s.endpointUsageReporter())
+	}
 
 	// 2a. Routing's captured request vectors have no owner without it. After
 	// the client removal, whose Cleanup has drained the capture writer, so no

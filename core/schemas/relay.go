@@ -147,15 +147,19 @@ func RelayExtraHeaderConflict(headers map[string]SecretVar) (string, bool) {
 // route's own fee. Settlement runs on the job accounting sweeper, with the endpoint's credential,
 // and charges the budgets the start call was subject to.
 type RelayJobConfig struct {
-	IDPath          string            `json:"id_path"`                    // start response path of the job id (Textract: JobId)
-	Poll            RelayJobPoll      `json:"poll"`                       // the request that reports where the job stands
-	StatusPath      string            `json:"status_path"`                // poll response path of the status (JobStatus)
-	Succeeded       []string          `json:"succeeded"`                  // statuses that end the job with work to bill
-	Failed          []string          `json:"failed,omitempty"`           // statuses that end the job at no charge
-	IntervalSeconds int               `json:"interval_seconds,omitempty"` // seconds between polls (default 30)
-	TimeoutSeconds  int               `json:"timeout_seconds,omitempty"`  // give up polling after this long (default 3600)
-	Usage           *RelayUsageConfig `json:"usage,omitempty"`            // terminal poll mapping over the route's; only its own cost_per_request is charged
+	IDPath           string            `json:"id_path"`                        // start response path of the job id (Textract: JobId)
+	Poll             RelayJobPoll      `json:"poll"`                           // the request that reports where the job stands
+	StatusPath       string            `json:"status_path"`                    // poll response path of the status (JobStatus)
+	Succeeded        []string          `json:"succeeded"`                      // statuses that end the job with work to bill
+	Failed           []string          `json:"failed,omitempty"`               // statuses that end the job at no charge
+	IntervalSeconds  int               `json:"interval_seconds,omitempty"`     // seconds between polls (default 30)
+	TimeoutSeconds   int               `json:"timeout_seconds,omitempty"`      // give up polling after this long (default 3600)
+	Usage            *RelayUsageConfig `json:"usage,omitempty"`                // terminal poll mapping over the route's; only its own cost_per_request is charged
+	ReusedIDIsNewJob bool              `json:"reused_id_is_new_job,omitempty"` // an id returned again after its job was charged is new work (caller-chosen ids)
 }
+
+// DefaultRelayJobTimeoutSeconds is how long a job is polled when timeout_seconds is unset.
+const DefaultRelayJobTimeoutSeconds = 3600
 
 // RelayJobPoll is the request the sweeper sends to check a job. {{job.id}} in the path, a
 // header value or the body is replaced with the job id.

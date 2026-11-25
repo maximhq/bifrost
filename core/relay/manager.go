@@ -640,7 +640,11 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		resp.Usage = extractUsage(p.usage, reply.contentType, reply.body, requestUnits)
 		// A route that starts a job hands the job id and its settlement snapshot to the logging
 		// plugin, which records it for the sweeper. The start call is still counted here.
-		resp.Usage.Job = p.route.jobHandle(reply.contentType, reply.body)
+		job, err := p.route.jobHandle(reply.contentType, reply.body)
+		if err != nil && m.logger != nil {
+			m.logger.Warn("relay %s: %v; the call is billed without settling a job", req.RelayName, err)
+		}
+		resp.Usage.Job = job
 	}
 	// A post-hook that clears the response without an error is refused like an empty recovery.
 	return recovered(runPost(resp, nil))
@@ -658,6 +662,16 @@ func recovered(resp *schemas.BifrostRelayResponse, bErr *schemas.BifrostError) (
 	return &Result{Response: resp}, nil
 }
 
+// ErrRelayNotFound marks a poll for a relay that is not loaded, as opposed to an upstream 404.
+var ErrRelayNotFound = errors.New("relay not found")
+
+// RelayNotFoundError is the error PollJob returns for a relay that is not loaded.
+func RelayNotFoundError(name string) *schemas.BifrostError {
+	bErr := statusError(http.StatusNotFound, fmt.Sprintf("relay %q not found", name))
+	bErr.Error.Error = ErrRelayNotFound
+	return bErr
+}
+
 // JobPollResponse is the upstream reply to a job poll.
 type JobPollResponse struct {
 	StatusCode  int
@@ -671,7 +685,7 @@ type JobPollResponse struct {
 func (m *Manager) PollJob(ctx *schemas.BifrostContext, endpointName string, poll JobPollRequest) (*JobPollResponse, *schemas.BifrostError) {
 	e := m.get(endpointName)
 	if e == nil {
-		return nil, statusError(http.StatusNotFound, fmt.Sprintf("relay %q not found", endpointName))
+		return nil, RelayNotFoundError(endpointName)
 	}
 	headers := make(map[string]string, len(poll.Headers))
 	for k, v := range poll.Headers {

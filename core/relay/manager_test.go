@@ -807,7 +807,9 @@ func TestServeJobRouteHandsBackJob(t *testing.T) {
 	status := snap.Status(poll.Body)
 	done, succeeded := snap.Outcome(status)
 	assert.True(t, done && succeeded)
-	assert.InDelta(t, 3*0.05, snap.Price(poll.ContentType, poll.Body).Cost, 1e-12, "the route fee was charged on the start call, not again at settlement")
+	priced, ok := snap.Price(poll.ContentType, poll.Body)
+	require.True(t, ok)
+	assert.InDelta(t, 3*0.05, priced.Cost, 1e-12, "the route fee was charged on the start call, not again at settlement")
 }
 
 func TestServeRequestSideBillingRefusesAmbiguousBody(t *testing.T) {

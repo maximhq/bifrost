@@ -1,7 +1,9 @@
 package relay
 
 import (
+	"encoding/xml"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -69,14 +71,28 @@ func (s *JobSnapshot) PollRequest(jobID string) JobPollRequest {
 			req.ContentType = "application/json"
 		}
 		inBody := jobID
-		if isJSONContentType(req.ContentType) {
+		switch mediaType := bodyMediaType(req.ContentType); {
+		case isJSONContentType(req.ContentType):
 			quoted, _ := providerUtils.MarshalSorted(jobID)
 			inBody = string(quoted[1 : len(quoted)-1])
+		case mediaType == "application/x-www-form-urlencoded":
+			// x&Action=Delete must stay one value, not add a parameter to the poll.
+			inBody = url.QueryEscape(jobID)
+		case strings.Contains(mediaType, "xml"):
+			var b strings.Builder
+			_ = xml.EscapeText(&b, []byte(jobID))
+			inBody = b.String()
 		}
 		req.Body = []byte(strings.ReplaceAll(s.Job.Poll.Body, schemas.JobIDPlaceholder, inBody))
 		req.Headers["content-type"] = req.ContentType
 	}
 	return req
+}
+
+// bodyMediaType is the lower-cased media type of a Content-Type value, without parameters.
+func bodyMediaType(contentType string) string {
+	mediaType, _, _ := strings.Cut(contentType, ";")
+	return strings.ToLower(strings.TrimSpace(mediaType))
 }
 
 // Status reads the job status a poll response reports, "" when the body has none.
@@ -116,15 +132,30 @@ func (s *JobSnapshot) Timeout() int {
 	if s.Job.TimeoutSeconds > 0 {
 		return s.Job.TimeoutSeconds
 	}
-	return 3600
+	return schemas.DefaultRelayJobTimeoutSeconds
 }
 
 // Price runs the terminal poll response through the job's usage mapping, the same way a
-// buffered relay prices a reply.
-func (s *JobSnapshot) Price(contentType string, body []byte) *schemas.RelayUsage {
+// buffered relay prices a reply. priced is false when the mapping reads units, a cost or tokens
+// and the reply carries none of that field, so a job is never settled as free because its reply
+// changed shape.
+func (s *JobSnapshot) Price(contentType string, body []byte) (usage *schemas.RelayUsage, priced bool) {
 	u := resolveUsage(s.Usage, nil)
 	u.ignoreUpstreamCost = s.IgnoreUpstreamCost
-	return u.build(u.parse(contentType, body))
+	fields := u.parse(contentType, body)
+	priced = true
+	if u.billsUnits() && !fields.hasUnits {
+		priced = false
+	}
+	if len(u.costPaths()) > 0 && !fields.hasCost {
+		priced = false
+	}
+	// Token paths are often inherited from the relay and never set the price, so they only count
+	// when the job has no units, cost path or fee of its own.
+	if u.tokensConfigured() && !u.billsUnits() && len(u.costPaths()) == 0 && u.costPerRequest == 0 && !fields.hasInput && !fields.hasOutput && !fields.hasTotal {
+		priced = false
+	}
+	return u.build(fields), priced
 }
 
 // mergeUsageConfig overlays override on base field by field, the schema-level twin of
@@ -212,22 +243,50 @@ func jobSnapshotFor(cfg *schemas.RelayConfig, route schemas.RelayRouteConfig, ig
 	return string(data), nil
 }
 
+// maxRelayJobIDLength keeps the job row key (relay-job:{relay}:g{n}:{id}) within its column.
+const maxRelayJobIDLength = 160
+
+// validRelayJobID accepts printable ASCII without spaces, backslashes, ? or #, and no . or ..
+// path segment: the id is substituted into the poll path as is (an ARN keeps its slashes), so an
+// id the upstream returns must not be able to leave the configured path.
+func validRelayJobID(id string) bool {
+	if len(id) > maxRelayJobIDLength {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if c <= ' ' || c >= 0x7f || c == '\\' || c == '?' || c == '#' {
+			return false
+		}
+	}
+	for _, segment := range strings.Split(id, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
 // jobHandle reads the job id a start response names and returns the handle the logging plugin
-// records, or nil when the response names none (the call is then billed as an ordinary one).
-func (route *compiledRoute) jobHandle(contentType string, body []byte) *schemas.RelayJobHandle {
+// records, or nil when the response names none (the call is then billed as an ordinary one). An
+// id that is unsafe to poll with is refused with an error, and the call is billed as an ordinary one.
+func (route *compiledRoute) jobHandle(contentType string, body []byte) (*schemas.RelayJobHandle, error) {
 	if route == nil || route.job == nil || len(body) == 0 {
-		return nil
+		return nil, nil
 	}
 	if !looksJSON(contentType, body) {
-		return nil
+		return nil, nil
 	}
 	v := providerUtils.GetJSONField(body, route.job.IDPath)
 	if !v.Exists() {
-		return nil
+		return nil, nil
 	}
 	id := strings.TrimSpace(v.String())
 	if id == "" {
-		return nil
+		return nil, nil
 	}
-	return &schemas.RelayJobHandle{ID: id, IntervalSeconds: route.jobInterval, Params: route.jobParams}
+	if !validRelayJobID(id) {
+		return nil, fmt.Errorf("the job id at %s is not safe to poll with (%d bytes; printable ASCII, no spaces, \\, ?, # or . segments, at most %d bytes)", route.job.IDPath, len(id), maxRelayJobIDLength)
+	}
+	return &schemas.RelayJobHandle{ID: id, IntervalSeconds: route.jobInterval, Params: route.jobParams, ReusedIDIsNewJob: route.job.ReusedIDIsNewJob}, nil
 }

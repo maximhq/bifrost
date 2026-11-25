@@ -5,8 +5,6 @@ package logging
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -570,21 +568,6 @@ func (p *LoggerPlugin) sleepCtx(d time.Duration) bool {
 // out is not lost: the job stays due and the sweeper re-drives it.
 const jobAccountingTimeout = 30 * time.Second
 
-// batchRunnerProcessID distinguishes this process when no cluster node id is set.
-// Deliberately random rather than PID-based: two replicas on different hosts can
-// share a PID, and this identity is what keeps their batch claims apart.
-var batchRunnerProcessID = newBatchRunnerProcessID()
-
-func newBatchRunnerProcessID() string {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand is effectively infallible here; a time-based value still
-		// separates processes far better than a shared constant would.
-		return strconv.FormatInt(time.Now().UnixNano(), 36)
-	}
-	return hex.EncodeToString(b[:])
-}
-
 // batchRunnerID builds the ownership-fence identity for a batch accounting worker.
 //
 // Batch claims are fenced on this value, so it must differ between workers that
@@ -596,10 +579,13 @@ func newBatchRunnerProcessID() string {
 // live workers, and a restarted process should not inherit its predecessor's
 // claims — those are recovered through the staleness path instead.
 func (p *LoggerPlugin) batchRunnerID(prefix string) string {
-	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
-		return prefix + ":" + nodeID
-	}
-	return prefix + ":" + batchRunnerProcessID
+	return jobaccounting.RunnerID(prefix, p.ClusterNodeID())
+}
+
+// ClusterNodeID is the node id SetClusterNodeID set, "" in OSS.
+func (p *LoggerPlugin) ClusterNodeID() string {
+	nodeID, _ := p.clusterNodeID.Load().(string)
+	return nodeID
 }
 
 func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.BifrostResponse, pricingScopes *modelcatalog.PricingLookupScopes) {
