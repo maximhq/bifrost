@@ -247,6 +247,70 @@ func TestGetUnfilteredModelsForProvider_CloudflareUsesListModelsOnly(t *testing.
 	}
 }
 
+// TestAliasNamesForProvider pins which alias names a listing may suggest; the raw catalog stays free of them.
+func TestAliasNamesForProvider(t *testing.T) {
+	disabled := false
+	aliases := func(names ...string) schemas.KeyAliases {
+		out := schemas.KeyAliases{}
+		for _, name := range names {
+			out[name] = schemas.AliasConfig{ModelID: "unlisted-target"}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		keys []schemas.Key
+		want []string
+	}{
+		{"no keys", nil, nil},
+		{"unlisted target", []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: aliases("zeta", "alpha")}}, []string{"alpha", "zeta"}},
+		{"shared by two keys", []schemas.Key{
+			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: aliases("alpha")},
+			{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: aliases("alpha", "beta")},
+		}, []string{"alpha", "beta"}},
+		{"pattern alias", []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: aliases("alpha", "regex:claude-.*")}}, []string{"alpha"}},
+		{"disabled key", []schemas.Key{
+			{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: aliases("alpha")},
+			{ID: "k2", Models: schemas.WhiteList{"*"}, Enabled: &disabled, Aliases: aliases("hidden")},
+		}, []string{"alpha"}},
+		{"outside the allow list", []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"alpha"}, Aliases: aliases("alpha", "beta")}}, []string{"alpha"}},
+		{"deny all", []schemas.Key{{ID: "k1", Models: schemas.WhiteList{}, Aliases: aliases("alpha")}}, nil},
+		{"blocked on its own key, beside an unrestricted key", []schemas.Key{
+			{ID: "k1", Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"beta"}, Aliases: aliases("alpha", "beta")},
+			{ID: "k2", Models: schemas.WhiteList{"*"}},
+		}, []string{"alpha"}},
+		{"outside its own key's allow list, beside an unrestricted key", []schemas.Key{
+			{ID: "k1", Models: schemas.WhiteList{"alpha"}, Aliases: aliases("alpha", "beta")},
+			{ID: "k2", Models: schemas.WhiteList{"*"}},
+		}, []string{"alpha"}},
+		{"key that blocks everything", []schemas.Key{
+			{ID: "k1", Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"*"}, Aliases: aliases("alpha")},
+			{ID: "k2", Models: schemas.WhiteList{"*"}, Aliases: aliases("beta")},
+		}, []string{"beta"}},
+		{"blocked", []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"beta"}, Aliases: aliases("alpha", "beta")}}, []string{"alpha"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := NewTestCatalog(nil)
+			mc.SetKeyConfigForProvider(schemas.Bedrock, tc.keys)
+			mc.UpsertLive(schemas.Bedrock, "k1", true, []string{"listed-model"})
+
+			got := mc.AliasNamesForProvider(schemas.Bedrock)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("AliasNamesForProvider = %v, want %v", got, tc.want)
+			}
+			effective := mc.GetModelsForProvider(schemas.Bedrock)
+			for _, alias := range tc.want {
+				if !slices.Contains(effective, alias) {
+					t.Errorf("GetModelsForProvider = %v, want it to list alias %q", effective, alias)
+				}
+			}
+			if unfiltered := mc.GetUnfilteredModelsForProvider(schemas.Bedrock); !slices.Equal(unfiltered, []string{"listed-model"}) {
+				t.Errorf("GetUnfilteredModelsForProvider = %v, want [listed-model]", unfiltered)
+			}
+		})
+	}
+}
+
 func TestGetModelsForProvider_IncludesDeprecatedDatasheetModelsWhenLiveExists(t *testing.T) {
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
 	pricingJSON := []byte(`{

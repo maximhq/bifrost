@@ -789,6 +789,7 @@ function FallbackRow({ fallback, index, referencedProviderOptions, allKeys, onUp
 						placeholder={t("routing.incomingOptional")}
 						allowCustomModel
 						unfiltered={true}
+						includeAliases
 						disabled={!provider}
 						className="!h-9 !min-h-9 w-full"
 					/>
