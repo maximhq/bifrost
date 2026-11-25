@@ -1311,6 +1311,33 @@ def test_pricing_patch_above_12hr_fields():
     assert not problems, "PricingPatch 1hr+ tier drift:\n    " + "\n    ".join(problems)
 
 
+def test_genai_interactions_input_types_match_the_decoder():
+    """GeminiInteractionsInput.UnmarshalJSON accepts a string, an object, an array or null and
+    refuses anything else, and an array holds objects. The create schema has to say the same, in the
+    source and the bundle, or a validator accepts `"input": 42` or `["hi"]` that the route rejects."""
+    import jsonschema
+
+    source = load(HERE / "paths" / "integrations" / "genai" / "interactions.yaml")
+    schemas = [("interactions.yaml", source["collection"]["post"]["requestBody"]["content"]["application/json"]["schema"])]
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    for path, item in bundle.get("paths", {}).items():
+        if path.startswith("/genai/") and path.endswith("/interactions") and "post" in item:
+            schemas.append((f"openapi.json {path}", item["post"]["requestBody"]["content"]["application/json"]["schema"]))
+    problems = []
+    for name, schema in schemas:
+        validator = jsonschema.Draft202012Validator(schema)
+        for value in ("hi", {"type": "text", "text": "hi"}, [{"type": "text", "text": "hi"}], None):
+            if not validator.is_valid({"model": "gemini-3-flash-preview", "input": value}):
+                problems.append(f"{name}: rejects input {value!r}, which the route accepts")
+        if not validator.is_valid({"model": "gemini-3-flash-preview"}):
+            problems.append(f"{name}: rejects an omitted input")
+        for value in (42, True, ["hi"], [42], [[{"type": "text", "text": "hi"}]]):
+            if validator.is_valid({"model": "gemini-3-flash-preview", "input": value}):
+                problems.append(f"{name}: accepts input {value!r}, which the route rejects")
+    assert len(schemas) > 1, "no /genai interactions create operation found in openapi.json"
+    assert not problems, "GenAI Interactions input contract:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
@@ -1336,5 +1363,6 @@ check("adaptive routing PUT descriptions state that an empty reroute_target is s
 
 check("pricing patch OpenAI 12h cache-creation rates are non-negative numbers in source and bundle", test_pricing_patch_above_12hr_fields)
 check("clamped list endpoints document limit maximum 100 and default 25", test_clamped_list_endpoints_document_the_page_bounds)
+check("genai interactions input types match the decoder", test_genai_interactions_input_types_match_the_decoder)
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

@@ -1,0 +1,199 @@
+# Google GenAI / Vertex - Interactions API
+
+collection:
+  post:
+    operationId: genaiCreateInteraction
+    summary: Create an interaction
+    description: |
+      Runs one turn of Google's Interactions API. On Gemini and Vertex the body is
+      forwarded to Google with three changes: the provider prefix is stripped from
+      `model` (or `agent`), the Bifrost-only `fallbacks` field is removed, and a streamed
+      request gets `stream: true`. Google's Interaction (or event stream when `stream` is
+      true) is returned unchanged. A `provider/model` prefix for another provider runs
+      the turn on that provider through the Responses API and renders the answer as an
+      Interaction; agent-only fields return 400 on that path, and on a Gemini or Vertex
+      request that lists a fallback outside Google's family.
+    tags:
+    - GenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              model:
+                type: string
+                description: Model to run, optionally with a provider prefix such as `openai/gpt-4o-mini`.
+              agent:
+                type: string
+                description: Agent to run instead of a model, such as `deep-research-preview-04-2026`. Gemini and Vertex only.
+              input:
+                type:
+                - string
+                - object
+                - array
+                - 'null'
+                items:
+                  type: object
+                  additionalProperties: true
+                description: A string, a content block or step, or a list of blocks and steps.
+              system_instruction:
+                type: string
+              tools:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+              generation_config:
+                type: object
+                additionalProperties: true
+              response_format:
+                description: Output format, an object or a list of objects.
+              previous_interaction_id:
+                type: string
+                description: Id of a stored interaction to continue from.
+              stream:
+                type: boolean
+              store:
+                type: boolean
+              background:
+                type: boolean
+              fallbacks:
+                type: array
+                items:
+                  type: string
+                description: Bifrost extension. Models to try if this one fails.
+            additionalProperties: true
+            # The route needs a model or an agent; either one, or both, is accepted.
+            anyOf:
+            - required:
+              - model
+              properties:
+                model:
+                  type: string
+                  minLength: 1
+            - required:
+              - agent
+              properties:
+                agent:
+                  type: string
+                  minLength: 1
+    responses:
+      '200':
+        description: The Interaction, or an SSE stream of Interactions events when `stream` is true.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+          text/event-stream:
+            schema:
+              type: string
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+item:
+  get:
+    operationId: genaiGetInteraction
+    summary: Get an interaction
+    description: Reads a stored interaction. `stream=true` replays it as an SSE stream, resuming after `last_event_id`. Add `provider` for a run not created on Gemini.
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: interaction_id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: stream
+      in: query
+      schema:
+        type: boolean
+    - name: last_event_id
+      in: query
+      schema:
+        type: string
+    - name: provider
+      in: query
+      schema:
+        type: string
+    responses:
+      '200':
+        description: The Interaction, or an SSE stream when `stream` is true.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+          text/event-stream:
+            schema:
+              type: string
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  delete:
+    operationId: genaiDeleteInteraction
+    summary: Delete an interaction
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: interaction_id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: provider
+      in: query
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Deleted. The body is an empty object.
+        content:
+          application/json:
+            schema:
+              type: object
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+cancel:
+  post:
+    operationId: genaiCancelInteraction
+    summary: Cancel a background interaction
+    tags:
+    - GenAI Integration
+    parameters:
+    - name: interaction_id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: provider
+      in: query
+      schema:
+        type: string
+    responses:
+      '200':
+        description: The cancelled Interaction.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

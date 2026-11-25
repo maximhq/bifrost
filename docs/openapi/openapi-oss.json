@@ -26354,6 +26354,318 @@
         ]
       }
     },
+    "/genai/v1beta/interactions": {
+      "post": {
+        "operationId": "genaiCreateInteraction",
+        "summary": "Create an interaction",
+        "description": "Runs one turn of Google's Interactions API. On Gemini and Vertex the body is\nforwarded to Google with three changes: the provider prefix is stripped from\n`model` (or `agent`), the Bifrost-only `fallbacks` field is removed, and a streamed\nrequest gets `stream: true`. Google's Interaction (or event stream when `stream` is\ntrue) is returned unchanged. A `provider/model` prefix for another provider runs\nthe turn on that provider through the Responses API and renders the answer as an\nInteraction; agent-only fields return 400 on that path, and on a Gemini or Vertex\nrequest that lists a fallback outside Google's family.\n",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model to run, optionally with a provider prefix such as `openai/gpt-4o-mini`."
+                  },
+                  "agent": {
+                    "type": "string",
+                    "description": "Agent to run instead of a model, such as `deep-research-preview-04-2026`. Gemini and Vertex only."
+                  },
+                  "input": {
+                    "type": [
+                      "string",
+                      "object",
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "description": "A string, a content block or step, or a list of blocks and steps."
+                  },
+                  "system_instruction": {
+                    "type": "string"
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "generation_config": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "response_format": {
+                    "description": "Output format, an object or a list of objects."
+                  },
+                  "previous_interaction_id": {
+                    "type": "string",
+                    "description": "Id of a stored interaction to continue from."
+                  },
+                  "stream": {
+                    "type": "boolean"
+                  },
+                  "store": {
+                    "type": "boolean"
+                  },
+                  "background": {
+                    "type": "boolean"
+                  },
+                  "fallbacks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Bifrost extension. Models to try if this one fails."
+                  }
+                },
+                "additionalProperties": true,
+                "anyOf": [
+                  {
+                    "required": [
+                      "model"
+                    ],
+                    "properties": {
+                      "model": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  {
+                    "required": [
+                      "agent"
+                    ],
+                    "properties": {
+                      "agent": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The Interaction, or an SSE stream of Interactions events when `stream` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/genai/v1beta/interactions/{interaction_id}": {
+      "get": {
+        "operationId": "genaiGetInteraction",
+        "summary": "Get an interaction",
+        "description": "Reads a stored interaction. `stream=true` replays it as an SSE stream, resuming after `last_event_id`. Add `provider` for a run not created on Gemini.",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "interaction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "stream",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "last_event_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Interaction, or an SSE stream when `stream` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "genaiDeleteInteraction",
+        "summary": "Delete an interaction",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "interaction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted. The body is an empty object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/genai/v1beta/interactions/{interaction_id}/cancel": {
+      "post": {
+        "operationId": "genaiCancelInteraction",
+        "summary": "Cancel a background interaction",
+        "tags": [
+          "GenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "interaction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The cancelled Interaction.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/genai/v1beta/models/{model}/operations/{operation_id}": {
       "get": {
         "operationId": "geminiRetrieveVideoOperation",
@@ -41888,6 +42200,15 @@
             }
           },
           {
+            "name": "include_aliases",
+            "in": "query",
+            "description": "If true together with `unfiltered`, also return the alias names on the provider's enabled keys, where each key's own allow and block lists admit them. Pattern aliases are left out. A listing without `unfiltered` already includes alias names.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
             "name": "include_deprecated",
             "in": "query",
             "description": "If true, include deprecated models when `query` is empty. Without a `query` they are hidden by default; with a `query` they are always included, listed after the live models.",
@@ -42029,6 +42350,15 @@
             "name": "unfiltered",
             "in": "query",
             "description": "If true, return the provider's whole catalog, including models filtered out by provider-level restrictions or by what the caller's virtual key or access allows",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "include_aliases",
+            "in": "query",
+            "description": "If true together with `unfiltered`, also return the alias names on the provider's enabled keys, where each key's own allow and block lists admit them. Pattern aliases are left out. A listing without `unfiltered` already includes alias names.",
             "schema": {
               "type": "boolean",
               "default": false
@@ -68126,7 +68456,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Logs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get logs",
-        "description": "Retrieves logs with filtering, search, and pagination via query parameters.\n",
+        "description": "Retrieves logs with filtering, search, and pagination via query parameters.\n\nEach entry is a summary row, not the full log:\n\n- `input_history` and `responses_input_history` hold only the last input message. Realtime turn rows (`object` is `realtime.turn`) keep their full history.\n- Response payloads are left out. Realtime turn rows keep `output_message`.\n- Of the other request payloads, only `speech_input`, `transcription_input` and `image_generation_input` are returned.\n- Provider error payloads are left out, except for guardrail blocks.\n- These fields are left out: `alias_model_family`, `server_side_fallback_model`, `served_model`, `routing_engines_used`, `complexity_mechanism`, `model_router_id`, `model_router_name`, `video_generation_input` and `cache_debug`.\n\nFetch a single entry with `GET /api/logs/{id}` for the full log.\n",
         "tags": [
           "Logging"
         ],
@@ -129327,7 +129657,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Routing engines that acted on this request (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core). core records fallback transitions; loadbalancing and circuit-breaker appear only in Bifrost Enterprise."
+            "description": "Routing engines that acted on this request (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core). core records fallback transitions; loadbalancing and circuit-breaker appear only in Bifrost Enterprise. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "tool_call_names": {
             "type": "array",
@@ -129348,11 +129678,12 @@
           "model_router_id": {
             "type": "string",
             "nullable": true,
-            "description": "The model router that took the request; omitted when none did."
+            "description": "The model router that took the request; omitted when none did. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "model_router_name": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "complexity_tier": {
             "type": "string",
@@ -129378,7 +129709,7 @@
               "skipped",
               null
             ],
-            "description": "How the effective complexity tier was determined. decision means the configured decision model supplied the tier; session means retained session state supplied it; skipped means classification was demanded but produced no tier."
+            "description": "How the effective complexity tier was determined. decision means the configured decision model supplied the tier; session means retained session state supplied it; skipped means classification was demanded but produced no tier. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "complexity_score": {
             "type": "number",
@@ -130587,7 +130918,8 @@
           },
           "cache_debug": {
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": true,
+            "description": "Semantic cache result for the request. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "metadata": {
             "type": "object",
@@ -130635,7 +130967,7 @@
           "video_generation_input": {
             "type": "object",
             "additionalProperties": true,
-            "description": "Video generation request input"
+            "description": "Video generation request input. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "video_generation_output": {
             "type": "object",

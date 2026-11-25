@@ -111,6 +111,8 @@ Claude Code OAuth sign-in (`Authorization: Bearer sk-ant-oat…`) is handled sep
 
 #### Interactions and agents
 
+The Interactions API is also a typed route, `/genai/v1beta/interactions`, which adds fallbacks and can run on providers other than Google. See [Interactions API](/integrations/genai-sdk/interactions).
+
 An Interactions create (`POST .../interactions`) can name an `agent`, such as `deep-research-preview-04-2026`, instead of a `model`. Bifrost treats the agent as the request's model for key selection, virtual-key model restrictions, and pricing. Polling, cancelling, or deleting a run (`GET`, `DELETE`, or `POST .../cancel` on `/interactions/{id}`) starts nothing new, so a virtual key with an allowed-models list can still do them.
 
 Google stores a run by default and reports its full usage on every read. Bifrost bills the run once, not once per read:

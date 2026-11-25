@@ -488,6 +488,12 @@ paths:
   # Rank (Vertex AI)
   /genai/v1/rank:
     $ref: "./paths/integrations/genai/rank.yaml#/rank"
+  /genai/v1beta/interactions:
+    $ref: "./paths/integrations/genai/interactions.yaml#/collection"
+  /genai/v1beta/interactions/{interaction_id}:
+    $ref: "./paths/integrations/genai/interactions.yaml#/item"
+  /genai/v1beta/interactions/{interaction_id}/cancel:
+    $ref: "./paths/integrations/genai/interactions.yaml#/cancel"
 
   # Long-running video operation polling
   /genai/v1beta/models/{model}/operations/{operation_id}:
