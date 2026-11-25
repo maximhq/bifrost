@@ -349744,6 +349744,157 @@
           ]
         }
       ]
+    },
+    {
+      "name": "382. Bedrock invoke routes carry Claude Code safeguards (bedrock invoke safeguards)",
+      "description": "Claude Code in Bedrock mode (CLAUDE_CODE_USE_BEDROCK=1, ANTHROPIC_BEDROCK_BASE_URL=<bifrost>/bedrock) sends the auto-mode classifier request as a top-level `safeguards` array on /bedrock/model/{id}/invoke and /invoke-with-response-stream. Two gaps lost it: BedrockConverseRequest.ToBifrostResponsesRequest rebuilt ExtraParams from a fixed key list without `safeguards`, so it never reached InvokeModel; and the invoke egress (ToBedrockInvokeMessagesResponse, toAnthropicInvokeStreamBytes) never emitted `safeguard_results`. Bedrock answers a valid classifier_context with safeguard_results [{type: dangerous_tool_use, status: {type: available, ...}}] (top-level when unary, message_delta.delta when streamed) and rejects an invalid one with a ValidationException. Pre-fix all three cases fail: no safeguard_results, and the invalid payload returns 200.",
+      "item": [
+        {
+          "name": "Bedrock /bedrock/model/{id}/invoke returns safeguard_results (claude-sonnet-5) - bedrock invoke safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invoke returns the classifier verdicts as top-level safeguard_results', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.safeguard_results, 'safeguard_results missing (dropped on the /bedrock invoke route): ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body.safeguard_results[0].type, 'safeguard_results reshaped: ' + JSON.stringify(body.safeguard_results)).to.equal('dangerous_tool_use');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"anthropic_beta\": [\n    \"dangerous-tool-use-2026-09-03\"\n  ],\n  \"safeguards\": [\n    {\n      \"type\": \"dangerous_tool_use\",\n      \"classifier_context\": {}\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock /bedrock/model/{id}/invoke-with-response-stream streams safeguard_results (claude-sonnet-5) - bedrock invoke safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invoke-with-response-stream carries safeguard_results on message_start or message_delta', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.equal(200);",
+                  "  var rawText = pm.response.text() || '';",
+                  "  var b64Matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(b64Matches.length, 'expected invoke-stream chunk events: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var events = b64Matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  var found = null;",
+                  "  events.forEach(function (e) {",
+                  "    if (e.type === 'message_start' && e.message && e.message.safeguard_results) { found = e.message.safeguard_results; }",
+                  "    if (e.type === 'message_delta' && e.delta && e.delta.safeguard_results) { found = e.delta.safeguard_results; }",
+                  "    if (e.type === 'safeguards_update' && e.safeguard_results) { found = found || e.safeguard_results; }",
+                  "  });",
+                  "  pm.expect(found, 'no safeguard_results in any streamed event: ' + JSON.stringify(events).slice(0, 800)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(found[0].type, 'safeguard_results reshaped: ' + JSON.stringify(found)).to.equal('dangerous_tool_use');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"anthropic_beta\": [\n    \"dangerous-tool-use-2026-09-03\"\n  ],\n  \"safeguards\": [\n    {\n      \"type\": \"dangerous_tool_use\",\n      \"classifier_context\": {}\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke-with-response-stream"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-4XX] Bedrock /bedrock/model/{id}/invoke forwards an invalid safeguards payload, provider rejects it (claude-sonnet-5) - bedrock invoke safeguards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invalid classifier_context reaches Bedrock and is rejected there', function () {",
+                  "  pm.expect(pm.response.code, 'expected Bedrock to reject the invalid safeguards (a 200 means the field was dropped before InvokeModel): ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text().toLowerCase(), 'rejection should name safeguards: ' + pm.response.text()).to.include('safeguards');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"anthropic_beta\": [\n    \"dangerous-tool-use-2026-09-03\"\n  ],\n  \"safeguards\": [\n    {\n      \"type\": \"dangerous_tool_use\",\n      \"classifier_context\": \"x\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

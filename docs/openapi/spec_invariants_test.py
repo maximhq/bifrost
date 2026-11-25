@@ -1184,18 +1184,32 @@ def test_pricing_patch_above_12hr_fields():
 
 
 def test_access_programs_contract():
-    """OpenAI's access_programs (Daybreak): cyber takes exactly the three documented
-    programs, members Bifrost does not model are allowed and forwarded so OpenAI can
-    reject them, and every Responses body that carries the field references the one
-    component, in the YAML sources and in both bundles."""
+    """OpenAI's access_programs (Daybreak): cyber documents the three known programs
+    without restricting the value, because Bifrost forwards unlisted strings and
+    non-string values for OpenAI to validate; members Bifrost does not model are
+    allowed and forwarded too, and every Responses body that carries the field
+    references the one component, in the YAML sources and in both bundles."""
+    import jsonschema
+
     programs = ["standard", "daybreak_blue", "daybreak_red"]
+    forwarded = [{"cyber": p} for p in programs] + [{"cyber": "daybreak_future"}, {"cyber": 1}, {"cyebr": "daybreak_red"}]
+
+    def cyber_problems(name, schema):
+        found = []
+        rejected = [v for v in forwarded if not jsonschema.Draft202012Validator(schema).is_valid(v)]
+        if rejected:
+            found.append(f"{name} AccessPrograms rejects values Bifrost forwards to OpenAI: {rejected}")
+        cyber_doc = ((schema.get("properties") or {}).get("cyber") or {}).get("description") or ""
+        missing = [p for p in programs if p not in cyber_doc]
+        if missing:
+            found.append(f"{name} AccessPrograms.cyber description does not name {missing}")
+        return found
     inference = load(HERE / "schemas" / "inference" / "responses.yaml")
     integration = load(HERE / "schemas" / "integrations" / "openai" / "responses.yaml")
     problems = []
 
     component = inference.get("AccessPrograms") or {}
-    if component.get("properties", {}).get("cyber", {}).get("enum") != programs:
-        problems.append(f"responses.yaml AccessPrograms.cyber enum is {component.get('properties', {}).get('cyber', {}).get('enum')}, want {programs}")
+    problems += cyber_problems("responses.yaml", component)
     if component.get("additionalProperties") is not True:
         problems.append("responses.yaml AccessPrograms must set additionalProperties: true (unknown members are forwarded to OpenAI)")
     if "forward" not in (component.get("description") or ""):
@@ -1214,7 +1228,8 @@ def test_access_programs_contract():
     for bundle_name in ("openapi.json", "openapi-oss.json"):
         schemas = json.loads((HERE / bundle_name).read_text(encoding="utf-8"))["components"]["schemas"]
         bundled = schemas.get("AccessPrograms") or {}
-        if bundled.get("properties", {}).get("cyber", {}).get("enum") != programs or bundled.get("additionalProperties") is not True:
+        problems += cyber_problems(bundle_name, bundled)
+        if bundled.get("properties") != component.get("properties") or bundled.get("additionalProperties") is not True:
             problems.append(f"{bundle_name} AccessPrograms drifted from responses.yaml: {bundled}")
         for owner in ("ResponsesRequest", "ResponsesResponse", "OpenAIResponsesRequest"):
             got = ((schemas.get(owner) or {}).get("properties") or {}).get("access_programs", {}).get("$ref")

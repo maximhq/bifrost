@@ -822,6 +822,8 @@ type BedrockInvokeMessagesResponse struct {
 
 	GuardrailAction string          `json:"amazon-bedrock-guardrailAction,omitempty"` // "INTERVENED" or "NONE" when a guardrail applied
 	Trace           json.RawMessage `json:"amazon-bedrock-trace,omitempty"`           // Guardrail trace when the caller enabled it
+
+	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"` // Claude Code auto-mode classifier verdicts, forwarded opaque
 }
 
 // BedrockInvokeMessagesContentBlock represents a content block in an Anthropic Messages response.

@@ -3903,3 +3903,128 @@ func BenchmarkToBedrockInvokeAnthropicResponse_StopReason(b *testing.B) {
 		_ = toBedrockInvokeAnthropicResponse(resp, "claude-sonnet-4-6")
 	}
 }
+
+// invokeSafeguardsBody is the request shape Claude Code sends in Bedrock mode
+// (CLAUDE_CODE_USE_BEDROCK=1) to /bedrock/model/{id}/invoke[-with-response-stream].
+const invokeSafeguardsBody = `{"anthropic_version":"bedrock-2023-05-31","max_tokens":256,` +
+	`"anthropic_beta":["dangerous-tool-use-2026-09-03"],` +
+	`"safeguards":[{"type":"dangerous_tool_use","classifier_context":{}}],` +
+	`"messages":[{"role":"user","content":"Say hi."}]}`
+
+const invokeSafeguardResults = `[{"type":"dangerous_tool_use","status":{"type":"available","tool_uses":{"toolu_bdrk_01":{"type":"evaluated","outcome":"not_flagged"}}}}]`
+
+// The invoke ingress converts the body through BedrockConverseRequest, whose
+// ToBifrostResponsesRequest rebuilt ExtraParams from a fixed key list without
+// safeguards, so the request never reached InvokeModel with the field and Bedrock
+// returned no verdicts.
+func TestInvokeIngress_SafeguardsReachInvokeModelBody(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var invokeReq BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(invokeSafeguardsBody), &invokeReq))
+	invokeReq.ModelID = "global.anthropic.claude-sonnet-5-5"
+
+	bifrostReq, err := invokeReq.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	bifrostReq.Provider = schemas.Bedrock
+
+	require.NotNil(t, bifrostReq.Params)
+	require.Contains(t, bifrostReq.Params.ExtraParams, "safeguards", "safeguards must survive the invoke ingress")
+	require.True(t, responsesUsesAnthropicInvokePath(ctx, bifrostReq), "a supported safeguards request must use InvokeModel")
+
+	provider := &BedrockProvider{}
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, bifrostReq, provider.invokeBuildConfig(bifrostReq.Model, false, true, nil))
+	require.Nil(t, bifrostErr)
+	assert.JSONEq(t, `[{"type":"dangerous_tool_use","classifier_context":{}}]`, gjson.GetBytes(body, "safeguards").Raw, "body=%s", body)
+}
+
+// Non-streaming /invoke: Bedrock reports top-level safeguard_results, which the
+// provider stores on BifrostResponsesResponse.SafeguardResults.
+func TestToBedrockInvokeAnthropicResponse_CarriesSafeguardResults(t *testing.T) {
+	model := "global.anthropic.claude-sonnet-5-5"
+	resp := &schemas.BifrostResponsesResponse{
+		Model:            model,
+		SafeguardResults: json.RawMessage(invokeSafeguardResults),
+	}
+
+	out, err := ToBedrockInvokeMessagesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
+	require.NoError(t, err)
+	body, err := sonic.Marshal(out)
+	require.NoError(t, err)
+	got := gjson.GetBytes(body, "safeguard_results")
+	require.True(t, got.Exists(), "safeguard_results missing from /invoke response: %s", body)
+	assert.JSONEq(t, invokeSafeguardResults, got.Raw)
+}
+
+// Streaming: verdicts nested in message_start.message must be re-emitted there.
+func TestToAnthropicInvokeStreamBytes_MessageStartCarriesSafeguardResults(t *testing.T) {
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCreated,
+		Response: &schemas.BifrostResponsesResponse{
+			ID:               schemas.Ptr("msg_bdrk_sg_start"),
+			SafeguardResults: json.RawMessage(invokeSafeguardResults),
+		},
+	}
+
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
+	require.NoError(t, err)
+	require.Len(t, frames, 1)
+	got := gjson.GetBytes(frames[0], "message.safeguard_results")
+	require.True(t, got.Exists(), "message_start.message.safeguard_results missing: %s", frames[0])
+	assert.JSONEq(t, invokeSafeguardResults, got.Raw)
+}
+
+// Streaming: Bedrock puts the final verdicts on message_delta.delta, the same
+// slot the /anthropic egress restores them to.
+func TestToAnthropicInvokeStreamBytes_MessageDeltaCarriesSafeguardResults(t *testing.T) {
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{
+			SafeguardResults: json.RawMessage(invokeSafeguardResults),
+		},
+	}
+
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
+	require.NoError(t, err)
+	require.Len(t, frames, 2, "expected message_delta + message_stop")
+	got := gjson.GetBytes(frames[0], "delta.safeguard_results")
+	require.True(t, got.Exists(), "message_delta.delta.safeguard_results missing: %s", frames[0])
+	assert.JSONEq(t, invokeSafeguardResults, got.Raw)
+}
+
+// Streaming: an intermediate safeguards_update event is forwarded as itself
+// rather than swallowed by the default branch.
+func TestToAnthropicInvokeStreamBytes_SafeguardsUpdateForwarded(t *testing.T) {
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type:             schemas.ResponsesStreamResponseTypeSafeguardsUpdate,
+		SafeguardResults: json.RawMessage(invokeSafeguardResults),
+	}
+
+	frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
+	require.NoError(t, err)
+	require.Len(t, frames, 1, "safeguards_update must be emitted, not dropped")
+	assert.Equal(t, "safeguards_update", gjson.GetBytes(frames[0], "type").String(), "frame=%s", frames[0])
+	assert.JSONEq(t, invokeSafeguardResults, gjson.GetBytes(frames[0], "safeguard_results").Raw)
+}
+
+// A model outside the auto-mode set stays on Converse, which has no safeguards
+// slot. The field must not reach the Converse body through passthrough extra
+// params (Bedrock would 400), and the caller's map must keep it so a fallback to
+// a supporting provider still sends it.
+func TestInvokeIngress_UnsupportedModelDropsSafeguardsOnConverse(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	var invokeReq BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(invokeSafeguardsBody), &invokeReq))
+	invokeReq.ModelID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+	bifrostReq, err := invokeReq.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	bifrostReq.Provider = schemas.Bedrock
+	require.Contains(t, bifrostReq.Params.ExtraParams, "safeguards")
+	require.False(t, responsesUsesAnthropicInvokePath(ctx, bifrostReq), "haiku is outside the auto-mode set and stays on Converse")
+
+	converseReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	assert.NotContains(t, converseReq.ExtraParams, "safeguards", "safeguards must not leak into the Converse body")
+	assert.Contains(t, bifrostReq.Params.ExtraParams, "safeguards", "the caller's params must keep safeguards for fallbacks")
+}

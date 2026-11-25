@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -2462,6 +2463,16 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		bifrostReq.Params.ExtraParams["cache_control"] = cc
 	}
 
+	// Claude Code's auto-mode classifier request (safeguards) has no Converse field either.
+	// Carried opaque, it lets responsesUsesAnthropicInvokePath route a supported model to
+	// InvokeModel, where the Anthropic builder restores it with the dangerous-tool-use beta.
+	if sg, ok := request.ExtraParams["safeguards"]; ok && sg != nil {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+		bifrostReq.Params.ExtraParams["safeguards"] = sg
+	}
+
 	// Convert additional model request fields to extra params
 	if request.AdditionalModelRequestFields.Len() > 0 {
 		fieldsToForward := request.AdditionalModelRequestFields
@@ -2800,6 +2811,13 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 		if bifrostReq.Params.ExtraParams != nil {
 			bedrockReq.ExtraParams = withoutTopLevelCacheControl(bifrostReq.Params.ExtraParams)
+			// Converse has no safeguards slot: a request that reaches it was gated off
+			// InvokeModel, so the field must not leak through passthrough extra params.
+			// Clone first so a fallback attempt still sees the caller's safeguards.
+			if _, ok := bedrockReq.ExtraParams["safeguards"]; ok {
+				bedrockReq.ExtraParams = maps.Clone(bedrockReq.ExtraParams)
+				delete(bedrockReq.ExtraParams, "safeguards")
+			}
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				delete(bedrockReq.ExtraParams, "stop")
 				if !caps.FieldUnsupported(schemas.FieldStop, !converseAcceptsStopSequences(capModel)) {
