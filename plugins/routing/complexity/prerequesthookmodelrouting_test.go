@@ -80,7 +80,7 @@ func serveGeneralRouter(t *testing.T, plugin *routing.RoutingPlugin, targets ...
 	t.Helper()
 	router := decisionModelRouter("general", "General", targets...)
 	router.Routing = globalRouting(0, "")
-	require.NoError(t, plugin.ReloadModelRouter(&router))
+	require.NoError(t, reloadRouter(plugin, &router))
 }
 
 // modelRoutingTestPlugin builds a routing plugin whose routers, and the
@@ -120,10 +120,12 @@ func modelRoutingTestPluginWithConfig(
 	plugin, err := routing.InitFromStore(ctx, config, logger, nil, ruleStore.Store, governance)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	testRuleStores.Store(plugin, ruleStore)
+	t.Cleanup(func() { testRuleStores.Delete(plugin) })
 	plugin.SetDecisionRequestExecutor(decide)
 	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(decisionAnalyzerTestConfig()))
 	for i := range routers {
-		require.NoError(t, plugin.ReloadModelRouter(&routers[i]))
+		require.NoError(t, reloadRouter(plugin, &routers[i]))
 	}
 	return plugin
 }
@@ -199,7 +201,7 @@ func TestModelRoutersMatchInOrder(t *testing.T) {
 	assert.Equal(t, "claude-haiku", model)
 	assert.Equal(t, "catch-all", ctx.Value(schemas.BifrostContextKeyModelRouterID))
 
-	require.NoError(t, plugin.SetModelRouterTargets("catch-all", []configstoreTables.TableModelRouterTarget{
+	require.NoError(t, testRulesOf(plugin).SaveModelRouterTargets(context.Background(), "catch-all", []configstoreTables.TableModelRouterTarget{
 		tierTarget(complexity.TierSimple, "anthropic", "claude-sonnet"),
 	}))
 	_, model = run("gpt-4o")
@@ -413,7 +415,7 @@ func TestModelRouterReloadAndRemove(t *testing.T) {
 	plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{supportRouter("Support")})
 
 	renamed := supportRouter("Customer support")
-	require.NoError(t, plugin.ReloadModelRouter(&renamed))
+	require.NoError(t, reloadRouter(plugin, &renamed))
 	ctx := newRequestContext()
 	runPreRequest(t, plugin, ctx, complexText)
 	assert.Equal(t, "Customer support", ctx.Value(schemas.BifrostContextKeyModelRouterName))
@@ -902,7 +904,7 @@ func TestRoutingRuleTierAndRouterTierAreSeparate(t *testing.T) {
 		llmCalls.Add(1)
 		return llmClassifierChatResponse(`{"tier": "SIMPLE"}`), nil
 	})
-	require.NoError(t, plugin.ReloadModelRouter(&byLLM))
+	require.NoError(t, reloadRouter(plugin, &byLLM))
 
 	ctx := newRequestContext()
 	req := runPreRequest(t, plugin, ctx, complexText)
@@ -1219,7 +1221,7 @@ func TestModelRoutersClassifyWithTheirOwnClassifier(t *testing.T) {
 	bySemantic := configstore.ModelRouter{ID: "by-semantic", Name: "By semantic", ComplexityAnalyzerConfig: *semanticConfig, Targets: everyTierTargets("by-semantic")}
 	bySemantic.Routing = appRouting(2, "semantic")
 	for _, router := range []*configstore.ModelRouter{&byDecision, &byLLM, &bySemantic} {
-		require.NoError(t, plugin.ReloadModelRouter(router))
+		require.NoError(t, reloadRouter(plugin, router))
 	}
 	require.Eventually(t, func() bool {
 		status, ok := plugin.ModelRouterSemanticStatus("by-semantic")
@@ -1252,7 +1254,8 @@ func TestModelRoutersClassifyWithTheirOwnClassifier(t *testing.T) {
 // TestModelRouterChangesApplyToTheNextRequest walks the edits an operator
 // makes to live routers and pins that each one decides the very next request:
 // reordering two routers, turning one off and on, moving one to a narrower
-// scope, saving one without routing, and changing a router's classifier.
+// scope, saving one again without routing, which keeps its saved routing, and
+// changing a router's classifier.
 func TestModelRouterChangesApplyToTheNextRequest(t *testing.T) {
 	first := decisionModelRouter("first", "First", everyTierTargets("first")...)
 	first.Routing = globalRouting(0, "")
@@ -1279,15 +1282,15 @@ func TestModelRouterChangesApplyToTheNextRequest(t *testing.T) {
 
 	withoutRouting := first
 	withoutRouting.Routing = nil
-	require.NoError(t, plugin.ReloadModelRouter(&withoutRouting))
-	assert.Equal(t, "gpt-4o", next(), "a router saved without routing takes nothing")
+	require.NoError(t, reloadRouter(plugin, &withoutRouting))
+	assert.Equal(t, "first-complex", next(), "a router saved again without routing keeps its saved routing")
 
 	plugin.SetChatRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 		return llmClassifierChatResponse(`{"tier": "SIMPLE"}`), nil
 	})
 	asLLM := configstore.ModelRouter{ID: "first", Name: "First", ComplexityAnalyzerConfig: llmRouterConfig(), Targets: everyTierTargets("first")}
 	asLLM.Routing = globalRouting(0, "")
-	require.NoError(t, plugin.ReloadModelRouter(&asLLM))
+	require.NoError(t, reloadRouter(plugin, &asLLM))
 	ctx := newRequestContext()
 	req := runPreRequest(t, plugin, ctx, complexText)
 	assert.Equal(t, "first-simple", routedModel(req), "a router saved with another classifier classifies with it")
@@ -1391,7 +1394,7 @@ func TestModelRouterToolContinuation(t *testing.T) {
 			llmCalls.Add(1)
 			return llmClassifierChatResponse(`{"tier": "SIMPLE"}`), nil
 		})
-		require.NoError(t, plugin.ReloadModelRouter(&byLLM))
+		require.NoError(t, reloadRouter(plugin, &byLLM))
 
 		turn := complexitySessionContext("s1")
 		req := runPreRequest(t, plugin, turn, mediumText)
@@ -1574,7 +1577,7 @@ func TestModelRoutersChangeUnderTraffic(t *testing.T) {
 		if i%2 == 1 {
 			model = "a-model-2"
 		}
-		_ = plugin.SetModelRouterTargets("a", []configstoreTables.TableModelRouterTarget{tierTarget(complexity.TierComplex, "", model)})
+		_ = testRulesOf(plugin).SaveModelRouterTargets(context.Background(), "a", []configstoreTables.TableModelRouterTarget{tierTarget(complexity.TierComplex, "", model)})
 	})
 	edit(func(i int) {
 		_ = plugin.SetModelRouterRouting("a", configstore.ModelRouterRouting{Enabled: i%2 == 0, Scope: "global"})
@@ -1585,7 +1588,7 @@ func TestModelRoutersChangeUnderTraffic(t *testing.T) {
 			return
 		}
 		served := b
-		_ = plugin.ReloadModelRouter(&served)
+		_ = reloadRouter(plugin, &served)
 	})
 
 	for range 8 {
@@ -1760,4 +1763,28 @@ func BenchmarkPreRequestHookModelRouters(b *testing.B) {
 			}
 		})
 	}
+}
+
+// testRuleStores maps each plugin modelRoutingTestPluginWithConfig built to the rule store its
+// routers are saved in.
+var testRuleStores sync.Map // *routing.RoutingPlugin -> *rules.TestRules
+
+// testRulesOf returns the rule store plugin's routers are saved in.
+func testRulesOf(plugin *routing.RoutingPlugin) *rules.TestRules {
+	store, _ := testRuleStores.Load(plugin)
+	return store.(*rules.TestRules)
+}
+
+// reloadRouter saves router and serves the record the save left, as the HTTP server does after a
+// save, so a save without routing serves the routing the router was saved with.
+func reloadRouter(plugin *routing.RoutingPlugin, router *configstore.ModelRouter) error {
+	store := testRulesOf(plugin)
+	if err := store.SaveModelRouter(context.Background(), router); err != nil {
+		return err
+	}
+	record, ok := store.Live().Collections.ModelRouters.Get(router.ID)
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	return plugin.ReloadModelRouter(&record.Router)
 }

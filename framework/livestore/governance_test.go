@@ -397,3 +397,45 @@ func TestRoutingRulesAreFoundByScopeWithTheirTargets(t *testing.T) {
 	require.Equal(t, []string{"r-global", "r-team"}, ids(registry.RoutingRuleScopeKey("global", "")))
 	require.Empty(t, ids(registry.RoutingRuleScopeKey("team", team)))
 }
+
+// TestUnreadableModelRouterFailsTheLoadAndKeepsItsRecordOnRefresh checks that a router stored in a
+// form this version cannot read fails the boot load and a refresh of the whole kind, naming the
+// router, and that a refresh of a router that became unreadable fails and keeps its record.
+func TestUnreadableModelRouterFailsTheLoadAndKeepsItsRecordOnRefresh(t *testing.T) {
+	ctx := context.Background()
+	cs := governanceDB(t)
+	config := configstore.ComplexityAnalyzerConfig{
+		TierBoundaries: configstore.ComplexityTierBoundaries{SimpleMedium: 0.10, MediumComplex: 0.30},
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			SimpleKeywords: []string{"hello"}, MediumKeywords: []string{"api"}, ComplexKeywords: []string{"tradeoffs"},
+		},
+	}
+	for _, id := range []string{"broken", "fine"} {
+		require.NoError(t, cs.CreateModelRouter(ctx, &configstore.ModelRouter{ID: id, Name: id, ComplexityAnalyzerConfig: config}))
+	}
+	db := cs.DB()
+	s := loadedGovernance(t, db)
+	fine, ok := s.Collections.ModelRouters.Get("fine")
+	require.True(t, ok)
+
+	require.NoError(t, db.Model(&tables.TableModelRouter{}).Where("id = ?", "broken").Update("simple_phrases_json", `["unterminated`).Error)
+	boot, err := New()
+	require.NoError(t, err)
+	t.Cleanup(boot.Close)
+	err = boot.LoadAll(ctx, db)
+	require.ErrorIs(t, err, configstore.ErrConfigUnreadable, "the boot load fails")
+	require.ErrorContains(t, err, `"broken"`, "and names the router")
+
+	err = s.RefreshKind(ctx, KindModelRouter)
+	require.ErrorIs(t, err, configstore.ErrConfigUnreadable, "a refresh of the whole kind fails")
+	kept, ok := s.Collections.ModelRouters.Get("fine")
+	require.True(t, ok)
+	require.Same(t, fine, kept, "and publishes nothing")
+
+	require.NoError(t, db.Model(&tables.TableModelRouter{}).Where("id = ?", "fine").Update("simple_phrases_json", `["unterminated`).Error)
+	err = s.Refresh(ctx, []Ref{{Kind: KindModelRouter, ID: "fine"}})
+	require.ErrorIs(t, err, configstore.ErrConfigUnreadable)
+	kept, ok = s.Collections.ModelRouters.Get("fine")
+	require.True(t, ok)
+	require.Same(t, fine, kept, "a refresh that cannot read the row keeps the record")
+}

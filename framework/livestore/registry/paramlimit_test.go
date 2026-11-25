@@ -201,3 +201,42 @@ func TestRoutingRulesByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
 	require.Equal(t, "r-1", RoutingRuleID(rows[0]))
 	require.Len(t, rows[0].Targets, 1)
 }
+
+// TestModelRoutersByIDReadsMoreRoutersThanTheParameterLimit checks that a refresh of more model
+// routers than one statement may bind reads every one, with its targets: the read of the routers
+// and the read of their targets each bind the whole ID list.
+func TestModelRoutersByIDReadsMoreRoutersThanTheParameterLimit(t *testing.T) {
+	ctx := context.Background()
+	store := newProviderDB(t, nil)
+	db := store.DB()
+	require.NoError(t, store.CreateModelRouter(ctx, &configstore.ModelRouter{ID: "mr-00000", Name: "mr-00000", ComplexityAnalyzerConfig: configstore.ComplexityAnalyzerConfig{
+		TierBoundaries: configstore.ComplexityTierBoundaries{SimpleMedium: 0.10, MediumComplex: 0.30},
+		Keywords: configstore.ComplexityEditableKeywordConfig{
+			SimpleKeywords: []string{"hello"}, MediumKeywords: []string{"api"}, ComplexKeywords: []string{"tradeoffs"},
+		},
+	}}))
+	insert(t, db, &tables.TableModelRouterTarget{RouterID: "mr-00000", Tier: "simple", Model: ptr("gpt-4o-mini"), Weight: 1})
+	var row tables.TableModelRouter
+	require.NoError(t, db.First(&row, "id = ?", "mr-00000").Error)
+	ids := []string{row.ID}
+	clones := make([]tables.TableModelRouter, 0, pastSQLiteParamLimit)
+	for i := 1; i < pastSQLiteParamLimit; i++ {
+		clone := row
+		clone.ID = fmt.Sprintf("mr-%05d", i)
+		clone.Name = clone.ID
+		clones = append(clones, clone)
+		ids = append(ids, clone.ID)
+	}
+	require.NoError(t, db.Omit(clause.Associations).CreateInBatches(clones, 200).Error)
+
+	rows, err := ModelRoutersByID(ctx, db, append(ids, "missing"))
+	require.NoError(t, err)
+	require.Len(t, rows, pastSQLiteParamLimit)
+	for _, r := range rows {
+		if r.Router.ID == "mr-00000" {
+			require.Len(t, r.Router.Targets, 1)
+		} else {
+			require.Empty(t, r.Router.Targets)
+		}
+	}
+}

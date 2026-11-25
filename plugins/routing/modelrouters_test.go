@@ -83,12 +83,12 @@ func TestRoutingPluginServesStoredModelRouters(t *testing.T) {
 	assert.True(t, plugin.routerMatcher.HasRoutes(), "the enabled router's routing is recorded")
 	assert.NotEqual(t, complexity.ClassifierDecision, plugin.complexityConfig.Load().Classifier, "routers never configure the complexity config")
 
-	// Replacing a router's targets leaves its classifiers alone.
+	// Replacing a router's targets, read from its record, leaves its classifiers alone.
 	config := rt.config.Load()
-	require.NoError(t, plugin.SetModelRouterTargets("support", nil))
+	require.NoError(t, store.SetModelRouterTargets(ctx, "support", nil))
+	refreshRouter(t, plugin, "support")
 	assert.Empty(t, rt.loadTargets())
 	assert.Same(t, config, rt.config.Load())
-	assert.ErrorIs(t, plugin.SetModelRouterTargets("missing", nil), configstore.ErrNotFound)
 
 	// Turning the router off forgets its routing and keeps it served.
 	require.NoError(t, plugin.SetModelRouterRouting("support", configstore.ModelRouterRouting{Scope: "global", Priority: 5}))
@@ -211,10 +211,15 @@ func TestModelRouterStoreWritesReachLiveRouting(t *testing.T) {
 		require.NoError(t, err)
 		return router
 	}
-	applyRouter := func(id string) { t.Helper(); require.NoError(t, plugin.ReloadModelRouter(saved(id))) }
-	applyTargets := func(id string) { t.Helper(); require.NoError(t, plugin.SetModelRouterTargets(id, saved(id).Targets)) }
+	applyRouter := func(id string) {
+		t.Helper()
+		refreshRouter(t, plugin, id)
+		require.NoError(t, plugin.ReloadModelRouter(saved(id)))
+	}
+	applyTargets := func(id string) { t.Helper(); refreshRouter(t, plugin, id) }
 	applyRouting := func(id string) {
 		t.Helper()
+		refreshRouter(t, plugin, id)
 		require.NoError(t, plugin.SetModelRouterRouting(id, *saved(id).Routing))
 	}
 	expect := func(askedFor, wantModel, wantRouter, why string) {
@@ -368,4 +373,22 @@ func liveFrom(t *testing.T, store configstore.ConfigStore) *livestore.Store {
 	t.Cleanup(live.Close)
 	require.NoError(t, live.LoadAll(context.Background(), store.DB()))
 	return live
+}
+
+// refreshRouter brings router id's saved row into the plugin's live store, as the HTTP server does
+// after a write.
+func refreshRouter(t *testing.T, plugin *RoutingPlugin, id string) {
+	t.Helper()
+	require.NoError(t, plugin.rules.LiveStore().Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindModelRouter, ID: id}}))
+}
+
+// newTestRouterMatcher builds an empty model router matcher over a live store of its own.
+func newTestRouterMatcher(t *testing.T) *rules.ModelRouterMatcher {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	matcher, err := rules.NewModelRouterMatcher(live)
+	require.NoError(t, err)
+	return matcher
 }

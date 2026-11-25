@@ -84,6 +84,12 @@ func NewStore(live *livestore.Store, logger schemas.Logger) (*Store, error) {
 	return rs, nil
 }
 
+// LiveStore returns the live store the rules are served from, which holds the other routing
+// configuration too.
+func (rs *Store) LiveStore() *livestore.Store {
+	return rs.live
+}
+
 // Close stops following the live store and drops the store's tables.
 func (rs *Store) Close() {
 	if rs == nil {

@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -90,8 +91,9 @@ type RoutingPlugin struct {
 
 	routers         atomic.Pointer[map[string]*modelRouterRuntime] // model routers by id, replaced whole under routersMu; see modelrouters.go
 	routersMu       sync.Mutex
-	routerMatcher   *rules.ModelRouterMatcher // enabled routers' routing; picks the one that takes a request
-	runtimeCtx      context.Context           // with warmCoordinator and dimensionStore: what routers built later reuse
+	routerMatcher   *rules.ModelRouterMatcher                   // enabled routers' routing; picks the one that takes a request
+	routerRecords   *livestore.Collection[registry.ModelRouter] // saved routers: name, targets and routing
+	runtimeCtx      context.Context                             // with warmCoordinator and dimensionStore: what routers built later reuse
 	warmCoordinator complexity.WarmCoordinator
 	dimensionStore  complexity.EmbeddingDimensionStore
 
@@ -252,13 +254,14 @@ func InitFromStore(
 		_ = plugin.Cleanup()
 		return nil, err
 	}
-	routerMatcher, err := rules.NewModelRouterMatcher()
+	plugin.routerRecords = ruleStore.LiveStore().Collections.ModelRouters
+	routerMatcher, err := rules.NewModelRouterMatcher(ruleStore.LiveStore())
 	if err != nil {
 		_ = plugin.Cleanup()
 		return nil, fmt.Errorf("failed to initialize model router matching: %w", err)
 	}
 	plugin.routerMatcher = routerMatcher
-	plugin.loadModelRouters(ctx, configStore)
+	plugin.loadModelRouters()
 	return plugin, nil
 }
 
@@ -728,6 +731,7 @@ func (p *RoutingPlugin) Cleanup() error {
 		p.closeComplexitySuggestions()
 		p.closeComplexityCapture()
 		p.closeModelRouters()
+		p.routerMatcher.Close()
 		if p.ownsRules {
 			p.rules.Close()
 		}
