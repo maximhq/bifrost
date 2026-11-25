@@ -541,11 +541,11 @@ func TestGeminiResponsesPreviousResponseIDUsesInteractions(t *testing.T) {
 // the run on ProviderJob so job accounting settles it once it ends.
 func TestGeminiResponsesBackgroundRecordsJob(t *testing.T) {
 	server, _ := newInteractionsTestServer(t, "application/json", func(interactionsCall) string {
-		return `{"id":"v1_bg","object":"interaction","agent":"deep-research-preview-04-2026","status":"in_progress"}`
+		return `{"id":"v1_bg","object":"interaction","agent":"deep-research-preview-04-2026","status":"in_progress","usage":{"total_input_tokens":5,"total_output_tokens":3,"total_tokens":8}}`
 	})
 	provider := NewGeminiProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL + "/v1beta"}}, nil)
 	key := schemas.Key{Value: schemas.SecretVar{Val: "k"}, Models: []string{"*"}}
-	resp, bifrostErr := provider.Responses(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, &schemas.BifrostResponsesRequest{
+	resp, bifrostErr := provider.Responses(accountedCtx(), key, &schemas.BifrostResponsesRequest{
 		Model:  "deep-research-preview-04-2026",
 		Input:  []schemas.ResponsesMessage{interactionsUserText("Research X")},
 		Params: &schemas.ResponsesParameters{Background: schemas.Ptr(true)},
@@ -557,6 +557,12 @@ func TestGeminiResponsesBackgroundRecordsJob(t *testing.T) {
 	assert.True(t, resp.ProviderJob.Created)
 	assert.False(t, resp.ProviderJob.Terminal)
 	assert.Equal(t, "/interactions/v1_bg", resp.ProviderJob.PollPath)
+	// The usage so far moves onto the run, so the create row is not billed and then billed again
+	// when the run settles.
+	assert.Nil(t, resp.Usage, "the create row is not billed for the run")
+	require.NotNil(t, resp.ProviderJob.Usage)
+	require.NotNil(t, resp.ProviderJob.Usage.LLMUsage)
+	assert.Equal(t, 8, resp.ProviderJob.Usage.LLMUsage.TotalTokens)
 }
 
 // TestGeminiResponsesPlainRequestKeepsGenerateContent pins that the common case is untouched.
@@ -1333,7 +1339,7 @@ func TestGeminiResponsesStreamPrematureEOF(t *testing.T) {
 	}
 	var handoff *schemas.BifrostResponsesStreamResponse
 	collect := func(background bool) ([]schemas.ResponsesStreamResponseType, *schemas.BifrostError) {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx := accountedCtx()
 		ctx.SetValue(schemas.BifrostContextKeyInteractionsAPI, true)
 		req := &schemas.BifrostResponsesRequest{Model: "gemini-3.8-flash", Input: []schemas.ResponsesMessage{interactionsUserText("hi")}}
 		if background {
@@ -2229,6 +2235,7 @@ func streamHeldOpen(t *testing.T, sse string) []*schemas.BifrostStreamChunk {
 		return result, err
 	}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyJobAccounting, true)
 	ctx.SetValue(schemas.BifrostContextKeyInteractionsAPI, true)
 	// The watchdog starts before dispatch, so a ResponsesStream that waits for the body to end
 	// before returning fails here too, not only a returned stream that never closes.
@@ -2319,7 +2326,7 @@ func TestGeminiResponsesBackgroundStreamContinuationRecordsJob(t *testing.T) {
 			postHook := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 				return result, err
 			}
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx := accountedCtx()
 			ctx.SetValue(schemas.BifrostContextKeyInteractionsAPI, true)
 			stream, bifrostErr := provider.ResponsesStream(ctx, postHook, nil, key, &schemas.BifrostResponsesRequest{
 				Model:  "gemini-3.8-flash",
@@ -4251,4 +4258,175 @@ func TestGeminiInteractionsSearchSuggestions(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []string{"<div/>"}, last.ProviderExtraFields["search_suggestions"])
+}
+
+// TestGeminiResponsesBackgroundCreateSearchUnitsUseRequestModel pins that a create response naming
+// neither model nor agent prices its run with the request's model, so a Gemini 3+ run counts each
+// search query rather than one unit.
+func TestGeminiResponsesBackgroundCreateSearchUnitsUseRequestModel(t *testing.T) {
+	server, _ := newInteractionsTestServer(t, "application/json", func(interactionsCall) string {
+		return `{"id":"v1_su","object":"interaction","status":"in_progress","usage":{"total_tokens":20,"total_input_tokens":10,"total_output_tokens":10,"grounding_tool_count":[{"type":"google_search","count":3}]}}`
+	})
+	provider := NewGeminiProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL + "/v1beta"}}, nil)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "k"}, Models: []string{"*"}}
+	resp, bifrostErr := provider.Responses(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, &schemas.BifrostResponsesRequest{
+		Model:  "gemini-3-flash-preview",
+		Input:  []schemas.ResponsesMessage{interactionsUserText("hi")},
+		Params: &schemas.ResponsesParameters{Background: schemas.Ptr(true)},
+	})
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "gemini-3-flash-preview", resp.Model)
+	require.NotNil(t, resp.ProviderJob)
+	require.NotNil(t, resp.ProviderJob.Usage)
+	require.NotNil(t, resp.ProviderJob.Usage.LLMUsage.ToolUsage)
+	assert.Equal(t, 3, resp.ProviderJob.Usage.LLMUsage.ToolUsage.WebSearch.NumRequests)
+}
+
+// TestInteractionsRetrieveStreamReportsTheRun pins that a replay reports the run it read, as the
+// unary read does, and keeps its usage for the caller, and that a replay the caller abandons
+// leaves no usage behind for the request to be charged with.
+func TestInteractionsRetrieveStreamReportsTheRun(t *testing.T) {
+	server, _ := newInteractionsTestServer(t, "text/event-stream", func(interactionsCall) string {
+		return "event: interaction.created\ndata: {\"event_type\":\"interaction.created\",\"interaction\":{\"id\":\"v1_rp\",\"status\":\"in_progress\",\"model\":\"gemini-3.8-flash\"}}\n\n" +
+			"event: interaction.completed\ndata: {\"event_type\":\"interaction.completed\",\"interaction\":{\"id\":\"v1_rp\",\"status\":\"completed\",\"model\":\"gemini-3.8-flash\",\"usage\":{\"total_tokens\":30,\"total_input_tokens\":10,\"total_output_tokens\":20}}}\n\n"
+	})
+	provider := NewGeminiProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL + "/v1beta"}}, nil)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "k"}, Models: []string{"*"}}
+	postHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stream, bErr := provider.ResponsesRetrieveStream(ctx, postHook, func(context.Context) {}, key, &schemas.BifrostResponsesRetrieveRequest{ResponseID: "v1_rp"})
+	require.Nil(t, bErr)
+	var last *schemas.BifrostResponsesResponse
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError)
+		if chunk.BifrostResponsesStreamResponse != nil && chunk.BifrostResponsesStreamResponse.Response != nil {
+			last = chunk.BifrostResponsesStreamResponse.Response
+		}
+	}
+	require.NotNil(t, last.ProviderJob)
+	assert.Equal(t, "v1_rp", last.ProviderJob.ID)
+	assert.True(t, last.ProviderJob.Terminal)
+	assert.False(t, last.ProviderJob.Created, "a replay did not start the run")
+	require.NotNil(t, last.Usage, "the caller still sees the run's usage")
+	assert.Equal(t, 30, last.Usage.TotalTokens)
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage))
+}
+
+// accountedCtx is a request context whose runs job accounting settles.
+func accountedCtx() *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyJobAccounting, true)
+	return ctx
+}
+
+// TestGeminiInteractionsUsageStaysWithoutAccounting pins that a background create keeps the usage it reported when
+// nothing settles its run, on a unary create and a stream's handoff.
+func TestGeminiInteractionsUsageStaysWithoutAccounting(t *testing.T) {
+	const run = `{"id":"v1_bg","status":"in_progress","model":"gemini-3.8-flash","usage":{"total_tokens":8,"total_input_tokens":8}}`
+	background := &schemas.BifrostResponsesRequest{Model: "gemini-3.8-flash", Input: []schemas.ResponsesMessage{interactionsUserText("hi")}, Params: &schemas.ResponsesParameters{Background: schemas.Ptr(true)}}
+	postHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	for _, accounted := range []bool{true, false} {
+		server, _ := newInteractionsTestServer(t, "application/json", func(interactionsCall) string { return run })
+		provider, key, ctx := interactionsTestProvider(server)
+		ctx.SetValue(schemas.BifrostContextKeyJobAccounting, accounted)
+		resp, bErr := provider.Responses(ctx, key, background)
+		require.Nil(t, bErr)
+		assert.Equal(t, accounted, resp.Usage == nil)
+
+		server, _ = newInteractionsTestServer(t, "text/event-stream", func(interactionsCall) string {
+			return `data: {"event_type":"interaction.created","interaction":` + run + "}\n\n"
+		})
+		provider, key, ctx = interactionsTestProvider(server)
+		ctx.SetValue(schemas.BifrostContextKeyJobAccounting, accounted)
+		stream, bErr := provider.ResponsesStream(ctx, postHook, func(context.Context) {}, key, background)
+		require.Nil(t, bErr)
+		var last *schemas.BifrostResponsesResponse
+		for chunk := range stream {
+			if ev := chunk.BifrostResponsesStreamResponse; ev != nil && ev.Response != nil {
+				last = ev.Response
+			}
+		}
+		require.NotNil(t, last)
+		assert.Equal(t, accounted, last.Usage == nil)
+	}
+}
+
+// TestGeminiInteractionsInterruptedRunReported pins that a background stream that ends in an error, because the
+// caller left or Google sent one, reports the run it started, so the run is settled once and not billed on the
+// request. A foreground stream, and one nothing settles, bill what they used.
+func TestGeminiInteractionsInterruptedRunReported(t *testing.T) {
+	run := func(background, accounted bool, frame string) *schemas.BifrostError {
+		var mu sync.Mutex
+		var last *schemas.BifrostError
+		release := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"event_type\":\"interaction.created\",\"interaction\":{\"id\":\"v1_gone\",\"status\":\"in_progress\",\"usage\":{\"total_tokens\":8,\"total_input_tokens\":8}}}\n\n"+frame)
+			w.(http.Flusher).Flush()
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}))
+		defer server.Close()
+		defer close(release)
+		provider, key, ctx := interactionsTestProvider(server)
+		ctx.SetValue(schemas.BifrostContextKeyInteractionsAPI, true)
+		if accounted {
+			ctx.SetValue(schemas.BifrostContextKeyJobAccounting, true)
+		}
+		postHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			if err != nil {
+				mu.Lock()
+				last = err
+				mu.Unlock()
+			}
+			return result, err
+		}
+		stream, bErr := provider.ResponsesStream(ctx, postHook, func(context.Context) {}, key, &schemas.BifrostResponsesRequest{
+			Model: "gemini-3.8-flash", Input: []schemas.ResponsesMessage{interactionsUserText("hi")}, Params: &schemas.ResponsesParameters{Background: &background}})
+		require.Nil(t, bErr)
+		seen := 0
+		for range stream {
+			if seen++; seen == 2 && frame == "" { // created and in_progress: the run is known
+				ctx.Cancel()
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		require.NotNil(t, last)
+		return last
+	}
+	const failure = "data: {\"event_type\":\"error\",\"error\":{\"code\":\"internal\",\"message\":\"boom\"}}\n\n"
+	for _, frame := range []string{"", failure} {
+		err := run(true, true, frame)
+		require.NotNil(t, err.ExtraFields.ProviderJob, frame)
+		assert.Equal(t, "v1_gone", err.ExtraFields.ProviderJob.ID)
+		assert.True(t, err.ExtraFields.ProviderJob.Created)
+		assert.False(t, err.ExtraFields.ProviderJob.Terminal)
+		assert.Equal(t, "/interactions/v1_gone", err.ExtraFields.ProviderJob.PollPath)
+		assert.Nil(t, err.ExtraFields.BilledUsage)
+	}
+	for name, err := range map[string]*schemas.BifrostError{"foreground": run(false, true, ""), "nothing settles it": run(true, false, "")} {
+		assert.Nil(t, err.ExtraFields.ProviderJob, name)
+		require.NotNil(t, err.ExtraFields.BilledUsage, name)
+		assert.Equal(t, 8, err.ExtraFields.BilledUsage.TotalTokens, name)
+	}
+}
+
+// TestInteractionJobKeepsSearchQueriesWithoutAModel pins that a read naming no model reports how
+// many searches ran, so settlement can count them by the model the create named.
+func TestInteractionJobKeepsSearchQueriesWithoutAModel(t *testing.T) {
+	usage := &GeminiInteractionsUsage{TotalTokens: 20, TotalInputTokens: 10, TotalOutputTokens: 10, GroundingToolCount: []GeminiInteractionsGroundingToolCount{{Type: "google_search", Count: 3}}}
+	target := &GeminiInteractionsTarget{}
+	assert.Equal(t, 3, target.interactionJob(&schemas.BifrostResponsesResponse{ID: schemas.Ptr("v1_q")}, "completed", usage, nil, false).SearchQueries)
+	assert.Zero(t, target.interactionJob(&schemas.BifrostResponsesResponse{ID: schemas.Ptr("v1_q"), Model: "gemini-3.8-flash"}, "completed", usage, nil, false).SearchQueries, "a named model already decided the count")
+	info := ParseInteractionsPassthrough([]byte(`{"id":"v1_q","status":"completed","usage":{"total_tokens":20,"total_input_tokens":10,"total_output_tokens":10,"grounding_tool_count":[{"type":"google_search","count":3}]}}`))
+	job := interactionsRequest{method: "GET", path: "/v1beta/interactions/v1_q"}.job(info)
+	require.NotNil(t, job)
+	assert.Equal(t, 3, job.SearchQueries, "a poll agrees")
 }

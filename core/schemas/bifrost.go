@@ -475,6 +475,8 @@ const (
 	BifrostContextKeyDeferredUsage                       BifrostContextKey = "bifrost-deferred-usage"                     // chan *BifrostLLMUsage (set by provider Phase B — delivers usage after response streaming completes)
 	BifrostContextKeyDeferredGuardrail                   BifrostContextKey = "bifrost-deferred-guardrail"                 // *DeferredGuardrailResult (set by enterprise guardrails plugin — output guardrail results that finish after the response was delivered; the log writer holds the row until they land)
 	BifrostContextKeyStreamAccumulatedUsage              BifrostContextKey = "bifrost-stream-accumulated-usage"           // *BifrostLLMUsage handle, set ONCE by a streaming provider and mutated in place as usage arrives; read on cancel/timeout to bill partial usage that the provider already consumed
+	BifrostContextKeyStreamProviderJob                   BifrostContextKey = "bifrost-stream-provider-job"                // *BifrostPassthroughJob (set by a streaming provider - DO NOT SET THIS MANUALLY) - the stored run a background create started, so an error that ends the stream still reports it
+	BifrostContextKeyJobAccounting                       BifrostContextKey = "bifrost-job-accounting"                     // bool (set by the logging plugin) - job accounting settles the runs this request reports, so their usage moves off the request
 	BifrostContextKeyStreamUsageProvisional              BifrostContextKey = "bifrost-stream-usage-provisional"           // bool (set by the Anthropic stream handlers - DO NOT SET THIS MANUALLY) - true while only the provisional message_start usage has arrived this attempt
 	BifrostContextKeyDeferredLargePayloadMetadata        BifrostContextKey = "bifrost-deferred-large-payload-metadata"    // <-chan *LargePayloadMetadata (set by enterprise Phase B request — delivers metadata after body streaming)
 	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
@@ -2559,8 +2561,9 @@ type BifrostErrorExtraFields struct {
 	// post-LLM hooks (governance billing, logging cost) can charge for tokens
 	// the provider actually billed us for. Nil when the failure consumed no
 	// tokens (e.g. 401/403/429 before the model ran).
-	BilledUsage         *BifrostLLMUsage `json:"billed_usage,omitempty"`
-	NativeErrorResponse json.RawMessage  `json:"-"` // provider error body verbatim for native drop-in routes; never serialized
+	BilledUsage         *BifrostLLMUsage       `json:"billed_usage,omitempty"`
+	ProviderJob         *BifrostPassthroughJob `json:"-"` // a stored run the failed request started, settled by job accounting in place of BilledUsage
+	NativeErrorResponse json.RawMessage        `json:"-"` // provider error body verbatim for native drop-in routes; never serialized
 
 	// ErrorType is this failure's normalized classification, declared by whoever
 	// produced the error. ClassifyErrorType returns it verbatim when set and infers

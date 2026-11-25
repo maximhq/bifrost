@@ -508,6 +508,18 @@ func computeContainerCreationCost(pricing *configstoreTables.TableModelPricing) 
 	return totalOnlyCost(*pricing.CodeInterpreterCostPerSession)
 }
 
+// readsStoredRun reports whether a request only read or cancelled a stored run that job accounting settles.
+func readsStoredRun(requestType schemas.RequestType, result *schemas.BifrostResponse) bool {
+	switch requestType {
+	case schemas.ResponsesRetrieveRequest, schemas.ResponsesCancelRequest:
+		return result.ResponsesResponse != nil && result.ResponsesResponse.ProviderJob != nil
+	case schemas.ResponsesRetrieveStreamRequest:
+		stream := result.ResponsesStreamResponse
+		return stream != nil && stream.Response != nil && stream.Response.ProviderJob != nil
+	}
+	return false
+}
+
 // calculateBaseCost extracts usage from the response and routes to the appropriate compute function.
 func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes LookupScopes) *schemas.BifrostCost {
 	extraFields := result.GetExtraFields()
@@ -541,6 +553,12 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// succeeded) would otherwise be billed again on every poll, inflating logs, traces and
 	// governance budgets.
 	if requestType == schemas.VideoRetrieveRequest {
+		return nil
+	}
+	// The same holds for a stored run: a Gemini Interaction's every read and cancel repeats the run's full
+	// usage. The run is billed once, by job accounting, under the create. A response no run covers is priced
+	// as before.
+	if readsStoredRun(requestType, result) {
 		return nil
 	}
 

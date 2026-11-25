@@ -28,20 +28,7 @@ var defaultGeminiImageURLSchemes = []string{"http", "https"}
 // isGemini3Plus returns true if the model is Gemini 3.0 or higher.
 // Uses simple string operations for hot path performance.
 func isGemini3Plus(model string) bool {
-	model = strings.ToLower(model)
-	idx := strings.Index(model, "gemini-")
-	if idx == -1 {
-		return false
-	}
-	afterPrefix := model[idx+7:] // len("gemini-") = 7
-	if len(afterPrefix) == 0 {
-		return false
-	}
-	firstChar := afterPrefix[0]
-	if firstChar < '0' || firstChar > '9' {
-		return false
-	}
-	return firstChar >= '3'
+	return schemas.IsGemini3PlusModel(model)
 }
 
 // isGemini4Plus reports whether model is Gemini 4.0 or newer.

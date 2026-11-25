@@ -925,3 +925,35 @@ func BenchmarkVocabularyLoad(b *testing.B) {
 		})
 	}
 }
+
+// TestEstimateLeavesATrackedRun pins that a failure that reports a stored run bills nothing, however its stream
+// ended: the run goes on and is settled once.
+func TestEstimateLeavesATrackedRun(t *testing.T) {
+	for name, field := range map[string]*schemas.ErrorField{
+		"cancelled": {Type: schemas.Ptr(schemas.RequestCancelled)},
+		"timed out": {Type: schemas.Ptr(schemas.RequestTimedOut)},
+		"idle":      {Error: fmt.Errorf("read: %w", providerUtils.ErrStreamIdleTimeout)},
+	} {
+		ctx := newContext()
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &schemas.BifrostLLMUsage{PromptTokens: 8, TotalTokens: 8})
+		ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(&snapshotTracer{snapshot: chatSnapshot("hello world", false)}))
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace")
+		failure := &schemas.BifrostError{Error: field, ExtraFields: schemas.BifrostErrorExtraFields{ProviderJob: &schemas.BifrostPassthroughJob{ID: "v1_x"}}}
+		Estimate(ctx, chatRequest("unknown"), "unknown", failure)
+		if failure.ExtraFields.BilledUsage != nil {
+			t.Errorf("%s: billed %+v", name, failure.ExtraFields.BilledUsage)
+		}
+		failure.ExtraFields.ProviderJob = nil
+		Estimate(ctx, chatRequest("unknown"), "unknown", failure)
+		if failure.ExtraFields.BilledUsage == nil {
+			t.Errorf("%s: a stream no run covers is billed", name)
+		}
+	}
+}
+
+type snapshotTracer struct {
+	schemas.NoOpTracer
+	snapshot *schemas.BifrostResponse
+}
+
+func (s *snapshotTracer) GetAccumulatedResponse(string) *schemas.BifrostResponse { return s.snapshot }

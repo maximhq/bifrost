@@ -4492,6 +4492,11 @@ func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schem
 	if ctx == nil || bifrostErr == nil {
 		return
 	}
+	// A stored run the stream started goes on without it and is settled once, so nothing is billed here.
+	if job, ok := ctx.Value(schemas.BifrostContextKeyStreamProviderJob).(*schemas.BifrostPassthroughJob); ok && job != nil {
+		bifrostErr.ExtraFields.ProviderJob = job
+		return
+	}
 	usage, ok := ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage).(*schemas.BifrostLLMUsage)
 	if !ok || usage == nil {
 		return

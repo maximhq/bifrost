@@ -2032,6 +2032,9 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			requestID = sessionID
 		}
 	}
+	if p.batchStore != nil && req.ResponsesRequest != nil {
+		ctx.SetValue(schemas.BifrostContextKeyJobAccounting, true)
+	}
 	createdTimestamp := time.Now().UTC()
 
 	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
@@ -2579,6 +2582,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// logs DB reflects what we were actually billed, mirroring the governance
 		// budget.
 		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
+		p.recordInterruptedJob(entry, bifrostErr)
 		p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
@@ -2637,6 +2641,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// A stream error can arrive with a response chunk, bypassing Path A.
 			// Preserve provider-billed usage and the sidecar calls in that case.
 			p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
+			p.recordInterruptedJob(entry, bifrostErr)
 			p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		} else if streamResponse == nil {
 			// tracer or traceID not available, or accumulator returned nil - still write what we have
@@ -2682,6 +2687,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if bifrostErr == nil && result.PassthroughResponse.ProviderJob != nil {
 				p.handleInteractionJob(ctx, entry, result)
 			}
+		}
+		if bifrostErr == nil && result != nil && result.ResponsesStreamResponse != nil &&
+			result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.ProviderJob != nil {
+			p.handleInteractionJob(ctx, entry, result)
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		if tracer != nil && traceID != "" {
@@ -2774,7 +2783,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			p.accountVideoResults(entry, result, pricingScopes)
 		}
 	}
-	if bifrostErr == nil && result != nil && result.PassthroughResponse != nil && result.PassthroughResponse.ProviderJob != nil {
+	if bifrostErr == nil && result != nil &&
+		(result.PassthroughResponse != nil && result.PassthroughResponse.ProviderJob != nil ||
+			result.ResponsesResponse != nil && result.ResponsesResponse.ProviderJob != nil) {
 		p.handleInteractionJob(ctx, entry, result)
 	}
 
