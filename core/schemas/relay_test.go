@@ -638,3 +638,16 @@ func TestRelayConfigRepeatedRoute(t *testing.T) {
 	}}
 	require.NoError(t, spaced.RepeatedRoute(), "values are compared as written, as the gateway matches them")
 }
+
+// The same cases as isValidRelayGlobSegment's in ui/lib/types/schemas.relay.test.ts, so the form
+// refuses on the field exactly what the gateway refuses on save.
+func TestRelayRouteGlobSegmentsMatchTheUI(t *testing.T) {
+	valid := []string{"search", "*", "v?", "[a-z]*", "[^x]", `a\*b`, `[\]]`, "jobs-*", ""}
+	invalid := []string{"[b", "[]", "[]a]", "[a-]", "[-a]", "[a", `a\`, "[^]", `[a-\`, `x[\`}
+	for _, segment := range valid {
+		assert.NoError(t, validateEndpointRouteGlob("/v1/"+segment), segment)
+	}
+	for _, segment := range invalid {
+		assert.Error(t, validateEndpointRouteGlob("/v1/"+segment), segment)
+	}
+}

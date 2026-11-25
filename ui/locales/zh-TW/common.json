@@ -330,6 +330,7 @@
 			"pathRequired": "路徑為必填",
 			"pathMustStartWithSlash": "路徑必須以 / 開頭",
 			"doubleStarOnce": "** 在路徑中只能使用一次",
+			"malformedPattern": "此路徑的模式格式錯誤：請閉合每個 [ ]，在其中放入字元或範圍，並跳脫結尾的 \\",
 			"headerNameRequired": "標頭認證需要標頭名稱",
 			"queryParamRequired": "查詢參數認證需要查詢參數",
 			"awsServiceRequired": "SigV4 認證需要 AWS 服務",

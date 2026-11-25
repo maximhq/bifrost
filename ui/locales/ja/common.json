@@ -535,6 +535,7 @@
 			"pathRequired": "パスは必須です",
 			"pathMustStartWithSlash": "パスは / で始まる必要があります",
 			"doubleStarOnce": "** はパス内で 1 回のみ使用できます",
+			"malformedPattern": "このパスのパターンが不正です。[ ] を閉じ、中に文字か範囲を入れ、末尾の \\ はエスケープしてください",
 			"headerNameRequired": "ヘッダー認証にはヘッダー名が必要です",
 			"queryParamRequired": "クエリ認証にはクエリパラメーターが必要です",
 			"awsServiceRequired": "SigV4 認証には AWS サービスが必要です",

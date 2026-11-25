@@ -535,6 +535,7 @@
 			"pathRequired": "경로는 필수입니다",
 			"pathMustStartWithSlash": "경로는 /로 시작해야 합니다",
 			"doubleStarOnce": "**는 경로에서 한 번만 사용할 수 있습니다",
+			"malformedPattern": "이 경로의 패턴이 잘못되었습니다. 모든 [ ]를 닫고, 안에 문자나 범위를 넣고, 끝의 \\는 이스케이프하세요",
 			"headerNameRequired": "헤더 인증에는 헤더 이름이 필요합니다",
 			"queryParamRequired": "쿼리 인증에는 쿼리 매개변수가 필요합니다",
 			"awsServiceRequired": "SigV4 인증에는 AWS 서비스가 필요합니다",

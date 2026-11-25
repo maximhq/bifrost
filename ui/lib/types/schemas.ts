@@ -2492,7 +2492,46 @@ export const relayUsageSchema = relayUsageBaseSchema.superRefine((usage, ctx) =>
 // anything else is refused on the field rather than as a fetch error.
 export const relayOpenAPISpecUrlSchema = z.string().trim().refine(isHttpUrl, msg("validation.relays.absoluteUrl"));
 
-// Mirrors the gateway's rule for a route or streaming path: rooted, and at most one **.
+/**
+ * Whether one path segment is a pattern the gateway accepts, as Go's path.Match parses it: a \ must
+ * escape something, and a [...] class must close and hold at least one character or range, with no
+ * bare - or ] where a character is expected.
+ */
+export function isValidRelayGlobSegment(segment: string): boolean {
+	let i = 0;
+	const char = (): boolean => {
+		if (i >= segment.length || segment[i] === "-" || segment[i] === "]") return false;
+		if (segment[i] === "\\" && ++i >= segment.length) return false;
+		i++;
+		return true;
+	};
+	while (i < segment.length) {
+		if (segment[i] === "\\") {
+			if (++i >= segment.length) return false;
+			i++;
+		} else if (segment[i] === "[") {
+			i++;
+			if (segment[i] === "^") i++;
+			for (let ranges = 0; ; ranges++) {
+				if (segment[i] === "]" && ranges > 0) {
+					i++;
+					break;
+				}
+				if (!char()) return false;
+				if (segment[i] === "-") {
+					i++;
+					if (!char()) return false;
+				}
+			}
+		} else {
+			i++;
+		}
+	}
+	return true;
+}
+
+// Mirrors the gateway's rule for a route or streaming path: rooted, at most one **, and every
+// other segment a pattern it can parse.
 const relayGlob = z
 	.string()
 	.trim()
@@ -2505,6 +2544,14 @@ const relayGlob = z
 				.split("/")
 				.filter((s) => s === "**").length <= 1,
 		msg("validation.relays.doubleStarOnce"),
+	)
+	.refine(
+		(p) =>
+			p
+				.slice(1)
+				.split("/")
+				.every((s) => s === "**" || isValidRelayGlobSegment(s)),
+		msg("validation.relays.malformedPattern"),
 	);
 
 export const relayAuthSchema = z

@@ -535,6 +535,7 @@
 			"pathRequired": "Pfad ist erforderlich",
 			"pathMustStartWithSlash": "Der Pfad muss mit / beginnen",
 			"doubleStarOnce": "** ist in einem Pfad nur einmal erlaubt",
+			"malformedPattern": "Dieser Pfad enthält ein fehlerhaftes Muster: Schließe jedes [ ], setze ein Zeichen oder einen Bereich hinein und maskiere ein abschließendes \\",
 			"headerNameRequired": "Für die Header-Authentifizierung ist ein Header-Name erforderlich",
 			"queryParamRequired": "Für die Query-Authentifizierung ist ein Query-Parameter erforderlich",
 			"awsServiceRequired": "Für die SigV4-Authentifizierung ist ein AWS-Dienst erforderlich",
