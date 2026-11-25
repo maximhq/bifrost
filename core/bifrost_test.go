@@ -10483,6 +10483,26 @@ func TestExecuteRequestWithRetries_DisableRetriesMakesOneAttempt(t *testing.T) {
 	}
 }
 
+// BenchmarkExecuteRequestWithRetries_PlainRequest measures the retry loop for an
+// ordinary request that succeeds on its first attempt with retries enabled, the
+// path BifrostContextKeyDisableRetries adds one context lookup to.
+func BenchmarkExecuteRequestWithRetries_PlainRequest(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	key := schemas.Key{ID: "k1", Value: *schemas.NewSecretVar("sk-1")}
+	keyProvider := func(map[string]bool, map[string]bool) (schemas.Key, error) { return key, nil }
+	handler := func(schemas.Key) (string, *schemas.BifrostError) { return "ok", nil }
+	config := createTestConfig(3, time.Millisecond, time.Millisecond)
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = executeRequestWithRetries(ctx, config, handler, keyProvider, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, logger)
+	}
+}
+
 // grammarLimitRequest is a chat request for the structured-output grammar-limit retry tests.
 func grammarLimitRequest(requestType schemas.RequestType) *schemas.BifrostRequest {
 	return &schemas.BifrostRequest{
