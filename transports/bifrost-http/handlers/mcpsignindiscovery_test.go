@@ -15,9 +15,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/mcp_headers"
-	"github.com/maximhq/bifrost/framework/mcpdiscovery"
-	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -97,9 +94,9 @@ func newSignInConfig(t *testing.T) (*lib.Config, configstore.ConfigStore) {
 	return &lib.Config{
 		ConfigStore:              store,
 		ClientConfig:             &configstore.ClientConfig{},
-		OAuthProvider:            oauth2.NewOAuth2Provider(store, logger),
-		MCPHeadersProvider:       mcp_headers.NewProvider(store, logger),
-		MCPPerUserDiscoveryStore: mcpdiscovery.NewPerUserStore(store, logger),
+		OAuthProvider:            newTestOAuthProvider(t, store, logger),
+		MCPHeadersProvider:       newTestHeadersProvider(t, store, logger),
+		MCPPerUserDiscoveryStore: newTestPerUserDiscovery(t, store, logger),
 	}, store
 }
 
@@ -113,8 +110,9 @@ func (failingDiscoveryWrites) UpsertMCPPerUserDiscovery(context.Context, *tables
 }
 
 // failDiscoveryWrites makes cfg's per-user discovery store fail every write.
-func failDiscoveryWrites(cfg *lib.Config, store configstore.ConfigStore) {
-	cfg.MCPPerUserDiscoveryStore = mcpdiscovery.NewPerUserStore(failingDiscoveryWrites{store}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+func failDiscoveryWrites(t testing.TB, cfg *lib.Config, store configstore.ConfigStore) {
+	t.Helper()
+	cfg.MCPPerUserDiscoveryStore = newTestPerUserDiscovery(t, failingDiscoveryWrites{store}, bifrost.NewDefaultLogger(schemas.LogLevelError))
 }
 
 // createSignInClient stores client, keeping one discovery per caller when perUser.
@@ -198,7 +196,7 @@ func callOAuthCallback(t *testing.T, h *OAuthHandler, state string) string {
 // earlier sign-in, possibly with another account, would have left.
 func seedEarlierDiscovery(t *testing.T, store configstore.ConfigStore, client *schemas.MCPClientConfig, mode schemas.MCPAuthMode, identity string) {
 	t.Helper()
-	earlier := mcpdiscovery.NewPerUserStore(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	earlier := newTestPerUserDiscovery(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	tools := map[string]schemas.ChatTool{client.Name + "-old": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: client.Name + "-old"}}}
 	require.NoError(t, earlier.SetDiscovery(signInCallerContext(context.Background(), mode, identity), client, &schemas.MCPDiscovery{Tools: tools}))
 	require.NotNil(t, storedDiscovery(store, mode, identity, client.ID))
@@ -245,7 +243,7 @@ func TestOAuthCallback_RedirectsSayingTheToolsArePendingWhenDiscoveryFails(t *te
 			cfg, store, client := newOAuthSignIn(t, true)
 			seedEarlierDiscovery(t, store, client, schemas.MCPAuthModeUser, "alice")
 			if tc.failing {
-				failDiscoveryWrites(cfg, store)
+				failDiscoveryWrites(t, cfg, store)
 			}
 
 			location := callOAuthCallback(t, NewOAuthHandler(cfg.OAuthProvider, nil, cfg, tc.manager), "state-1")
@@ -388,7 +386,7 @@ func TestHeadersSubmit_ReportsADiscoveryItCouldNotStore(t *testing.T) {
 	cfg, store := newSignInConfig(t)
 	createSignInClient(t, store, client, true)
 	seedEarlierDiscovery(t, store, client, schemas.MCPAuthModeUser, "alice")
-	failDiscoveryWrites(cfg, store)
+	failDiscoveryWrites(t, cfg, store)
 	createHeadersFlow(t, store, &tables.TableMCPPerUserHeaderFlow{ID: "flow-1", MCPClientID: client.ID, FlowMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("alice")})
 
 	body := submitHeaders(t, NewMCPPerUserHeadersHandler(&signInMCPManager{}, nil, cfg, nil), "flow-1", "alice")

@@ -95,6 +95,7 @@ test.describe('Placeholder and Enterprise Pages', () => {
       { path: 'connections', title: 'Connect provider billing accounts' },
       { path: 'explorer', title: 'Break AI spend down by model and account' },
       { path: 'forecast', title: 'Forecast AI spend and catch anomalies' },
+      { path: 'anomalies', title: 'Forecast AI spend and catch anomalies' },
     ]
 
     for (const { path, title } of finopsPages) {

@@ -25,9 +25,10 @@ import (
 func TestApplyRoutingRules_PinnedKeyReachesContext(t *testing.T) {
 	const pinnedKeyID = "pinned-key-abc-123"
 
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "pin-1",
 		Name:          "Pinned Key Rule",
 		CelExpression: "model == 'gpt-4o'",
@@ -44,7 +45,7 @@ func TestApplyRoutingRules_PinnedKeyReachesContext(t *testing.T) {
 		Priority: 0,
 	}))
 
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 	require.NoError(t, err)
 
 	req := &schemas.BifrostRequest{
@@ -72,9 +73,10 @@ func TestApplyRoutingRules_PinnedKeyReachesContext(t *testing.T) {
 func TestApplyRoutingRules_FallbackKeyPinReachesRequest(t *testing.T) {
 	const fallbackKeyID = "fallback-key-xyz-789"
 
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "fb-pin-1",
 		Name:          "Pinned Fallback Rule",
 		CelExpression: "model == 'gpt-4o'",
@@ -90,7 +92,7 @@ func TestApplyRoutingRules_FallbackKeyPinReachesRequest(t *testing.T) {
 		Priority: 0,
 	}))
 
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 	require.NoError(t, err)
 
 	req := &schemas.BifrostRequest{
@@ -144,10 +146,11 @@ func TestApplyRoutingRules_CustomProviderFallbackSurvivesRestart(t *testing.T) {
 	}
 	require.NoError(t, stored.AfterFind(nil))
 
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), stored))
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), stored))
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 	require.NoError(t, err)
 
 	// bifrost.Init now registers the custom provider, after the rules were loaded.
@@ -174,9 +177,10 @@ func TestApplyRoutingRules_CustomProviderFallbackSurvivesRestart(t *testing.T) {
 // under the same restricted-write block core installs around PreRequestHook,
 // and only for streaming request types.
 func TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T) {
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "ttft-1",
 		Name:          "TTFT Rule",
 		CelExpression: "model == 'gpt-4o'",
@@ -187,7 +191,7 @@ func TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T)
 		Enabled:         bifrost.Ptr(true),
 		Scope:           "global",
 	}))
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 	require.NoError(t, err)
 
 	for _, tc := range []struct {
@@ -226,9 +230,10 @@ func TestApplyRoutingRules_TTFTTimeoutReachesContextForStreamsOnly(t *testing.T)
 // Publishing the allowlist for the incoming model would prune providers the routed model is
 // actually allowed on.
 func TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules(t *testing.T) {
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "rewrite-1",
 		Name:          "Rewrite Model",
 		CelExpression: "model == 'gpt-4o'",
@@ -244,7 +249,7 @@ func TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules(t *testing.T) {
 	governance := NewMockGovernance()
 	governance.VirtualKeys["sk-bf-test"] = vk
 
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, governance)
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
 	require.NoError(t, err)
 
 	req := &schemas.BifrostRequest{
@@ -272,9 +277,10 @@ func TestPreRequestHook_MaterializesVirtualKeyRoutingAfterRules(t *testing.T) {
 // derived from that name can come back empty, which downstream layers treat as "no provider
 // permitted".
 func TestPreRequestHook_LargePayloadPublishesAllowlistBeforeRefinement(t *testing.T) {
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "rewrite-lp",
 		Name:          "Rewrite Model",
 		CelExpression: "model == 'gpt-4o'",
@@ -296,7 +302,7 @@ func TestPreRequestHook_LargePayloadPublishesAllowlistBeforeRefinement(t *testin
 		req.SetModel("azure-gpt-4o-mini-deployment")
 	}
 
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, governance)
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
 	require.NoError(t, err)
 
 	metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o"}
@@ -332,10 +338,11 @@ func fallbackMatrixPlugin(t *testing.T, storedFallbacks *string) *RoutingPlugin 
 		Scope:         "global",
 	}
 	require.NoError(t, stored.AfterFind(nil))
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), stored))
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), stored))
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 	require.NoError(t, err)
 	return plugin
 }
@@ -557,10 +564,11 @@ func TestApplyRoutingRules_SkippedFallbackIsLogged(t *testing.T) {
 				Scope:         "global",
 			}
 			require.NoError(t, stored.AfterFind(nil))
-			store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+			store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 			require.NoError(t, err)
-			require.NoError(t, store.UpsertRule(context.Background(), stored))
-			plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+			t.Cleanup(store.Close)
+			require.NoError(t, store.Put(context.Background(), stored))
+			plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, NewMockGovernance())
 			require.NoError(t, err)
 
 			req := &schemas.BifrostRequest{
@@ -627,12 +635,13 @@ func TestPreRequestHook_FallbackOutsideAccessIsLogged(t *testing.T) {
 				Scope:         "global",
 			}
 			require.NoError(t, rule.AfterFind(nil))
-			store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+			store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 			require.NoError(t, err)
-			require.NoError(t, store.UpsertRule(context.Background(), rule))
+			t.Cleanup(store.Close)
+			require.NoError(t, store.Put(context.Background(), rule))
 			governance := NewMockGovernance()
 			governance.Access = tc.access
-			plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, governance)
+			plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
 			require.NoError(t, err)
 
 			req := &schemas.BifrostRequest{
@@ -673,14 +682,15 @@ func TestPreRequestHook_LargePayloadDoesNotWarnAboutDroppedFallbacks(t *testing.
 		Scope:         "global",
 	}
 	require.NoError(t, rule.AfterFind(nil))
-	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	store, err := rules.NewTestRules(context.Background(), t.TempDir(), rules.NewMockLogger())
 	require.NoError(t, err)
-	require.NoError(t, store.UpsertRule(context.Background(), rule))
+	t.Cleanup(store.Close)
+	require.NoError(t, store.Put(context.Background(), rule))
 	governance := NewMockGovernance()
 	governance.Access = grant.NewAccess([]schemas.Permit{grant.NewPermit(grant.PermitVirtualKey, "vk-1", "vk", true, false, []schemas.ProviderPermit{
 		{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o"}, KeyIDs: schemas.WhiteList{"*"}},
 	}, nil)}, "", nil, grant.Union, nil)
-	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, governance)
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store.Store, governance)
 	require.NoError(t, err)
 
 	metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o"}

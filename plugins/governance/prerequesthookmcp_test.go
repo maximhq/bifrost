@@ -58,7 +58,7 @@ func buildVKForMCPStamping(tools []string) *configstoreTables.TableVirtualKey {
 func newPluginForMCPStamping(t *testing.T, vk *configstoreTables.TableVirtualKey, disableAutoToolInject bool) *GovernancePlugin {
 	t.Helper()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
@@ -66,7 +66,7 @@ func newPluginForMCPStamping(t *testing.T, vk *configstoreTables.TableVirtualKey
 	plugin, err := InitFromStore(context.Background(), &Config{
 		IsVkMandatory:         boolPtr(false),
 		DisableAutoToolInject: boolPtr(disableAutoToolInject),
-	}, logger, store, nil, nil, nil, nil)
+	}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin
@@ -582,15 +582,15 @@ func TestPreMCPHookEvaluatesCodemodeToolsLikeAnyTool(t *testing.T) {
 func newPluginForMCPStampingWithDefaults(t *testing.T, vk *configstoreTables.TableVirtualKey, allowedByDefault map[string]string) *GovernancePlugin {
 	t.Helper()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, &mockInMemoryStore{allowedByDefaultClients: allowedByDefault})
+	}, nil, &liveFixture{allowedByDefaultClients: allowedByDefault})
 	require.NoError(t, err)
 
 	plugin, err := InitFromStore(context.Background(), &Config{
 		IsVkMandatory:         boolPtr(false),
 		DisableAutoToolInject: boolPtr(false),
-	}, logger, store, nil, nil, nil, nil)
+	}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin

@@ -494,7 +494,12 @@
 		"maximumSpend": "Maximum Spend (USD)",
 		"noBudgetLimits": "No budget limits configured.",
 		"removeBudgetAria": "Remove budget {{number}}",
-		"duplicateResetPeriod": "Duplicate reset period; each budget line must use a different interval."
+		"duplicateResetPeriod": "Duplicate reset period; each budget line must use a different interval.",
+		"contentLogging": "Content logging",
+		"contentLoggingInherit": "Inherit",
+		"contentLoggingOff": "Off for this team",
+		"contentLoggingOn": "On for this team",
+		"contentLoggingHelp": "Whether request and response content is stored in logs for this team's traffic. The team outranks its virtual keys and provider keys, so a key cannot reopen content the team turned off. \"Off\" also strips content from connector exports. The per-request header still applies when per-request overrides are allowed."
 	},
 	"filters": {
 		"filters": "Filters",

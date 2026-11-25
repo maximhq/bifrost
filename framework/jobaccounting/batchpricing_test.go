@@ -12,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet/datasheettest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,9 +21,9 @@ func loadPricingFromFile(t *testing.T) *modelcatalog.ModelCatalog {
 	t.Helper()
 	abs, err := filepath.Abs("testdata/pricing.json")
 	require.NoError(t, err, "resolve testdata/pricing.json path")
-	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
+	ds := datasheetForTest(t, nil, bifrost.NewNoOpLogger(), datasheet.Config{URL: "file://" + abs})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()), "failed to load pricing datasheet")
-	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+	return catalogWithDatasheetForTest(t, ds)
 }
 
 func assertSweeperAccountsBatchWithPricing(t *testing.T, mc *modelcatalog.ModelCatalog, job *cstables.TableProviderJob, results []schemas.BatchResultItem, expectedCost float64) {
@@ -43,11 +44,11 @@ func assertSweeperAccountsBatchWithPricing(t *testing.T, mc *modelcatalog.ModelC
 	emitter := &fakeAggregateLogWriter{}
 	reporter := &fakeUsageReporter{}
 
-	kv := &fakeKVStore{setNXAllowed: true}
+	leases, _ := pollLeasesForTest(t, ProviderJobKindBatch)
 	sweeper := NewBatchSweeper(store, store, mc, fetcher, emitter, reporter, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
-		KVStore:  kv,
+		Leases:   leases,
 	})
 
 	sweeper.SweepOnce(context.Background())
@@ -191,11 +192,11 @@ func TestBatchPricing_UnknownModel_StillUnpriceable(t *testing.T) {
 		},
 	}
 
-	kv := &fakeKVStore{setNXAllowed: true}
+	leases, _ := pollLeasesForTest(t, ProviderJobKindBatch)
 	sweeper := NewBatchSweeper(store, store, mc, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
-		KVStore:  kv,
+		Leases:   leases,
 	})
 
 	sweeper.SweepOnce(context.Background())
@@ -255,11 +256,11 @@ func TestBatchPricing_MultiModel(t *testing.T) {
 		},
 	}
 
-	kv := &fakeKVStore{setNXAllowed: true}
+	leases, _ := pollLeasesForTest(t, ProviderJobKindBatch)
 	sweeper := NewBatchSweeper(store, store, mc, fetcher, nil, nil, SweeperConfig{
 		Interval: time.Minute,
 		Limit:    10,
-		KVStore:  kv,
+		Leases:   leases,
 	})
 
 	sweeper.SweepOnce(context.Background())
@@ -288,3 +289,18 @@ func TestBatchPricing_MultiModel(t *testing.T) {
 	require.NotNil(t, breakdown["global.anthropic.claude-sonnet-4-6"].Cost)
 	assert.InDelta(t, 150*1.5e-06+30*7.5e-06, *breakdown["global.anthropic.claude-sonnet-4-6"].Cost, 1e-12)
 }
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// datasheetForTest returns a datasheet over a new live store closed when the test ends.
+var datasheetForTest = datasheettest.New

@@ -155,7 +155,7 @@ func topicTestVectors() map[string][]float32 {
 func TestBuildTopicsJobMetaErrorClasses(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	build := func(row *tables.TableWarpConfig, end time.Time) error {
-		service := NewService(nil,
+		service := serviceForTest(t, nil,
 			WithConfigStore(&recordingStore{row: row}), WithLogReader(topicTestReader(t, topicTestLogs(start))),
 			WithVectorStore(newFakeWarpVectorStore()),
 		)
@@ -256,7 +256,7 @@ func TestWarpRegisterTopicsKeepsDiscoveryWithoutAVectorStore(t *testing.T) {
 		if withVectors {
 			options = append(options, WithVectorStore(newFakeWarpVectorStore()))
 		}
-		service := NewService(nil, options...)
+		service := serviceForTest(t, nil, options...)
 		t.Cleanup(service.Shutdown)
 		runner := sidekiq.New(nil, nil, 1, "")
 		service.RegisterTopics(runner)
@@ -303,7 +303,7 @@ func TestWarpTopicsJobAppliesWindowInCode(t *testing.T) {
 	require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, "log-old", []float32{0, 0, 1}, map[string]interface{}{"log_id": "log-old", "timestamp": start.Add(-48 * time.Hour).Unix(), "warp_log": true}))
 	require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, "not-a-log", []float32{0, 0, 1}, map[string]interface{}{"log_id": "not-a-log", "timestamp": start.Add(time.Hour).Unix()}))
 
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(topicTestReader(t, logs)),
 		WithVectorStore(vectors), WithEmbeddingExecutor(backfillEmbeddingExecutor),
 		WithChatFunc(func(context.Context, *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
@@ -332,7 +332,7 @@ func topicTestService(t *testing.T, vectors *fakeWarpVectorStore, reader LogRead
 	if reader == nil {
 		reader = topicTestReader(t, logs)
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
 		WithVectorStore(vectors), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithChatFunc(chat),
 	)
@@ -589,7 +589,7 @@ func TestTopicSampleTextsStaysWithinTheHydrationBound(t *testing.T) {
 		clusters = append(clusters, topicCluster{sampleIDs: samples})
 	}
 	reader := &cappedHydrator{semanticLogReader: &semanticLogReader{logs: logs}, limit: topicsHydrationBatch}
-	service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader))
+	service := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader))
 	defer service.Shutdown()
 
 	texts := service.topicSampleTexts(context.Background(), clusters)
@@ -706,7 +706,7 @@ func TestWarpTopicsJobCountsARepeatedEntryOnce(t *testing.T) {
 	for id, vector := range topicTestVectors() {
 		require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, id, vector, map[string]interface{}{"log_id": id, "timestamp": logs[id].Timestamp.Unix(), "warp_log": true}))
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(topicTestReader(t, logs)),
 		WithVectorStore(&repeatingStore{vectors}), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithChatFunc(topicTestNaming),
 	)
@@ -1600,7 +1600,7 @@ func (r *recordingTopicStore) UpsertWarpTopicAssignments(ctx context.Context, ro
 func TestWarpTopicsNeedALogStoreThatKeepsThem(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	logs := topicTestLogs(start)
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(&semanticLogReader{logs: logs}),
 		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithChatFunc(topicTestNaming),
 	)
@@ -2537,7 +2537,7 @@ func TestWarpTopicsJobAgainstLiveVectorStores(t *testing.T) {
 			time.Sleep(2 * time.Second)
 
 			reader := topicTestReader(t, logs)
-			service := NewService(nil,
+			service := serviceForTest(t, nil,
 				WithConfigStore(&recordingStore{row: row}), WithLogReader(reader),
 				WithVectorStore(store), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithChatFunc(topicTestNaming),
 			)
@@ -2604,7 +2604,7 @@ func TestWarpHasIndexedRequests(t *testing.T) {
 
 	vectors := newFakeWarpVectorStore()
 	require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, "not-warps", []float32{1, 0, 0}, map[string]interface{}{"log_id": "x"}))
-	empty := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(vectors))
+	empty := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(vectors))
 	t.Cleanup(empty.Shutdown)
 	indexed, err = empty.HasIndexedRequests(context.Background())
 	require.NoError(t, err)
@@ -2627,7 +2627,7 @@ func TestWarpHasIndexedRequests(t *testing.T) {
 
 	forgetful := newFakeWarpVectorStore()
 	forgetful.strict = true
-	unknown := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(forgetful))
+	unknown := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(forgetful))
 	t.Cleanup(unknown.Shutdown)
 	_, err = unknown.HasIndexedRequests(context.Background())
 	require.Error(t, err)

@@ -14,6 +14,8 @@ OpenAIResponsesRequest:
       $ref: "#/OpenAIResponsesInput"
     stream:
       type: boolean
+    access_programs:
+      $ref: "../../inference/responses.yaml#/AccessPrograms"
     context_management:
       $ref: "../../inference/responses.yaml#/ContextManagement"
     instructions:

@@ -10,6 +10,11 @@ export interface Notification {
 	message: string;
 	action_label?: string;
 	action_path?: string;
+	subject_type?: string;
+	subject_id?: string;
+	/** Set once the subject is handled; the row stays visible but stops asking for action. */
+	resolved_at?: string;
+	resolution?: string;
 	created_at: string;
 	expires_at: string;
 }

@@ -39715,6 +39715,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -40029,6 +40039,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -42129,6 +42149,116 @@
         }
       }
     },
+    "/api/governance/users/{user_id}/content-logging": {
+      "put": {
+        "operationId": "setUserContentLogging",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Set a user's content-logging decision",
+        "description": "Available in Bifrost Enterprise only. Sets, flips or clears the user's own content-logging decision and reloads the user on every node. The user sits below their business units and teams and above their virtual keys, provider keys and access profiles. Requires Users (Update).\n",
+        "tags": [
+          "Users"
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "description": "User ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "disable_content_logging"
+                ],
+                "properties": {
+                  "disable_content_logging": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ],
+                    "description": "The user's own content-logging decision: true forces content off for the user's traffic, false forces it on, null clears it back to inherit. The field is required, so an empty body is refused rather than read as a clear. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Decision stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user_id": {
+                      "type": "string"
+                    },
+                    "disable_content_logging": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/users/{user_id}/teams": {
       "get": {
         "operationId": "getUserTeams",
@@ -43533,6 +43663,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -43607,6 +43747,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -43674,6 +43824,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -43756,6 +43916,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -43821,6 +43991,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -43986,6 +44166,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -44081,6 +44271,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -44157,6 +44357,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -44258,6 +44468,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -44332,6 +44552,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -44717,6 +44947,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -44857,6 +45097,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -45059,6 +45309,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -45117,6 +45377,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -45398,6 +45668,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -45671,6 +45951,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -45836,6 +46126,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -45904,6 +46204,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -45959,6 +46269,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -46078,6 +46398,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -46159,6 +46489,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -46202,6 +46542,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -46211,7 +46561,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Plugins:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Create a new plugin",
-        "description": "Creates a new plugin with the specified configuration.\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
+        "description": "Creates a new plugin with the specified configuration.\nThe built-in plugins Bifrost configures itself (`governance`, `routing`, `logging`,\n`prompts`, `compat` and `model-catalog-resolver`) cannot be created, changed or deleted through this API; a request\nnaming one is refused with 400.\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
         "tags": [
           "Plugins"
         ],
@@ -46285,6 +46635,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -46296,7 +46656,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Plugins:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List built-in plugin names",
-        "description": "Returns the canonical list of built-in plugin names available in this Bifrost build.\nUse this to discover which plugins can be enabled without supplying a custom binary.\n",
+        "description": "Returns the canonical list of built-in plugin names available in this Bifrost build.\nUse this to discover which plugins can be enabled without supplying a custom binary.\nOf these, `governance`, `routing`, `logging`, `prompts`, `compat` and `model-catalog-resolver` are configured by\nBifrost itself and cannot be created, changed or deleted through the plugins API.\n",
         "tags": [
           "Plugins"
         ],
@@ -46330,6 +46690,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -46463,6 +46833,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -46472,7 +46852,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Plugins:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update a plugin",
-        "description": "Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.\nThe response `actualName` field shows the plugin name from GetName() (used as the map key),\nwhich may differ from the display name (`name`).\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
+        "description": "Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.\nThe built-in plugins Bifrost configures itself (`governance`, `routing`, `logging`,\n`prompts`, `compat` and `model-catalog-resolver`) cannot be created, changed or deleted through this API; a request\nnaming one is refused with 400.\nThe response `actualName` field shows the plugin name from GetName() (used as the map key),\nwhich may differ from the display name (`name`).\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
         "tags": [
           "Plugins"
         ],
@@ -46557,6 +46937,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -46566,7 +46956,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Plugins:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Delete a plugin",
-        "description": "Removes a plugin from the configuration and stops it if running.\n",
+        "description": "Removes a plugin from the configuration and stops it if running.\nThe built-in plugins Bifrost configures itself (`governance`, `routing`, `logging`,\n`prompts`, `compat` and `model-catalog-resolver`) cannot be created, changed or deleted through this API; a request\nnaming one is refused with 400.\n",
         "tags": [
           "Plugins"
         ],
@@ -46622,6 +47012,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -47415,6 +47815,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -49103,6 +49513,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -49426,6 +49846,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -49481,6 +49911,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -49555,6 +49995,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -49638,6 +50088,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -49730,6 +50190,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -49798,6 +50268,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -50095,6 +50575,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -50194,6 +50684,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -50249,6 +50749,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -50313,6 +50823,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -50472,6 +50992,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -50532,6 +51062,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -50609,6 +51149,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -50748,7 +51298,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List MCP library servers",
-        "description": "Returns a paginated, searchable, filterable list of the MCP server library catalog,\nwith whether an MCP client already installs each entry. Multi-value filters accept a\ncomma-separated list and use OR semantics within a field. Returns an empty page when\nthe config store is disabled.\n",
+        "description": "Returns a paginated, searchable, filterable list of the MCP server library catalog,\nwith whether an MCP client already installs each entry. Multi-value filters accept a\ncomma-separated list and use OR semantics within a field.\n",
         "tags": [
           "MCP"
         ],
@@ -51025,6 +51575,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -51393,6 +51953,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -51605,6 +52175,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -51703,6 +52283,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -51763,6 +52353,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -51837,6 +52437,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -52021,6 +52631,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -52087,6 +52707,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -52161,6 +52791,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -52889,6 +53529,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -52943,6 +53593,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -53032,6 +53692,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -53106,6 +53776,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -53195,6 +53875,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -53257,6 +53947,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -53312,6 +54012,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -53412,6 +54122,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -53476,6 +54196,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -53945,6 +54675,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -54027,6 +54767,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -54081,6 +54831,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -54150,6 +54910,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -54239,6 +55009,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -54294,6 +55074,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -54553,6 +55343,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -54607,6 +55407,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -54676,6 +55486,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -54765,6 +55585,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -54820,6 +55650,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -55043,6 +55883,13 @@
                           "customer_count": {
                             "type": "integer"
                           },
+                          "disable_content_logging": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ],
+                            "description": "The business unit's content-logging decision. Absent or null inherits. The business unit is the highest content-logging layer, above every team, user and key below it. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                          },
                           "created_at": {
                             "type": "string",
                             "format": "date-time"
@@ -55109,6 +55956,13 @@
                 "properties": {
                   "name": {
                     "type": "string"
+                  },
+                  "disable_content_logging": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ],
+                    "description": "Omit or set null to inherit. The business unit is the highest content-logging layer, above every team, user and key below it. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                   }
                 }
               }
@@ -55234,6 +56088,13 @@
                     "rate_limit": {
                       "$ref": "#/components/schemas/RateLimit"
                     },
+                    "disable_content_logging": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "The business unit's content-logging decision. Absent or null inherits. The business unit is the highest content-logging layer, above every team, user and key below it. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                    },
                     "created_at": {
                       "type": "string",
                       "format": "date-time"
@@ -55278,7 +56139,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `BusinessUnits:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update business unit",
-        "description": "Updates the business unit name.\n",
+        "description": "Updates the business unit's content-logging decision. Renaming a business unit is refused.",
         "tags": [
           "Governance"
         ],
@@ -55299,13 +56160,18 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "description": "Create business unit request",
-                "required": [
-                  "name"
-                ],
+                "description": "Update business unit request. Renaming is refused; send the current name or omit it.",
                 "properties": {
                   "name": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Must equal the current name when sent."
+                  },
+                  "disable_content_logging": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ],
+                    "description": "Tri-state. Omit to leave the decision unchanged, null to clear it back to inherit, true or false to set it. The business unit is the highest content-logging layer, above every team, user and key below it. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                   }
                 }
               }
@@ -55890,6 +56756,13 @@
                         "created_by_user_id": {
                           "type": "string"
                         },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The business unit's content-logging decision. Absent or null inherits. The business unit is the highest content-logging layer, above every team, user and key below it. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                        },
                         "created_at": {
                           "type": "string",
                           "format": "date-time"
@@ -56056,6 +56929,13 @@
                         },
                         "created_by_user_id": {
                           "type": "string"
+                        },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The business unit's content-logging decision. Absent or null inherits. The business unit is the highest content-logging layer, above every team, user and key below it. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                         },
                         "created_at": {
                           "type": "string",
@@ -56420,6 +57300,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -56456,6 +57346,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -56690,6 +57590,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -56761,6 +57671,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -56823,6 +57743,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -56912,6 +57842,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -56974,6 +57914,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -57021,6 +57971,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -57112,6 +58072,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -57167,6 +58137,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -57288,6 +58268,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -57342,6 +58332,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -57433,6 +58433,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -57478,6 +58488,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -58754,6 +59774,13 @@
                             "type": "boolean",
                             "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
                           },
+                          "disable_content_logging": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ],
+                            "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                          },
                           "auto_rotation_interval": {
                             "type": "integer",
                             "format": "int64",
@@ -59243,6 +60270,13 @@
                     "default": false,
                     "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
                   },
+                  "disable_content_logging": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ],
+                    "description": "The profile's content-logging decision. Omit or set null to inherit. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                  },
                   "auto_rotation_interval": {
                     "oneOf": [
                       {
@@ -59704,6 +60738,13 @@
                         "allow_all_providers": {
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                         },
                         "auto_rotation_interval": {
                           "type": "integer",
@@ -60224,6 +61265,13 @@
                         "allow_all_providers": {
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                         },
                         "auto_rotation_interval": {
                           "type": "integer",
@@ -60749,6 +61797,13 @@
                     "nullable": true,
                     "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false, provider-wide access is disabled and access is deny-by-default via provider_configs. Omit to leave unchanged."
                   },
+                  "disable_content_logging": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ],
+                    "description": "Tri-state. Omit to leave the decision unchanged, null to clear it back to inherit, true or false to set it. A change is written to every user and entity copy of the profile on this save, without a propagate. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                  },
                   "auto_rotation_interval": {
                     "oneOf": [
                       {
@@ -61219,6 +62274,13 @@
                         "allow_all_providers": {
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                         },
                         "auto_rotation_interval": {
                           "type": "integer",
@@ -61807,6 +62869,13 @@
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
                         },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                        },
                         "auto_rotation_interval": {
                           "type": "integer",
                           "format": "int64",
@@ -62316,6 +63385,13 @@
                         "allow_all_providers": {
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                         },
                         "auto_rotation_interval": {
                           "type": "integer",
@@ -62846,6 +63922,13 @@
                         "allow_all_providers": {
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                         },
                         "auto_rotation_interval": {
                           "type": "integer",
@@ -76243,6 +77326,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "x-bifrost-successor": "/api/governance/teams",
@@ -76311,6 +77404,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -76406,6 +77509,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "x-bifrost-successor": "/api/governance/teams/{team_id}",
@@ -76467,6 +77580,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -77104,6 +78227,13 @@
                             "type": "boolean",
                             "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
                           },
+                          "disable_content_logging": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ],
+                            "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                          },
                           "auto_rotation_interval": {
                             "type": "integer",
                             "format": "int64",
@@ -77596,6 +78726,13 @@
                     "default": false,
                     "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
                   },
+                  "disable_content_logging": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ],
+                    "description": "The profile's content-logging decision. Omit or set null to inherit. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                  },
                   "auto_rotation_interval": {
                     "oneOf": [
                       {
@@ -78057,6 +79194,13 @@
                         "allow_all_providers": {
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                         },
                         "auto_rotation_interval": {
                           "type": "integer",
@@ -78580,6 +79724,13 @@
                         "allow_all_providers": {
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                         },
                         "auto_rotation_interval": {
                           "type": "integer",
@@ -79108,6 +80259,13 @@
                     "nullable": true,
                     "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false, provider-wide access is disabled and access is deny-by-default via provider_configs. Omit to leave unchanged."
                   },
+                  "disable_content_logging": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ],
+                    "description": "Tri-state. Omit to leave the decision unchanged, null to clear it back to inherit, true or false to set it. A change is written to every user and entity copy of the profile on this save, without a propagate. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                  },
                   "auto_rotation_interval": {
                     "oneOf": [
                       {
@@ -79578,6 +80736,13 @@
                         "allow_all_providers": {
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                         },
                         "auto_rotation_interval": {
                           "type": "integer",
@@ -80172,6 +81337,13 @@
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
                         },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
+                        },
                         "auto_rotation_interval": {
                           "type": "integer",
                           "format": "int64",
@@ -80684,6 +81856,13 @@
                         "allow_all_providers": {
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                         },
                         "auto_rotation_interval": {
                           "type": "integer",
@@ -81217,6 +82396,13 @@
                         "allow_all_providers": {
                           "type": "boolean",
                           "description": "When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs."
+                        },
+                        "disable_content_logging": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "The profile's content-logging decision. Absent or null inherits. A user's own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity's decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
                         },
                         "auto_rotation_interval": {
                           "type": "integer",
@@ -84624,6 +85810,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -84828,6 +86024,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -84972,6 +86178,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -85201,6 +86417,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -85267,6 +86493,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -85367,6 +86603,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -85441,6 +86687,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -87957,6 +89213,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -88028,6 +89294,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -88090,6 +89366,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -88189,6 +89475,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -88244,6 +89540,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -93123,6 +94429,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -93194,6 +94510,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -93224,6 +94550,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ModelRouterDefaults"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -93294,6 +94630,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -93382,6 +94728,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -93426,6 +94782,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -93490,6 +94856,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -93574,6 +94950,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -93710,6 +95096,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -94586,6 +95982,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "x-bifrost-successor": "/api/routing/rules",
@@ -94663,6 +96069,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "x-bifrost-successor": "/api/routing/rules",
@@ -94731,6 +96147,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -94836,6 +96262,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "x-bifrost-successor": "/api/routing/rules/{rule_id}",
@@ -94897,6 +96333,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -110533,6 +111979,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -110636,6 +112092,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -110723,6 +112189,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -110851,6 +112327,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -110905,6 +112391,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -111197,6 +112693,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -111512,6 +113018,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -111804,6 +113320,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -112127,6 +113653,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -112181,6 +113717,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -112297,6 +113843,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -112465,6 +114021,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -112588,6 +114154,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -112643,6 +114219,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -112762,6 +114348,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -112937,6 +114533,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -113056,6 +114662,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -113227,6 +114843,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -113282,6 +114908,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -113426,6 +115062,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -113582,6 +115228,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -113645,6 +115301,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -113699,6 +115365,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -113735,6 +115411,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -113796,6 +115482,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -113904,6 +115600,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -113958,6 +115664,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -114048,6 +115764,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -114130,6 +115856,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -114185,6 +115921,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -114311,6 +116057,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -114395,6 +116151,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -114434,6 +116200,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available, or the skills marketplace is disabled because `skills_external_client_url` is not set.",
             "content": {
               "application/json": {
                 "schema": {
@@ -114487,6 +116263,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available, or the skills marketplace is disabled because `skills_external_client_url` is not set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -114517,6 +116303,24 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available, or skills serving is busy (retry after the seconds in `Retry-After`).",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds to wait before retrying; sent when skills serving is busy."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -114575,6 +116379,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -114642,6 +116456,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -115976,6 +117800,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -116037,6 +117871,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -116087,6 +117931,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -116170,6 +118024,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -116218,6 +118082,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -116277,6 +118151,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -116362,6 +118246,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available, or webhook delivery is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -116435,7 +118329,7 @@
             }
           },
           "503": {
-            "description": "Logs store is not available.",
+            "description": "Config store not available, or logs store not available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -116615,7 +118509,7 @@
             }
           },
           "503": {
-            "description": "Logs store is not available.",
+            "description": "Config store not available, or logs store not available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -116687,6 +118581,16 @@
           },
           "409": {
             "description": "This delivery is already in flight.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available, or logs store not available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -118115,6 +120019,16 @@
           },
           "403": {
             "description": "Caller lacks `WarpSession` View (enterprise)"
+          },
+          "409": {
+            "description": "Warp's settings name a virtual key (`virtual_key_id`) that no longer\nexists, and the caller has no identity of their own to use instead.\nAn administrator chooses another key in Warp's settings.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "413": {
             "description": "Conversation exceeds the server's history limit",
@@ -131170,6 +133084,22 @@
           }
         }
       },
+      "AccessPrograms": {
+        "type": "object",
+        "description": "OpenAI trusted-access programs (Daybreak). On a request, selects the program the request runs under; it is forwarded only to OpenAI and dropped for every other provider. Members other than cyber, and a cyber that is not one of the listed values, are forwarded to OpenAI as sent, so a misspelled member is rejected with a 400 instead of silently running the model's default program. On a response, records the program that served the request; absent when OpenAI applied standard safeguards implicitly.\n",
+        "additionalProperties": true,
+        "properties": {
+          "cyber": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "daybreak_blue",
+              "daybreak_red"
+            ],
+            "description": "Cyber trusted-access program. Use the value OpenAI lists for the model."
+          }
+        }
+      },
       "ContextManagement": {
         "description": "Automatic context window management. The wire shape depends on the target provider: OpenAI-compatible providers accept an array of {type, compact_threshold} entries; Anthropic-compatible providers accept an object with an \"edits\" array (compact_20260112, clear_tool_uses_20250919, clear_thinking_20251015).\n",
         "oneOf": [
@@ -131703,6 +133633,9 @@
           "stream": {
             "type": "boolean"
           },
+          "access_programs": {
+            "$ref": "#/components/schemas/AccessPrograms"
+          },
           "background": {
             "type": "boolean"
           },
@@ -132112,6 +134045,9 @@
         "properties": {
           "id": {
             "type": "string"
+          },
+          "access_programs": {
+            "$ref": "#/components/schemas/AccessPrograms"
           },
           "background": {
             "type": "boolean"
@@ -138950,6 +140886,9 @@
           },
           "stream": {
             "type": "boolean"
+          },
+          "access_programs": {
+            "$ref": "#/components/schemas/AccessPrograms"
           },
           "context_management": {
             "$ref": "#/components/schemas/ContextManagement"
@@ -148684,6 +150623,13 @@
             "type": "boolean",
             "description": "Whether to use OpenAI-compatible endpoints for this key"
           },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The provider key's own content-logging decision. Omit or null to inherit. The key sits in the credential tier with the virtual key and access profile, below the business unit, team and user, so any of those that decides outranks it; inside the tier, any that says true wins. Stamped when the key is selected; once a request has been sent on a key that says true, a retry onto another key does not turn content back on. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
+          },
           "config_hash": {
             "type": "string",
             "description": "Hash of config.json version, used for change detection"
@@ -151954,6 +153900,13 @@
             "type": "object",
             "additionalProperties": true
           },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The team's own content-logging decision. Absent or null inherits. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. A team that says true keeps content off even for a virtual key set to false, and a team that says false keeps content on even for a key set to true. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
+          },
           "config_hash": {
             "type": [
               "string",
@@ -152023,6 +153976,13 @@
           "customer_id": {
             "type": "string"
           },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Omit or set null to inherit. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. A team that says true keeps content off even for a virtual key set to false, and a team that says false keeps content on even for a key set to true. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
+          },
           "budgets": {
             "type": "array",
             "description": "Budgets to create for this team; reset durations must be unique",
@@ -152064,6 +154024,13 @@
           "calendar_aligned": {
             "type": "boolean",
             "description": "Team-wide calendar alignment for budget and rate-limit resets. Omit to leave unchanged."
+          },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Tri-state. Omit to leave the current decision unchanged, null to clear it back to inheriting, true to force content off, false to force it on. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. A team that says true keeps content off even for a virtual key set to false, and a team that says false keeps content on even for a key set to true. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
           },
           "reset_budget_usage": {
             "type": "boolean",
@@ -155629,6 +157596,13 @@
               "null"
             ],
             "default": false
+          },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The provider key's own content-logging decision. Omit or null to inherit. The key sits in the credential tier with the virtual key and access profile, below the business unit, team and user, so any of those that decides outranks it; inside the tier, any that says true wins. Stamped when the key is selected; once a request has been sent on a key that says true, a retry onto another key does not turn content back on. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
           },
           "created_at": {
             "type": "string",
@@ -161364,6 +163338,10 @@
             "type": "string",
             "description": "Which of the provider's configured keys the default model uses. A\nreference, not a credential, so it round-trips in the clear - there is\nnothing here worth redacting. Empty when the provider needs no key.\n"
           },
+          "virtual_key_id": {
+            "type": "string",
+            "description": "ID of the virtual key Warp's model calls present when the person asking\nhas no user identity of their own: the local admin, or a deployment\nwithout an identity provider. A reference, not the key. Absent when\nnone is set.\n"
+          },
           "additional_models": {
             "type": "array",
             "description": "The other models an operator has exposed. A chat request may name any of\nthem, or the default, by `provider` and `model`; nothing else is\naccepted. Omitted when only the default is configured.\n",
@@ -161545,6 +163523,10 @@
           "api_key_id": {
             "type": "string",
             "description": "Which of the provider's configured keys Warp should use. Empty is valid\nand common: a provider on a trusted network, or one using ambient IAM\ncredentials, needs no key at all.\n"
+          },
+          "virtual_key_id": {
+            "type": "string",
+            "description": "ID of a virtual key Warp's model calls present when the person asking\nhas no user identity of their own: the local admin, or a deployment\nwithout an identity provider. Needed for that caller while\n`enforce_auth_on_inference` is on; signed-in users are governed as\nthemselves and never use it. Omitted keeps the stored value, and `\"\"`\nclears it. A key that does not exist, or is inactive, is rejected with\n`400` when the value changes.\n"
           },
           "additional_models": {
             "type": "array",
