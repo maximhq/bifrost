@@ -1580,6 +1580,7 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 	bodyMode := pluginRequestBodyMode(ctx)
 	// Apply headers
 	for key, value := range req.Headers {
+		ctx.Request.Header.Del(key)
 		ctx.Request.Header.Set(key, value)
 	}
 	// Apply query params

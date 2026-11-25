@@ -2143,7 +2143,7 @@ func TestFasthttpToHTTPRequest(t *testing.T) {
 	}
 }
 
-func TestFasthttpToHTTPRequestPreservesRepeatedHeaders(t *testing.T) {
+func TestHTTPRequestHeaderRoundTripPreservesRepeatedHeaders(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Add("X-Repeated-Header", "first")
 	ctx.Request.Header.Add("x-repeated-header", "second")
@@ -2154,6 +2154,20 @@ func TestFasthttpToHTTPRequestPreservesRepeatedHeaders(t *testing.T) {
 	fasthttpToHTTPRequest(ctx, req)
 
 	assert.Equal(t, "first, second", req.Headers["X-Repeated-Header"])
+	assert.True(t, applyHTTPRequestToCtx(ctx, req))
+
+	var values []string
+	for key, value := range ctx.Request.Header.All() {
+		if strings.EqualFold(string(key), "X-Repeated-Header") {
+			values = append(values, string(value))
+		}
+	}
+	assert.Equal(t, []string{"first, second"}, values)
+
+	roundTripReq := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(roundTripReq)
+	fasthttpToHTTPRequest(ctx, roundTripReq)
+	assert.Equal(t, "first, second", roundTripReq.Headers["X-Repeated-Header"])
 }
 
 func BenchmarkFasthttpToHTTPRequestHeaders(b *testing.B) {
