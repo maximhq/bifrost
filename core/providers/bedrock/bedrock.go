@@ -3019,6 +3019,10 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 		s3Key = cleanedPrefix + "/" + filename
 	}
 
+	if _, bucketErr := keysAllowingS3Object([]schemas.Key{key}, bucketName, s3Key); bucketErr != nil {
+		return nil, bucketErr
+	}
+
 	provider.logger.Debug("uploading file to s3: %s", s3Key)
 
 	// Build S3 PUT request URL
@@ -3121,6 +3125,10 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 	}
 	if bucketPrefix != "" {
 		s3Prefix = bucketPrefix + s3Prefix
+	}
+	keys, bucketErr := keysAllowingS3Object(keys, bucketName, s3Prefix)
+	if bucketErr != nil {
+		return nil, bucketErr
 	}
 
 	// Initialize serial pagination helper
@@ -3262,6 +3270,10 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 	if bucketErr := validateS3Bucket(bucketName); bucketErr != nil {
 		return nil, bucketErr
 	}
+	keys, bucketErr := keysAllowingS3Object(keys, bucketName, s3Key)
+	if bucketErr != nil {
+		return nil, bucketErr
+	}
 
 	var keyErrs s3KeyErrors
 	for _, key := range keys {
@@ -3363,6 +3375,10 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 	if bucketErr := validateS3Bucket(bucketName); bucketErr != nil {
 		return nil, bucketErr
 	}
+	keys, bucketErr := keysAllowingS3Object(keys, bucketName, s3Key)
+	if bucketErr != nil {
+		return nil, bucketErr
+	}
 
 	var keyErrs s3KeyErrors
 	for _, key := range keys {
@@ -3445,6 +3461,10 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		return nil, providerUtils.NewBifrostOperationError("invalid S3 URI format, expected s3://bucket/key", nil)
 	}
 	if bucketErr := validateS3Bucket(bucketName); bucketErr != nil {
+		return nil, bucketErr
+	}
+	keys, bucketErr := keysAllowingS3Object(keys, bucketName, s3Key)
+	if bucketErr != nil {
 		return nil, bucketErr
 	}
 
@@ -3564,6 +3584,19 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.NewBifrostOperationError("output_s3_uri is required for Bedrock batch API (provide in extra_params)", nil)
 	}
 
+	// The job reads its input from and writes its output to S3 on the key's behalf, so
+	// both locations follow the key's bucket list.
+	outputBucket, outputKey := parseS3URI(outputS3Uri)
+	if _, bucketErr := keysAllowingS3Folder([]schemas.Key{key}, outputBucket, outputKey); bucketErr != nil {
+		return nil, bucketErr
+	}
+	if request.InputFileID != "" {
+		inputBucket, inputKey := parseS3URI(request.InputFileID)
+		if _, bucketErr := keysAllowingS3Object([]schemas.Key{key}, inputBucket, inputKey); bucketErr != nil {
+			return nil, bucketErr
+		}
+	}
+
 	if request.Model == nil {
 		provider.logger.Error("model is required for Bedrock batch API")
 		return nil, providerUtils.NewBifrostOperationError("model is required for Bedrock batch API", nil)
@@ -3599,12 +3632,13 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 			return nil, providerUtils.NewBifrostOperationError("failed to convert requests to JSONL", err)
 		}
 
-		// Generate S3 key for the input file
-		inputKey := generateBatchInputS3Key(jobName)
-
-		// Derive bucket from output S3 URI
-		inputS3URI := deriveInputS3URIFromOutput(outputS3Uri, inputKey)
-		bucket, s3Key := parseS3URI(inputS3URI)
+		// The input goes next to the output, inside the key's bucket list, and its final
+		// location is checked like one the caller named.
+		bucket, s3Key := batchInputS3Location(key, outputS3Uri, jobName)
+		if _, bucketErr := keysAllowingS3Object([]schemas.Key{key}, bucket, s3Key); bucketErr != nil {
+			return nil, bucketErr
+		}
+		inputS3URI := fmt.Sprintf("s3://%s/%s", bucket, s3Key)
 
 		// Upload to S3 using Bedrock credentials
 		if bifrostErr := uploadToS3(
@@ -3913,6 +3947,11 @@ func (provider *BedrockProvider) fetchBatchManifest(ctx *schemas.BifrostContext,
 	manifestKey := "manifest.json.out"
 	if base != "" {
 		manifestKey = base + "/manifest.json.out"
+	}
+	// The read is signed with the key's credentials, so it follows the key's bucket list
+	// like any other file read. A job whose output the key does not list reports no counts.
+	if !keyAllowsS3Object(key, bucketName, manifestKey) {
+		return nil
 	}
 
 	// Build S3 GET request
@@ -4255,7 +4294,9 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 			Provider: request.Provider,
 			StorageConfig: &schemas.FileStorageConfig{
 				S3: &schemas.S3StorageConfig{
-					Bucket: outputS3URI,
+					// Listed as the folder BatchCreate accepted, whether or not it was written
+					// with its trailing slash. The direct read below keeps the URI as written.
+					Bucket: s3FolderURI(outputS3URI),
 				},
 			},
 			Limit: 100,
@@ -4304,8 +4345,7 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 	// Find and download JSONL output files (files ending with .jsonl.out or containing results)
 	var allParseErrors []schemas.BatchError
 	for _, file := range allFiles {
-		// Skip manifest files, only process JSONL output files
-		if strings.HasSuffix(file.ID, ".jsonl.out") || strings.HasSuffix(file.ID, ".jsonl") {
+		if isBatchResultFile(file.ID) {
 			fileContentResp, fileErr := provider.FileContent(ctx, keys, &schemas.BifrostFileContentRequest{
 				Provider: request.Provider,
 				FileID:   file.ID,

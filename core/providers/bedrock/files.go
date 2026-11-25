@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,6 +40,147 @@ func validateS3Bucket(bucket string) *schemas.BifrostError {
 		return providerUtils.NewBifrostBadRequestError(fmt.Sprintf("invalid s3 bucket name: %q", bucket))
 	}
 	return nil
+}
+
+// keyAllowsS3Object reports whether key may be used for objectKey in bucket. A key that
+// lists buckets in batch_s3_config is limited to them: the bucket must be listed, and when
+// the entry carries a prefix the object key must sit inside it. A key that lists no buckets
+// is not limited, which keeps deployments that name the bucket per request working.
+//
+// The S3 request is signed with the key's own AWS credentials, so without this rule a
+// caller could point a file or batch operation at any bucket those credentials can reach.
+func keyAllowsS3Object(key schemas.Key, bucket, objectKey string) bool {
+	if key.BedrockKeyConfig == nil || key.BedrockKeyConfig.BatchS3Config == nil || len(key.BedrockKeyConfig.BatchS3Config.Buckets) == 0 {
+		return true
+	}
+	for _, allowed := range key.BedrockKeyConfig.BatchS3Config.Buckets {
+		if allowed.BucketName != bucket {
+			continue
+		}
+		prefix := strings.TrimPrefix(allowed.Prefix, "/")
+		if prefix == "" {
+			return true
+		}
+		// A prefix names a folder, so "jobs" and "jobs/" both mean keys under "jobs/".
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
+		if !strings.HasPrefix(objectKey, prefix) {
+			continue
+		}
+		// S3 keys are literal, but a ".." segment can be collapsed on the way to S3.
+		if slices.Contains(strings.Split(objectKey, "/"), "..") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// keysAllowingS3Object returns the keys that may be used for objectKey in bucket, in their
+// original order. When no key may be used the operation is refused with a 403.
+func keysAllowingS3Object(keys []schemas.Key, bucket, objectKey string) ([]schemas.Key, *schemas.BifrostError) {
+	// The caller's slice is returned as it came until a key is refused, so a deployment that
+	// lists no buckets, where nothing is ever filtered, allocates nothing here.
+	allowed := keys
+	filtered := false
+	for i := range keys {
+		if keyAllowsS3Object(keys[i], bucket, objectKey) {
+			if filtered {
+				allowed = append(allowed, keys[i])
+			}
+			continue
+		}
+		if !filtered {
+			allowed = append(make([]schemas.Key, 0, len(keys)), keys[:i]...)
+			filtered = true
+		}
+	}
+	if len(allowed) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			StatusCode:     schemas.Ptr(http.StatusForbidden),
+			Error: &schemas.ErrorField{
+				Message: fmt.Sprintf("s3 location %q is not in the bucket list (batch_s3_config) of any key available for this request", "s3://"+bucket+"/"+objectKey),
+			},
+		}
+	}
+	return allowed, nil
+}
+
+// keysAllowingS3Folder is keysAllowingS3Object for a location that names a folder, such as
+// a batch output location. "jobs" and "jobs/" name the same folder, so it is checked with
+// its trailing slash: a key limited to "jobs/" accepts both spellings and still refuses
+// "jobs-archive". The bucket root stays the empty key.
+func keysAllowingS3Folder(keys []schemas.Key, bucket, folderKey string) ([]schemas.Key, *schemas.BifrostError) {
+	if folderKey != "" && !strings.HasSuffix(folderKey, "/") {
+		folderKey += "/"
+	}
+	return keysAllowingS3Object(keys, bucket, folderKey)
+}
+
+// batchInputFolder is the folder the input generated for an inline batch is written to.
+const batchInputFolder = "bifrost-batch-input/"
+
+// batchInputS3Location returns where the input generated for an inline batch is written:
+// the output bucket, in batchInputFolder. A key limited to a prefix of that bucket gets the
+// folder inside the prefix that covers the output, so the key can write its own input and
+// read or delete it afterwards. When the output is the prefix itself the input folder sits
+// inside the output folder; BatchResults skips it by name.
+func batchInputS3Location(key schemas.Key, outputS3URI, jobName string) (bucket, objectKey string) {
+	bucket, outputKey := parseS3URI(outputS3URI)
+	objectKey = generateBatchInputS3Key(jobName)
+	if key.BedrockKeyConfig == nil || key.BedrockKeyConfig.BatchS3Config == nil {
+		return bucket, objectKey
+	}
+	if outputKey != "" && !strings.HasSuffix(outputKey, "/") {
+		outputKey += "/"
+	}
+	for _, allowed := range key.BedrockKeyConfig.BatchS3Config.Buckets {
+		if allowed.BucketName != bucket {
+			continue
+		}
+		prefix := strings.TrimPrefix(allowed.Prefix, "/")
+		if prefix == "" {
+			return bucket, objectKey
+		}
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
+		if strings.HasPrefix(outputKey, prefix) {
+			return bucket, prefix + objectKey
+		}
+	}
+	return bucket, objectKey
+}
+
+// s3FolderURI returns an s3:// URI in the form that names a folder: with a trailing slash on
+// its key. "s3://b/jobs" and "s3://b/jobs/" name the same folder; listing the first as written
+// would list the prefix "jobs", which is not inside a key's "jobs/". A URI with no key (the
+// bucket itself) is returned unchanged.
+func s3FolderURI(uri string) string {
+	_, objectKey := parseS3URI(uri)
+	if objectKey == "" || strings.HasSuffix(objectKey, "/") {
+		return uri
+	}
+	return uri + "/"
+}
+
+// isBatchResultFile reports whether an object listed under a batch output folder holds
+// results: the JSONL files, not the manifest. A ".jsonl.out" file is always a result. A plain
+// ".jsonl" file sitting directly in a batchInputFolder is the input generated for an inline
+// batch, which lands inside the output folder when the output is the key's prefix itself.
+func isBatchResultFile(fileID string) bool {
+	if strings.HasSuffix(fileID, ".jsonl.out") {
+		return true
+	}
+	if !strings.HasSuffix(fileID, ".jsonl") {
+		return false
+	}
+	// The folder is matched in the object key: a bucket can carry the same name.
+	_, objectKey := parseS3URI(fileID)
+	dir := objectKey[:strings.LastIndexByte(objectKey, '/')+1]
+	return dir != batchInputFolder && !strings.HasSuffix(dir, "/"+batchInputFolder)
 }
 
 // s3KeyErrors collects the failures of an S3 file operation that tries every key in turn.

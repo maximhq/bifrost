@@ -163423,6 +163423,422 @@
       ]
     },
     {
+      "name": "Bedrock file and batch operations follow the key bucket list (bedrock-bucket-list) [SERIAL]",
+      "description": "A Bedrock key that lists buckets in bedrock_key_config.batch_s3_config serves file and batch operations for those buckets only, and inside a bucket's prefix when one is set. The S3 request is signed with the key's own AWS credentials, so the list is what ties an operation to the buckets the key was set up for. The folder creates its own Bedrock-backed provider (bedrock-bucket-list-harness) with one key limited to s3://bifrost-harness-listed/jobs/ and placeholder credentials, so no other key can serve the request and nothing reaches AWS: the refusal is decided before a request is signed. Cases: retrieve from an unlisted bucket, content from the listed bucket outside its prefix, a sibling folder that only shares the prefix's spelling (jobs-archive), and delete in an unlisted bucket all answer 403 naming batch_s3_config. A batch create is refused the same way for an output in an unlisted bucket, an output in the listed bucket outside its prefix, and an input in an unlisted bucket; the role and model in those requests are placeholders, because the refusal comes before anything is sent to AWS. The last step deletes the provider. Step 1 reads the provider list and deletes a provider left by an interrupted run when one is there. Keys that list no buckets are unaffected; folder 102 covers them. No provider spend, no AWS call.",
+      "item": [
+        {
+          "name": "bedrock bucket list setup: remove a provider left by an earlier run - bedrock bucket list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The provider list always answers 200, so this row needs no status tag. A provider left by an",
+                  "// interrupted run is deleted here; any answer but 200 to that delete fails the row.",
+                  "var text = pm.response.text();",
+                  "var providers = []; try { providers = (pm.response.json() || {}).providers || []; } catch (e) { providers = []; }",
+                  "var stale = providers.filter(function (p) { return p && p.name === 'bedrock-bucket-list-harness'; });",
+                  "pm.test('provider list read - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "if (stale.length > 0) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/bedrock-bucket-list-harness', method: 'DELETE', header: { 'Content-Type': 'application/json' } }, function (err, res) {",
+                  "    pm.test('stale provider removed - bedrock bucket list', function () {",
+                  "      pm.expect(err, 'failed: ' + err).to.equal(null);",
+                  "      pm.expect(res.code, 'failed: ' + res.text()).to.equal(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers"
+          }
+        },
+        {
+          "name": "[EXPECT-200] bedrock bucket list setup: create the Bedrock-backed provider - bedrock bucket list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider create exact response status - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\": \"bedrock-bucket-list-harness\", \"custom_provider_config\": {\"base_provider_type\": \"bedrock\", \"is_key_less\": false}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] bedrock bucket list setup: add a key limited to one bucket and prefix - bedrock bucket list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('key create exact response status - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the key keeps its bucket list - bedrock bucket list', function () {",
+                  "  var buckets = ((((pm.response.json() || {}).bedrock_key_config || {}).batch_s3_config || {}).buckets) || [];",
+                  "  pm.expect(buckets.length, 'failed: ' + pm.response.text()).to.equal(1);",
+                  "  pm.expect(buckets[0].bucket_name, 'failed: ' + pm.response.text()).to.equal('bifrost-harness-listed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/bedrock-bucket-list-harness/keys",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"bucket-list-key\", \"value\": \"\", \"models\": [\"*\"], \"weight\": 1, \"bedrock_key_config\": {\"access_key\": \"AKIAHARNESSPLACEHOLDER\", \"secret_key\": \"harness-placeholder-secret\", \"region\": \"us-east-1\", \"batch_s3_config\": {\"buckets\": [{\"bucket_name\": \"bifrost-harness-listed\", \"prefix\": \"jobs/\"}]}}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] bedrock file retrieve from a bucket the key does not list - bedrock bucket list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('retrieve from an unlisted bucket exact response status - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('retrieve from an unlisted bucket is refused by the key bucket list, before any AWS call - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('batch_s3_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fbifrost-harness-unlisted%2Fjobs%2Fa.jsonl?provider=bedrock-bucket-list-harness",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fbifrost-harness-unlisted%2Fjobs%2Fa.jsonl"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock-bucket-list-harness"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] bedrock file content from the listed bucket outside its prefix - bedrock bucket list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('content outside the prefix exact response status - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('content outside the prefix is refused by the key bucket list, before any AWS call - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('batch_s3_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fbifrost-harness-listed%2Fprivate%2Fa.jsonl/content?provider=bedrock-bucket-list-harness",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fbifrost-harness-listed%2Fprivate%2Fa.jsonl",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock-bucket-list-harness"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] bedrock file retrieve from a folder that only shares the prefix spelling - bedrock bucket list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('retrieve from jobs-archive exact response status - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('retrieve from jobs-archive is refused by the key bucket list, before any AWS call - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('batch_s3_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fbifrost-harness-listed%2Fjobs-archive%2Fa.jsonl?provider=bedrock-bucket-list-harness",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fbifrost-harness-listed%2Fjobs-archive%2Fa.jsonl"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock-bucket-list-harness"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] bedrock file delete in a bucket the key does not list - bedrock bucket list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete in an unlisted bucket exact response status - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('delete in an unlisted bucket is refused by the key bucket list, before any AWS call - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('batch_s3_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/s3%3A%2F%2Fbifrost-harness-unlisted%2Fjobs%2Fa.jsonl?provider=bedrock-bucket-list-harness",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "s3%3A%2F%2Fbifrost-harness-unlisted%2Fjobs%2Fa.jsonl"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "bedrock-bucket-list-harness"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] bedrock batch create with its output in a bucket the key does not list - bedrock bucket list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('batch output in an unlisted bucket exact response status - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('batch output in an unlisted bucket is refused by the key bucket list, before any AWS call - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('batch_s3_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/batches",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock-bucket-list-harness/anthropic.claude-3-haiku-20240307-v1:0\",\n  \"input_file_id\": \"s3://bifrost-harness-listed/jobs/in.jsonl\",\n  \"role_arn\": \"arn:aws:iam::123456789012:role/bifrost-harness-placeholder\",\n  \"output_s3_uri\": \"s3://bifrost-harness-unlisted/jobs/out/\"\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] bedrock batch create with its output in the listed bucket outside its prefix - bedrock bucket list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('batch output outside the prefix exact response status - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('batch output outside the prefix is refused by the key bucket list, before any AWS call - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('batch_s3_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/batches",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock-bucket-list-harness/anthropic.claude-3-haiku-20240307-v1:0\",\n  \"input_file_id\": \"s3://bifrost-harness-listed/jobs/in.jsonl\",\n  \"role_arn\": \"arn:aws:iam::123456789012:role/bifrost-harness-placeholder\",\n  \"output_s3_uri\": \"s3://bifrost-harness-listed/private/out/\"\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] bedrock batch create with its input in a bucket the key does not list - bedrock bucket list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('batch input in an unlisted bucket exact response status - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('batch input in an unlisted bucket is refused by the key bucket list, before any AWS call - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('batch_s3_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/batches",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock-bucket-list-harness/anthropic.claude-3-haiku-20240307-v1:0\",\n  \"input_file_id\": \"s3://bifrost-harness-unlisted/jobs/in.jsonl\",\n  \"role_arn\": \"arn:aws:iam::123456789012:role/bifrost-harness-placeholder\",\n  \"output_s3_uri\": \"s3://bifrost-harness-listed/jobs/out/\"\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] bedrock bucket list cleanup: delete the provider - bedrock bucket list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider delete exact response status - bedrock bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/bedrock-bucket-list-harness"
+          }
+        }
+      ]
+    },
+    {
       "name": "103. Stream chunks carry only delta - no message object or empty reasoning noise (#7294) (stream-chunk-shape)",
       "description": "Issue #7294: with a DeepSeek-shaped OpenAI-compatible upstream (ModelScope), every streamed /v1/chat/completions chunk carried a full `message` object next to `delta` plus empty reasoning, reasoning_content, and reasoning_details fields on content-phase chunks. Bifrost passed the message object through (BifrostResponseChoice decodes both embedded shapes) and amplified the empty reasoning noise (UnmarshalJSON folded \"\" into a non-nil Reasoning, synthesized an empty details entry, and MarshalJSON re-emitted both spellings). Reasoning-aware clients rendered a fresh \"[Thinking 0.0s]\" block between every piece of the answer. Fixed by normalizing empty reasoning to absent in the schema unmarshalers and dropping the non-stream choice shape whenever a delta is present in the OpenAI-family stream loop. 103.1 pins the chunk shape on the plain OpenAI path; 103.2 pins it on a reasoning-emitting model and additionally asserts real (non-empty) reasoning deltas still stream, guarding against over-pruning.",
       "item": [
