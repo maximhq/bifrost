@@ -2487,21 +2487,29 @@ func (s *BifrostHTTPServer) ReloadPricingFromDBAndPopulateModelPool(ctx context.
 	return nil
 }
 
-// UpsertPricingOverride inserts or updates a pricing override in the in-memory model catalog.
+// UpsertPricingOverride brings a written pricing override into memory; the model catalog prices
+// with it once the live store holds it. A row gone by the time it is read was deleted meanwhile:
+// its record is dropped and configstore.ErrNotFound returned.
 func (s *BifrostHTTPServer) UpsertPricingOverride(ctx context.Context, override *tables.TablePricingOverride) error {
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
-	return s.Config.ModelCatalog.UpsertPricingOverrides(override)
+	if err := s.refreshRows(ctx, []livestore.Ref{{Kind: livestore.KindPricingOverride, ID: override.ID}}); err != nil {
+		return err
+	}
+	if _, held := s.Config.LiveStore.Collections.PricingOverrides.Get(override.ID); !held {
+		return configstore.ErrNotFound
+	}
+	return nil
 }
 
-// DeletePricingOverride removes a pricing override from the in-memory model catalog.
+// DeletePricingOverride drops a deleted pricing override from memory, so the model catalog stops
+// pricing with it.
 func (s *BifrostHTTPServer) DeletePricingOverride(ctx context.Context, id string) error {
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
-	s.Config.ModelCatalog.DeletePricingOverride(id)
-	return nil
+	return s.removeRecord(ctx, livestore.KindPricingOverride, id)
 }
 
 // UpsertModelPricingAttributes writes the additional_attributes JSON for the
