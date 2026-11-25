@@ -396,14 +396,6 @@ func TestWebhookHandlerTestDelivery(t *testing.T) {
 	_ = config
 }
 
-func TestWebhookHandlerStoreUnavailable(t *testing.T) {
-	cfg := &lib.Config{}
-	handler := NewWebhookHandler(configWebhookManager{cfg}, cfg, nil)
-	ctx := newWebhookRequestCtx("", nil)
-	handler.listWebhookEndpoints(ctx)
-	assert.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
-}
-
 func TestWebhookHandlerPerEndpointTuning(t *testing.T) {
 	handler, config := newWebhookTestHandler(t)
 

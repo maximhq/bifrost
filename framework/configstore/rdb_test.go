@@ -3,7 +3,9 @@ package configstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -782,6 +784,21 @@ func TestUpdateProvidersConfig_UpdateExistingByName_FallbackFix(t *testing.T) {
 	assert.Equal(t, "original-uuid", result["openai"].Keys[0].ID, "Original KeyID should be preserved")
 }
 
+// storedProviderKey returns provider's stored key keyID as GetProviderKeys reads it, failing the
+// test when the read fails or the key is not stored.
+func storedProviderKey(t *testing.T, store *RDBConfigStore, provider schemas.ModelProvider, keyID string) *schemas.Key {
+	t.Helper()
+	keys, err := store.GetProviderKeys(context.Background(), provider)
+	require.NoError(t, err)
+	for i := range keys {
+		if keys[i].ID == keyID {
+			return &keys[i]
+		}
+	}
+	t.Fatalf("provider %s holds no key %q", provider, keyID)
+	return nil
+}
+
 // TestUpdateProvidersConfig_EnabledFromFileIsPersisted verifies that an explicit enabled
 // value on an existing key is written to the store, while a key that leaves enabled unset
 // keeps the stored value (for example a toggle made in the UI).
@@ -801,8 +818,7 @@ func TestUpdateProvidersConfig_EnabledFromFileIsPersisted(t *testing.T) {
 	require.NoError(t, store.UpdateProvidersConfig(ctx, providers))
 
 	// key-b is disabled outside the file, as the UI toggle does
-	keyB, err := store.GetProviderKey(ctx, "openai", "key-b")
-	require.NoError(t, err)
+	keyB := storedProviderKey(t, store, "openai", "key-b")
 	keyB.Enabled = &enabledFalse
 	require.NoError(t, store.UpdateProviderKey(ctx, "openai", "key-b", *keyB))
 
@@ -882,9 +898,7 @@ func TestProviderKeyCRUD(t *testing.T) {
 	require.Len(t, keys, 1)
 	assert.Equal(t, "openai-primary", keys[0].Name)
 
-	storedKey, err := store.GetProviderKey(ctx, "openai", key.ID)
-	require.NoError(t, err)
-	require.NotNil(t, storedKey)
+	storedKey := storedProviderKey(t, store, "openai", key.ID)
 	assert.Equal(t, "sk-test-key-v1", storedKey.Value.Val)
 
 	key.Value = *schemas.NewSecretVar("sk-test-key-v2")
@@ -893,11 +907,22 @@ func TestProviderKeyCRUD(t *testing.T) {
 	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
 	require.NoError(t, err)
 
-	storedKey, err = store.GetProviderKey(ctx, "openai", key.ID)
-	require.NoError(t, err)
-	require.NotNil(t, storedKey)
+	storedKey = storedProviderKey(t, store, "openai", key.ID)
 	assert.Equal(t, "sk-test-key-v2", storedKey.Value.Val)
 	assert.Equal(t, 2.0, storedKey.Weight)
+
+	// Content logging is tri-state and every state must survive create, read and update, including
+	// clearing a decision back to inherit.
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		key.DisableContentLogging = decision
+		require.NoError(t, store.UpdateProviderKey(ctx, "openai", key.ID, key))
+		storedKey = storedProviderKey(t, store, "openai", key.ID)
+		assert.Equal(t, decision, storedKey.DisableContentLogging)
+		keys, err = store.GetProviderKeys(ctx, "openai")
+		require.NoError(t, err)
+		require.Len(t, keys, 1)
+		assert.Equal(t, decision, keys[0].DisableContentLogging, "the list path converts keys separately")
+	}
 
 	err = store.DeleteProviderKey(ctx, "openai", key.ID)
 	require.NoError(t, err)
@@ -905,6 +930,91 @@ func TestProviderKeyCRUD(t *testing.T) {
 	keys, err = store.GetProviderKeys(ctx, "openai")
 	require.NoError(t, err)
 	assert.Empty(t, keys)
+}
+
+// TestUpdateProviderLeavesKeyRowsAsStored checks that UpdateProvider writes the provider's settings
+// and nothing else: the keys it is handed are ignored, every key row stays as stored, and the
+// config hash and status keep their stored values.
+func TestUpdateProviderLeavesKeyRowsAsStored(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	stored := schemas.Key{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Weight: 1}
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai": {ConfigHash: "from-file", Keys: []schemas.Key{stored}},
+	}))
+	require.NoError(t, store.UpdateStatus(ctx, "openai", "", "list_models_failed", "upstream 503"))
+	var before tables.TableKey
+	require.NoError(t, store.DB().Where("key_id = ?", "k1").First(&before).Error)
+
+	require.NoError(t, store.UpdateProvider(ctx, "openai", ProviderConfig{
+		SendBackRawRequest: true,
+		ConfigHash:         "from-request",
+		Keys:               []schemas.Key{{ID: "k2", Name: "second", Value: *schemas.NewSecretVar("sk-2")}},
+	}))
+
+	config, err := store.GetProviderConfig(ctx, "openai")
+	require.NoError(t, err)
+	assert.True(t, config.SendBackRawRequest, "the settings are saved")
+	assert.Equal(t, "from-file", config.ConfigHash)
+	assert.Equal(t, "list_models_failed", config.Status)
+	require.Len(t, config.Keys, 1, "no key row is added or deleted")
+	var after tables.TableKey
+	require.NoError(t, store.DB().Where("key_id = ?", "k1").First(&after).Error)
+	assert.Equal(t, before.UpdatedAt, after.UpdatedAt, "the key row is not rewritten")
+	assert.Equal(t, "sk-1", after.Value.GetValue())
+
+	require.ErrorIs(t, store.UpdateProvider(ctx, "anthropic", ProviderConfig{}), ErrNotFound)
+}
+
+// TestGetProviderKeyReadsOneKeyOfItsProvider checks that GetProviderKey returns the stored key and
+// answers not found for a key of another provider or a key with no row.
+func TestGetProviderKeyReadsOneKeyOfItsProvider(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai":    {Keys: []schemas.Key{{ID: "o1", Name: "o1", Value: *schemas.NewSecretVar("sk-o1"), Weight: 2}}},
+		"anthropic": {Keys: []schemas.Key{{ID: "a1", Name: "a1", Value: *schemas.NewSecretVar("sk-a1"), Weight: 1}}},
+	}))
+
+	key, err := store.GetProviderKey(ctx, "openai", "o1")
+	require.NoError(t, err)
+	assert.Equal(t, "sk-o1", key.Value.GetValue())
+	require.NotNil(t, key.Weight)
+	assert.Equal(t, 2.0, *key.Weight)
+
+	_, err = store.GetProviderKey(ctx, "openai", "a1")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = store.GetProviderKey(ctx, "openai", "missing")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestProviderKeyReadsReturnCreationOrder checks that GetProviderKeys and GetProvidersConfig list a
+// provider's keys by row ID, the order they were created in, even when created_at says otherwise,
+// as clock skew between nodes can make it.
+func TestProviderKeyReadsReturnCreationOrder(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{"openai": {}}))
+	want := []string{"k1", "k2", "k3"}
+	for _, id := range want {
+		require.NoError(t, store.CreateProviderKey(ctx, "openai", schemas.Key{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-" + id), Weight: 1}))
+	}
+	// k1 was created first but carries the latest timestamp.
+	require.NoError(t, store.DB().Exec("UPDATE config_keys SET created_at = ? WHERE key_id = ?", time.Now().Add(time.Hour), "k1").Error)
+
+	ids := func(keys []schemas.Key) []string {
+		out := make([]string, 0, len(keys))
+		for _, k := range keys {
+			out = append(out, k.ID)
+		}
+		return out
+	}
+	keys, err := store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	assert.Equal(t, want, ids(keys))
+	providers, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, want, ids(providers["openai"].Keys))
 }
 
 func TestProviderKeyCRUD_ProviderMustExist(t *testing.T) {
@@ -922,9 +1032,6 @@ func TestProviderKeyCRUD_ProviderMustExist(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 
 	_, err = store.GetProviderKeys(ctx, "openai")
-	require.ErrorIs(t, err, ErrNotFound)
-
-	_, err = store.GetProviderKey(ctx, "openai", key.ID)
 	require.ErrorIs(t, err, ErrNotFound)
 
 	err = store.UpdateProviderKey(ctx, "openai", key.ID, key)
@@ -2123,6 +2230,35 @@ func TestDeleteVirtualKey(t *testing.T) {
 	assert.Error(t, err, "Should not find deleted virtual key")
 }
 
+// Warp's settings name a virtual key its model calls present for a caller with no
+// identity of their own. Like every other reference to a key, it must not outlive
+// the key: left behind, every such caller's Warp turn was refused with "Warp's
+// virtual key no longer exists" until an administrator noticed and chose another.
+// Deleting the key clears it, and leaves a setting naming a different key alone.
+func TestDeleteVirtualKey_ClearsWarpVirtualKey(t *testing.T) {
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableWarpConfig{}))
+	ctx := context.Background()
+
+	for _, id := range []string{"vk-warp", "vk-other"} {
+		require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{
+			ID: id, Name: id, Value: *schemas.NewSecretVar(id + "-value"), IsActive: schemas.Ptr(true),
+		}))
+	}
+	require.NoError(t, store.UpsertWarpConfig(ctx, &tables.TableWarpConfig{Enabled: true, Provider: "openai", Model: "gpt-4o", VirtualKeyID: "vk-warp"}))
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, "vk-other"))
+	config, err := store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "vk-warp", config.VirtualKeyID, "deleting another key leaves Warp's alone")
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, "vk-warp"))
+	config, err = store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, config.VirtualKeyID, "Warp must not keep naming a deleted key")
+	assert.Equal(t, "gpt-4o", config.Model, "only the reference is cleared")
+}
+
 func TestDeleteVirtualKey_RevokesInboundVKGrants(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2155,6 +2291,56 @@ func TestDeleteVirtualKey_RevokesInboundVKGrants(t *testing.T) {
 	var got tables.TableOAuth2RefreshToken
 	require.NoError(t, store.DB().WithContext(ctx).First(&got, "id = ?", "rt-vk-grant").Error)
 	assert.NotNil(t, got.RevokedAt, "vk-mode grant should be revoked when its VK is deleted")
+}
+
+func TestDeleteVirtualKey_LogsGrantRevocationOnlyOnceCommitted(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ml := newMockLogger()
+	store.logger = ml
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-log",
+		Name:     "Log VK",
+		Value:    *schemas.NewSecretVar("vk-log-value"),
+		IsActive: schemas.Ptr(true),
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableOAuth2RefreshToken{
+		ID: "rt-vk-log", TokenHash: "hash-vk-log", FamilyID: "fam-vk-log", ClientID: "client-1",
+		BfMode: string(schemas.MCPAuthModeVK), BfSub: vk.ID, Scope: "mcp", Resource: "https://example.test/mcp", CreatedAt: time.Now(),
+	}).Error)
+	revocationLogs := func() int {
+		ml.mu.Lock()
+		defer ml.mu.Unlock()
+		n := 0
+		for _, msg := range ml.debugMessages {
+			if strings.Contains(msg, "reason=virtual_key_deleted") {
+				n++
+			}
+		}
+		return n
+	}
+	tokenRevoked := func() bool {
+		var got tables.TableOAuth2RefreshToken
+		require.NoError(t, store.DB().WithContext(ctx).First(&got, "id = ?", "rt-vk-log").Error)
+		return got.RevokedAt != nil
+	}
+
+	// Inside a caller's transaction that rolls back: nothing is revoked and nothing is logged.
+	rollback := errors.New("caller rolls back")
+	err := store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID, tx))
+		return rollback
+	})
+	require.ErrorIs(t, err, rollback)
+	assert.False(t, tokenRevoked(), "the rolled-back delete must leave the grant active")
+	assert.Zero(t, revocationLogs(), "a rolled-back revocation must not be logged")
+
+	// On its own transaction the revocation commits and is logged once.
+	require.NoError(t, store.DeleteVirtualKey(ctx, vk.ID))
+	assert.True(t, tokenRevoked())
+	assert.Equal(t, 1, revocationLogs())
 }
 
 func TestDeleteVirtualKey_CleansUpScopedModelConfigs(t *testing.T) {
@@ -2595,7 +2781,10 @@ func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {
 	assert.ErrorAs(t, err, &unresolvedErr, "Should be ErrUnresolvedKeys")
 }
 
-func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *testing.T) {
+// TestDeleteProviderKey_RemovesVirtualKeyProviderConfigKeyAssociations checks that a key's
+// assignments to virtual keys go with the key's own delete, and that a provider settings save
+// handed a key list without the key leaves the key and its assignments alone.
+func TestDeleteProviderKey_RemovesVirtualKeyProviderConfigKeyAssociations(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
 
@@ -2636,10 +2825,14 @@ func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *t
 			{ID: "key-a", Name: "openai-key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
 		},
 	}
-	err = store.UpdateProvider(ctx, "openai", updatedProviderConfig)
-	require.NoError(t, err)
-
+	require.NoError(t, store.UpdateProvider(ctx, "openai", updatedProviderConfig))
 	result, err := store.GetVirtualKey(ctx, "vk-update-provider-cleanup")
+	require.NoError(t, err)
+	require.Len(t, result.ProviderConfigs, 1)
+	require.Len(t, result.ProviderConfigs[0].Keys, 1, "a settings save leaves the key and its assignment")
+
+	require.NoError(t, store.DeleteProviderKey(ctx, "openai", "key-b"))
+	result, err = store.GetVirtualKey(ctx, "vk-update-provider-cleanup")
 	require.NoError(t, err)
 	require.Len(t, result.ProviderConfigs, 1)
 	assert.Equal(t, "openai", result.ProviderConfigs[0].Provider)
@@ -2827,6 +3020,66 @@ func TestUpdateClientConfig_MCPClientMetadataURLRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, unsetHash, emptyHash, "configs written before the field existed keep their hash")
 	assert.NotEqual(t, unsetHash, hostedHash)
+}
+
+func TestUpdateClientConfig_MCPOpenAPIMaxSpecMBRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, result.MCPOpenAPIMaxSpecMB, "unset reads back as 0, the built-in limit")
+
+	sized := base
+	sized.MCPOpenAPIMaxSpecMB = 64
+	require.NoError(t, store.UpdateClientConfig(ctx, &sized))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 64, result.MCPOpenAPIMaxSpecMB)
+
+	// Only a set value is hashed, so configs written before the field existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	sizedHash, err := sized.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, sizedHash)
+	unsetHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
+}
+
+func TestUpdateClientConfig_BifrostURLAndBifrostMCPRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, result.BifrostURL.GetValue())
+	assert.Nil(t, result.BifrostMCPAllowWrites, "unset reads back nil: writes on")
+
+	set := base
+	set.BifrostURL = schemas.NewSecretVar("https://gateway.example.com")
+	set.BifrostMCPAllowWrites = new(false)
+	require.NoError(t, store.UpdateClientConfig(ctx, &set))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "https://gateway.example.com", result.BifrostURL.GetValue())
+	require.NotNil(t, result.BifrostMCPAllowWrites)
+	assert.False(t, *result.BifrostMCPAllowWrites, "false is stored, not replaced by a default")
+
+	// Only set values are hashed, so configs written before the fields existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	setHash, err := set.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, setHash)
+	unsetHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
 }
 
 func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
@@ -3112,6 +3365,85 @@ func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
 	assert.NotEqual(t, baseHash, urlHash)
 }
 
+func TestGenerateClientConfigHash_ClaudeCodeGateway(t *testing.T) {
+	withGateway := func(cc *tables.ClaudeCodeGatewayConfig) *ClientConfig {
+		return &ClientConfig{
+			InitialPoolSize:    100,
+			LogRetentionDays:   30,
+			MCPServerAuthMode:  tables.MCPServerAuthModeBoth,
+			OAuth2ServerConfig: &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar("https://bifrost.test"), Gateways: &tables.ClientGatewaysConfig{ClaudeCode: cc}},
+		}
+	}
+	hashOf := func(cc *tables.ClaudeCodeGatewayConfig) string {
+		h, err := withGateway(cc).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+
+	unset := hashOf(nil)
+	enabled := hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true})
+	assert.NotEqual(t, unset, enabled, "turning the gateway on is a config change")
+	assert.NotEqual(t, enabled, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: false}))
+
+	policyA := hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"A": "1", "B": "2"}}})
+	assert.NotEqual(t, enabled, policyA, "managed settings are part of the config")
+	assert.Equal(t, policyA, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"B": "2", "A": "1"}}}),
+		"the hash does not depend on map ordering")
+	assert.NotEqual(t, policyA, hashOf(&tables.ClaudeCodeGatewayConfig{Enabled: true, ManagedSettings: map[string]any{"env": map[string]any{"A": "1"}}}))
+
+	withTelemetry := func(endpoint, header string) *tables.ClaudeCodeGatewayConfig {
+		return &tables.ClaudeCodeGatewayConfig{Enabled: true, Telemetry: &tables.ClientGatewayTelemetryConfig{
+			Enabled: true,
+			Destinations: []tables.ClientGatewayTelemetryDestination{{
+				Endpoint: schemas.NewSecretVar(endpoint),
+				Headers:  map[string]*schemas.SecretVar{"authorization": schemas.NewSecretVar(header)},
+			}},
+		}}
+	}
+	t.Setenv("BIFROST_TEST_HASH_OTEL_TOKEN", "first")
+	telemetry := hashOf(withTelemetry("https://otel.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN"))
+	assert.NotEqual(t, enabled, telemetry, "telemetry is part of the config")
+	assert.NotEqual(t, telemetry, hashOf(withTelemetry("https://other.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN")), "a changed endpoint is a config change")
+	t.Setenv("BIFROST_TEST_HASH_OTEL_TOKEN", "rotated")
+	assert.Equal(t, telemetry, hashOf(withTelemetry("https://otel.example.com", "env.BIFROST_TEST_HASH_OTEL_TOKEN")),
+		"a header is hashed by its reference, so rotating the secret behind it is not a config change")
+}
+
+func TestUpdateClientConfig_ClaudeCodeGatewayRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	cfg := &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      100,
+		LogRetentionDays:     30,
+		MaxRequestBodySizeMB: 50,
+		MCPServerAuthMode:    tables.MCPServerAuthModeBoth,
+		OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+			IssuerURL: schemas.NewSecretVar("https://bifrost.test"),
+			Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{
+				Enabled:         true,
+				ManagedSettings: map[string]any{"permissions": map[string]any{"deny": []any{"WebFetch"}}},
+			}},
+		},
+	}
+	require.NoError(t, store.UpdateClientConfig(ctx, cfg))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.OAuth2ServerConfig)
+	assert.True(t, result.OAuth2ServerConfig.IsClaudeCodeGatewayEnabled())
+	assert.Equal(t, map[string]any{"permissions": map[string]any{"deny": []any{"WebFetch"}}}, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+
+	// An empty policy is a policy: {} must come back as {}, not as "no policy".
+	cfg.OAuth2ServerConfig.Gateways.ClaudeCode.ManagedSettings = map[string]any{}
+	require.NoError(t, store.UpdateClientConfig(ctx, cfg))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result.OAuth2ServerConfig.ClaudeCodeGateway())
+	assert.NotNil(t, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+	assert.Empty(t, result.OAuth2ServerConfig.ClaudeCodeGateway().ManagedSettings)
+}
+
 func TestClientConfigVKRotationCooldown_UnmarshalDurationString(t *testing.T) {
 	var cfg ClientConfig
 	require.NoError(t, json.Unmarshal([]byte(`{"vk_rotation_cooldown": "5m"}`), &cfg))
@@ -3332,6 +3664,72 @@ func TestCreateCustomer(t *testing.T) {
 	assert.Equal(t, "Test Customer", result.Name)
 }
 
+// TestUpdateCustomerLeavesChildRowsAlone checks that saving a customer read earlier does not pull a
+// team that has since moved to another customer back onto it.
+func TestUpdateCustomerLeavesChildRowsAlone(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"cust-a", "cust-b"} {
+		require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: id, Name: id}))
+	}
+	a := "cust-a"
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "team-1", CustomerID: &a}))
+
+	customer, err := store.GetCustomer(ctx, "cust-a")
+	require.NoError(t, err)
+	require.Len(t, customer.Teams, 1)
+
+	team, err := store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	b := "cust-b"
+	team.CustomerID = &b
+	require.NoError(t, store.UpdateTeam(ctx, team))
+
+	customer.Name = "cust-a renamed"
+	require.NoError(t, store.UpdateCustomer(ctx, customer))
+
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.CustomerID)
+	assert.Equal(t, "cust-b", *team.CustomerID)
+
+	renamed, err := store.GetCustomer(ctx, "cust-a")
+	require.NoError(t, err)
+	assert.Equal(t, "cust-a renamed", renamed.Name)
+}
+
+// TestUpdateTeamChangesAndClearsCustomer checks that a team read with its customer preloaded can be
+// moved to another customer and detached, as the team update handler does.
+func TestUpdateTeamChangesAndClearsCustomer(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"cust-a", "cust-b"} {
+		require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: id, Name: id}))
+	}
+	a := "cust-a"
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "team-1", CustomerID: &a}))
+
+	team, err := store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.Customer, "GetTeam preloads the customer")
+	b := "cust-b"
+	team.CustomerID = &b
+	require.NoError(t, store.UpdateTeam(ctx, team))
+
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NotNil(t, team.CustomerID)
+	assert.Equal(t, "cust-b", *team.CustomerID)
+
+	team.CustomerID = nil
+	require.NoError(t, store.UpdateTeam(ctx, team))
+	team, err = store.GetTeam(ctx, "team-1")
+	require.NoError(t, err)
+	assert.Nil(t, team.CustomerID)
+}
+
 func TestCreateTeam(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -3359,6 +3757,17 @@ func TestCreateTeam(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Test Team", result.Name)
 	assert.Equal(t, "customer-for-team", *result.CustomerID)
+	assert.Nil(t, result.DisableContentLogging, "a team created without a decision inherits")
+
+	// Content logging is tri-state and every state must survive an update, including clearing a
+	// decision back to NULL: an update that skipped nil would leave a team stuck on its old choice.
+	for _, decision := range []*bool{new(true), new(false), nil} {
+		team.DisableContentLogging = decision
+		require.NoError(t, store.UpdateTeam(ctx, team))
+		result, err = store.GetTeam(ctx, "team-test")
+		require.NoError(t, err)
+		assert.Equal(t, decision, result.DisableContentLogging)
+	}
 }
 
 // =============================================================================
@@ -6039,6 +6448,17 @@ func TestGenerateClientConfigHash_SkillsExternalClientURL(t *testing.T) {
 	require.Equal(t, "env.BIFROST_SKILLS_URL_TEST", redacted.SkillsExternalClientURL.GetRawRef())
 }
 
+// TestValidateOpenAPIURL accepts the default (empty), an http(s) URL, or a path
+// that stays inside the app directory, and refuses everything else.
+func TestValidateOpenAPIURL(t *testing.T) {
+	for _, value := range []string{"", "  ", "https://raw.githubusercontent.com/maximhq/bifrost/refs/heads/dev/docs/openapi/openapi.json", "http://mirror.internal:8080/openapi.json", "openapi.json", "specs/openapi.yaml", "./specs/../openapi.json"} {
+		require.NoError(t, ValidateOpenAPIURL(value), value)
+	}
+	for _, value := range []string{"/etc/bifrost/openapi.json", "../openapi.json", "specs/../../openapi.json", "ftp://example.com/spec", "file:///etc/passwd", "https://", strings.Repeat("a", MaxOpenAPIURLLength+1)} {
+		require.Error(t, ValidateOpenAPIURL(value), value)
+	}
+}
+
 // TestValidatePublicBaseURL permits public base paths and rejects credential-bearing components without echoing input.
 func TestValidatePublicBaseURL(t *testing.T) {
 	for _, value := range []string{"", "https://skills.example/path", "http://localhost:8080", "https://example.com/path%23section", "http://[::1]:8080"} {
@@ -6048,6 +6468,24 @@ func TestValidatePublicBaseURL(t *testing.T) {
 		err := ValidatePublicBaseURL(value)
 		require.Error(t, err, value)
 		require.NotContains(t, err.Error(), value)
+	}
+}
+
+// The public URL settings accept exactly what their varchar columns store: a URL
+// of MaxPublicURLLength characters is accepted, one longer is refused before it
+// reaches UpdateClientConfig, and every column holding one is that wide.
+func TestValidatePublicBaseURLLengthMatchesColumns(t *testing.T) {
+	prefix := "https://example.com/"
+	require.NoError(t, ValidatePublicBaseURL(prefix+strings.Repeat("a", MaxPublicURLLength-len(prefix))))
+	err := ValidatePublicBaseURL(prefix + strings.Repeat("a", MaxPublicURLLength-len(prefix)+1))
+	require.ErrorContains(t, err, "at most 512 characters")
+
+	columns := map[string]string{"BifrostURL": "", "MCPExternalClientURL": "", "SkillsExternalClientURL": "", "A2AExternalClientURL": ""}
+	typ := reflect.TypeOf(tables.TableClientConfig{})
+	for name := range columns {
+		field, ok := typ.FieldByName(name)
+		require.True(t, ok, name)
+		require.Contains(t, field.Tag.Get("gorm"), fmt.Sprintf("varchar(%d)", MaxPublicURLLength), "%s's column width must match the limit validation applies", name)
 	}
 }
 
@@ -6823,10 +7261,10 @@ func TestMCPClientPendingVerification_OnlyItsSetterClearsIt(t *testing.T) {
 		if withClientConfig {
 			require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{}))
 		}
-		mcpConfig, err := store.GetMCPConfig(ctx)
+		clients, err := store.GetMCPClientConfigs(ctx)
 		require.NoError(t, err)
-		require.Len(t, mcpConfig.ClientConfigs, 1)
-		assert.True(t, mcpConfig.ClientConfigs[0].PendingVerification, "read back on load (client config row: %v)", withClientConfig)
+		require.Len(t, clients, 1)
+		assert.True(t, clients[0].PendingVerification, "read back on load (client config row: %v)", withClientConfig)
 	}
 
 	row, err := store.GetMCPClientByID(ctx, "pending-client")
@@ -7135,11 +7573,11 @@ func TestMCPClientServerTypeOnSlugRoundTrip(t *testing.T) {
 	}
 	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, stored(), "created with the override")
 
-	config, err := store.GetMCPConfig(ctx)
+	clients, err := store.GetMCPClientConfigs(ctx)
 	require.NoError(t, err)
-	require.NotNil(t, config)
+	require.NotNil(t, clients)
 	var loaded *schemas.MCPClientConfig
-	for _, client := range config.ClientConfigs {
+	for _, client := range clients {
 		if client.ID == "scm-client" {
 			loaded = client
 		}
@@ -7292,4 +7730,26 @@ func TestUpdateBudgetKeepsTheBusinessUnitOwnerOnAnOwnerlessWrite(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, moved.BusinessUnitID)
 	assert.Equal(t, other, *moved.BusinessUnitID)
+}
+
+// TestUsageResetEpochConfigUpdatesPreserveRuntime verifies configuration-shaped
+// saves cannot erase durable accounting evidence, including unknown zero input.
+func TestUsageResetEpochConfigUpdatesPreserveRuntime(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	epoch := time.Now().UnixNano()
+	budget := &tables.TableBudget{ID: "budget-reset-evidence", MaxLimit: 100, ResetDuration: "1h", CurrentUsage: 7, LastReset: time.Now(), UsageResetEpoch: epoch}
+	rate := &tables.TableRateLimit{ID: "rate-reset-evidence", TokenCurrentUsage: 9, RequestCurrentUsage: 3, TokenUsageResetEpoch: epoch, RequestUsageResetEpoch: epoch - 1}
+	require.NoError(t, store.CreateBudget(ctx, budget))
+	require.NoError(t, store.CreateRateLimit(ctx, rate))
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{ID: budget.ID, MaxLimit: 200, ResetDuration: "1h"}))
+	require.NoError(t, store.UpdateRateLimit(ctx, &tables.TableRateLimit{ID: rate.ID}))
+	loadedBudget, err := store.GetBudget(ctx, budget.ID)
+	require.NoError(t, err)
+	loadedRate, err := store.GetRateLimit(ctx, rate.ID)
+	require.NoError(t, err)
+	require.Equal(t, epoch, loadedBudget.UsageResetEpoch)
+	require.Equal(t, epoch, loadedRate.TokenUsageResetEpoch)
+	require.Equal(t, epoch-1, loadedRate.RequestUsageResetEpoch)
+	require.Equal(t, 7.0, loadedBudget.CurrentUsage)
 }

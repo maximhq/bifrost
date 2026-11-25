@@ -812,7 +812,12 @@
 			"copilotTokenLabel": "GitHub 令牌或 Copilot API 令牌",
 			"copilotTokenDescription": "具有 <strong>Copilot Requests</strong> 权限的细粒度个人访问令牌（<code>github_pat_…</code>）。你的组织必须启用 <strong>Copilot CLI</strong> 策略。",
 			"copilotTokenInputPlaceholder": "github_pat_… 或 ghu_… 令牌，或 Copilot API 令牌",
-			"copilotSignInHint": "也可以使用 GitHub 登录以填写令牌。"
+			"copilotSignInHint": "也可以使用 GitHub 登录以填写令牌。",
+			"contentLogging": "内容日志",
+			"contentLoggingInherit": "继承",
+			"contentLoggingOff": "此密钥关闭",
+			"contentLoggingOn": "此密钥开启",
+			"contentLoggingHelp": "是否把此密钥所服务流量的请求和响应内容写入日志。密钥的业务单元、团队和用户优先于它；与虚拟密钥并列时，任一方为「关闭」即关闭。请求一旦通过设为「关闭」的密钥发送，重试到其他密钥时内容仍保持关闭。"
 		},
 		"proxyHttp": "HTTP",
 		"proxySocks5": "SOCKS5",
@@ -1209,10 +1214,10 @@
 		"namePlaceholder": "例如 Production API Key",
 		"descriptionPlaceholder": "此密钥用于…",
 		"contentLogging": "内容日志",
-		"contentLoggingInherit": "继承网关设置",
+		"contentLoggingInherit": "继承",
 		"contentLoggingOff": "此密钥关闭",
 		"contentLoggingOn": "此密钥开启",
-		"contentLoggingHelp": "是否把此密钥流量的请求和响应内容写入日志。「关闭」也会从 OpenTelemetry 导出中去掉内容。「开启」只对日志存储覆盖网关级的关闭。在允许按请求覆盖时，单次请求的请求头仍然生效。",
+		"contentLoggingHelp": "是否把此密钥流量的请求和响应内容写入日志。密钥所属团队的设置优先于此设置。「关闭」也会从 OpenTelemetry 导出中去掉内容。「开启」只对日志存储覆盖网关级的关闭。在允许按请求覆盖时，单次请求的请求头仍然生效。",
 		"isActive": "此密钥是否启用？",
 		"budgetConfiguration": "预算配置",
 		"budgetOverrides": "预算覆盖",
@@ -1286,6 +1291,9 @@
 		"unknownClient": "未知客户端",
 		"budgetInformation": "预算信息",
 		"noBudgetLimits": "未配置预算限额",
+		"sharedBudgetUser": "由分配给 {{name}} 的所有密钥共享。支出为这些密钥的总和。",
+		"sharedBudgetUserUnnamed": "由分配给此用户的所有密钥共享。支出为这些密钥的总和。",
+		"sharedBudgetOwner": "由拥有此密钥的团队、业务部门或客户的所有密钥共享。支出为这些密钥的总和。",
 		"noRateLimits": "未配置速率限制",
 		"basePlusOverride": "基础 {{base}} + {{override}} 覆盖",
 		"cyclesRemaining": "剩余 {{count}} 个周期",
@@ -2292,7 +2300,7 @@
 			},
 			"routersNotice": {
 				"title": "复杂度路由器正在升级为路由器",
-				"body": "路由器可以运行多个分类器，每个分类器都有自己的模型和所处理的请求。此页面会照常工作；对于新的设置，我们建议试用路由器。",
+				"body": "使用路由器，您可以创建多个路由器，各自拥有自己的分类器和模型。此页面会照常工作；我们建议现有设置和新设置都迁移到路由器。",
 				"action": "打开路由器"
 			}
 		},
@@ -2661,6 +2669,7 @@
 		"upstreamValue": "数据表：{{value}}",
 		"upstreamChanged": "自你编辑以来数据表值已变更（原为 {{value}}）",
 		"followUpstream": "沿用数据表（{{value}}）",
+		"followUpstreamNoValue": "沿用数据表",
 		"on": "开",
 		"off": "关",
 		"customModelPlaceholder": "例如 ft:gpt-4o:acme",

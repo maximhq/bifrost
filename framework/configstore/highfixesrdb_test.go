@@ -260,9 +260,10 @@ func TestHighFixDeleteProviderCleansProviderConfigsSetBased(t *testing.T) {
 	}
 }
 
-// TestHighFixUpdateProviderRemovedKeysSetBased pins H14's UpdateProvider path:
-// dropping a key removes its join rows from every VK provider config of that
-// provider in one statement, and keeps the join rows of surviving keys.
+// TestHighFixUpdateProviderRemovedKeysSetBased pins what became of H14's UpdateProvider path:
+// UpdateProvider writes settings only, so a key list without a key deletes neither the key nor its
+// join rows, and the key's own delete removes its join rows from every VK provider config of that
+// provider while keeping the join rows of other keys.
 func TestHighFixUpdateProviderRemovedKeysSetBased(t *testing.T) {
 	for _, ns := range highFixStores(t) {
 		t.Run(ns.name, func(t *testing.T) {
@@ -276,8 +277,12 @@ func TestHighFixUpdateProviderRemovedKeysSetBased(t *testing.T) {
 			require.NoError(t, ns.store.UpdateProvider(ctx, "openai", ProviderConfig{Keys: []schemas.Key{
 				{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1},
 			}}))
-			require.LessOrEqual(t, joinDeletes.count(), int64(1), "join rows must be deleted set-based, not one statement per provider config")
+			require.Zero(t, joinDeletes.count(), "a settings save deletes no join rows")
+			require.EqualValues(t, 10, countTableRows(t, db, "governance_virtual_key_provider_config_keys", "table_key_id = ?", fx.keyIDs["k2"]))
+			require.EqualValues(t, 1, countTableRows(t, db, "config_keys", "key_id = ?", "k2"))
 
+			require.NoError(t, ns.store.DeleteProviderKey(ctx, "openai", "k2"))
+			require.LessOrEqual(t, joinDeletes.count(), int64(1), "join rows must be deleted set-based, not one statement per provider config")
 			require.Zero(t, countTableRows(t, db, "governance_virtual_key_provider_config_keys", "table_key_id = ?", fx.keyIDs["k2"]))
 			require.EqualValues(t, 10, countTableRows(t, db, "governance_virtual_key_provider_config_keys", "table_key_id = ?", fx.keyIDs["k1"]))
 			require.EqualValues(t, 10, countTableRows(t, db, "governance_virtual_key_provider_config_keys", "table_key_id = ?", fx.keyIDs["a1"]))

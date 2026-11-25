@@ -64,12 +64,10 @@ type BumpAllSkillsVersionRequest struct {
 	Bump string `json:"bump"`
 }
 
-// NewSkillsHandler creates a new SkillsHandler.
+// NewSkillsHandler creates a new SkillsHandler. store is nil when the config store is disabled;
+// the routes then answer 503 from RequireConfigStoreMiddleware.
 // objectStore may be nil; when nil, file uploads fall back to DB blobs.
 func NewSkillsHandler(store configstore.ConfigStore, objectStore objectstore.ObjectStore) *SkillsHandler {
-	if store == nil {
-		return nil
-	}
 	return &SkillsHandler{store: store, objectStore: objectStore}
 }
 

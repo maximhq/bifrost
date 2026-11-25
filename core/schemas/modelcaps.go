@@ -463,6 +463,16 @@ func (c ModelCaps) SupportsNativeStructuredOutput(fallback bool) bool {
 	return fallback
 }
 
+// SupportsVision reports whether the model accepts image inputs in user
+// content. Prefers the datasheet's supports_vision boolean, falling back to the
+// caller's default when no record is registered.
+func (c ModelCaps) SupportsVision(fallback bool) bool {
+	if c.record != nil && c.record.SupportsVision != nil {
+		return *c.record.SupportsVision
+	}
+	return fallback
+}
+
 // SupportsResponseSchemaWithTools reports whether the model accepts a JSON
 // response format alongside function declarations. Models without it reject the
 // pairing, so the response-format hint is dropped to keep tool calling working.
@@ -499,6 +509,15 @@ func (c ModelCaps) SupportsNativeEffort(fallback bool) bool {
 func (c ModelCaps) SupportsMidConversationSystem(fallback bool) bool {
 	if c.record != nil && c.record.SupportsMidConversationSystem != nil {
 		return *c.record.SupportsMidConversationSystem
+	}
+	return fallback
+}
+
+// SupportsNativeMidConversationSystem is the datasheet's supports_native_mid_conversation_system,
+// the gate the Anthropic converter reads in place of SupportsMidConversationSystem.
+func (c ModelCaps) SupportsNativeMidConversationSystem(fallback bool) bool {
+	if c.record != nil && c.record.SupportsNativeMidConversationSystem != nil {
+		return *c.record.SupportsNativeMidConversationSystem
 	}
 	return fallback
 }

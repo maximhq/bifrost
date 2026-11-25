@@ -376,6 +376,15 @@
           "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys with none of the profile's providers or access. Deleting the user still deletes their keys.",
           "default": false
         },
+        "entity_access_profile_mode": {
+          "type": "string",
+          "enum": [
+            "union",
+            "intersect"
+          ],
+          "default": "union",
+          "description": "Enterprise only. How the access profiles of the teams, business units and customers a caller belongs to combine with the caller's own access. Takes the same values as a project's access_rule. 'union' (default) lets each of them add to what the caller may reach. 'intersect' makes each level that holds an active profile cap it instead: the caller keeps only what their own profiles (or virtual key) allow AND what at least one of their team or business unit profiles allows AND what at least one of their customer profiles allows. A level holding no active profile is skipped. The cap covers providers, models, provider keys, MCP tools and relays; agents are not capped, since team, business unit and customer profiles cannot grant them. Budgets and rate limits are charged as in 'union' mode. The x-bf-customer-id / x-bf-customer-name scope headers are ignored in 'intersect' mode."
+        },
         "vk_rotation_cooldown": {
           "type": [
             "string",
@@ -416,6 +425,13 @@
           "type": "boolean",
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
+        },
+        "mcp_openapi_max_spec_mb": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256,
+          "default": 0,
+          "description": "Size limit, in MiB, on the spec of an openapi MCP client (inline, spec_file or fetched from spec_url). 0 uses the built-in default of 32 MiB. Parsing holds several times the spec's size in memory while it runs."
         },
         "mcp_code_mode_limits": {
           "$ref": "#/$defs/mcp_code_mode_limits",
@@ -587,6 +603,45 @@
           ],
           "description": "Bifrost's public base URL for the Agent Gateway, used in served agent cards and push-notification callback URLs. Required to enable Agent Gateway protocol endpoints. When unset, agent traffic is rejected while management APIs remain available. Supports env var syntax: \"env.MY_VAR\"."
         },
+        "bifrost_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "plain_text",
+                    "env",
+                    "vault"
+                  ]
+                },
+                "env_var": {
+                  "type": "string"
+                },
+                "from_env": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "The gateway's public base URL (scheme, host and any base path), as clients reach it through your proxy. Required for /v1/mcp: its tool calls take their host and scheme from it, never from the Host the client sent, so the URLs their routes build point here. Unset, the Bifrost MCP does not load and /v1/mcp answers 503. Supports env var syntax (\"env.MY_VAR\") and vault refs. Must include server.base_path when Bifrost is mounted under one."
+        },
+        "bifrost_mcp_allow_writes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes outside /api are served either way. Every call is still authorized by the caller's own credential, and destructive tools carry destructiveHint."
+        },
         "mcp_server_auth_mode": {
           "type": "string",
           "enum": [
@@ -626,7 +681,7 @@
                   "additionalProperties": false
                 }
               ],
-              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth' (config load and PUT /api/config reject an unset value in those modes); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
+              "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required whenever mcp_server_auth_mode is 'both' or 'oauth', or any client gateway is enabled (config load and PUT /api/config reject an unset value then); the issuer is never derived from the request Host header while OAuth is enabled. Supports env var syntax: \"env.MY_VAR\"."
             },
             "auth_code_ttl": {
               "type": "integer",
@@ -645,10 +700,87 @@
               "type": "boolean",
               "default": false,
               "description": "When true, the OAuth consent flow no longer offers or accepts virtual-key identity and existing virtual-key grants lose access immediately (rejected at request time and unable to refresh). Honored only when an identity provider is configured. Only valid when mcp_server_auth_mode is 'oauth'."
+            },
+            "gateways": {
+              "type": "object",
+              "properties": {
+                "claude_code": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Serve the Claude Code gateway protocol under /gateway/claude-code so developers sign in with Claude Code's /login (Cloud gateway) at <issuer_url>/gateway/claude-code. Sign-in uses the OAuth consent page (virtual key, signed-in user, or anonymous session). Independent of mcp_server_auth_mode; requires issuer_url."
+                    },
+                    "managed_settings": {
+                      "type": ["object", "null"],
+                      "description": "Claude Code managed-settings.json served at /gateway/claude-code/managed/settings to every signed-in client. null or omitted means no policy (the endpoint answers 404); {} is an empty policy."
+                    },
+                    "telemetry": {
+                      "type": "object",
+                      "description": "Keep the OTLP telemetry Claude Code sends while signed in to this gateway (metrics, logs and traces) instead of discarding it. Each export is stamped with the Bifrost identity the client signed in as (bifrost.virtual_key.id/name, bifrost.team.id, bifrost.customer.id, or enduser.id) and forwarded asynchronously to every destination as OTLP/HTTP protobuf. Client-sent bifrost.* and enduser.id attributes are removed first.",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "default": false,
+                          "description": "Forward telemetry. Off: exports are acknowledged and discarded."
+                        },
+                        "destinations": {
+                          "type": "array",
+                          "description": "OTLP/HTTP collectors. Required (at least one) when enabled.",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "endpoint": {
+                                "type": "string",
+                                "description": "Collector base URL (http or https); each signal is posted to {endpoint}/v1/{metrics|logs|traces}. Supports env var syntax: \"env.MY_VAR\"."
+                              },
+                              "headers": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "string",
+                                  "pattern": "\\S",
+                                  "description": "A plain value or an env. or vault. reference; it must not be empty. Use a reference to keep the credential out of config.json."
+                                },
+                                "description": "Headers sent with every export, for example authorization. Values can be plain or env./vault. references, like provider keys."
+                              }
+                            },
+                            "required": [
+                              "endpoint"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "drop_attributes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "description": "Attribute keys removed at every level (resource, scope, record, data point, span, event) before forwarding, for example \"prompt\"."
+                        }
+                      },
+                      "if": {
+                        "properties": { "enabled": { "const": true } },
+                        "required": ["enabled"]
+                      },
+                      "then": {
+                        "required": ["destinations"],
+                        "properties": { "destinations": { "minItems": 1 } }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Claude Code gateway at <issuer_url>/gateway/claude-code: Claude Code's /login (Cloud gateway) sign-in, Anthropic Messages inference, managed settings and telemetry."
+                }
+              },
+              "additionalProperties": false,
+              "description": "Client gateways, one block per coding client, each served under <issuer_url>/gateway/<client>. A client signs in with its own /login flow through the OAuth consent page instead of a hand-configured virtual key. Independent of mcp_server_auth_mode; every enabled gateway requires issuer_url."
             }
           },
           "additionalProperties": false,
-          "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'."
+          "description": "OAuth2 authorization server settings for /mcp (when mcp_server_auth_mode is 'both' or 'oauth') and for client gateways (oauth2_server_config.gateways)."
         }
       },
       "additionalProperties": false,
@@ -671,6 +803,48 @@
             "required": [
               "oauth2_server_config"
             ],
+            "properties": {
+              "oauth2_server_config": {
+                "required": [
+                  "issuer_url"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "oauth2_server_config": {
+                "properties": {
+                  "gateways": {
+                    "properties": {
+                      "claude_code": {
+                        "properties": {
+                          "enabled": {
+                            "const": true
+                          }
+                        },
+                        "required": [
+                          "enabled"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "claude_code"
+                    ]
+                  }
+                },
+                "required": [
+                  "gateways"
+                ]
+              }
+            },
+            "required": [
+              "oauth2_server_config"
+            ]
+          },
+          "then": {
             "properties": {
               "oauth2_server_config": {
                 "required": [
@@ -771,6 +945,9 @@
           "$ref": "#/$defs/provider"
         },
         "byteplus": {
+          "$ref": "#/$defs/provider"
+        },
+        "machgen": {
           "$ref": "#/$defs/provider"
         },
         "baseten": {
@@ -1216,6 +1393,10 @@
                 "description": "Snap the team's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
                 "default": false
               },
+              "disable_content_logging": {
+                "type": ["boolean", "null"],
+                "description": "Team-level override of content logging for requests made by or through this team. Omit to inherit. Precedence, highest first: business unit, team, user, then the credential (virtual key, provider key and access profile, where any that says true wins), then client.disable_content_logging. So a team that says true keeps content off even for a virtual key set to false, and a team that says false keeps content on even for a key set to true. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence for the log store."
+              },
               "virtual_key_count": {
                 "type": "integer",
                 "description": "Computed count of virtual keys associated with this team",
@@ -1429,8 +1610,8 @@
                 "default": false
               },
               "disable_content_logging": {
-                "type": "boolean",
-                "description": "Per-key override of client.disable_content_logging for requests made with this virtual key. Omit to inherit the client setting. true keeps request and response content out of the log store and out of OpenTelemetry export for this key's traffic; other observability connectors follow their own disable_content_logging until they adopt the trace mark. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. false forces content into the log store even when the client setting is true; observability connectors keep following their own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
+                "type": ["boolean", "null"],
+                "description": "Per-key override of client.disable_content_logging for requests made with this virtual key. Omit to inherit the client setting. A decision from the key's business unit, team or user outranks this value; within the credential tier, a provider key or access profile that says true wins over false here. true keeps request and response content out of the log store and out of OpenTelemetry export for this key's traffic; other observability connectors follow their own disable_content_logging until they adopt the trace mark. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. false forces content into the log store even when the client setting is true; observability connectors keep following their own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
               },
               "metadata": {
                 "type": "object",
@@ -2444,6 +2625,10 @@
         "max_protocol_version": {
           "$ref": "#/$defs/mcp_max_protocol_version",
           "description": "Newest MCP protocol version Bifrost offers to upstream MCP servers. 'auto' uses the newest version Bifrost supports. MCP servers can override it with their own max_protocol_version. Omitted keeps the stored value: deployments upgraded with existing MCP servers start at '2025-06-18', the version they used before."
+        },
+        "server_max_protocol_version": {
+          "$ref": "#/$defs/mcp_max_protocol_version",
+          "description": "Newest MCP protocol version Bifrost's own MCP endpoint (/mcp) serves to clients. 'auto' serves every version Bifrost supports. Below '2025-11-25', sign-in with Client ID Metadata Documents is turned off and clients register dynamically instead. Omitted keeps the stored value."
         },
         "tool_sync_interval": {
           "description": "Global default interval for syncing tools from MCP servers (Go duration string in whole minutes, e.g. '10m', '1h', '1h30m'; '0s' uses the runtime default of 10 minutes). Legacy integer nanoseconds are also accepted and must be a whole number of minutes.",
@@ -6117,6 +6302,10 @@
           "type": "string",
           "description": "ID of one of the provider's configured keys to pin Warp to. Omit to load-balance across the provider's keys, or for a provider that needs no key."
         },
+        "virtual_key_id": {
+          "type": "string",
+          "description": "ID of a virtual key (governance.virtual_keys[].id) that Warp's model calls present when the person asking has no user identity of their own: the local admin, or a deployment without an identity provider. Required for that caller while client.enforce_auth_on_inference is true. Signed-in users are governed as themselves and never use it. The key's permits, budgets and rate limits apply, and Warp's spend is attributed to it. Omitted keeps the stored value; an empty string clears it."
+        },
         "additional_models": {
           "type": "array",
           "maxItems": 20,
@@ -6459,6 +6648,11 @@
         "disable_root_span_content": {
           "type": "boolean",
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
+          "default": false
+        },
+        "apply_trace_dimensions_to_child_spans": {
+          "type": "boolean",
+          "description": "When true, x-bf-dim-* request dimensions stored on the trace are merged onto child spans as well as the root. Span attributes win on conflict. The suffixes path and method, and keys in reserved attribute namespaces (gen_ai., llm., bifrost., http., url., session., service., k8s., langfuse., openinference., otel.), are skipped. Default false.",
           "default": false
         },
         "headers": {
@@ -7560,7 +7754,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis or Pinecone): with Chromem, or no vector store, nothing is captured and suggestion runs are refused."
+          "description": "Capture a sample of classified requests for phrase suggestions; default false. Captured requests are kept in Bifrost's vector store, which must be a shared one (Weaviate, Qdrant, Redis or Pinecone): with Chromem, or no vector store, nothing is captured and suggestion runs are refused. Runs started through the API need this block and a suggestion model (provider and model here, or an llm block), not enabled; with false, suggestions run only on demand, never on the schedule. A run started without a suggestion model is accepted and then fails."
         },
         "sample_rate": {
           "type": "number",
@@ -7867,7 +8061,7 @@
     },
     "complexity_llm_config": {
       "type": "object",
-      "description": "Chat-completion (LLM) fallback classifier settings. The block is inert unless complexity_semantic_config.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names (SIMPLE, MEDIUM, COMPLEX) and the response format are fixed: the gateway always appends a non-editable reinforcement stating them.",
+      "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier when classifier is 'llm', and as the fallback when complexity_semantic_config.fallback selects 'llm', where it runs only after semantic classification produces no tier. Otherwise the block is kept but not used. Tier names (SIMPLE, MEDIUM, COMPLEX) and the response format are fixed: the gateway always appends a non-editable reinforcement stating them.",
       "properties": {
         "provider": {
           "type": "string",
@@ -7877,7 +8071,7 @@
         "model": {
           "type": "string",
           "minLength": 1,
-          "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+          "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
         },
         "timeout": {
           "description": "Per-request classification timeout (duration string like '2s' or milliseconds as a number; default: 4s). Zero, in either form, means the default. On timeout no complexity tier is published and the request is recorded as 'skipped'.",
@@ -7994,6 +8188,12 @@
               "minimum": 60
             }
           ]
+        },
+        "openapi_url": {
+          "type": "string",
+          "maxLength": 2048,
+          "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory (for air-gapped installs). Supports env var syntax (\"env.MY_VAR\"). Leave empty to read the default spec, https://getbifrost.ai/openapi-oss.json.",
+          "optional": true
         }
       },
       "additionalProperties": false
@@ -8004,7 +8204,7 @@
         "base_url": {
           "type": "string",
           "format": "uri",
-          "description": "Base URL for the provider (optional, required for Ollama). Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
+          "description": "Base URL for the provider (optional, required for Ollama). For Bedrock, only the host is used: it replaces the bedrock-runtime host for all inference, a key's bedrock_key_config.endpoints.runtime still wins over it, and the other Bedrock services keep their per-key endpoints or public hosts. Management API updates accept an origin and optional path, without credentials, query parameters, or fragments."
         },
         "extra_headers": {
           "type": "object",
@@ -8548,6 +8748,10 @@
           "type": "boolean",
           "description": "Whether this key can be used for batch API operations (default: false)",
           "default": false
+        },
+        "disable_content_logging": {
+          "type": ["boolean", "null"],
+          "description": "The provider key's own content-logging decision. Omit or null to inherit. The key sits in the credential tier with the virtual key and access profile, below the business unit, team and user, so any of those that decides outranks it; inside the tier, any that says true wins. Stamped when the key is selected; once a request has been sent on a key that says true, a retry onto another key does not turn content back on. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store."
         },
         "aliases": {
           "type": "object",
@@ -13206,12 +13410,30 @@
                 "default": "enforce",
                 "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
               },
+              "input_timing": {
+                "type": "string",
+                "enum": [
+                  "pre_call",
+                  "parallel"
+                ],
+                "default": "pre_call",
+                "description": "When the rule's input check runs. 'pre_call' (default) finishes the check before the request is sent, so it can block, redact, or transform the input. 'parallel' runs the check alongside the LLM call and holds the response until the verdict arrives; only a block is enforced, and redaction findings reach only the logs. Parallel requires target 'llm' and apply_to 'input' or 'both'."
+              },
+              "profile_execution_mode": {
+                "type": "string",
+                "enum": [
+                  "independent",
+                  "chained"
+                ],
+                "default": "independent",
+                "description": "How the rule's profiles see the payload. 'independent' (default) gives every profile the original payload. 'chained' runs profiles in provider_config_ids order and gives each one the payload as earlier profiles redacted or transformed it. A rule with one profile never chains."
+              },
               "provider_config_ids": {
                 "type": "array",
                 "items": {
                   "type": "integer"
                 },
-                "description": "IDs of provider configurations to use with this rule"
+                "description": "IDs of provider configurations to use with this rule, in execution order"
               }
             },
             "required": [

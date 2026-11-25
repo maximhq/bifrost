@@ -23,6 +23,12 @@
 		"circuitBreaker": "熔斷器",
 		"pricingOverrides": "定價覆蓋",
 		"modelSettings": "模型設定",
+		"finops": "FinOps",
+		"finopsOverview": "概覽",
+		"finopsConnections": "連線",
+		"finopsExplorer": "成本瀏覽器",
+		"finopsForecast": "預測",
+		"finopsAnomalies": "異常",
 		"mcpGateway": "MCP伺服器",
 		"mcpCatalog": "MCP 目錄",
 		"mcpLibrary": "MCP 庫",
@@ -67,6 +73,7 @@
 		"caching": "快取",
 		"security": "安全",
 		"warp": "Warp",
+		"gateways": "閘道",
 		"proxy": "代理",
 		"apiKeys": "API 金鑰",
 		"performanceTuning": "效能調優",
@@ -106,6 +113,7 @@
 		"circuitBreaker": "主端點失敗時自動回退",
 		"pricingOverrides": "作用域定價覆蓋",
 		"modelSettings": "模型與路由配置",
+		"finops": "所有供應商帳戶的 AI 支出",
 		"mcpGateway": "MCP 配置",
 		"mcpCatalog": "MCP 工具目錄",
 		"mcpLibrary": "安裝精選 MCP 伺服器",
@@ -150,6 +158,7 @@
 		"caching": "快取配置",
 		"security": "安全設定",
 		"warp": "Warp 代理設定",
+		"gateways": "程式設計用戶端登入",
 		"proxy": "代理配置",
 		"apiKeys": "API 金鑰管理",
 		"performanceTuning": "效能調優設定",
@@ -430,6 +439,10 @@
 			"indexStatusUnavailable": "索引狀態不可用",
 			"askAdminTurnOn": "請管理員打開 Warp。",
 			"askAdminSetUp": "請管理員設定 Warp。",
+			"needsBifrostMCP": "Warp 需要 Bifrost MCP",
+			"needsBifrostMCPHint": "設定 Bifrost URL，讓 Warp 能讀取此部署的設定。",
+			"setUpBifrostMCP": "設定",
+			"askAdminBifrostMCP": "請管理員為 Warp 設定 Bifrost MCP。",
 			"sendsWhenFinished": "當此答案完成時發送",
 			"remove": "消除"
 		},
@@ -453,7 +466,15 @@
 			"label": "問題",
 			"skip": "跳過",
 			"orType": "或在下方輸入你自己的回答。",
-			"skipAnswer": "請自行判斷，並說明你的假設。"
+			"skipAnswer": "請自行判斷，並說明你的假設。",
+			"confirm": {
+				"subtitle": "確認後，Warp 將執行此變更。",
+				"destructiveSubtitle": "確認後，Warp 將執行此變更。請仔細檢查。",
+				"cannotUndo": "此操作無法復原。",
+				"noArguments": "無參數。",
+				"cancel": "取消",
+				"confirm": "確認"
+			}
 		},
 		"message": {
 			"whatThisCovers": "涵蓋內容",
@@ -544,6 +565,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "此部署尚未設定 Warp。",
+				"cause": "Warp 需要 Bifrost MCP 才能讀取此部署的設定，但它尚未載入。",
+				"suggestions": ["請管理員在用戶端設定中設定 Bifrost URL。"]
+			},
 			"not_configured": {
 				"summary": "Warp 尚未設定。",
 				"cause": "未設定供應商和模型，或在設定中關閉了 Warp。",

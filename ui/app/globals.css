@@ -806,6 +806,26 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 	animation: warp-fade-in 200ms ease-out both;
 }
 
+/* Each argument resolves the way a streamed word does: a light blur clearing as
+   it lands, staggered by --warp-row so the call reads top to bottom. */
+@keyframes warp-row-in {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+		filter: blur(3px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+		filter: none;
+	}
+}
+
+.warp-row-in {
+	animation: warp-row-in 240ms cubic-bezier(0.165, 0.84, 0.44, 1) both;
+	animation-delay: calc(80ms + var(--warp-row, 0) * 30ms);
+}
+
 /* Thinking shows in the gaps between lookups. The delay keeps a gap shorter than
    it from flashing the row in and straight back out. */
 .warp-thinking-in {
@@ -821,6 +841,7 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 	.warp-check-draw,
 	.warp-fade-in,
 	.warp-thinking-in,
+	.warp-row-in,
 	[data-sd-animate] {
 		animation: none;
 	}

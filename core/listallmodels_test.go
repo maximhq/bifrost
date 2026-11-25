@@ -195,6 +195,36 @@ func TestListAllModelsIncludesEveryPageOfASlowLargeProvider(t *testing.T) {
 	}
 }
 
+// The default per-page deadline must fit a slow but healthy page. A live HuggingFace page takes
+// 3.5-4.8s on its own, so under a 5s default the aggregate dropped it (and Azure, Bedrock or
+// OpenRouter at random) while the provider-scoped listing returned every model.
+func TestListAllModelsDefaultDeadlineFitsASlowPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(6 * time.Second)
+		openAIStyleModelsHandler("slow-model")(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
+	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+	tuneProviderForTest(t, account, schemas.OpenAI)
+	account.configs[schemas.OpenAI].NetworkConfig.DefaultRequestTimeoutInSeconds = 30
+
+	client := newListModelsTestClient(t, account, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bfErr != nil {
+		t.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
+	}
+	if !containsModelID(resp, "openai/slow-model") {
+		t.Fatalf("a 6s page was dropped under the default per-page deadline %v; got %v", listAllModelsProviderTimeout, modelIDs(resp))
+	}
+}
+
 // A direct key is the caller's own credential for one provider. Listing every provider would send it
 // to each of them, so the aggregate refuses a request carrying one before any provider is asked,
 // while a listing that names its provider still uses the key there, and only there.

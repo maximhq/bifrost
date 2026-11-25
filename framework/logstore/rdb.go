@@ -50,6 +50,11 @@ const (
 
 var terminalLogStatuses = []string{"success", "error", "cancelled"}
 
+// maxRankingPairFilter is the most (model, provider) pairs a previous-period
+// ranking query filters on term by term; beyond it the query reads every
+// pair, well inside SQLite's 1,000-deep expression limit.
+const maxRankingPairFilter = 200
+
 // applyRankingLimit caps a ranking query at the caller-requested number of rows,
 // falling back to defaultMaxRankingsLimit. The query is left unbounded when the
 // caller explicitly asked for every ranked entity (RankingLimit <= 0), which is
@@ -459,6 +464,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// a self-referencing row already lists as a root (see applyRootsOnlyFilter),
 		// so without this it would also appear inside its own expansion.
 		baseQuery = baseQuery.Where("parent_request_id = ? AND id <> parent_request_id", filters.ParentRequestID)
+		if filters.FallbackHopsOnly {
+			baseQuery = baseQuery.Where("fallback_index > 0")
+		}
 	} else if filters.RootsOnly && filters.RequestID == "" {
 		// An explicit ID lookup targets exactly one row; collapsing it as a
 		// non-root would hide the very row that was pasted.
@@ -1002,8 +1010,9 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]Cos
 // for a specific cluster node after a stable cursor. The first scan uses the
 // timestamp/log-id lower bound for the ghost's detection point. Once DB-assigned
 // inc_number values are observed, subsequent scans use inc_number so rows flushed
-// late by the async log writer are not skipped.
-func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
+// late by the async log writer are not skipped. Actual-reset windows filter each
+// resource and dimension before aggregation; excluded rows still advance the cursor.
+func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor, windows NodeUsageWindows) (*NodeUsageAggregate, error) {
 	type logRow struct {
 		ID           string    `gorm:"column:id"`
 		Timestamp    time.Time `gorm:"column:timestamp"`
@@ -1077,7 +1086,9 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 				for _, id := range budgetIDs {
 					if _, dup := seen[id]; !dup {
 						seen[id] = struct{}{}
-						budgetCosts[id] += row.Cost
+						if cutoff := windows.Budgets[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							budgetCosts[id] += row.Cost
+						}
 					}
 				}
 			}
@@ -1094,8 +1105,12 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 				for _, id := range rateLimitIDs {
 					if _, dup := seen[id]; !dup {
 						seen[id] = struct{}{}
-						rateLimitRequests[id]++
-						rateLimitTokens[id] += row.TotalTokens
+						if cutoff := windows.Requests[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							rateLimitRequests[id]++
+						}
+						if cutoff := windows.Tokens[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							rateLimitTokens[id] += row.TotalTokens
+						}
 					}
 				}
 			}
@@ -1307,6 +1322,8 @@ func logsOrderClause(sortBy, order string) string {
 		return "total_tokens " + direction + ", id " + direction
 	case "cost":
 		return "cost " + direction + " NULLS LAST, id " + direction
+	case "fallback_index":
+		return "fallback_index " + direction + ", id " + direction
 	default:
 		return "timestamp " + direction + ", id " + direction
 	}
@@ -1725,30 +1742,41 @@ func normalizeAggregateTimestamp(value any) string {
 //
 // Realtime turn rows are kept intact because the logs table renders them as a
 // combined Tool/User/Assistant summary and needs the full turn context.
+//
+// Columns only the log detail sheet reads are left out: alias_model_family,
+// server_side_fallback_model, served_model, routing_engines_used,
+// complexity_mechanism, model_router_id, model_router_name,
+// video_generation_input and cache_debug. The sheet waits for
+// GET /api/logs/{id}, which selects every column, before it renders, so
+// carrying them on every list row only grows the response. Each backs an
+// omitempty field, so a list row leaves the key out rather than reporting a
+// zero value. TestListProjectionLeavesOutDetailOnlyColumns pins the set.
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
+		// alias and complexity_tier stay: Warp's log search tool reports them.
 		"id", "parent_request_id", "timestamp", "object_type", "is_passthrough", "provider", "model", "alias",
-		"canonical_model_name", "alias_model_family", "server_side_fallback_model", "served_model",
+		"canonical_model_name",
 		"number_of_retries", "fallback_index",
+		// selected_key_name stays: the handler attaches selected_key to a row
+		// only when both the id and the name are present.
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
-		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
-		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
-		"model_router_id", "model_router_name",
+		"tool_call_names", "routing_rule_id", "routing_rule_name",
+		"complexity_tier", "session_id", "agent_correlation_id",
 		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
 		"project_id", "project_name",
 		"user_agent", "app", "client_ip",
-		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
+		"speech_input", "transcription_input", "image_generation_input",
 		// error_details is intentionally excluded from the list select: for status=error
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
 		// Only guardrail blocks, whose errors are bounded, are listed (see below).
-		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
+		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream", "stop_reason",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", MaxContentSummaryBytes),
-		"metadata", "cache_debug",
+		"metadata",
 		"batch_debug",
 		// video_debug tells a settled video's aggregate cost row apart from the
 		// submission it settles; without it the list shows the same video twice.
@@ -1758,8 +1786,12 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"is_large_payload_request", "is_large_payload_response",
 		"prompt_tokens", "completion_tokens", "total_tokens",
 		"cached_read_tokens",
+		// content_hidden also gates Warp: its backfill and log search skip a
+		// hidden row before fetching it in full.
 		"has_object", "content_hidden",
 		"service_tier", "speed", "inference_geo",
+		// created_at is not omitempty, so a missing column would serialize as
+		// the zero time instead of being left out.
 		"created_at",
 		// guardrail_debug holds only sanitized rule metadata (never matched
 		// text), so it stays small; the Guardrail Incidents view reads the
@@ -3230,8 +3262,11 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 
 		// Only fetch previous-period data for (model, provider) pairs that
 		// appear in the current ranking so trend computation is accurate even
-		// when the previous period has more groups than the limit.
-		if len(currentResults) > 0 {
+		// when the previous period has more groups than the limit. Each pair is
+		// one OR term, and SQLite rejects an expression deeper than 1,000, so
+		// past maxRankingPairFilter pairs the filter is dropped: previous rows
+		// are matched to current ones by pair below, so extra rows are ignored.
+		if len(currentResults) > 0 && len(currentResults) <= maxRankingPairFilter {
 			pairConditions := make([]string, len(currentResults))
 			pairArgs := make([]interface{}, 0, len(currentResults)*2)
 			for i, r := range currentResults {
@@ -5361,6 +5396,9 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 		if !acquired {
 			return ErrRetentionBusy
 		}
+		if err := raiseRetentionStatementTimeout(tx); err != nil {
+			return err
+		}
 		result := tx.Exec(stmt, cutoff, batchSize)
 		if result.Error != nil {
 			return result.Error
@@ -5372,6 +5410,16 @@ func (s *RDBLogStore) deleteExpiredBatchPostgres(ctx context.Context, table, key
 		return 0, err
 	}
 	return deleted, nil
+}
+
+// retentionStatementTimeout is the statement_timeout floor for one retention batch: wide rows carry megabytes of TOAST each.
+const retentionStatementTimeout = "10min"
+
+// raiseRetentionStatementTimeout lifts a shorter statement_timeout for the rest of tx and leaves 0 (no limit) or a longer one alone.
+func raiseRetentionStatementTimeout(tx *gorm.DB) error {
+	return tx.Exec(`SELECT set_config('statement_timeout', ?, true)
+		WHERE current_setting('statement_timeout')::interval > interval '0'
+		AND current_setting('statement_timeout')::interval < ?::interval`, retentionStatementTimeout, retentionStatementTimeout).Error
 }
 
 // RetentionInterval is hourly on Postgres, where the advisory lock makes idle replicas' ticks one cheap probe.
@@ -5461,6 +5509,9 @@ func (s *RDBLogStore) DeleteLog(ctx context.Context, id string) error {
 	})
 }
 
+// deleteLogsChunkSize bounds one DELETE in DeleteLogs so a large id list of wide rows stays inside statement_timeout.
+const deleteLogsChunkSize = 100
+
 // DeleteLogs deletes multiple log entries from the database by their IDs, and
 // with them what Warp's topic tables hold about them, in one transaction.
 func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
@@ -5468,8 +5519,10 @@ func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 		return nil
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
-			return err
+		for chunk := range slices.Chunk(ids, deleteLogsChunkSize) {
+			if err := tx.Where("id IN ?", chunk).Delete(&Log{}).Error; err != nil {
+				return err
+			}
 		}
 		return deleteWarpTopicRowsForLogs(tx, ids)
 	})

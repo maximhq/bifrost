@@ -85,7 +85,7 @@ func providerScopeTestStore(t *testing.T) *LocalGovernanceStore {
 		providerScopeTestProviderConfig("bedrock", bedrockBudget, bedrockRL),
 	}
 
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, NewMockLogger(), &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Teams:       []configstoreTables.TableTeam{*team},
 		Budgets: []configstoreTables.TableBudget{
@@ -215,7 +215,7 @@ func TestARequestIsChargedOnlyToTheProviderConfigItUsed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := providerScopeTestStore(t)
-			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, NewMockLogger(), store, nil, providerScopeTestCatalog(t), nil, nil)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, NewMockLogger(), store, nil, providerScopeTestCatalog(t), nil, store.live)
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 

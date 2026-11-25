@@ -736,14 +736,10 @@ func TestExecuteToolCode_GuardrailedResultNeverReachesModel(t *testing.T) {
 			require.NoError(t, manager.RegisterTool(tc.tool, "returns a large confidential body",
 				func(any) (string, error) { return tc.text, nil }, toolSchema))
 
-			for _, client := range manager.GetClients() {
-				if client.ExecutionConfig.ID == "bifrostInternal" {
-					cfg := client.ExecutionConfig
-					cfg.IsCodeModeClient = true
-					cfg.ToolsToExecute = []string{"*"}
-					require.NoError(t, manager.UpdateClient(cfg.ID, cfg))
-				}
-			}
+			require.NoError(t, editInternalClient(manager, func(cfg *schemas.MCPClientConfig) {
+				cfg.IsCodeModeClient = true
+				cfg.ToolsToExecute = []string{"*"}
+			}))
 
 			guard := &blockingOutputPlugin{secret: secret, redact: tc.redact}
 			b, err := core.Init(context.Background(), schemas.BifrostConfig{

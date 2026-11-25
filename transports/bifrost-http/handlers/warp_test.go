@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
@@ -22,7 +23,9 @@ import (
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -613,7 +616,7 @@ func TestWarpSnapshotCarriesQueryScope(t *testing.T) {
 	ctx.SetUserValue(schemas.BifrostContextKeyQueryScope, scope)
 	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
 
-	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second, "")
 	require.NoError(t, err)
 	defer cancel()
 	carried := queryscope.FromContext(snapshot)
@@ -633,7 +636,7 @@ func TestWarpSnapshotCarriesSettledGrant(t *testing.T) {
 	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
 	ctx.SetUserValue(schemas.BifrostContextKeyUserEmail, "u1@example.com")
 
-	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second, "")
 	require.NoError(t, err)
 	defer cancel()
 	g := warp.NewGrantFromContext(snapshot)
@@ -644,7 +647,7 @@ func TestWarpSnapshotCarriesSettledGrant(t *testing.T) {
 
 	// A deployment with no auth still settles an identity - "nobody" - which is
 	// distinct from never having been settled.
-	anonymous, cancelAnonymous, err := snapshotWarpContext(&fasthttp.RequestCtx{}, time.Second)
+	anonymous, cancelAnonymous, err := snapshotWarpContext(&fasthttp.RequestCtx{}, time.Second, "")
 	require.NoError(t, err)
 	defer cancelAnonymous()
 	require.NotNil(t, warp.NewGrantFromContext(anonymous))
@@ -660,7 +663,7 @@ func TestWarpSnapshotSettlesAFreshGrantPerCall(t *testing.T) {
 	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
 	ctx.SetUserValue(schemas.BifrostContextKeyUserName, "Suresh")
 
-	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second, "")
 	require.NoError(t, err)
 	defer cancel()
 	ctx.ResetUserValues()
@@ -688,7 +691,7 @@ func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
 			set(&ctx.Request.Header)
 			ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
 
-			snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+			snapshot, cancel, err := snapshotWarpContext(ctx, time.Second, "")
 			require.NoError(t, err)
 			defer cancel()
 			identity := warp.NewGrantFromContext(snapshot).Identity()
@@ -701,7 +704,7 @@ func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
 	// A bearer that is not a virtual key (a dashboard session token) is not one.
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.Set("Authorization", "Bearer session-token")
-	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+	snapshot, cancel, err := snapshotWarpContext(ctx, time.Second, "")
 	require.NoError(t, err)
 	defer cancel()
 	require.Empty(t, warp.NewGrantFromContext(snapshot).Identity().Credential().Value)
@@ -716,11 +719,12 @@ func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
 // A grant the snapshot drops, settles without its user, or settles past a
 // presented key breaks the chat or widens it, and either shows up here.
 func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
-	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil, &configstore.GovernanceConfig{}, nil, nil)
+	live := libtest.FileOnly(t, &lib.Config{}, nil).LiveStore
+	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil, live, nil)
 	require.NoError(t, err)
 	isVkMandatory := false
 	plugin, err := governance.InitFromStore(context.Background(), &governance.Config{IsVkMandatory: &isVkMandatory},
-		&mockLogger{}, store, nil, nil, nil, nil)
+		&mockLogger{}, store, nil, nil, nil, live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -736,7 +740,7 @@ func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
 	}
 	chat := func(t *testing.T, ctx *fasthttp.RequestCtx) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		t.Helper()
-		snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+		snapshot, cancel, err := snapshotWarpContext(ctx, time.Second, "")
 		require.NoError(t, err)
 		defer cancel()
 		// The agent runs after the handler returns, so the request is gone by
@@ -771,7 +775,7 @@ func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
 		// The control: it is Warp's model-call context that admits the user, not
 		// the grant, so the same settled grant on any other request is still
 		// held to an access it does not have.
-		snapshot, cancel, err := snapshotWarpContext(signedIn(), time.Second)
+		snapshot, cancel, err := snapshotWarpContext(signedIn(), time.Second, "")
 		require.NoError(t, err)
 		defer cancel()
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -813,7 +817,7 @@ func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
 func TestWarpSnapshotFailsClosedOnUnusableScope(t *testing.T) {
 	t.Run("absent scope is allowed", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
-		snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+		snapshot, cancel, err := snapshotWarpContext(ctx, time.Second, "")
 		require.NoError(t, err, "an OSS deployment has no scope wrapper and must still work")
 		defer cancel()
 		require.Nil(t, queryscope.FromContext(snapshot))
@@ -822,7 +826,7 @@ func TestWarpSnapshotFailsClosedOnUnusableScope(t *testing.T) {
 	t.Run("wrong type fails closed", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		ctx.SetUserValue(schemas.BifrostContextKeyQueryScope, "not-a-scope")
-		_, cancel, err := snapshotWarpContext(ctx, time.Second)
+		_, cancel, err := snapshotWarpContext(ctx, time.Second, "")
 		if cancel != nil {
 			defer cancel()
 		}
@@ -832,7 +836,7 @@ func TestWarpSnapshotFailsClosedOnUnusableScope(t *testing.T) {
 	t.Run("nil scope of the right type fails closed", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		ctx.SetUserValue(schemas.BifrostContextKeyQueryScope, queryscope.QueryScope(nil))
-		_, cancel, err := snapshotWarpContext(ctx, time.Second)
+		_, cancel, err := snapshotWarpContext(ctx, time.Second, "")
 		if cancel != nil {
 			defer cancel()
 		}
@@ -1291,7 +1295,83 @@ func warpModelsHandler(calls *[]schemas.BifrostResponsesRequest) *WarpHandler {
 		// The turn ends on this error; the test only needs to see the address.
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "scripted stop"}}
 	}
-	return &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat))}
+	service := warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat), warp.WithBifrostMCP(true))
+	service.SetManagementTools(handlerManagementTools{catalog: warp.NewManagementCatalog([]warp.ManagementTool{
+		{Name: "listRoutingRules", Description: "List routing rules.", InputSchema: `{"type":"object","properties":{}}`},
+	})})
+	return &WarpHandler{service: service}
+}
+
+// handlerManagementTools stands in for the Bifrost MCP: a nil catalog is a
+// gateway whose Bifrost MCP did not load.
+type handlerManagementTools struct{ catalog *warp.ManagementCatalog }
+
+func (h handlerManagementTools) Catalog() *warp.ManagementCatalog { return h.catalog }
+func (handlerManagementTools) Call(context.Context, *warp.ManagementCatalog, string, map[string]any) (string, bool, error) {
+	return "", false, nil
+}
+
+// Warp needs the Bifrost MCP. Without it the chat route answers 503 with the
+// no_bifrost_mcp reason before any model runs, and the config read says so, so
+// the panel can show the setup state before anyone asks.
+func TestWarpChatRefusedWithoutBifrostMCP(t *testing.T) {
+	var calls []schemas.BifrostResponsesRequest
+	handler := warpModelsHandler(&calls)
+	handler.service.SetManagementTools(handlerManagementTools{})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"messages":[{"role":"user","content":"what routing rules exist?"}],"stream":false}`)
+	handler.chat(ctx)
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var body schemas.WarpUnavailableResponse
+	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body))
+	require.Equal(t, schemas.WarpUnavailableNoBifrostMCP, body.Reason)
+	require.Empty(t, calls, "no model runs without the Bifrost MCP")
+
+	configCtx := &fasthttp.RequestCtx{}
+	handler.getConfig(configCtx)
+	require.Equal(t, fasthttp.StatusOK, configCtx.Response.StatusCode())
+	// An explicit false: a missing field would read as false through Bool().
+	require.Equal(t, gjson.False, gjson.GetBytes(configCtx.Response.Body(), "bifrost_mcp_available").Type, string(configCtx.Response.Body()))
+
+	configCtx = &fasthttp.RequestCtx{}
+	warpModelsHandler(&calls).getConfig(configCtx)
+	require.True(t, gjson.GetBytes(configCtx.Response.Body(), "bifrost_mcp_available").Bool())
+}
+
+// Decoupled from the Bifrost MCP (the default for now), the chat route answers
+// without it - the model runs - and the config read reports bifrost_mcp_enabled
+// false, so the dashboard hides the Bifrost MCP setup step.
+func TestWarpChatAnswersWithoutBifrostMCPWhenDecoupled(t *testing.T) {
+	var calls []schemas.BifrostResponsesRequest
+	coupled := warpModelsHandler(&calls)
+	store := &recordingWarpStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small", EmbeddingDimension: 1536,
+		LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
+	}}
+	chat := func(_ context.Context, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		calls = append(calls, *request)
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "scripted stop"}}
+	}
+	service := warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat))
+	service.SetManagementTools(handlerManagementTools{})
+	handler := &WarpHandler{service: service}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"messages":[{"role":"user","content":"what routing rules exist?"}],"stream":false}`)
+	handler.chat(ctx)
+	require.NotEqual(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.NotEmpty(t, calls, "the model runs without the Bifrost MCP")
+
+	configCtx := &fasthttp.RequestCtx{}
+	handler.getConfig(configCtx)
+	require.Equal(t, fasthttp.StatusOK, configCtx.Response.StatusCode())
+	require.Equal(t, gjson.False, gjson.GetBytes(configCtx.Response.Body(), "bifrost_mcp_enabled").Type, string(configCtx.Response.Body()))
+
+	configCtx = &fasthttp.RequestCtx{}
+	coupled.getConfig(configCtx)
+	require.True(t, gjson.GetBytes(configCtx.Response.Body(), "bifrost_mcp_enabled").Bool())
 }
 
 // The models an operator exposes are part of the config wire shape in both
@@ -1375,4 +1455,132 @@ func TestWarpChatRefusesAModelThatIsNotExposed(t *testing.T) {
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 	require.Contains(t, string(ctx.Response.Body()), "model is not available for warp")
 	require.Empty(t, calls)
+}
+
+// BF-2990: with inference auth enforced, the local admin - who signs in with the
+// admin password and is no user - could not use Warp: the dashboard cannot attach
+// a virtual key and the session is not an inference credential. Warp's settings
+// now name a virtual key its model calls present for a caller with no identity
+// of their own, so that caller is served and governed by the key. Driven end to
+// end, as above: the dashboard request's snapshot, Warp's model-call context and
+// the governance pre-hook, with the mandatory-credential check on.
+func TestWarpChatPresentsWarpVirtualKeyForACallerWithNoIdentity(t *testing.T) {
+	active := true
+	warpKey := tables.TableVirtualKey{
+		ID: "vk-warp", Name: "warp", Value: *schemas.NewSecretVar("sk-bf-warp"), IsActive: &active,
+		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{{Provider: "openai", AllowedModels: []string{"*"}, Weight: new(1.0)}},
+	}
+	live := libtest.FileOnlyGovernance(t, &lib.Config{}, nil,
+		&configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{warpKey}}).LiveStore
+	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil, live, nil)
+	require.NoError(t, err)
+	isVkMandatory := true
+	plugin, err := governance.InitFromStore(context.Background(), &governance.Config{IsVkMandatory: &isVkMandatory},
+		&mockLogger{}, store, nil, nil, nil, live)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	handler := &WarpHandler{live: live}
+
+	// governed records what governance attributed the call to.
+	var governed string
+	govern := func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: req})
+		require.NoError(t, err)
+		// Read off the grant, the authoritative record of who the call was attributed to.
+		if g := ctx.Grant(); g != nil {
+			if identity := g.Identity(); identity != nil {
+				if vk := identity.VirtualKey(); vk != nil {
+					governed = vk.ID
+				}
+			}
+		}
+		if shortCircuit != nil {
+			return nil, shortCircuit.Error
+		}
+		return &schemas.BifrostResponsesResponse{}, nil
+	}
+	chat := func(t *testing.T, ctx *fasthttp.RequestCtx, warpVirtualKeyID string, provider schemas.ModelProvider) *schemas.BifrostError {
+		t.Helper()
+		governed = ""
+		presented, err := handler.warpVirtualKey(ctx, warpVirtualKeyID)
+		require.NoError(t, err)
+		snapshot, cancel, err := snapshotWarpContext(ctx, time.Second, presented)
+		require.NoError(t, err)
+		defer cancel()
+		ctx.ResetUserValues()
+		ctx.Request.Reset()
+		_, bifrostErr := warp.NewChat(govern, &schemas.WarpConfig{VirtualKeyID: warpVirtualKeyID}, "conv-1")(snapshot,
+			&schemas.BifrostResponsesRequest{Provider: provider, Model: "gpt-4o"})
+		return bifrostErr
+	}
+	// What the auth middleware leaves for the admin password login: no user, no credential.
+	localAdmin := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "session-token")
+		ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
+		return ctx
+	}
+
+	t.Run("the local admin is served on Warp's key", func(t *testing.T) {
+		bifrostErr := chat(t, localAdmin(), "vk-warp", schemas.OpenAI)
+
+		require.Nil(t, bifrostErr, "the local admin must not be told to send a virtual key: %+v", bifrostErr)
+		require.Equal(t, "vk-warp", governed, "the call is governed and attributed as Warp's key")
+	})
+
+	t.Run("the key's own permits apply", func(t *testing.T) {
+		bifrostErr := chat(t, localAdmin(), "vk-warp", schemas.Anthropic)
+
+		require.NotNil(t, bifrostErr, "Warp's key allows only openai")
+		require.Equal(t, schemas.ErrorTypePolicyProviderBlocked, bifrostErr.ExtraFields.ErrorType)
+	})
+
+	t.Run("a signed-in user is not given Warp's key", func(t *testing.T) {
+		// Option A: someone with an identity of their own is governed as themselves.
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialSessionToken, "session-token"))
+
+		bifrostErr := chat(t, ctx, "vk-warp", schemas.OpenAI)
+
+		require.Nil(t, bifrostErr, "%+v", bifrostErr)
+		require.Empty(t, governed, "the user's call must not be attributed to Warp's key")
+	})
+
+	t.Run("a virtual key the request presents still goes first", func(t *testing.T) {
+		ctx := localAdmin()
+		ctx.Request.Header.Set("x-bf-vk", "sk-bf-nobody")
+
+		bifrostErr := chat(t, ctx, "vk-warp", schemas.OpenAI)
+
+		require.NotNil(t, bifrostErr)
+		require.Contains(t, bifrostErr.Error.Message, "access not found", "a dead key is not rescued by Warp's")
+	})
+
+	t.Run("with no key set, the refusal is declared as governance's own", func(t *testing.T) {
+		bifrostErr := chat(t, localAdmin(), "", schemas.OpenAI)
+
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.Type)
+		require.Equal(t, "virtual_key_required", *bifrostErr.Type)
+		require.Equal(t, schemas.ErrorTypePolicyAccessDenied, bifrostErr.ExtraFields.ErrorType)
+	})
+
+	t.Run("a deleted key is reported before the turn starts", func(t *testing.T) {
+		_, err := handler.warpVirtualKey(localAdmin(), "vk-deleted")
+
+		require.ErrorIs(t, err, errWarpVirtualKeyMissing)
+	})
+}
+
+// Warp's virtual key is read from the live store, so a handler built without one
+// cannot resolve it. That is a wiring fault (the chat's 500), not a key that no
+// longer exists (its 409).
+func TestWarpVirtualKeyWithoutLiveStoreIsNotMissing(t *testing.T) {
+	handler := &WarpHandler{}
+
+	_, err := handler.warpVirtualKey(&fasthttp.RequestCtx{}, "vk-warp")
+
+	require.ErrorIs(t, err, livestore.ErrNoLiveStore)
+	require.NotErrorIs(t, err, errWarpVirtualKeyMissing, "an unwired live store is not a deleted key")
 }

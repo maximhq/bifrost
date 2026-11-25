@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
@@ -566,6 +567,108 @@ func TestRDBRetentionIntervalByDialect(t *testing.T) {
 	}
 	assert.Equal(t, time.Hour, onDialect(postgres.Dialector{Config: &postgres.Config{}}).RetentionInterval())
 	assert.Equal(t, 24*time.Hour, onDialect(&sqlite.Dialector{}).RetentionInterval())
+}
+
+// timeoutAbove is a delete that times out above limit rows and drains backlog otherwise, recording each requested size.
+type timeoutAbove struct {
+	limit   int
+	backlog int64
+	sizes   []int
+}
+
+func (d *timeoutAbove) deleteBatch(_ context.Context, _ time.Time, size int) (int64, error) {
+	d.sizes = append(d.sizes, size)
+	if size > d.limit {
+		return 0, &pgconn.PgError{Code: postgresSQLStateStatementTimeout}
+	}
+	deleted := min(d.backlog, int64(size))
+	d.backlog -= deleted
+	return deleted, nil
+}
+
+// A batch of wide rows that cannot finish inside statement_timeout must not fail every pass on the same rows.
+func TestDrainExpiredShrinksBatchOnStatementTimeout(t *testing.T) {
+	d := &timeoutAbove{limit: 1000, backlog: 2500}
+	cleaner := NewLogsCleaner(plainRetentionManager{}, CleanerConfig{RetentionDays: 7}, testLogger{})
+	require.True(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), d.deleteBatch))
+	assert.Zero(t, d.backlog)
+	assert.Equal(t, []int{5000, 2500, 1250, 625, 625, 625, 625, 625}, d.sizes)
+
+	d = &timeoutAbove{limit: 1000, backlog: 700}
+	require.True(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), d.deleteBatch))
+	assert.Equal(t, 625, d.sizes[0], "the next pass starts at the size that fit")
+	assert.Equal(t, batchSize, cleaner.batchSizeFor("mcp tool logs"), "each table learns its own size")
+}
+
+func TestDrainExpiredGrowsBatchBackAfterSuccesses(t *testing.T) {
+	d := &timeoutAbove{limit: batchSize / 2, backlog: 1 << 30}
+	calls := 0
+	deleteBatch := func(ctx context.Context, cutoff time.Time, size int) (int64, error) {
+		calls++
+		if calls == 1 {
+			d.sizes = append(d.sizes, size)
+			return 0, &pgconn.PgError{Code: postgresSQLStateStatementTimeout}
+		}
+		if calls > cleanupGrowAfter+2 {
+			d.sizes = append(d.sizes, size)
+			return 0, nil
+		}
+		d.limit = batchSize
+		return d.deleteBatch(ctx, cutoff, size)
+	}
+	cleaner := NewLogsCleaner(plainRetentionManager{}, CleanerConfig{RetentionDays: 7}, testLogger{})
+	require.True(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), deleteBatch))
+	assert.Equal(t, batchSize/2, d.sizes[1])
+	assert.Equal(t, batchSize, d.sizes[len(d.sizes)-1], "a run of successes restores the full batch")
+	assert.Equal(t, batchSize, cleaner.batchSizeFor("logs"))
+}
+
+func TestDrainExpiredFailsWhenOneRowTimesOut(t *testing.T) {
+	d := &timeoutAbove{limit: 0}
+	cleaner := NewLogsCleaner(plainRetentionManager{}, CleanerConfig{RetentionDays: 7}, testLogger{})
+	require.False(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), d.deleteBatch))
+	assert.Equal(t, 1, d.sizes[len(d.sizes)-1])
+	assert.Len(t, d.sizes, 13, "halving stops at one row")
+}
+
+// Other errors still end the table's drain at once.
+func TestDrainExpiredDoesNotShrinkOnOtherErrors(t *testing.T) {
+	calls := 0
+	deleteBatch := func(context.Context, time.Time, int) (int64, error) {
+		calls++
+		return 0, &pgconn.PgError{Code: "40P01"}
+	}
+	cleaner := NewLogsCleaner(plainRetentionManager{}, CleanerConfig{RetentionDays: 7}, testLogger{})
+	require.False(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), deleteBatch))
+	assert.Equal(t, 1, calls)
+}
+
+func TestRaiseRetentionStatementTimeout(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available")
+	}
+	for session, want := range map[string]string{"100ms": "10min", "2min": "10min", "0": "0", "1h": "1h"} {
+		var got string
+		require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+			require.NoError(t, tx.Exec("SELECT set_config('statement_timeout', ?, true)", session).Error)
+			require.NoError(t, raiseRetentionStatementTimeout(tx))
+			return tx.Raw("SHOW statement_timeout").Scan(&got).Error
+		}))
+		assert.Equal(t, want, got, "session timeout %s", session)
+	}
+}
+
+// A long id list goes out in several statements, and every row still goes.
+func TestPostgresDeleteLogsChunksLargeIDList(t *testing.T) {
+	store, db := setupRetentionPostgres(t, 3*deleteLogsChunkSize+7, 5)
+	ids := make([]string, 0, 3*deleteLogsChunkSize+7)
+	for i := 1; i <= 3*deleteLogsChunkSize+7; i++ {
+		ids = append(ids, fmt.Sprintf("old-%d", i))
+	}
+	require.NoError(t, store.DeleteLogs(context.Background(), ids))
+	assert.Zero(t, countLogs(t, db, "old-"))
+	assert.Equal(t, int64(5), countLogs(t, db, "new-"))
 }
 
 // reclaimingRetentionManager reports a fixed reclaim result, so a test can see

@@ -812,7 +812,12 @@
 			"copilotTokenLabel": "GitHub Token または Copilot API Token",
 			"copilotTokenDescription": "<strong>Copilot Requests</strong> 権限を持つ、詳細な権限を設定した個人アクセストークン（<code>github_pat_…</code>）です。組織で <strong>Copilot CLI</strong> ポリシーを有効にする必要があります。",
 			"copilotTokenInputPlaceholder": "github_pat_… または ghu_… トークン、あるいは Copilot API Token",
-			"copilotSignInHint": "または GitHub にサインインしてトークンを入力します。"
+			"copilotSignInHint": "または GitHub にサインインしてトークンを入力します。",
+			"contentLogging": "コンテンツログ",
+			"contentLoggingInherit": "継承",
+			"contentLoggingOff": "このキーではオフ",
+			"contentLoggingOn": "このキーではオン",
+			"contentLoggingHelp": "このキーが処理するトラフィックについて、リクエストとレスポンスの内容をログに保存するかどうかです。キーのビジネスユニット、チーム、ユーザーの設定がこれより優先されます。仮想キーと並ぶ場合は、どちらかの「オフ」が優先されます。「オフ」のキーでリクエストを送信した後は、別のキーで再試行しても内容はオフのままです。"
 		},
 		"proxyHttp": "HTTP",
 		"proxySocks5": "SOCKS5",
@@ -1209,10 +1214,10 @@
 		"namePlaceholder": "例：生産 API キー",
 		"descriptionPlaceholder": "この鍵は…に使われます",
 		"contentLogging": "コンテンツログ",
-		"contentLoggingInherit": "ゲートウェイ設定を継承",
+		"contentLoggingInherit": "継承",
 		"contentLoggingOff": "このキーではオフ",
 		"contentLoggingOn": "このキーではオン",
-		"contentLoggingHelp": "このキーのトラフィックについて、リクエストとレスポンスの内容をログに保存するかどうかです。「オフ」は OpenTelemetry のエクスポートからも内容を除きます。「オン」が上書きするのはログストアだけで、ゲートウェイ全体のオフはそこだけ覆ります。リクエストごとの上書きが許可されている場合、リクエスト単位のヘッダーは引き続き適用されます。",
+		"contentLoggingHelp": "このキーのトラフィックについて、リクエストとレスポンスの内容をログに保存するかどうかです。キーのチームの設定がこの設定より優先されます。「オフ」は OpenTelemetry のエクスポートからも内容を除きます。「オン」が上書きするのはログストアだけで、ゲートウェイ全体のオフはそこだけ覆ります。リクエストごとの上書きが許可されている場合、リクエスト単位のヘッダーは引き続き適用されます。",
 		"isActive": "このキーは有効ですか？",
 		"budgetConfiguration": "予算設定",
 		"budgetOverrides": "予算の上書き",
@@ -1286,6 +1291,9 @@
 		"unknownClient": "不明なクライアント",
 		"budgetInformation": "予算情報",
 		"noBudgetLimits": "予算上限が設定されていません",
+		"sharedBudgetUser": "{{name}} に割り当てられたすべてのキーで共有されます。支出はそれらのキーの合計です。",
+		"sharedBudgetUserUnnamed": "このユーザーに割り当てられたすべてのキーで共有されます。支出はそれらのキーの合計です。",
+		"sharedBudgetOwner": "このキーを所有するチーム、事業部門、または顧客のすべてのキーで共有されます。支出はそれらのキーの合計です。",
 		"noRateLimits": "レート制限が設定されていません",
 		"basePlusOverride": "ベース {{base}} + {{override}} 上書き",
 		"cyclesRemaining": "{{count}} 残りサイクル",
@@ -2292,7 +2300,7 @@
 			},
 			"routersNotice": {
 				"title": "複雑度ルーターはルーターへ移行中です",
-				"body": "ルーターは複数の分類器を実行でき、それぞれが独自のモデルと受け持つリクエストを持ちます。このページはこれまでどおり動作します。新しく設定する場合はルーターをお試しください。",
+				"body": "ルーターでは複数のルーターを作成でき、それぞれが独自の分類器とモデルを持ちます。このページはこれまでどおり動作しますが、既存の設定も新しい設定もルーターへ移行することをおすすめします。",
 				"action": "ルーターを開く"
 			}
 		},
@@ -2661,6 +2669,7 @@
 		"upstreamValue": "データシート: {{value}}",
 		"upstreamChanged": "編集後にデータシートの値が変わりました（以前は {{value}}）",
 		"followUpstream": "データシートに従う（{{value}}）",
+		"followUpstreamNoValue": "データシートに従う",
 		"on": "オン",
 		"off": "オフ",
 		"customModelPlaceholder": "例: ft:gpt-4o:acme",

@@ -142,10 +142,12 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
-		inMemoryStore := &GovernanceInMemoryStore{Config: bifrostConfig}
-		governancePlugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
-			bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog,
-			bifrostConfig.MCPCatalog, inMemoryStore)
+		// A copy, so the caller's config is left as it was; the log timestamp precision is always
+		// the transport's log store's.
+		withPrecision := *governanceConfig
+		withPrecision.LogTimestampPrecision = GovernanceLogTimestampPrecision(bifrostConfig)
+		governancePlugin, err := governance.Init(ctx, &withPrecision, logger, bifrostConfig.ConfigStore,
+			bifrostConfig.LiveStore, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
 		if err != nil {
 			return nil, err
 		}
@@ -242,6 +244,12 @@ func (s *BifrostHTTPServer) getPluginConfig(name string) *schemas.PluginConfig {
 		}
 	}
 	return nil
+}
+
+// IsFixedBuiltinPlugin implements handlers.PluginsLoader: the built-in plugins Bifrost configures
+// itself, which the plugins API may not create, change or delete.
+func (s *BifrostHTTPServer) IsFixedBuiltinPlugin(name string) bool {
+	return lib.IsFixedBuiltinPlugin(name)
 }
 
 // loadBuiltinPlugins loads required built-in plugins in specific order

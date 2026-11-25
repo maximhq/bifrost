@@ -28,12 +28,10 @@ type PromptsHandler struct {
 	reloader PromptCacheReloader // optional; nil when the prompts plugin is not loaded
 }
 
-// NewPromptsHandler creates a new PromptsHandler.
+// NewPromptsHandler creates a new PromptsHandler. store is nil when the config store is
+// disabled; the routes then answer 503 from RequireConfigStoreMiddleware.
 // reloader may be nil; when set, the in-memory prompt cache is refreshed after mutations.
 func NewPromptsHandler(store configstore.ConfigStore, reloader PromptCacheReloader) *PromptsHandler {
-	if store == nil {
-		return nil
-	}
 	return &PromptsHandler{store: store, reloader: reloader}
 }
 
@@ -317,6 +315,10 @@ func (h *PromptsHandler) deleteFolder(ctx *fasthttp.RequestCtx) {
 	if err := h.store.DeleteFolder(ctx, id); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "folder not found")
+			return
+		}
+		if errors.Is(err, configstore.ErrFolderHasHiddenPrompts) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
 			return
 		}
 		logger.Error("failed to delete folder: %v", err)

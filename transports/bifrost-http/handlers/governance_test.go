@@ -76,12 +76,12 @@ func (m *mockRotateConfigStore) ExecuteTransaction(_ context.Context, fn func(tx
 	return fn(nil)
 }
 
-func (m *mockRotateConfigStore) RevokeOAuth2GrantsBySubject(_ context.Context, bfMode, bfSub string, _ ...*gorm.DB) error {
+func (m *mockRotateConfigStore) RevokeOAuth2GrantsBySubject(_ context.Context, bfMode, bfSub string, _ ...*gorm.DB) (int64, error) {
 	if m.revokeErr != nil {
-		return m.revokeErr
+		return 0, m.revokeErr
 	}
 	m.revokedGrants = append(m.revokedGrants, bfMode+":"+bfSub)
-	return nil
+	return 1, nil
 }
 
 func (m *mockRotateConfigStore) GetClientConfig(_ context.Context) (*configstore.ClientConfig, error) {
@@ -203,10 +203,7 @@ func (m *budgetOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Conte
 func (m *budgetOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m *budgetOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m *budgetOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m *budgetOverrideTestGovernanceManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m *budgetOverrideTestGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -219,10 +216,7 @@ func (m *mockRotateGovernanceManager) ReloadVirtualMCP(ctx context.Context, id u
 func (m *mockRotateGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m *mockRotateGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m *mockRotateGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m *mockRotateGovernanceManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m *mockRotateGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -235,10 +229,7 @@ func (m pricingOverrideTestGovernanceManager) ReloadVirtualMCP(ctx context.Conte
 func (m pricingOverrideTestGovernanceManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m pricingOverrideTestGovernanceManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m pricingOverrideTestGovernanceManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m pricingOverrideTestGovernanceManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m pricingOverrideTestGovernanceManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -251,10 +242,7 @@ func (m *providerGovernanceAdoptionManager) ReloadVirtualMCP(ctx context.Context
 func (m *providerGovernanceAdoptionManager) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return nil
 }
-func (m *providerGovernanceAdoptionManager) AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
-	return nil
-}
-func (m *providerGovernanceAdoptionManager) DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error {
+func (m *providerGovernanceAdoptionManager) ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error {
 	return nil
 }
 func (m *providerGovernanceAdoptionManager) ReloadVirtualKeys(ctx context.Context, ids []string) error {
@@ -281,6 +269,61 @@ func TestClassifyAgentGrantReplacementError(t *testing.T) {
 		require.ErrorIs(t, classified, err)
 		require.NotErrorAs(t, classified, &badReqErr)
 	}
+}
+
+// A virtual key holds one config per provider, so create and update refuse provider_configs that name
+// a provider twice, before anything is written.
+func TestVirtualKeyProviderConfigsHoldOneConfigPerProvider(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	// Configured, so the only thing wrong with each request below is the repeated provider.
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+
+	duplicates := []string{
+		`"provider_configs":[{"provider":"openai","allowed_models":["gpt-4o-mini"]},{"provider":"openai","allowed_models":["gpt-4.1-mini"]}]`,
+		`"provider_configs":[{"provider":"openai","allowed_models":["*"]},{"provider":" openai ","allowed_models":["*"]}]`,
+	}
+
+	for _, configs := range duplicates {
+		createCtx := newTestRequestCtx(`{"name":"two-openai",` + configs + `}`)
+		handler.createVirtualKey(createCtx)
+		require.Equal(t, fasthttp.StatusBadRequest, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
+		assert.Contains(t, string(createCtx.Response.Body()), `provider_configs names provider \"openai\" more than once`)
+	}
+	keys, err := store.GetVirtualKeys(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, keys, "a refused create writes nothing")
+
+	createCtx := newTestRequestCtx(`{"name":"no-providers","description":"original"}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+
+	for _, configs := range duplicates {
+		updateCtx := newTestRequestCtx(`{"description":"changed",` + configs + `}`)
+		updateCtx.SetUserValue("vk_id", created.VirtualKey.ID)
+		handler.updateVirtualKey(updateCtx)
+		require.Equal(t, fasthttp.StatusBadRequest, updateCtx.Response.StatusCode(), string(updateCtx.Response.Body()))
+	}
+	persisted, err := store.GetVirtualKey(ctx, created.VirtualKey.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "original", persisted.Description, "a refused update changes nothing")
+	assert.Empty(t, persisted.ProviderConfigs)
+}
+
+func TestValidateVirtualKeyProviders(t *testing.T) {
+	assert.NoError(t, validateVirtualKeyProviders(nil))
+	assert.NoError(t, validateVirtualKeyProviders([]string{"openai", "anthropic"}))
+	assert.NoError(t, validateVirtualKeyProviders([]string{"", " "}), "blank names are the provider check's to refuse")
+	assert.ErrorContains(t, validateVirtualKeyProviders([]string{"openai", "anthropic", "openai"}), `"openai"`)
+	assert.ErrorContains(t, validateVirtualKeyProviders([]string{"openai", " openai"}), `"openai"`, "compared as stored, trimmed")
 }
 
 func TestVirtualKeyAgentAssignmentsHTTPContract(t *testing.T) {
@@ -4323,6 +4366,55 @@ func TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget(t *te
 	}
 }
 
+// TestUpdateVirtualKey_AdoptsStandaloneBudgetFromConfigJSON is a regression test for
+// updating the budget of a VK provisioned from config.json. Such a VK carries its
+// budget as a standalone row (TableBudget.VirtualKeyID set, no model config), and the
+// first update adopts that row into a new VK-scoped model config. The adoption only
+// moves the row to its new owner; it must not run TableBudget's BeforeSave hook,
+// which validates a zero-value model and rejects it with
+// "invalid reset duration format: ".
+func TestUpdateVirtualKey_AdoptsStandaloneBudgetFromConfigJSON(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	const vkID = "vk-from-config"
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:       vkID,
+		Name:     "svc-from-config",
+		Value:    *schemas.NewSecretVar("sk-bf-config-json-secret"),
+		IsActive: &active,
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	// The shape config.json provisioning writes: a budget owned directly by the VK.
+	require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{
+		ID:            "bud-from-config",
+		MaxLimit:      100,
+		ResetDuration: "1M",
+		VirtualKeyID:  schemas.Ptr(vkID),
+	}))
+
+	updateCtx := newTestRequestCtx(`{"budgets":[{"max_limit":250,"reset_duration":"1M"}]}`)
+	updateCtx.SetUserValue("vk_id", vkID)
+	handler.updateVirtualKey(updateCtx)
+	require.Equal(t, fasthttp.StatusOK, updateCtx.Response.StatusCode(), string(updateCtx.Response.Body()))
+
+	persisted, err := store.GetVirtualKey(ctx, vkID)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-bf-config-json-secret", persisted.Value.GetValue(), "the key value must not change")
+
+	budgets, err := store.GetBudgets(ctx)
+	require.NoError(t, err)
+	var limits []float64
+	for _, budget := range budgets {
+		assert.Nil(t, budget.VirtualKeyID, "no budget is left owned directly by the VK after adoption: %+v", budget)
+		limits = append(limits, budget.MaxLimit)
+	}
+	assert.Equal(t, []float64{250}, limits, "the VK keeps exactly one budget, at the new limit")
+}
+
 // TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance verifies the
 // existing overlay path: when a VK-scoped model config owns the governance
 // (TableBudget.ModelConfigID set, not preloaded onto the VK), hydration overlays it.
@@ -5143,6 +5235,7 @@ func TestVirtualKeyProviderConfigWeight_RejectsNegative(t *testing.T) {
 	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
 	ctx := context.Background()
 	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{}))
 
 	create := func(t *testing.T, name, weight string) *fasthttp.RequestCtx {
 		t.Helper()
@@ -5182,7 +5275,7 @@ func TestVirtualKeyProviderConfigWeight_RejectsNegative(t *testing.T) {
 
 	for name, body := range map[string]string{
 		"an existing config to a negative weight": fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":-0.5}]}`, pcID),
-		"a new config with a negative weight":     fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":1},{"provider":"openai","allowed_models":["*"],"weight":-1}]}`, pcID),
+		"a new config with a negative weight":     fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":1},{"provider":"anthropic","allowed_models":["*"],"weight":-1}]}`, pcID),
 	} {
 		put := newTestRequestCtx(body)
 		put.SetUserValue("vk_id", created.VirtualKey.ID)
@@ -6059,4 +6152,100 @@ func TestUpdateTeamNewBudgetStartsAtZero(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTeamContentLoggingRoundTrip drives the team handlers end to end: a team created with the
+// decision persists it, an update that omits the field keeps it, false flips it to a decision to
+// force content on, and null clears it back to inherit.
+func TestTeamContentLoggingRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: pricingOverrideTestGovernanceManager{}}
+	ctx := context.Background()
+
+	createCtx := newTestRequestCtx(`{"name":"team-content-off","disable_content_logging":true}`)
+	handler.createTeam(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), "create resp=%s", createCtx.Response.Body())
+	teams, _, err := store.GetTeamsPaginated(ctx, configstore.TeamsQueryParams{Search: "team-content-off"})
+	require.NoError(t, err)
+	require.Len(t, teams, 1)
+	teamID := teams[0].ID
+
+	read := func(t *testing.T) *bool {
+		t.Helper()
+		stored, err := store.GetTeam(ctx, teamID)
+		require.NoError(t, err)
+		return stored.DisableContentLogging
+	}
+	require.NotNil(t, read(t), "create must persist the decision")
+	assert.True(t, *read(t))
+
+	putTeam := func(t *testing.T, body string) {
+		t.Helper()
+		putCtx := newGovernanceTeamIDCtx(teamID, body)
+		handler.updateTeam(putCtx)
+		require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), "PUT body=%s resp=%s", body, putCtx.Response.Body())
+	}
+
+	putTeam(t, `{"name":"team-content-renamed"}`)
+	require.NotNil(t, read(t), "an update that omits the field must not clear it")
+	assert.True(t, *read(t))
+
+	putTeam(t, `{"disable_content_logging":false}`)
+	require.NotNil(t, read(t))
+	assert.False(t, *read(t), "false is a decision to force content on, not an absence")
+
+	putTeam(t, `{"disable_content_logging":null}`)
+	assert.Nil(t, read(t), "null clears the decision back to inherit")
+}
+
+// deleteOrderGovernanceManager records, for each team or customer removed from memory, what
+// reading its row returned at that moment: ErrNotFound once the row is deleted, nil while it is
+// still there, and any other error when the read itself failed.
+type deleteOrderGovernanceManager struct {
+	pricingOverrideTestGovernanceManager
+	store   configstore.ConfigStore
+	readErr map[string]error
+}
+
+// RemoveTeam records what reading the team's row returned.
+func (m *deleteOrderGovernanceManager) RemoveTeam(ctx context.Context, id string) error {
+	_, err := m.store.GetTeam(ctx, id)
+	m.readErr["team:"+id] = err
+	return nil
+}
+
+// RemoveCustomer records what reading the customer's row returned.
+func (m *deleteOrderGovernanceManager) RemoveCustomer(ctx context.Context, id string) error {
+	_, err := m.store.GetCustomer(ctx, id)
+	m.readErr["customer:"+id] = err
+	return nil
+}
+
+// TestDeleteTeamAndCustomerDeleteTheRowBeforeRemovingTheRecord checks that the delete routes
+// delete the row before they remove the record, so the removal re-reads the keys and teams under it
+// with the reference the delete cleared.
+func TestDeleteTeamAndCustomerDeleteTheRowBeforeRemovingTheRecord(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &deleteOrderGovernanceManager{store: store, readErr: map[string]error{}}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	require.NoError(t, store.CreateCustomer(ctx, &configstoreTables.TableCustomer{ID: "cust-1", Name: "Acme"}))
+	require.NoError(t, store.CreateTeam(ctx, &configstoreTables.TableTeam{ID: "team-1", Name: "Platform"}))
+
+	teamCtx := newGovernanceTeamIDCtx("team-1", "")
+	handler.deleteTeam(teamCtx)
+	require.Equal(t, fasthttp.StatusOK, teamCtx.Response.StatusCode(), string(teamCtx.Response.Body()))
+	readErr, removed := manager.readErr["team:team-1"]
+	require.True(t, removed, "the team is removed from memory")
+	require.ErrorIs(t, readErr, configstore.ErrNotFound, "the team's row is deleted before its record is removed")
+
+	customerCtx := newTestRequestCtx("")
+	customerCtx.SetUserValue("customer_id", "cust-1")
+	handler.deleteCustomer(customerCtx)
+	require.Equal(t, fasthttp.StatusOK, customerCtx.Response.StatusCode(), string(customerCtx.Response.Body()))
+	readErr, removed = manager.readErr["customer:cust-1"]
+	require.True(t, removed, "the customer is removed from memory")
+	require.ErrorIs(t, readErr, configstore.ErrNotFound, "the customer's row is deleted before its record is removed")
 }

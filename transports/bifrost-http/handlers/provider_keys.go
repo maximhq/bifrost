@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
@@ -21,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -50,7 +52,7 @@ type complexitySemanticRearmer interface {
 // Deliberately unconditional and cheap on this side: the classifier ignores
 // providers it does not embed through, and ignores changes while it is healthy.
 func (h *ProviderHandler) rearmComplexitySemanticClassifier(provider schemas.ModelProvider) {
-	basePlugins := h.inMemoryStore.BasePlugins.Load()
+	basePlugins := h.config.BasePlugins.Load()
 	if basePlugins == nil {
 		return
 	}
@@ -69,7 +71,7 @@ func (h *ProviderHandler) listProviderKeys(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	keys, err := h.inMemoryStore.GetProviderKeysRedacted(provider)
+	stored, err := h.providerKeys(ctx, provider)
 	if err != nil {
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
@@ -78,6 +80,7 @@ func (h *ProviderHandler) listProviderKeys(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider keys: %v", err))
 		return
 	}
+	keys := append([]schemas.Key(nil), redactKeys(stored)...)
 
 	SendJSON(ctx, ListProviderKeysResponse{Keys: keys, Total: len(keys)})
 }
@@ -95,7 +98,7 @@ func (h *ProviderHandler) getProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	key, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
+	key, err := h.redactedKeyOf(ctx, provider, keyID)
 	if err != nil {
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
@@ -129,15 +132,12 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	providerConfig, err := h.inMemoryStore.GetProviderConfigRaw(provider)
-	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
-			return
-		}
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
+	stored, ok := h.config.LiveStore.Collections.Providers.Get(string(provider))
+	if !ok {
+		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", lib.ErrNotFound))
 		return
 	}
+	providerConfig := stored.Settings
 
 	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
 		SendError(ctx, fasthttp.StatusBadRequest, "Cannot add keys to a keyless provider")
@@ -199,7 +199,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		key.Enabled = bifrost.Ptr(true)
 	}
 
-	if err := h.inMemoryStore.AddProviderKey(ctx, provider, key); err != nil {
+	if err := h.config.AddProviderKey(ctx, provider, key); err != nil {
 		logger.Warn("Failed to create key for provider %s: %v", provider, err)
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
@@ -220,7 +220,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 	}
 	h.rearmComplexitySemanticClassifier(provider)
 
-	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, key.ID)
+	redactedKey, err := h.redactedKeyOf(ctx, provider, key.ID)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get created provider key: %v", err))
 		return
@@ -243,34 +243,37 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	providerConfig, err := h.inMemoryStore.GetProviderConfigRaw(provider)
-	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
-			return
-		}
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
+	stored, ok := h.config.LiveStore.Collections.Providers.Get(string(provider))
+	if !ok {
+		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", lib.ErrNotFound))
 		return
 	}
+	providerConfig := stored.Settings
 
 	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
 		SendError(ctx, fasthttp.StatusBadRequest, "Cannot update keys on a keyless provider")
 		return
 	}
 
-	oldRawKey, err := h.inMemoryStore.GetProviderKeyRaw(provider, keyID)
-	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
-			return
-		}
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider key: %v", err))
+	// The merge base is the key as stored, not the live record: fields the body leaves out and
+	// redacted values it echoes back are filled from the database, so nothing memory holds is
+	// written back to it.
+	if h.config.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider key: %v", lib.ErrNoConfigStore))
 		return
 	}
-	var before json.RawMessage
-	if oldRedactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID); err == nil {
-		before = lib.AuditSnapshot(oldRedactedKey)
+	storedKey, err := h.config.ConfigStore.GetProviderKey(ctx, provider, keyID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", lib.ErrNotFound))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to read provider key: %v", err))
+		return
 	}
+	storedSchemaKey := configstore.SchemaKeyFromTableKey(*storedKey)
+	oldRawKey := &storedSchemaKey
+	before := lib.AuditSnapshot(redactKeys([]schemas.Key{*oldRawKey})[0])
 
 	if err := rejectUnknownOAuthKeyConfigFields(ctx.PostBody()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -340,7 +343,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.inMemoryStore.UpdateProviderKey(ctx, provider, keyID, mergedKey); err != nil {
+	if err := h.config.UpdateProviderKey(ctx, provider, keyID, mergedKey); err != nil {
 		logger.Warn("Failed to update key %s for provider %s: %v", keyID, provider, err)
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
@@ -361,7 +364,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 	}
 	h.rearmComplexitySemanticClassifier(provider)
 
-	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
+	redactedKey, err := h.redactedKeyOf(ctx, provider, keyID)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get updated provider key: %v", err))
 		return
@@ -386,16 +389,12 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 
 	// Deletion stays allowed on keyless providers: a provider switched from
 	// keyed to keyless keeps its old keys, and this is the only way to remove them.
-	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
-			return
-		}
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
+	if _, ok := h.config.LiveStore.Collections.Providers.Get(string(provider)); !ok {
+		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", lib.ErrNotFound))
 		return
 	}
 
-	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
+	redactedKey, err := h.redactedKeyOf(ctx, provider, keyID)
 	if err != nil {
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
@@ -405,7 +404,7 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.inMemoryStore.RemoveProviderKey(ctx, provider, keyID); err != nil {
+	if err := h.config.RemoveProviderKey(ctx, provider, keyID); err != nil {
 		logger.Warn("Failed to delete key %s for provider %s: %v", keyID, provider, err)
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
@@ -434,12 +433,8 @@ func (h *ProviderHandler) refreshProviderModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
-			return
-		}
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
+	if _, ok := h.config.LiveStore.Collections.Providers.Get(string(provider)); !ok {
+		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", lib.ErrNotFound))
 		return
 	}
 
@@ -454,11 +449,12 @@ func (h *ProviderHandler) refreshProviderModels(ctx *fasthttp.RequestCtx) {
 
 	// Read back after the refresh so the caller sees the statuses this pass
 	// produced rather than the ones it started from.
-	keys, err := h.inMemoryStore.GetProviderKeysRedacted(provider)
+	stored, err := h.providerKeys(ctx, provider)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider keys: %v", err))
 		return
 	}
+	keys := append([]schemas.Key(nil), redactKeys(stored)...)
 
 	lib.RecordAuditChange(ctx, "provider.models_refreshed", "provider", string(provider), string(provider), nil, map[string]any{"key_count": len(keys)})
 	SendJSON(ctx, ListProviderKeysResponse{Keys: keys, Total: len(keys)})
@@ -480,7 +476,7 @@ func (h *ProviderHandler) refreshProviderKeyModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if _, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID); err != nil {
+	if _, err := h.redactedKeyOf(ctx, provider, keyID); err != nil {
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
 			return
@@ -498,7 +494,7 @@ func (h *ProviderHandler) refreshProviderKeyModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	refreshedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
+	refreshedKey, err := h.redactedKeyOf(ctx, provider, keyID)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider key: %v", err))
 		return
@@ -506,6 +502,61 @@ func (h *ProviderHandler) refreshProviderKeyModels(ctx *fasthttp.RequestCtx) {
 
 	lib.RecordAuditChange(ctx, "provider_key.models_refreshed", "provider_key", keyID, refreshedKey.Name, nil, map[string]any{"provider": string(provider), "key_id": keyID})
 	SendJSON(ctx, refreshedKey)
+}
+
+// providerKeys reads a provider's keys for the management API, in creation order. With a config
+// store they come from the database, as getProvider reads providers, so a route shows what is
+// saved even when reloading a write into memory failed; without one they come from the live
+// store's Views.ProviderKeyLists, whose shared slice callers only read. It answers
+// lib.ErrNotFound when the provider is not configured.
+func (h *ProviderHandler) providerKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	if h.configStore != nil {
+		keys, err := h.configStore.GetProviderKeys(ctx, provider)
+		if errors.Is(err, configstore.ErrNotFound) {
+			return nil, lib.ErrNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		return keys, nil
+	}
+	if _, ok := h.config.LiveStore.Collections.Providers.Get(string(provider)); !ok {
+		return nil, lib.ErrNotFound
+	}
+	if list, ok := h.config.LiveStore.Views.ProviderKeyLists.Get(string(provider)); ok {
+		return *list, nil
+	}
+	return nil, nil
+}
+
+// redactedKeyOf reads a provider's key with this ID as the keys API shows it, from the database
+// when there is a config store and from the live store otherwise, as providerKeys does. It answers
+// lib.ErrNotFound when the provider has no key with this ID.
+func (h *ProviderHandler) redactedKeyOf(ctx context.Context, provider schemas.ModelProvider, keyID string) (schemas.Key, error) {
+	var key schemas.Key
+	if h.configStore != nil {
+		row, err := h.configStore.GetProviderKey(ctx, provider, keyID)
+		if errors.Is(err, configstore.ErrNotFound) {
+			return schemas.Key{}, lib.ErrNotFound
+		}
+		if err != nil {
+			return schemas.Key{}, err
+		}
+		key = configstore.SchemaKeyFromTableKey(*row)
+	} else {
+		rec, ok := h.config.LiveStore.Collections.ProviderKeys.Get(keyID)
+		if !ok || rec.Provider != provider {
+			return schemas.Key{}, lib.ErrNotFound
+		}
+		key = rec.Key
+	}
+	return redactKeys([]schemas.Key{key})[0], nil
+}
+
+// redactKeys returns copies of keys as the keys API shows them: identifiers readable,
+// credentials masked. The keys themselves, which may be the live store's, are left untouched.
+func redactKeys(keys []schemas.Key) []schemas.Key {
+	return (&configstore.ProviderConfig{Keys: keys}).Redacted().Keys
 }
 
 // decodeKeyUpdate decodes a key update body with patch semantics: a field the

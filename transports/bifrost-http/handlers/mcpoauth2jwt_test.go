@@ -103,6 +103,15 @@ func (m *mockOAuth2Store) ConsentOAuth2AuthorizeRequest(_ context.Context, req *
 	return nil
 }
 
+func (m *mockOAuth2Store) DenyOAuth2AuthorizeRequest(_ context.Context, id string) error {
+	existing, ok := m.authReqs[id]
+	if !ok || existing.Status != configtables.OAuth2AuthorizeRequestStatusPending {
+		return configstore.ErrNotFound
+	}
+	existing.Status = configtables.OAuth2AuthorizeRequestStatusRevoked
+	return nil
+}
+
 func (m *mockOAuth2Store) GetOAuth2SigningKey(_ context.Context) (*configtables.OAuth2SigningKey, error) {
 	if m.signingErr != nil {
 		return nil, m.signingErr
@@ -159,7 +168,7 @@ func newTestOAuth2Config(store configstore.ConfigStore, authMode configtables.MC
 // mintTestToken signs a token with valid defaults (vk mode), applying mutate to
 // override claims/header for negative cases. signMethod and signKey let callers
 // force a non-RS256 algorithm or a wrong signing key.
-func mintTestToken(t *testing.T, priv *rsa.PrivateKey, kid string, mutate func(jwt.MapClaims)) string {
+func mintTestToken(t testing.TB, priv *rsa.PrivateKey, kid string, mutate func(jwt.MapClaims)) string {
 	t.Helper()
 	now := time.Now()
 	claims := jwt.MapClaims{
@@ -356,6 +365,7 @@ func TestVerifyMCPJWT_Rejections(t *testing.T) {
 			claims, err := verifyMCPJWT(ctx, tc.raw(), cfg, key)
 			require.Error(t, err)
 			assert.Nil(t, claims)
+			assert.ErrorIs(t, err, errOAuth2TokenRejected, "a bad token must be reported as a rejected token")
 		})
 	}
 }
@@ -374,6 +384,7 @@ func TestVerifyMCPJWT_NilSigningKeyNotLabeledInvalidToken(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "signing key unavailable")
 	assert.NotContains(t, err.Error(), "invalid token")
+	assert.NotErrorIs(t, err, errOAuth2TokenRejected)
 }
 
 // TestCachedSigningKey_ConfigFaults pins that the handler's key loader — which
@@ -400,14 +411,16 @@ func TestCachedSigningKey_ConfigFaults(t *testing.T) {
 	})
 }
 
+// TestInjectJWTContext checks what each bf_mode of a verified token puts on the request: the user,
+// the value of the key a vk-mode token names, or the session, and the errors for a vk-mode token
+// without a key, a token without a subject and an unknown mode.
 func TestInjectJWTContext(t *testing.T) {
-	activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active")}
 
 	t.Run("user mode sets user id", func(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
 		err := injectJWTContext(bc, &jwtMCPClaims{
 			RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1"}, BfMode: "user",
-		}, nil)
+		}, "")
 		require.NoError(t, err)
 		assert.Equal(t, "user-1", bc.Value(schemas.BifrostContextKeyUserID))
 		identity := bc.Grant().Identity()
@@ -421,7 +434,7 @@ func TestInjectJWTContext(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
 		err := injectJWTContext(bc, &jwtMCPClaims{
 			RegisteredClaims: jwt.RegisteredClaims{Subject: "vk-row-1"}, BfMode: "vk",
-		}, activeVK)
+		}, "sk-bf-active")
 		require.NoError(t, err)
 		assert.Equal(t, "sk-bf-active", bc.Value(schemas.BifrostContextKeyVirtualKey))
 		// The VK row ID is resolved later by governance's PreMCPConnectionHook from
@@ -438,7 +451,7 @@ func TestInjectJWTContext(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
 		err := injectJWTContext(bc, &jwtMCPClaims{
 			RegisteredClaims: jwt.RegisteredClaims{Subject: "vk-row-1"}, BfMode: "vk",
-		}, nil)
+		}, "")
 		require.Error(t, err)
 	})
 
@@ -446,7 +459,7 @@ func TestInjectJWTContext(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
 		err := injectJWTContext(bc, &jwtMCPClaims{
 			RegisteredClaims: jwt.RegisteredClaims{Subject: "session-abc"}, BfMode: "session",
-		}, nil)
+		}, "")
 		require.NoError(t, err)
 		assert.Equal(t, "session-abc", bc.Value(schemas.BifrostContextKeyMCPSessionID))
 		// Nothing verified, nothing recorded: the request is admitted as anonymous.
@@ -455,7 +468,7 @@ func TestInjectJWTContext(t *testing.T) {
 
 	t.Run("missing sub errors", func(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
-		err := injectJWTContext(bc, &jwtMCPClaims{BfMode: "user"}, nil)
+		err := injectJWTContext(bc, &jwtMCPClaims{BfMode: "user"}, "")
 		require.Error(t, err)
 	})
 
@@ -463,7 +476,7 @@ func TestInjectJWTContext(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
 		err := injectJWTContext(bc, &jwtMCPClaims{
 			RegisteredClaims: jwt.RegisteredClaims{Subject: "x"}, BfMode: "bogus",
-		}, nil)
+		}, "")
 		require.Error(t, err)
 		assert.True(t, strings.Contains(err.Error(), "bf_mode"))
 	})

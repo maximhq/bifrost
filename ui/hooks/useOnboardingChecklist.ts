@@ -64,9 +64,13 @@ export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}
 	);
 
 	const { data: allKeys } = useGetAllKeysQuery(undefined, { skip: shouldSkipChecklistQueries || !access.providerKeys });
-	const { data: vksResponse } = useGetVirtualKeysQuery(undefined, {
-		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE || !access.virtualKeys,
-	});
+	// Only existence matters here; total_count avoids downloading every virtual key.
+	const { data: vksResponse } = useGetVirtualKeysQuery(
+		{ limit: 1, offset: 0 },
+		{
+			skip: shouldSkipChecklistQueries || !IS_ENTERPRISE || !access.virtualKeys,
+		},
+	);
 	const { data: modelConfigsResponse } = useGetModelConfigsQuery(undefined, {
 		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE || !access.modelConfigs,
 	});

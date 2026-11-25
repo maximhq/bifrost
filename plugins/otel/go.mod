@@ -1,11 +1,11 @@
 module github.com/maximhq/bifrost/plugins/otel
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
-	github.com/maximhq/bifrost/core v1.15.1
-	github.com/maximhq/bifrost/framework v1.12.1
+	github.com/maximhq/bifrost/core v1.15.2
+	github.com/maximhq/bifrost/framework v1.12.2
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0
@@ -82,6 +82,7 @@ require (
 	github.com/go-openapi/jsonreference v1.0.1 // indirect
 	github.com/go-openapi/loads v0.25.2 // indirect
 	github.com/go-openapi/runtime v0.33.0 // indirect
+	github.com/go-openapi/runtime/server-middleware v0.30.0 // indirect
 	github.com/go-openapi/spec v0.22.11 // indirect
 	github.com/go-openapi/strfmt v0.27.0 // indirect
 	github.com/go-openapi/swag v0.29.1 // indirect

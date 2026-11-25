@@ -824,3 +824,86 @@ func TestWarpTopicDiscoveryMinRequestsIsConfigurable(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, schemas.WarpDefaultTopicDiscoveryMinRequests, unset.TopicDiscoveryMinRequests)
 }
+
+// Warp offers reads only until its settings allow kinds of change. A write is
+// normalized (case, duplicates, order), an unknown kind - reads among them,
+// which are always on - is refused, an omitted field keeps what is stored, and
+// [] goes back to reads only.
+func TestWarpManagementWritesAreConfigurable(t *testing.T) {
+	base := `"enabled": true, "provider": "openai", "model": "gpt-4o",
+		"embedding_provider": "openai", "embedding_model": "text-embedding-3-small", "embedding_dimension": 1536`
+	store := &recordingStore{}
+	service := newTestService(store)
+
+	view, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{}, view.ManagementWrites, "reads only by default, shown as an empty list")
+	require.Nil(t, store.row.ManagementWrites)
+
+	view, err = service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`, "management_writes": [" DELETE", "create", "create"]}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{schemas.WarpManagementCreate, schemas.WarpManagementDelete}, view.ManagementWrites)
+	require.Equal(t, []string{schemas.WarpManagementCreate, schemas.WarpManagementDelete}, configFromRow(store.row).ManagementWrites)
+
+	view, err = service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{schemas.WarpManagementCreate, schemas.WarpManagementDelete}, view.ManagementWrites, "omitted keeps what is stored")
+
+	view, err = service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`, "management_writes": []}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{}, view.ManagementWrites, "[] is reads only again")
+	require.Nil(t, store.row.ManagementWrites)
+
+	for _, bad := range []string{`["read"]`, `["patch"]`, `["create", "everything"]`} {
+		_, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`, "management_writes": `+bad+`}`))
+		require.ErrorIs(t, err, ErrInvalidConfig, bad)
+	}
+}
+
+// BF-2990: Warp's own virtual key, presented on its model calls when the person
+// asking has no user identity of their own. It is a reference to a key row, not
+// the secret, so it round-trips in the clear. An omitted field keeps what is
+// stored, so an API client that predates it cannot clear it on save, and ""
+// clears it. A key that does not exist or is switched off is refused when the
+// setting changes, rather than surfacing as a refused chat later.
+func TestWarpVirtualKeyIsConfigurable(t *testing.T) {
+	base := `"enabled": true, "provider": "openai", "model": "gpt-4o",
+		"embedding_provider": "openai", "embedding_model": "text-embedding-3-small", "embedding_dimension": 1536`
+	inactive := false
+	governance := &fakeGovernanceReader{byID: map[string]*tables.TableVirtualKey{
+		"vk-warp": {ID: "vk-warp", Name: "warp"},
+		"vk-off":  {ID: "vk-off", Name: "off", IsActive: &inactive},
+	}}
+	store := &recordingStore{}
+	service := NewService(nil, WithConfigStore(store), WithVectorStore(newFakeWarpVectorStore()), WithGovernanceReader(governance))
+
+	view, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`}`))
+	require.NoError(t, err)
+	require.Empty(t, view.VirtualKeyID, "unset by default")
+
+	view, err = service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`, "virtual_key_id": " vk-warp "}`))
+	require.NoError(t, err)
+	require.Equal(t, "vk-warp", view.VirtualKeyID)
+	require.Equal(t, "vk-warp", store.row.VirtualKeyID)
+	require.Equal(t, "vk-warp", configFromRow(store.row).VirtualKeyID)
+
+	view, err = service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`}`))
+	require.NoError(t, err)
+	require.Equal(t, "vk-warp", view.VirtualKeyID, "omitted keeps what is stored")
+
+	// Not looked up again while unchanged: a key switched off after it was
+	// chosen must not block saving an unrelated setting.
+	governance.byID["vk-warp"].IsActive = &inactive
+	_, err = service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`, "virtual_key_id": "vk-warp", "max_iterations": 6}`))
+	require.NoError(t, err)
+
+	view, err = service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`, "virtual_key_id": ""}`))
+	require.NoError(t, err)
+	require.Empty(t, view.VirtualKeyID, `"" clears it`)
+	require.Empty(t, store.row.VirtualKeyID)
+
+	for name, id := range map[string]string{"unknown": "vk-nobody", "inactive": "vk-off"} {
+		_, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{`+base+`, "virtual_key_id": "`+id+`"}`))
+		require.ErrorIs(t, err, ErrInvalidConfig, name)
+	}
+}

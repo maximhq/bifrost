@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -25,6 +26,288 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+// Native ingress is covered by the HTTP integration tests; these cover the neutral SDK types.
+func TestDocumentCitationsRequestRoundTrip(t *testing.T) {
+	const chunks = `[{"type":"text","text":"Budget: $4.2M."},{"type":"text","text":"Audit: 3 March."}]`
+	for _, route := range []string{"responses", "chat"} {
+		t.Run(route, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var req *schemas.BifrostResponsesRequest
+			switch route {
+			case "responses":
+				req = &schemas.BifrostResponsesRequest{}
+				require.NoError(t, json.Unmarshal([]byte(`{"provider":"bedrock","model":"global.anthropic.claude-haiku-5-5","input":[{"role":"user","content":[{"type":"input_file","filename":"pack","file_content":`+chunks+`,"citations":{"enabled":true}},{"type":"input_text","text":"Cite the budget."}]}]}`), req))
+			default:
+				file := `{"type":"file","file":{"filename":"pack","file_content":` + chunks + `},"citations":{"enabled":true}}`
+				var in schemas.BifrostChatRequest
+				require.NoError(t, json.Unmarshal([]byte(`{"provider":"bedrock","model":"global.anthropic.claude-haiku-5-5","input":[{"role":"user","content":[`+file+`,{"type":"text","text":"Cite the budget."}]}]}`), &in))
+				in.Params = &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(128), Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("none")}}
+				out, err := bedrock.ToBedrockChatCompletionRequest(ctx, &in)
+				require.NoError(t, err)
+				wire, err := providerUtils.MarshalSorted(out)
+				require.NoError(t, err)
+				assert.True(t, gjson.GetBytes(wire, "messages.0.content.0.document.citations.enabled").Bool(), "%s", wire)
+				assert.Equal(t, "Audit: 3 March.", gjson.GetBytes(wire, "messages.0.content.0.document.source.content.1.text").Str, "%s", wire)
+				req = in.ToResponsesRequest()
+			}
+			if req.Params == nil {
+				req.Params = &schemas.ResponsesParameters{}
+			}
+			req.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")}
+			req.Params.MaxOutputTokens = schemas.Ptr(128)
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+			require.NoError(t, err)
+			wire, err := providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			doc := gjson.GetBytes(wire, "messages.0.content.0.document")
+			assert.True(t, doc.Get("citations.enabled").Bool(), "%s", wire)
+			assert.Equal(t, "Budget: $4.2M.", doc.Get("source.content.0.text").Str, "%s", wire)
+			assert.Equal(t, "Audit: 3 March.", doc.Get("source.content.1.text").Str, "%s", wire)
+			assert.False(t, doc.Get("format").Exists(), "custom content must not inherit the PDF default: %s", wire)
+		})
+	}
+}
+
+func TestDocumentCitationsS3Ingress(t *testing.T) {
+	var in bedrock.BedrockConverseRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"format":"pdf","name":"pack","source":{"s3Location":{"uri":"s3://bucket/key.pdf"}}}}]}]}`), &in))
+	in.ModelID = "us.amazon.nova-2-lite-v1:0"
+	req, err := in.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	require.Equal(t, schemas.Ptr("s3://bucket/key.pdf"), req.Input[0].Content.ContentBlocks[0].FileURL)
+}
+
+func TestDocumentCitationsConfigIngressRoundTrip(t *testing.T) {
+	for _, config := range []string{"", `,"citations":{}`, `,"citations":{"enabled":false}`, `,"citations":{"enabled":true}`} {
+		var native bedrock.BedrockConverseRequest
+		require.NoError(t, json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"format":"txt","name":"pack","source":{"text":"Budget: $4.2M."}`+config+`}},{"text":"Read the document."}]}]}`), &native))
+		native.ModelID = "global.anthropic.claude-haiku-5-5"
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req, err := native.ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		citations := req.Input[0].Content.ContentBlocks[0].Citations
+		if config == "" {
+			require.Nil(t, citations)
+			// An empty neutral config is equivalent to omission.
+			req.Input[0].Content.ContentBlocks[0].Citations = &schemas.Citations{}
+		} else {
+			require.NotNil(t, citations)
+			require.NotNil(t, citations.Enabled)
+			require.Equal(t, strings.Contains(config, "true"), *citations.Enabled)
+		}
+		out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+		require.NoError(t, err)
+		wire, err := providerUtils.MarshalSorted(out)
+		require.NoError(t, err)
+		got := gjson.GetBytes(wire, "messages.0.content.0.document.citations")
+		if config == "" {
+			require.False(t, got.Exists())
+		} else {
+			require.True(t, got.Get("enabled").Exists(), "explicit false must not disappear")
+			require.Equal(t, *citations.Enabled, got.Get("enabled").Bool())
+		}
+	}
+}
+
+func TestDocumentCitationsResponseRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		location, kind, start, end string
+		first, last                int
+	}{
+		{"documentChunk", "content_block_location", "start_block_index", "end_block_index", 0, 1},
+		{"documentChar", "char_location", "start_char_index", "end_char_index", 0, 14},
+		{"documentPage", "page_location", "start_page_number", "end_page_number", 1, 2},
+	} {
+		t.Run(tc.location, func(t *testing.T) {
+			citation := fmt.Sprintf(`{"title":"pack","sourceContent":[{"text":"Budget: "},{"text":"$4.2M."}],"location":{"%s":{"documentIndex":0,"start":%d,"end":%d}}}`, tc.location, tc.first, tc.last)
+			var in bedrock.BedrockConverseResponse
+			require.NoError(t, sonic.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[{"citationsContent":{"content":[{"text":"The budget is $4.2M."}],"citations":[`+citation+`]}}]}},"stopReason":"end_turn"}`), &in))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, err := in.ToBifrostResponsesResponse(ctx)
+			require.NoError(t, err)
+			chat, err := in.ToBifrostChatResponse(ctx, "global.anthropic.claude-haiku-5-5")
+			require.NoError(t, err)
+			require.NotNil(t, chat.Choices[0].Message.Content.ContentStr)
+			require.Equal(t, "The budget is $4.2M.", *chat.Choices[0].Message.Content.ContentStr)
+			require.NotEmpty(t, resp.Output, "generated text in citationsContent was discarded")
+			block := resp.Output[0].Content.ContentBlocks[0]
+			require.Equal(t, "The budget is $4.2M.", *block.Text)
+			require.Len(t, block.Annotations, 1)
+			assert.Equal(t, tc.kind, block.Annotations[0].Type)
+			assert.Equal(t, "Budget: $4.2M.", *block.Annotations[0].Text)
+			native := anthropic.ToAnthropicResponsesResponse(ctx, resp)
+			wire, err := providerUtils.MarshalSorted(native)
+			require.NoError(t, err)
+			ann := gjson.GetBytes(wire, "content.0.citations.0")
+			assert.Equal(t, tc.kind, ann.Get("type").Str, "%s", wire)
+			assert.Equal(t, "pack", ann.Get("document_title").Str)
+			assert.True(t, ann.Get(tc.start).Exists(), "zero index lost: %s", wire)
+			assert.Equal(t, int64(tc.first), ann.Get(tc.start).Int())
+			assert.Equal(t, int64(tc.last), ann.Get(tc.end).Int())
+			out, err := bedrock.ToBedrockConverseResponse(resp)
+			require.NoError(t, err)
+			wire, err = providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			nativeBlock := gjson.GetBytes(wire, "output.message.content.0.citationsContent")
+			assert.Equal(t, "The budget is $4.2M.", nativeBlock.Get("content.0.text").Str, "%s", wire)
+			assert.JSONEq(t, citation, nativeBlock.Get("citations.0").Raw)
+		})
+	}
+}
+
+func TestDocumentCitationsChatRejectsConflictingSources(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostChatRequest{Model: "global.anthropic.claude-haiku-5-5", Input: []schemas.ChatMessage{{
+		Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+			Type:      schemas.ChatContentBlockTypeFile,
+			File:      &schemas.ChatInputFile{FileContent: json.RawMessage(`"Budget."`), FileData: schemas.Ptr("QnVkZ2V0Lg==")},
+			Citations: &schemas.Citations{Enabled: schemas.Ptr(true)},
+		}}},
+	}}}
+	_, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	bad, ok := providerUtils.AsBifrostBadRequestError(err)
+	require.True(t, ok, "got %v", err)
+	require.Equal(t, 400, *bad.StatusCode)
+	require.Contains(t, bad.Error.Message, "cannot be combined")
+}
+
+// An empty file_data beside file_content is no second source: it is ignored, as on the Anthropic path.
+func TestDocumentCitationsEmptyFileDataIsNotAConflict(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostChatRequest{Model: "global.anthropic.claude-haiku-5-5", Input: []schemas.ChatMessage{{
+		Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+			Type:      schemas.ChatContentBlockTypeFile,
+			File:      &schemas.ChatInputFile{FileContent: json.RawMessage(`"Budget."`), FileData: schemas.Ptr(""), Filename: schemas.Ptr("pack")},
+			Citations: &schemas.Citations{Enabled: schemas.Ptr(true)},
+		}}},
+	}}}
+	out, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+	wire, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	assert.Equal(t, "Budget.", gjson.GetBytes(wire, "messages.0.content.#(document).document.source.content.0.text").Str, "%s", wire)
+}
+
+// A citationsContent block whose content carries no text adds no empty message: its citations
+// annotate the preceding text, like the content-less Nova web citations.
+func TestDocumentCitationsWithoutGeneratedTextAnnotatePrecedingText(t *testing.T) {
+	for name, content := range map[string]string{"no text field": `[{}]`, "empty text": `[{"text":""}]`, "empty fragments": `[{"text":""},{}]`} {
+		t.Run(name, func(t *testing.T) {
+			var in bedrock.BedrockConverseResponse
+			require.NoError(t, sonic.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"The budget is $4.2M."},`+
+				`{"citationsContent":{"content":`+content+`,"citations":[{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}]}}]}},"stopReason":"end_turn"}`), &in))
+			resp, err := in.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+			require.NoError(t, err)
+			require.Len(t, resp.Output, 1, "no empty text message may be added")
+			block := resp.Output[0].Content.ContentBlocks[0]
+			require.Equal(t, "The budget is $4.2M.", *block.Text)
+			require.Len(t, block.Annotations, 1)
+			assert.Equal(t, "content_block_location", block.Annotations[0].Type)
+		})
+	}
+}
+
+// A citation-only item (a stream that closed a block holding a citation and no text) keeps its
+// citations when the completed response is rendered as Converse.
+func TestDocumentCitationsCitationOnlyItemRendersAsConverse(t *testing.T) {
+	resp := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr(""),
+			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{{
+				Type: "content_block_location", Index: schemas.Ptr(0), StartBlockIndex: schemas.Ptr(0), EndBlockIndex: schemas.Ptr(1),
+				Filename: schemas.Ptr("pack"), SourceContent: []string{"Budget: $4.2M."},
+			}}},
+		}}},
+	}}}
+	out, err := bedrock.ToBedrockConverseResponse(resp)
+	require.NoError(t, err)
+	wire, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	citation := gjson.GetBytes(wire, "output.message.content.#(citationsContent).citationsContent.citations.0")
+	require.True(t, citation.Exists(), "citation-only item lost its citations: %s", wire)
+	assert.Equal(t, int64(1), citation.Get("location.documentChunk.end").Int())
+	assert.Equal(t, "Budget: $4.2M.", citation.Get("sourceContent.0.text").Str)
+
+	// Converting the rendered Converse response back keeps the citation, though no text precedes it.
+	var back bedrock.BedrockConverseResponse
+	require.NoError(t, sonic.Unmarshal(wire, &back))
+	round, err := back.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	require.Len(t, round.Output, 1, "%s", wire)
+	block := round.Output[0].Content.ContentBlocks[0]
+	require.Len(t, block.Annotations, 1, "citation-only block lost its citation on the way back")
+	assert.Equal(t, "content_block_location", block.Annotations[0].Type)
+	assert.Equal(t, "", *block.Text)
+}
+
+func TestDocumentCitationsPreserveLegacyWeb(t *testing.T) {
+	var in bedrock.BedrockConverseResponse
+	raw := `{"output":{"message":{"role":"assistant","content":[{"text":"Answer"},{"citationsContent":{"citations":[{"location":{"web":{"url":"https://example.com","domain":"example.com"}}}]}}]}},"stopReason":"end_turn"}`
+	require.NoError(t, json.Unmarshal([]byte(raw), &in))
+	resp, err := in.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	require.Len(t, resp.Output[0].Content.ContentBlocks[0].Annotations, 1)
+	require.Equal(t, "url_citation", resp.Output[0].Content.ContentBlocks[0].Annotations[0].Type)
+	out, err := bedrock.ToBedrockConverseResponse(resp)
+	require.NoError(t, err)
+	wire, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	require.JSONEq(t, gjson.Get(raw, "output.message").Raw, gjson.GetBytes(wire, "output.message").Raw)
+
+	state := bedrock.NewBedrockResponsesStreamState()
+	start, bErr, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Start: &bedrock.BedrockContentBlockStart{
+		ToolUse: &bedrock.BedrockToolUseStart{ToolUseID: "grounding", Name: string(bedrock.BedrockSystemToolNovaGrounding)},
+	}}).ToBifrostResponsesStream(0, state)
+	require.Nil(t, bErr)
+	events, bErr, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &bedrock.BedrockContentBlockDelta{
+		Citation: &in.Output.Message.Content[1].CitationsContent.Citations[0],
+	}}).ToBifrostResponsesStream(len(start), state)
+	require.Nil(t, bErr)
+	require.Len(t, events, 1)
+	require.Equal(t, "url_citation", events[0].Annotation.Type)
+	final := bedrock.FinalizeBedrockStream(state, len(start)+len(events), &schemas.ResponsesResponseUsage{}, nil)
+	output := final[len(final)-1].Response.Output
+	require.Len(t, output, 1)
+	sources := output[0].Action.ResponsesWebSearchToolCallAction.Sources
+	require.Len(t, sources, 1)
+	require.Equal(t, "https://example.com", sources[0].URL)
+}
+
+func BenchmarkOrdinaryDocumentConversion(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock, Model: "global.anthropic.claude-haiku-5-5",
+		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{Filename: schemas.Ptr("pack.txt"), FileType: schemas.Ptr("text/plain"), FileData: schemas.Ptr("Budget: $4.2M.")},
+			}}},
+		}},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := bedrock.ToBedrockResponsesRequest(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDocumentCitationsNativeRequest(b *testing.B) {
+	var request bedrock.BedrockConverseRequest
+	if err := json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"name":"pack","source":{"content":[{"text":"Budget: $4.2M."},{"text":"Audit: March."}]},"citations":{"enabled":true}}},{"text":"Cite it."}]}]}`), &request); err != nil {
+		b.Fatal(err)
+	}
+	request.ModelID = "global.anthropic.claude-haiku-5-5"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := request.ToBifrostResponsesRequest(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
 
 func mustMarshalJSON(v interface{}) json.RawMessage {
 	b, err := json.Marshal(v)
@@ -4291,6 +4574,101 @@ func TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths(t *test
 	customField, hasCustomField := result.AdditionalModelRequestFields.Get("customField")
 	require.True(t, hasCustomField, "expected customField to be merged")
 	assert.Equal(t, "customValue", customField)
+}
+
+// TestBedrockAdditionalModelRequestFieldPathsUnionsAnthropicBeta pins that a
+// caller's additionalModelRequestFieldPaths.anthropic_beta is unioned with the
+// betas the gateway derives (fine-grained tool streaming, server tools) instead
+// of replacing them, on both the Chat and Responses Converse paths.
+func TestBedrockAdditionalModelRequestFieldPathsUnionsAnthropicBeta(t *testing.T) {
+	const (
+		eagerBeta  = "fine-grained-tool-streaming-2025-05-14"
+		memoryBeta = "context-management-2025-06-27"
+		callerBeta = "context-1m-2025-08-07"
+	)
+	params := func() *schemas.ToolFunctionParameters {
+		return &schemas.ToolFunctionParameters{
+			Type:       "object",
+			Properties: schemas.NewOrderedMapFromPairs(schemas.KV("content", map[string]interface{}{"type": "string"})),
+		}
+	}
+	betaList := func(t *testing.T, fields *schemas.OrderedMap) []string {
+		t.Helper()
+		require.NotNil(t, fields)
+		raw, ok := fields.Get("anthropic_beta")
+		require.True(t, ok, "anthropic_beta missing")
+		encoded, err := json.Marshal(raw)
+		require.NoError(t, err)
+		var out []string
+		require.NoError(t, json.Unmarshal(encoded, &out), "anthropic_beta is not a string list: %s", encoded)
+		return out
+	}
+
+	cases := []struct {
+		name        string
+		callerBetas any
+		eager       bool
+		serverTool  bool
+		want        []string
+	}{
+		{name: "caller list keeps the eager beta", callerBetas: []interface{}{callerBeta}, eager: true, want: []string{callerBeta, eagerBeta}},
+		{name: "caller string keeps the eager beta", callerBetas: callerBeta, eager: true, want: []string{callerBeta, eagerBeta}},
+		{name: "caller repeating the eager beta is not duplicated", callerBetas: []string{eagerBeta, callerBeta}, eager: true, want: []string{eagerBeta, callerBeta}},
+		{name: "caller list keeps server-tool betas", callerBetas: []string{callerBeta}, serverTool: true, want: []string{callerBeta, memoryBeta}},
+		{name: "caller list alone is forwarded unchanged", callerBetas: []string{callerBeta}, want: []string{callerBeta}},
+	}
+
+	for _, tc := range cases {
+		extra := func() map[string]any {
+			return map[string]any{
+				"additionalModelRequestFieldPaths": schemas.NewOrderedMapFromPairs(schemas.KV("anthropic_beta", tc.callerBetas)),
+			}
+		}
+
+		t.Run(tc.name+"/chat", func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Model:  "anthropic.claude-sonnet-4-5-20250929-v1:0",
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ChatParameters{ExtraParams: extra()},
+			}
+			if tc.eager {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{
+					Type:                schemas.ChatToolTypeFunction,
+					Function:            &schemas.ChatToolFunction{Name: "Write", Description: schemas.Ptr("Write a file"), Parameters: params()},
+					EagerInputStreaming: schemas.Ptr(true),
+				})
+			}
+			if tc.serverTool {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: "memory_20250818", Name: "memory"})
+			}
+			bedrockReq, err := bedrock.ToBedrockChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, betaList(t, bedrockReq.AdditionalModelRequestFields))
+		})
+
+		if tc.serverTool {
+			continue // server tools are tunneled only on the Chat path
+		}
+		t.Run(tc.name+"/responses", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Model:  "anthropic.claude-sonnet-4-5-20250929-v1:0",
+				Input:  []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ResponsesParameters{ExtraParams: extra()},
+			}
+			if tc.eager {
+				req.Params.Tools = append(req.Params.Tools, schemas.ResponsesTool{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("Write"),
+					Description:           schemas.Ptr("Write a file"),
+					EagerInputStreaming:   schemas.Ptr(true),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params()},
+				})
+			}
+			bedrockReq, err := bedrock.ToBedrockResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, betaList(t, bedrockReq.AdditionalModelRequestFields))
+		})
+	}
 }
 
 // TestNovaReasoningConfigUsesReasoningConfigField verifies that Nova models use
@@ -9485,4 +9863,217 @@ func TestBedrockNativeStructuredOutput_ResponsesNoToolInterception(t *testing.T)
 	require.Len(t, chat.Choices, 1)
 	assert.Equal(t, text, *chat.Choices[0].Message.Content.ContentStr)
 	assert.Equal(t, "stop", *chat.Choices[0].FinishReason)
+}
+
+// TestBedrockNativeStructuredOutput_ClaudeSchemaRulesBothConverters: a schema hitting each Claude rule
+// (live 400s natively, 200 on the tool path) keeps bf_so_* on both converters.
+func TestBedrockNativeStructuredOutput_ClaudeSchemaRulesBothConverters(t *testing.T) {
+	const model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	cases := map[string]string{
+		"unknown key on an object": `{"type":"object","properties":{"greeting":{"type":"object","x-order":1,"properties":{"x":{"type":"string"}},"required":["x"]}},"required":["greeting"]}`,
+		"typeless property":        `{"type":"object","properties":{"greeting":{"title":"Greeting"}},"required":["greeting"]}`,
+		"nullable enum":            `{"type":"object","properties":{"greeting":{"type":["string","null"],"enum":["hi",null]}},"required":["greeting"]}`,
+		"object const":             `{"type":"object","properties":{"greeting":{"const":{"a":1}}},"required":["greeting"]}`,
+	}
+	for name, raw := range cases {
+		t.Run(name+"/chat", func(t *testing.T) {
+			var schema map[string]any
+			require.NoError(t, json.Unmarshal([]byte(raw), &schema))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest(model, schema, nil))
+			require.NoError(t, err)
+			assertSyntheticStructuredOutput(t, req)
+		})
+		t.Run(name+"/responses", func(t *testing.T) {
+			var schema schemas.OrderedMap
+			require.NoError(t, json.Unmarshal([]byte(raw), &schema))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req, err := bedrock.ToBedrockResponsesRequest(ctx, nativeSOResponsesRequest(model, &schema))
+			require.NoError(t, err)
+			assertSyntheticStructuredOutput(t, req)
+		})
+	}
+}
+
+// TestBedrockNativeStructuredOutput_ClaudePrefill: Claude 400s on a trailing assistant message with an
+// output format (verified live) while the forced tool accepts it; GPT takes it natively.
+func TestBedrockNativeStructuredOutput_ClaudePrefill(t *testing.T) {
+	cases := []struct {
+		model           string
+		prefill, native bool
+	}{
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", true, false},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", false, true},
+		{"us.openai.gpt-6-luna", true, true},
+	}
+	for _, tc := range cases {
+		name := fmt.Sprintf("%s/prefill=%v", tc.model, tc.prefill)
+		t.Run(name+"/chat", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := nativeSOChatRequest(tc.model, greetingSchema, nil)
+			if tc.prefill {
+				req.Input = append(req.Input, schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("{")}})
+			}
+			out, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+			require.NoError(t, err)
+			if tc.native {
+				assertNativeStructuredOutput(t, ctx, out)
+			} else {
+				assertSyntheticStructuredOutput(t, out)
+			}
+		})
+		t.Run(name+"/responses", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			schemaMap := schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "object"),
+				schemas.KV("properties", schemas.NewOrderedMapFromPairs(schemas.KV("greeting", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))))),
+				schemas.KV("required", []string{"greeting"}),
+			)
+			req := nativeSOResponsesRequest(tc.model, schemaMap)
+			if tc.prefill {
+				req.Input = append(req.Input, schemas.ResponsesMessage{
+					Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("{")},
+				})
+			}
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+			require.NoError(t, err)
+			if tc.native {
+				assertNativeStructuredOutput(t, ctx, out)
+			} else {
+				assertSyntheticStructuredOutput(t, out)
+			}
+		})
+	}
+}
+
+// TestBedrockNativeStructuredOutput_ToolChoiceNone: Converse has no "none" choice, so with tools the
+// native path lets the model call one; "none" keeps bf_so_* pinned, as before native output.
+func TestBedrockNativeStructuredOutput_ToolChoiceNone(t *testing.T) {
+	const model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	for _, choice := range []string{"none", "auto", ""} {
+		t.Run("chat/"+choice, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := &schemas.ChatParameters{Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+				Name:       "get_weather",
+				Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("city", map[string]any{"type": "string"}))},
+			}}}}
+			if choice != "" {
+				params.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(choice)}
+			}
+			out, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest(model, greetingSchema, params))
+			require.NoError(t, err)
+			if choice == "none" {
+				assertSyntheticStructuredOutput(t, out)
+				require.NotNil(t, out.ToolConfig.ToolChoice)
+				require.NotNil(t, out.ToolConfig.ToolChoice.Tool)
+				assert.Equal(t, "bf_so_greeting", out.ToolConfig.ToolChoice.Tool.Name)
+			} else {
+				assertNativeStructuredOutput(t, ctx, out)
+			}
+		})
+		t.Run("responses/"+choice, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			schemaMap := schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "object"),
+				schemas.KV("properties", schemas.NewOrderedMapFromPairs(schemas.KV("greeting", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))))),
+				schemas.KV("required", []string{"greeting"}),
+			)
+			req := nativeSOResponsesRequest(model, schemaMap)
+			req.Params.Tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("get_weather"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("city", map[string]any{"type": "string"}))}}}}
+			if choice != "" {
+				req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr(choice)}
+			}
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+			require.NoError(t, err)
+			if choice == "none" {
+				assertSyntheticStructuredOutput(t, out)
+				require.NotNil(t, out.ToolConfig.ToolChoice)
+				require.NotNil(t, out.ToolConfig.ToolChoice.Tool)
+				assert.Equal(t, "bf_so_greeting", out.ToolConfig.ToolChoice.Tool.Name)
+			} else {
+				assertNativeStructuredOutput(t, ctx, out)
+			}
+		})
+	}
+}
+
+// TestBedrockNativeStructuredOutput_GPTStrictSchemaRules: under text.format.strict Bedrock's GPT 400s or
+// 500s on these keywords (verified live on gpt-6-luna and gpt-6.1-sol), so they keep bf_so_*.
+func TestBedrockNativeStructuredOutput_GPTStrictSchemaRules(t *testing.T) {
+	obj := func(props string) string {
+		return `{"type":"object","properties":` + props + `,"required":["greeting"],"additionalProperties":false}`
+	}
+	cases := map[string]struct {
+		schema string
+		native bool
+	}{
+		"uniqueItems true":               {obj(`{"greeting":{"type":"array","items":{"type":"string"},"uniqueItems":true}}`), false},
+		"contains":                       {obj(`{"greeting":{"type":"array","contains":{"type":"string"}}}`), false},
+		"minContains":                    {obj(`{"greeting":{"type":"array","items":{"type":"string"},"minContains":1}}`), false},
+		"unevaluatedItems":               {obj(`{"greeting":{"type":"array","items":{"type":"string"},"unevaluatedItems":false}}`), false},
+		"not":                            {obj(`{"greeting":{"type":"string","not":{"const":"x"}}}`), false},
+		"if":                             {obj(`{"greeting":{"type":"string","if":{"const":"x"},"then":{"minLength":1}}}`), false},
+		"propertyNames":                  {`{"type":"object","properties":{"greeting":{"type":"string"}},"required":["greeting"],"propertyNames":{"pattern":"^g"}}`, false},
+		"dependentRequired":              {`{"type":"object","properties":{"greeting":{"type":"string"}},"required":["greeting"],"dependentRequired":{"greeting":[]}}`, false},
+		"unevaluatedProperties":          {`{"type":"object","properties":{"greeting":{"type":"string"}},"required":["greeting"],"unevaluatedProperties":false}`, false},
+		"format uri":                     {obj(`{"greeting":{"type":"string","format":"uri"}}`), false},
+		"format phone":                   {obj(`{"greeting":{"type":"string","format":"phone"}}`), false},
+		"lookahead pattern":              {obj(`{"greeting":{"type":"string","pattern":"^(?=.*a).+$"}}`), false},
+		"backreference pattern":          {obj(`{"greeting":{"type":"string","pattern":"^(a)\\1$"}}`), false},
+		"word boundary pattern":          {obj(`{"greeting":{"type":"string","pattern":"\\bhi\\b"}}`), false},
+		"empty enum":                     {obj(`{"greeting":{"type":"string","enum":[]}}`), false},
+		"enum not matching type":         {obj(`{"greeting":{"type":"string","enum":[1,2]}}`), false},
+		"required without property":      {`{"type":"object","properties":{"greeting":{"type":"string"}},"required":["greeting","ghost"],"additionalProperties":false}`, false},
+		"nested in $defs":                {`{"type":"object","properties":{"greeting":{"$ref":"#/$defs/G"}},"required":["greeting"],"$defs":{"G":{"type":"array","items":{"type":"string"},"uniqueItems":true}}}`, false},
+		"nested in anyOf":                {obj(`{"greeting":{"anyOf":[{"type":"string","format":"phone"},{"type":"null"}]}}`), false},
+		"nested in items":                {obj(`{"greeting":{"type":"array","items":{"type":"string","not":{"const":"x"}}}}`), false},
+		"nested in additionalProperties": {obj(`{"greeting":{"type":"object","additionalProperties":{"type":"string","format":"phone"}}}`), false},
+		"uniqueItems false":              {obj(`{"greeting":{"type":"array","items":{"type":"string"},"uniqueItems":false}}`), true},
+		"format email":                   {obj(`{"greeting":{"type":"string","format":"email"}}`), true},
+		"oneOf":                          {obj(`{"greeting":{"oneOf":[{"type":"string"},{"type":"integer"}]}}`), true},
+		"property named format":          {`{"type":"object","properties":{"format":{"type":"string"},"not":{"type":"string"},"greeting":{"type":"string"}},"required":["greeting","format","not"],"additionalProperties":false}`, true},
+		"unknown key":                    {obj(`{"greeting":{"type":"string","x-order":1}}`), true},
+		"nullable enum":                  {obj(`{"greeting":{"type":["string","null"],"enum":["hi",null]}}`), true},
+		"numeric bounds and lengths":     {obj(`{"greeting":{"type":"string","minLength":1,"maxLength":9},"n":{"type":"integer","minimum":1}}`), true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var schema map[string]any
+			require.NoError(t, json.Unmarshal([]byte(tc.schema), &schema))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			out, err := bedrock.ToBedrockChatCompletionRequest(ctx, nativeSOChatRequest("us.openai.gpt-6-luna", schema, nil))
+			require.NoError(t, err)
+			if tc.native {
+				assertNativeStructuredOutput(t, ctx, out)
+			} else {
+				assertSyntheticStructuredOutput(t, out)
+			}
+		})
+	}
+}
+
+// TestBedrockNativeStructuredOutput_ForceToolAfterGrammarRejection: once core marks the request for
+// the tool path after a grammar-limit 400, both converters send bf_so_* for a schema that is otherwise native.
+func TestBedrockNativeStructuredOutput_ForceToolAfterGrammarRejection(t *testing.T) {
+	const model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+	forced := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputForceTool)
+		return ctx
+	}
+	chatReq, err := bedrock.ToBedrockChatCompletionRequest(forced(), nativeSOChatRequest(model, greetingSchema, nil))
+	require.NoError(t, err)
+	assertSyntheticStructuredOutput(t, chatReq)
+
+	schemaMap := schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "object"),
+		schemas.KV("properties", schemas.NewOrderedMapFromPairs(schemas.KV("greeting", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))))),
+		schemas.KV("required", []string{"greeting"}),
+	)
+	responsesReq, err := bedrock.ToBedrockResponsesRequest(forced(), nativeSOResponsesRequest(model, schemaMap))
+	require.NoError(t, err)
+	assertSyntheticStructuredOutput(t, responsesReq)
 }

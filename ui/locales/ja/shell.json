@@ -23,6 +23,12 @@
 		"circuitBreaker": "サーキットブレーカー",
 		"pricingOverrides": "料金オーバーライド",
 		"modelSettings": "モデル設定",
+		"finops": "FinOps",
+		"finopsOverview": "概要",
+		"finopsConnections": "接続",
+		"finopsExplorer": "コストエクスプローラー",
+		"finopsForecast": "予測",
+		"finopsAnomalies": "異常",
 		"mcpGateway": "MCP サーバー",
 		"mcpCatalog": "MCP カタログ",
 		"mcpLibrary": "MCP ライブラリ",
@@ -67,6 +73,7 @@
 		"caching": "キャッシュ",
 		"security": "セキュリティ",
 		"warp": "Warp",
+		"gateways": "ゲートウェイ",
 		"proxy": "プロキシ",
 		"apiKeys": "API キー",
 		"performanceTuning": "パフォーマンス調整",
@@ -106,6 +113,7 @@
 		"circuitBreaker": "プライマリエンドポイント障害時の自動フォールバック",
 		"pricingOverrides": "スコープ付き料金オーバーライド",
 		"modelSettings": "モデルとルーティングの構成",
+		"finops": "すべてのプロバイダーアカウントの AI 支出",
 		"mcpGateway": "MCP 構成",
 		"mcpCatalog": "MCP ツールカタログ",
 		"mcpLibrary": "厳選 MCP サーバーをインストール",
@@ -150,6 +158,7 @@
 		"caching": "キャッシュ構成",
 		"security": "セキュリティ設定",
 		"warp": "Warp エージェントの設定",
+		"gateways": "コーディングクライアントのサインイン",
 		"proxy": "プロキシ構成",
 		"apiKeys": "API キー管理",
 		"performanceTuning": "パフォーマンス調整設定",
@@ -430,6 +439,10 @@
 			"indexStatusUnavailable": "インデックスの状態を取得できません",
 			"askAdminTurnOn": "管理者に Warp を有効にするよう依頼してください。",
 			"askAdminSetUp": "管理者に Warp をセットアップするよう依頼してください。",
+			"needsBifrostMCP": "Warp には Bifrost MCP が必要です",
+			"needsBifrostMCPHint": "Warp がこのデプロイの構成を読み取れるように、Bifrost URL を設定してください。",
+			"setUpBifrostMCP": "セットアップ",
+			"askAdminBifrostMCP": "管理者に Warp 用の Bifrost MCP をセットアップするよう依頼してください。",
 			"sendsWhenFinished": "この回答の完了後に送信されます",
 			"remove": "削除"
 		},
@@ -453,7 +466,15 @@
 			"label": "質問",
 			"skip": "スキップ",
 			"orType": "または下に自分の回答を入力してください。",
-			"skipAnswer": "最善の判断で進め、どのような前提を置いたか説明してください。"
+			"skipAnswer": "最善の判断で進め、どのような前提を置いたか説明してください。",
+			"confirm": {
+				"subtitle": "確認すると、Warp がこの変更を実行します。",
+				"destructiveSubtitle": "確認すると、Warp がこの変更を実行します。内容をよくご確認ください。",
+				"cannotUndo": "この操作は元に戻せません。",
+				"noArguments": "引数はありません。",
+				"cancel": "キャンセル",
+				"confirm": "確認"
+			}
 		},
 		"message": {
 			"whatThisCovers": "この内容の範囲",
@@ -544,6 +565,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "このデプロイでは Warp がセットアップされていません。",
+				"cause": "Warp はこのデプロイの構成を読み取るために Bifrost MCP を必要としますが、読み込まれていません。",
+				"suggestions": ["管理者にクライアント設定で Bifrost URL を設定するよう依頼してください。"]
+			},
 			"not_configured": {
 				"summary": "Warp はまだ設定されていません。",
 				"cause": "プロバイダーとモデルが未設定か、設定で Warp がオフになっています。",

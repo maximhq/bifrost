@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -114,22 +115,21 @@ func TestInteractionPollerReadsTheRunWithTheCreatingKey(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := &lib.Config{
+	cfg := libtest.FileOnly(t, &lib.Config{
 		ModelCatalog: modelcatalog.NewTestCatalog(nil),
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.Gemini: {
-				Keys: []schemas.Key{
-					{ID: "key-other", Value: *schemas.NewSecretVar("gk-other"), Models: schemas.WhiteList{"*"}, Weight: 1},
-					{ID: "key-creator", Value: *schemas.NewSecretVar("gk-creator"), Models: schemas.WhiteList{"*"}, Weight: 1},
-				},
-				NetworkConfig: &schemas.NetworkConfig{
-					BaseURL:                        upstream.URL + "/v1beta",
-					AllowPrivateNetwork:            true,
-					DefaultRequestTimeoutInSeconds: 5,
-				},
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Gemini: {
+			Keys: []schemas.Key{
+				{ID: "key-other", Value: *schemas.NewSecretVar("gk-other"), Models: schemas.WhiteList{"*"}, Weight: 1},
+				{ID: "key-creator", Value: *schemas.NewSecretVar("gk-creator"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			},
+			NetworkConfig: &schemas.NetworkConfig{
+				BaseURL:                        upstream.URL + "/v1beta",
+				AllowPrivateNetwork:            true,
+				DefaultRequestTimeoutInSeconds: 5,
 			},
 		},
-	}
+	})
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: lib.NewBaseAccount(cfg),
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),

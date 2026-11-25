@@ -3,9 +3,11 @@ package mcptests
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -778,53 +780,17 @@ func RegisterThrowErrorTool(manager *mcp.MCPManager) error {
 
 // SetInternalClientAutoExecute configures which tools should be auto-executed for the internal Bifrost client
 func SetInternalClientAutoExecute(manager *mcp.MCPManager, toolNames []string) error {
-	// Get the current internal client config
-	clients := manager.GetClients()
-
-	// Find the internal client
-	var internalClient *schemas.MCPClientState
-	for i := range clients {
-		if clients[i].ExecutionConfig.ID == "bifrostInternal" {
-			internalClient = &clients[i]
-			break
-		}
-	}
-
-	if internalClient == nil {
-		return fmt.Errorf("internal bifrost client not found")
-	}
-
-	// Update the ToolsToAutoExecute field
-	internalClient.ExecutionConfig.ToolsToAutoExecute = toolNames
-
-	// Apply the updated config
-	return manager.UpdateClient(internalClient.ExecutionConfig.ID, internalClient.ExecutionConfig)
+	return editInternalClient(manager, func(config *schemas.MCPClientConfig) {
+		config.ToolsToAutoExecute = toolNames
+	})
 }
 
 // SetInternalClientAsCodeMode configures the internal Bifrost client as a CodeMode client
 func SetInternalClientAsCodeMode(manager *mcp.MCPManager, toolsToExecute []string) error {
-	// Get the current internal client config
-	clients := manager.GetClients()
-
-	// Find the internal client
-	var internalClient *schemas.MCPClientState
-	for i := range clients {
-		if clients[i].ExecutionConfig.ID == "bifrostInternal" {
-			internalClient = &clients[i]
-			break
-		}
-	}
-
-	if internalClient == nil {
-		return fmt.Errorf("internal bifrost client not found")
-	}
-
-	// Update the config
-	internalClient.ExecutionConfig.IsCodeModeClient = true
-	internalClient.ExecutionConfig.ToolsToExecute = toolsToExecute
-
-	// Apply the updated config
-	return manager.UpdateClient(internalClient.ExecutionConfig.ID, internalClient.ExecutionConfig)
+	return editInternalClient(manager, func(config *schemas.MCPClientConfig) {
+		config.IsCodeModeClient = true
+		config.ToolsToExecute = toolsToExecute
+	})
 }
 
 // =============================================================================
@@ -1414,8 +1380,69 @@ const (
 // BIFROST SETUP
 // =============================================================================
 
-// testAccount is a minimal account implementation for MCP tests
-type testAccount struct{}
+// testAccount is a minimal account implementation for MCP tests. It serves OpenAI with the key from
+// the environment, and the MCP client records a test sets, as the live store serves them to the
+// manager. The zero value serves no MCP clients.
+type testAccount struct {
+	mu      sync.RWMutex
+	order   []string // record IDs in the order they were first set
+	clients map[string]*schemas.MCPClientConfig
+}
+
+// newTestAccount returns a testAccount serving clients.
+func newTestAccount(clients ...*schemas.MCPClientConfig) *testAccount {
+	a := &testAccount{}
+	a.set(clients...)
+	return a
+}
+
+// set stores each client as its record, replacing any record with the same ID. A record is
+// read-only once set, as the live store's are: to change one, set a changed copy.
+func (a *testAccount) set(clients ...*schemas.MCPClientConfig) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.clients == nil {
+		a.clients = make(map[string]*schemas.MCPClientConfig)
+	}
+	for _, client := range clients {
+		if _, ok := a.clients[client.ID]; !ok {
+			a.order = append(a.order, client.ID)
+		}
+		a.clients[client.ID] = client
+	}
+}
+
+// remove drops the record with this ID.
+func (a *testAccount) remove(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.clients[id]; !ok {
+		return
+	}
+	delete(a.clients, id)
+	for i, existing := range a.order {
+		if existing == id {
+			a.order = append(a.order[:i:i], a.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// record returns the record with this ID, or nil when there is none.
+func (a *testAccount) record(id string) *schemas.MCPClientConfig {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.clients[id]
+}
+
+// restore puts back the record a set replaced: previous, or no record at all when it is nil.
+func (a *testAccount) restore(id string, previous *schemas.MCPClientConfig) {
+	if previous == nil {
+		a.remove(id)
+		return
+	}
+	a.set(previous)
+}
 
 func (a *testAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
 	return []schemas.ModelProvider{schemas.OpenAI}, nil
@@ -1445,6 +1472,137 @@ func (a *testAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*
 		}, nil
 	}
 	return nil, fmt.Errorf("provider %s not supported", providerKey)
+}
+
+// GetConfiguredMCPClients lists the IDs of the records set, in the order they were first set.
+func (a *testAccount) GetConfiguredMCPClients() ([]string, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return append([]string(nil), a.order...), nil
+}
+
+// GetConfigForMCPClient returns the record with this ID.
+func (a *testAccount) GetConfigForMCPClient(id string) (*schemas.MCPClientConfig, error) {
+	if client := a.record(id); client != nil {
+		return client, nil
+	}
+	return nil, fmt.Errorf("MCP client %s is not configured", id)
+}
+
+// GetConfigForMCPClientByName returns the earliest set record with this name, so a record set
+// later under a name already taken never shadows the client that holds it.
+func (a *testAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, id := range a.order {
+		if client := a.clients[id]; client.Name == name {
+			return client, nil
+		}
+	}
+	return nil, fmt.Errorf("MCP client %s is not configured", name)
+}
+
+// managerAccounts maps each manager built by newTestManager to the testAccount it reads its clients
+// from, so helpers given only the manager can reach its records.
+var managerAccounts sync.Map
+
+// accountOf returns the testAccount manager reads its clients from, or nil when manager was not
+// built by newTestManager.
+func accountOf(manager *mcp.MCPManager) *testAccount {
+	account, ok := managerAccounts.Load(manager)
+	if !ok {
+		return nil
+	}
+	return account.(*testAccount)
+}
+
+// errNotATestManager is returned by the record helpers for a manager newTestManager did not build.
+var errNotATestManager = errors.New("the manager was not built by newTestManager, so it has no test account")
+
+// addClient sets config as its client's record in manager's test account and adds the client, as a
+// caller writes the row, loads it, and then adds the client. A failed add puts back the record the
+// account held before, as a caller rolls the row back.
+func addClient(ctx context.Context, manager *mcp.MCPManager, config *schemas.MCPClientConfig) error {
+	account := accountOf(manager)
+	if account == nil {
+		return errNotATestManager
+	}
+	previous := account.record(config.ID)
+	account.set(config)
+	if err := manager.AddClient(ctx, config.ID); err != nil {
+		account.restore(config.ID, previous)
+		return err
+	}
+	return nil
+}
+
+// updateClient sets config as the complete new record of client id in manager's test account and
+// applies it with UpdateClient, as a caller writes the edited row, loads it, and then updates the
+// client.
+func updateClient(manager *mcp.MCPManager, id string, config *schemas.MCPClientConfig) error {
+	account := accountOf(manager)
+	if account == nil {
+		return errNotATestManager
+	}
+	if config.ID != id {
+		return fmt.Errorf("the record for MCP client %s has ID %q", id, config.ID)
+	}
+	account.set(config)
+	return manager.UpdateClient(id)
+}
+
+// editClient applies edit to a copy of the client's current record in manager's test account, sets
+// the copy and applies it with UpdateClient.
+func editClient(manager *mcp.MCPManager, id string, edit func(*schemas.MCPClientConfig)) error {
+	account := accountOf(manager)
+	if account == nil {
+		return errNotATestManager
+	}
+	current := account.record(id)
+	if current == nil {
+		return fmt.Errorf("MCP client %s has no record to edit", id)
+	}
+	edited := *current
+	edit(&edited)
+	return updateClient(manager, id, &edited)
+}
+
+// editInternalClient applies edit to a copy of the configuration core reports for its internal
+// client, stores the copy as that client's record and applies it with UpdateClient. It errors when
+// the manager still reports the old configuration afterwards: core fixes the internal client's
+// configuration, so a test needing auto-executed or code mode internal tools cannot get them, and
+// the record is dropped again.
+func editInternalClient(manager *mcp.MCPManager, edit func(*schemas.MCPClientConfig)) error {
+	account := accountOf(manager)
+	if account == nil {
+		return errNotATestManager
+	}
+	current := reportedInternalClientConfig(manager)
+	if current == nil {
+		return fmt.Errorf("internal bifrost client not found")
+	}
+	edited := *current
+	edit(&edited)
+	if err := updateClient(manager, mcp.BifrostMCPClientKey, &edited); err != nil {
+		account.remove(mcp.BifrostMCPClientKey)
+		return err
+	}
+	if applied := reportedInternalClientConfig(manager); applied == nil || !reflect.DeepEqual(*applied, edited) {
+		account.remove(mcp.BifrostMCPClientKey)
+		return fmt.Errorf("the manager ignored the edited configuration of its internal client %q: core fixes that client's configuration, so it cannot be changed", mcp.BifrostMCPClientKey)
+	}
+	return nil
+}
+
+// reportedInternalClientConfig returns the configuration the manager reports for its internal client,
+// or nil when that client does not exist yet (no tool has been registered).
+func reportedInternalClientConfig(manager *mcp.MCPManager) *schemas.MCPClientConfig {
+	for _, client := range manager.GetClients() {
+		if client.ExecutionConfig != nil && client.ExecutionConfig.ID == mcp.BifrostMCPClientKey {
+			return client.ExecutionConfig
+		}
+	}
+	return nil
 }
 
 // setupBifrost creates a Bifrost instance for testing
@@ -1479,43 +1637,62 @@ func (n *noopPluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpRes
 	return mcpResp, bifrostErr
 }
 
-// setupMCPManager creates an MCP manager for testing
+// setupMCPManager creates an MCP manager for testing, connected to clientConfigs, which its test
+// account serves as records.
 func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mcp.MCPManager {
 	t.Helper()
 
-	logger := newTestLogger(t)
-
-	// Convert to pointer slice for MCPConfig
-	clientConfigPtrs := make([]*schemas.MCPClientConfig, len(clientConfigs))
+	// The records point into clientConfigs, which the test must not change afterwards: a record is
+	// read-only once set.
+	account := newTestAccount()
 	for i := range clientConfigs {
-		clientConfigPtrs[i] = &clientConfigs[i]
+		account.set(&clientConfigs[i])
 	}
 
 	// Create MCP config with a no-op plugin pipeline so that codemode tool calls
 	// work correctly even when no Bifrost instance is attached.
-	mcpConfig := &schemas.MCPConfig{
-		ClientConfigs: clientConfigPtrs,
+	mcpConfig := schemas.MCPConfig{
 		PluginPipelineProvider: func() interface{} {
 			return &noopPluginPipeline{}
 		},
 		ReleasePluginPipeline: func(pipeline interface{}) {},
 	}
 
+	manager := newTestManager(t, mcpConfig, account)
+	// Construction never dials; connect the clients the account lists explicitly.
+	manager.ConnectConfiguredClients(context.Background(), nil)
+
+	return manager
+}
+
+// newTestManager creates an MCP manager with Starlark code mode that reads its clients from account,
+// and removes every client once the test ends.
+func newTestManager(t *testing.T, mcpConfig schemas.MCPConfig, account *testAccount) *mcp.MCPManager {
+	t.Helper()
+
+	logger := newTestLogger(t)
+
 	// Create Starlark CodeMode
 	codeMode := starlark.NewStarlarkCodeMode(nil, logger)
 
 	// Create MCP manager - dependencies are injected automatically
-	manager := mcp.NewMCPManager(context.Background(), *mcpConfig, nil, logger, codeMode)
-	// Construction no longer dials; connect the configured clients explicitly.
-	manager.ConnectConfiguredClients(context.Background(), nil)
+	manager := mcp.NewMCPManager(context.Background(), mcpConfig, account, nil, logger, codeMode)
+	managerAccounts.Store(manager, account)
 
 	// Cleanup
 	t.Cleanup(func() {
-		// Remove all clients
-		clients := manager.GetClients()
-		for _, client := range clients {
-			_ = manager.RemoveClient(client.ExecutionConfig.ID)
+		// Remove every client the account lists and every client the manager reports, such as
+		// core's internal one, which has no record
+		ids, _ := account.GetConfiguredMCPClients()
+		for _, client := range manager.GetClients() {
+			if client.ExecutionConfig != nil {
+				ids = append(ids, client.ExecutionConfig.ID)
+			}
 		}
+		for _, id := range ids {
+			_ = manager.RemoveClient(id)
+		}
+		managerAccounts.Delete(manager)
 	})
 
 	return manager
@@ -2142,14 +2319,8 @@ func SetupManagerWithAutoExecuteTools(t *testing.T, tools []string, autoExecuteT
 	manager := SetupManagerWithTools(t, tools)
 
 	// Set auto-execute tools
-	clients := manager.GetClients()
-	for i := range clients {
-		if clients[i].ExecutionConfig.ID == "bifrostInternal" {
-			clients[i].ExecutionConfig.ToolsToAutoExecute = autoExecuteTools
-			err := manager.UpdateClient(clients[i].ExecutionConfig.ID, clients[i].ExecutionConfig)
-			require.NoError(t, err)
-			break
-		}
+	if reportedInternalClientConfig(manager) != nil {
+		require.NoError(t, SetInternalClientAutoExecute(manager, autoExecuteTools))
 	}
 
 	return manager

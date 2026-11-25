@@ -27,6 +27,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
@@ -63,6 +64,8 @@ func (s *agentAuthStore) GetAgentRegistration(_ context.Context, name string) (*
 	}
 	return nil, agent.ErrNotFound
 }
+
+// DeleteAgentRegistration accepts every delete.
 func (*agentAuthStore) DeleteAgentRegistration(context.Context, string) error { return nil }
 func (s *agentAuthStore) GetVirtualKey(_ context.Context, id string) (*tables.TableVirtualKey, error) {
 	vk := s.byID[id]
@@ -70,10 +73,6 @@ func (s *agentAuthStore) GetVirtualKey(_ context.Context, id string) (*tables.Ta
 		return nil, configstore.ErrNotFound
 	}
 	return vk, nil
-}
-func (s *agentAuthStore) GetVirtualKeyByID(_ context.Context, id string) (*tables.TableVirtualKey, bool) {
-	vk := s.byID[id]
-	return vk, vk != nil
 }
 
 type recordingAgentRegistrationManager struct {
@@ -140,22 +139,22 @@ func TestAgentGatewayMutationStopsWhenPreviousRegistrationReadFails(t *testing.T
 	require.Zero(t, mutations.deleteCalls)
 }
 
+// agentAuthCache serves the store's keys as the governance store does, as records.
 type agentAuthCache struct {
-	store    *agentAuthStore
-	missByID bool
+	store *agentAuthStore
 }
 
-func (c *agentAuthCache) GetVirtualKey(_ context.Context, value string) (*tables.TableVirtualKey, bool) {
-	vk := c.store.byValue[value]
-	return vk, vk != nil
+// GetVirtualKey returns the record of the key stored under this value.
+func (c *agentAuthCache) GetVirtualKey(_ context.Context, value string) (*registry.VirtualKey, bool) {
+	return agentAuthRecord(c.store.byValue[value])
 }
 
-func (c *agentAuthCache) GetVirtualKeyByID(_ context.Context, id string) (*tables.TableVirtualKey, bool) {
-	if c.missByID {
+// agentAuthRecord is vk's record, false for no key.
+func agentAuthRecord(vk *tables.TableVirtualKey) (*registry.VirtualKey, bool) {
+	if vk == nil {
 		return nil, false
 	}
-	vk := c.store.byID[id]
-	return vk, vk != nil
+	return registry.VirtualKeyFromTable(vk, nil, nil, func(g *registry.GrantSet) registry.GrantSetID { return g.ID }), true
 }
 
 func newAgentAuthMiddleware(enforce bool, store *agentAuthStore) schemas.BifrostHTTPMiddleware {

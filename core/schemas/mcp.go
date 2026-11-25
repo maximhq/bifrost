@@ -248,12 +248,15 @@ type MCPCredentialStore interface {
 
 // MCPConfig represents the configuration for MCP integration in Bifrost.
 // It enables tool auto-discovery and execution from local and external MCP servers.
+// The MCP clients themselves come from the Account (GetConfiguredMCPClients and
+// GetConfigForMCPClient), not from this struct.
 type MCPConfig struct {
-	ClientConfigs     []*MCPClientConfig    `json:"client_configs,omitempty"`      // Per-client execution configurations
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
 	// MaxProtocolVersion caps the MCP protocol version offered to upstreams ("" or "auto" = newest supported).
 	MaxProtocolVersion string `json:"max_protocol_version,omitempty"`
+	// ServerMaxProtocolVersion caps the MCP protocol version Bifrost's own /mcp serves to clients ("" or "auto" = newest supported).
+	ServerMaxProtocolVersion string `json:"server_max_protocol_version,omitempty"`
 
 	// VirtualMCPs are Virtual MCP definitions declared in config.json: named bundles of tools from one
 	// or more MCP clients, served at /mcp/<endpoint_slug> and assignable to virtual keys. Reconciled
@@ -649,6 +652,28 @@ func ValidateMCPMaxProtocolVersion(field, v string) error {
 		return nil
 	}
 	return fmt.Errorf("%s must be one of %s, got %q", field, strings.Join(MCPMaxProtocolVersions, ", "), v)
+}
+
+// MCPProtocolVersionsUpTo returns the protocol versions the SDK implements at or below maxVersion,
+// newest first, or nil when maxVersion is "", "auto" or invalid (uncapped).
+func MCPProtocolVersionsUpTo(maxVersion string) []string {
+	if maxVersion == "" || maxVersion == MCPMaxProtocolVersionAuto || !IsValidMCPMaxProtocolVersion(maxVersion) {
+		return nil
+	}
+	versions := make([]string, 0, len(mcp.ValidProtocolVersions))
+	for _, v := range mcp.ValidProtocolVersions {
+		if v <= maxVersion {
+			versions = append(versions, v)
+		}
+	}
+	return versions
+}
+
+// MCPAllowsClientMetadataDocuments reports whether a server capped at maxVersion offers Client ID
+// Metadata Documents, which arrived in 2025-11-25.
+func MCPAllowsClientMetadataDocuments(maxVersion string) bool {
+	versions := MCPProtocolVersionsUpTo(maxVersion)
+	return versions == nil || versions[0] >= MCPProtocolVersion20251125
 }
 
 // MCPAuthType defines the authentication type for MCP connections
@@ -1409,53 +1434,6 @@ func (c *MCPOpenAPIConfig) HasSpecSource() bool {
 		return true
 	}
 	return c.SpecURL != nil && strings.TrimSpace(*c.SpecURL) != ""
-}
-
-// Clone returns a copy that shares no mutable state with c: the string
-// pointers, the credential map and its secrets are all copied.
-func (c *MCPOpenAPIConfig) Clone() *MCPOpenAPIConfig {
-	if c == nil {
-		return nil
-	}
-	out := *c
-	out.SpecURL = cloneStringPtr(c.SpecURL)
-	out.SpecFile = cloneStringPtr(c.SpecFile)
-	out.BaseURL = cloneStringPtr(c.BaseURL)
-	if c.SecurityCredentials != nil {
-		out.SecurityCredentials = make(map[string]MCPOpenAPICredential, len(c.SecurityCredentials))
-		for name, cred := range c.SecurityCredentials {
-			out.SecurityCredentials[name] = MCPOpenAPICredential{
-				Value:    cloneSecretVarPtr(cred.Value),
-				Username: cloneSecretVarPtr(cred.Username),
-				Password: cloneSecretVarPtr(cred.Password),
-			}
-		}
-	}
-	return &out
-}
-
-func cloneStringPtr(s *string) *string {
-	if s == nil {
-		return nil
-	}
-	v := *s
-	return &v
-}
-
-func cloneSecretVarPtr(s *SecretVar) *SecretVar {
-	if s == nil {
-		return nil
-	}
-	v := *s
-	return &v
-}
-
-// Clone returns a copy of t that shares no mutable state with it.
-func (t *MCPTLSConfig) Clone() *MCPTLSConfig {
-	if t == nil {
-		return nil
-	}
-	return &MCPTLSConfig{InsecureSkipVerify: t.InsecureSkipVerify, CACertPEM: cloneSecretVarPtr(t.CACertPEM)}
 }
 
 // MarshalForStorage serializes MCPTLSConfig for DB persistence.

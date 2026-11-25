@@ -70,8 +70,7 @@ type GovernanceManager interface {
 	// Virtual MCP cache refresh after a write, surgically per operation (mirrors the VK/team callbacks).
 	ReloadVirtualMCP(ctx context.Context, id uint) (*configstoreTables.TableVirtualMCP, error)
 	RemoveVirtualMCP(ctx context.Context, id uint) error
-	AttachVirtualMCPToVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
-	DetachVirtualMCPFromVirtualKeyInMemory(ctx context.Context, vkID string, id uint) error
+	ReloadVirtualMCPAssignment(ctx context.Context, vkID string, id uint, attached bool) error
 	// ReloadVirtualKeys reloads many virtual keys exactly as ReloadVirtualKey
 	// reloads one, from batched reads. Enterprise also propagates the reload to
 	// cluster peers. An error means nothing was reloaded, and the caller falls
@@ -323,39 +322,40 @@ type GovernanceRouteOverrides struct {
 // key read paths use it to fill in each key's assigned user.
 // virtualKeyBusinessUnitResolver is optional (may be nil); when supplied the same
 // read paths use it to name each key's owning business unit.
-// Side effect: ensures the default virtual_key scope-name resolver is
-// registered against the supplied configStore, so resolveModelConfigScopeName
-// can render VK names for OSS-only builds without further wiring.
+// configStore is nil when the config store is disabled; the handler's routes then answer 503
+// from RequireConfigStoreMiddleware.
+// Side effect: with a config store, ensures the default virtual_key scope-name resolver is
+// registered against it, so resolveModelConfigScopeName can render VK names for OSS-only
+// builds without further wiring.
 func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager, externalQuotaBudgetResolver ExternalQuotaBudgetResolver, virtualKeyAssigneeResolver VirtualKeyAssigneeResolver, virtualKeyBusinessUnitResolver VirtualKeyBusinessUnitResolver) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
-	if configStore == nil {
-		return nil, fmt.Errorf("config store is required")
+	if configStore != nil {
+		RegisterScopeNameResolver(configstoreTables.ModelConfigScopeVirtualKey, func(ctx context.Context, scopeID string) (string, bool) {
+			vk, err := configStore.GetVirtualKey(ctx, scopeID)
+			if err != nil || vk == nil {
+				return "", false
+			}
+			return vk.Name, true
+		})
+		// Batch form: one id+name read for every VK on a page. GetRedactedVirtualKeys
+		// returns ALL keys for an empty id list, so the empty case never reaches it.
+		RegisterScopeNameBatchResolver(configstoreTables.ModelConfigScopeVirtualKey, func(ctx context.Context, scopeIDs []string) (map[string]string, bool) {
+			if len(scopeIDs) == 0 {
+				return map[string]string{}, true
+			}
+			vks, err := configStore.GetRedactedVirtualKeys(ctx, scopeIDs)
+			if err != nil {
+				return nil, false
+			}
+			names := make(map[string]string, len(vks))
+			for i := range vks {
+				names[vks[i].ID] = vks[i].Name
+			}
+			return names, true
+		})
 	}
-	RegisterScopeNameResolver(configstoreTables.ModelConfigScopeVirtualKey, func(ctx context.Context, scopeID string) (string, bool) {
-		vk, err := configStore.GetVirtualKey(ctx, scopeID)
-		if err != nil || vk == nil {
-			return "", false
-		}
-		return vk.Name, true
-	})
-	// Batch form: one id+name read for every VK on a page. GetRedactedVirtualKeys
-	// returns ALL keys for an empty id list, so the empty case never reaches it.
-	RegisterScopeNameBatchResolver(configstoreTables.ModelConfigScopeVirtualKey, func(ctx context.Context, scopeIDs []string) (map[string]string, bool) {
-		if len(scopeIDs) == 0 {
-			return map[string]string{}, true
-		}
-		vks, err := configStore.GetRedactedVirtualKeys(ctx, scopeIDs)
-		if err != nil {
-			return nil, false
-		}
-		names := make(map[string]string, len(vks))
-		for i := range vks {
-			names[vks[i].ID] = vks[i].Name
-		}
-		return names, true
-	})
 	return &GovernanceHandler{
 		governanceManager:           manager,
 		configStore:                 configStore,
@@ -1338,11 +1338,14 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			for i, b := range vk.Budgets {
 				ids[i] = b.ID
 			}
-			if err := tx.Model(&configstoreTables.TableBudget{}).
+			// Only the owner moves. Skip hooks: TableBudget.BeforeSave would validate the zero-value
+			// model passed to Model() and reject its empty ResetDuration.
+			if err := tx.Session(&gorm.Session{SkipHooks: true}).Model(&configstoreTables.TableBudget{}).
 				Where("id IN ? AND virtual_key_id = ?", ids, vk.ID).
 				Updates(map[string]interface{}{
 					"model_config_id": mc.ID,
 					"virtual_key_id":  nil,
+					"updated_at":      time.Now(),
 				}).Error; err != nil {
 				return fmt.Errorf("failed to adopt standalone VK budgets into model config: %w", err)
 			}
@@ -1799,6 +1802,10 @@ type CreateTeamRequest struct {
 	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"`          // Multi-budget: each must have a unique reset_duration
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`       // Team can have its own rate limit
 	CalendarAligned bool                    `json:"calendar_aligned,omitempty"` // Team-wide: snap all team budgets and rate-limit resets to calendar boundaries
+	// DisableContentLogging is the team's own content-logging decision. Omit to inherit; true forces
+	// content off for the team's traffic, false forces it on. It outranks every virtual key and
+	// provider key the team's traffic comes in with.
+	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 }
 
 // UpdateTeamRequest represents the request body for updating a team
@@ -1811,6 +1818,23 @@ type UpdateTeamRequest struct {
 	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
 	// The reset boundary is left alone; only accumulated spend is cleared.
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
+	// DisableContentLogging is tri-state on the wire: omitted leaves the current decision, null
+	// clears it back to inheriting, true/false set it.
+	DisableContentLogging schemas.OptionalJSON[bool] `json:"disable_content_logging,omitempty"`
+}
+
+// applyTeamContentLoggingUpdate applies the tri-state disable_content_logging field of a team
+// update: omitted leaves the team's decision as it is, null clears it back to inheriting, true or
+// false set it.
+func applyTeamContentLoggingUpdate(team *configstoreTables.TableTeam, req *UpdateTeamRequest) {
+	if !req.DisableContentLogging.Set {
+		return
+	}
+	if req.DisableContentLogging.Null {
+		team.DisableContentLogging = nil
+		return
+	}
+	team.DisableContentLogging = new(req.DisableContentLogging.Value)
 }
 
 // CreateCustomerRequest represents the request body for creating a customer
@@ -1919,8 +1943,9 @@ func (h *GovernanceHandler) RegisterRoutesWithOverrides(r *router.Router, overri
 	r.DELETE("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.deletePricingOverride, middlewares...))
 
 	// Self-service endpoint — no admin auth, VK in header is the credential.
-	// Registered without admin middlewares; only common middlewares (telemetry) are applied.
-	r.GET("/api/governance/virtual-keys/quota", h.getVirtualKeyQuota)
+	// Registered without admin middlewares; only common middlewares (telemetry) are applied. It
+	// reads the key's quota from the config store, so it is refused without one.
+	r.GET("/api/governance/virtual-keys/quota", lib.ChainMiddlewares(h.getVirtualKeyQuota, RequireConfigStoreMiddleware(h.configStore)))
 }
 
 // registerTeamRoutes registers Team CRUD with optional edition-specific handlers.
@@ -2212,6 +2237,26 @@ func classifyAgentGrantReplacementError(err error) error {
 	return err
 }
 
+// validateVirtualKeyProviders refuses provider configs that name one provider more than once. A
+// virtual key holds one config per provider: its per-provider budgets and rate limits are keyed by
+// the provider, and access answers for a provider from that one config's models and keys. Names are
+// compared as the configs are stored, with surrounding whitespace trimmed; a blank name is left to
+// the provider check that refuses it.
+func validateVirtualKeyProviders(providers []string) error {
+	seen := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		name := strings.TrimSpace(provider)
+		if name == "" {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("provider_configs names provider %q more than once: a virtual key holds one config per provider", name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
 // createVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key
 func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	var req CreateVirtualKeyRequest
@@ -2267,6 +2312,14 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if err := configstoreTables.ValidateVirtualKeyMetadata(req.Metadata); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	createProviders := make([]string, 0, len(req.ProviderConfigs))
+	for _, pc := range req.ProviderConfigs {
+		createProviders = append(createProviders, pc.Provider)
+	}
+	if err := validateVirtualKeyProviders(createProviders); err != nil {
 		SendError(ctx, 400, err.Error())
 		return
 	}
@@ -2681,6 +2734,16 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 400, err.Error())
 			return
 		}
+	}
+	// provider_configs is the full desired set (configs it leaves out are deleted), so checking the
+	// request alone covers what the key will hold.
+	updateProviders := make([]string, 0, len(req.ProviderConfigs))
+	for _, pc := range req.ProviderConfigs {
+		updateProviders = append(updateProviders, pc.Provider)
+	}
+	if err := validateVirtualKeyProviders(updateProviders); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
 	}
 	// The operator's explicit "reset usage" choice, surfaced by the UI's
 	// Preserve / Reset dialog. Carried into budget reconciliation and collected
@@ -3460,6 +3523,8 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			Name:            req.Name,
 			CustomerID:      req.CustomerID,
 			CalendarAligned: req.CalendarAligned,
+			// Stored as given: nil is inherit, so no defaulting here.
+			DisableContentLogging: req.DisableContentLogging,
 		}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
@@ -3629,6 +3694,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 			alignmentSwitchedOn = !team.CalendarAligned && *req.CalendarAligned
 			team.CalendarAligned = *req.CalendarAligned
 		}
+		applyTeamContentLoggingUpdate(team, &req)
 		// Snap-to-calendar-period happens after budget/rate-limit reconciliation
 		// below, so combined `calendar_aligned + budgets/rate_limit` updates see
 		// the final persisted state.
@@ -3783,12 +3849,6 @@ func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve team")
 		return
 	}
-	// Removing team from in-memory store
-	err = h.governanceManager.RemoveTeam(ctx, team.ID)
-	if err != nil {
-		// But we ignore this error because its not
-		logger.Error("failed to remove team: %v", err)
-	}
 	if err := h.configStore.DeleteTeam(ctx, teamID); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Team not found")
@@ -3796,6 +3856,10 @@ func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 		}
 		SendError(ctx, 500, "Failed to delete team")
 		return
+	}
+	// The row goes first: removing the team re-reads the keys under it, which then no longer name it.
+	if err := h.governanceManager.RemoveTeam(ctx, team.ID); err != nil {
+		logger.Error("failed to remove team: %v", err)
 	}
 	lib.RecordAuditChange(ctx, "team.deleted", "team", team.ID, team.Name, auditTeam(team), nil)
 	SendJSON(ctx, map[string]interface{}{
@@ -4167,11 +4231,6 @@ func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve customer")
 		return
 	}
-	err = h.governanceManager.RemoveCustomer(ctx, customer.ID)
-	if err != nil {
-		// But we ignore this error because its not
-		logger.Error("failed to remove customer: %v", err)
-	}
 	if err := h.configStore.DeleteCustomer(ctx, customerID); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Customer not found")
@@ -4179,6 +4238,11 @@ func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 		}
 		SendError(ctx, 500, "Failed to delete customer")
 		return
+	}
+	// The row goes first: removing the customer re-reads the keys and teams under it, which then no
+	// longer name it.
+	if err := h.governanceManager.RemoveCustomer(ctx, customer.ID); err != nil {
+		logger.Error("failed to remove customer: %v", err)
 	}
 	lib.RecordAuditChange(ctx, "customer.deleted", "customer", customer.ID, customer.Name, auditCustomer(customer), nil)
 	SendJSON(ctx, map[string]interface{}{
@@ -4441,13 +4505,24 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Non-paginated path: return all model configs
-	modelConfigs, err := h.configStore.GetModelConfigs(ctx)
-	if err != nil {
-		logger.Error("failed to retrieve model configs: %v", err)
-		SendError(ctx, 500, "Failed to retrieve model configs")
-		return
+	// Non-paginated path: return every model config the caller may see. It pages through the
+	// paginated read, which applies the caller's row-visibility scope; GetModelConfigs does not.
+	modelConfigs := []configstoreTables.TableModelConfig{}
+	for offset := 0; ; {
+		page, total, err := h.configStore.GetModelConfigsPaginated(ctx, configstore.ModelConfigsQueryParams{Limit: 100, Offset: offset})
+		if err != nil {
+			logger.Error("failed to retrieve model configs: %v", err)
+			SendError(ctx, 500, "Failed to retrieve model configs")
+			return
+		}
+		modelConfigs = append(modelConfigs, page...)
+		offset += len(page)
+		if len(page) == 0 || int64(offset) >= total {
+			break
+		}
 	}
+	// Pages come newest first; this route has always answered in id order.
+	sort.Slice(modelConfigs, func(i, j int) bool { return modelConfigs[i].ID < modelConfigs[j].ID })
 	h.enrichModelConfigScopeNames(ctx, modelConfigs)
 	h.enrichModelConfigManagedBy(ctx, modelConfigs)
 	SendJSON(ctx, map[string]any{
