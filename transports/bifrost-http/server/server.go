@@ -36,6 +36,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/openapimcp"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
+	"github.com/maximhq/bifrost/framework/rssfeed"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
@@ -3172,7 +3173,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	loggerPlugin, _ := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName)
 	var govLogManager logging.LogManager
 	if loggerPlugin != nil {
-		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s, s.Config)
+		loggingHandler, err = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s, s.Config)
+		if err != nil {
+			return fmt.Errorf("failed to create the logging handler: %w", err)
+		}
 		if resolverProvider, ok := callbacks.(LogRedactionMappingResolverProvider); ok {
 			loggingHandler.SetLogRedactionMappingResolver(resolverProvider.GetLogRedactionMappingResolver())
 		}
@@ -3235,7 +3239,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.NotificationService.Start(s.Ctx)
 	}
 	if s.RSSFeedsHandler == nil {
-		s.RSSFeedsHandler = handlers.NewRSSFeedsHandler(s.Config.ConfigStore, nil)
+		feeds, err := rssfeed.NewManager(s.Config.LiveStore)
+		if err != nil {
+			return fmt.Errorf("failed to create the rss feed manager: %w", err)
+		}
+		s.RSSFeedsHandler = handlers.NewRSSFeedsHandler(s.Config.ConfigStore, feeds)
 		s.RSSFeedsHandler.Start(s.Ctx)
 	}
 	// This is the first point in Bootstrap where the logging plugin - and so
@@ -3916,7 +3924,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// Use a signed (stateless) ticket store when an encryption key is configured
 		// so tickets are verifiable across nodes; otherwise fall back to in-memory.
 		// NewSignedWSTicketStore handles empty key by degrading to in-memory mode.
-		s.WSTicketStore = handlers.NewSignedWSTicketStore(encrypt.Key())
+		wsTickets, err := handlers.NewSignedWSTicketStore(s.Config.LiveStore, encrypt.Key())
+		if err != nil {
+			return fmt.Errorf("failed to create the websocket ticket store: %w", err)
+		}
+		s.WSTicketStore = wsTickets
 		// Initialize the temp-token service and register all scopes owned by the
 		// handlers package. The service is the seam every "scoped, anonymous,
 		// browser-only" workflow plugs into (currently just the MCP per-user OAuth

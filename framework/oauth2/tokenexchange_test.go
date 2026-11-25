@@ -28,6 +28,8 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"gorm.io/gorm"
 )
 
@@ -2438,5 +2440,29 @@ func TestValidateProfile(t *testing.T) {
 	}
 	if (&schemas.MCPTokenExchangeConfig{Audience: "a"}).ValidateProfile() != nil {
 		t.Fatal("the direct profile needs no id_jag fields")
+	}
+}
+
+// TestResourceEndpointGoesWithItsMCPClient checks that a discovered upstream token endpoint is
+// state of its MCP client: removing the client from the live store drops the endpoint.
+func TestResourceEndpointGoesWithItsMCPClient(t *testing.T) {
+	live := testLiveStore(t)
+	p, err := NewOAuth2Provider(nil, live, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &registry.MCPClient{Config: schemas.MCPClientConfig{ID: "client-1", Name: "one"}}
+	if err := live.LoadRecords(context.Background(), []livestore.Record{livestore.Rec(live.Collections.MCPClients, client)}); err != nil {
+		t.Fatal(err)
+	}
+	p.resourceEndpoints.Put("client-1", &resourceEndpoint{issuer: "https://as.example", endpoint: "https://as.example/token", fetchedAt: time.Now()})
+	if _, ok := p.resourceEndpoints.Get("client-1"); !ok {
+		t.Fatal("test setup: the endpoint must be cached")
+	}
+	if err := live.Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindMCPClient, ID: "client-1", Remove: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p.resourceEndpoints.Get("client-1"); ok {
+		t.Fatal("removing the MCP client must drop its cached endpoint")
 	}
 }

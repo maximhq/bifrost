@@ -792,9 +792,9 @@ type Config struct {
 	// insert and never rotated, so it is identical across nodes and immutable for
 	// the process lifetime. Caching it here lets the JWKS, token-issuance, and
 	// JWT-verify paths share a single load — sparing each a DB read + private-key
-	// decrypt per request — through one invalidation point. See
-	// GetOAuth2SigningKey.
-	oauth2SigningKey atomic.Pointer[configstoreTables.OAuth2SigningKey]
+	// decrypt per request, through one invalidation point. It is a live-store
+	// cache with one entry, created by AttachLiveStore. See GetOAuth2SigningKey.
+	oauth2SigningKey *livestore.Cache[*configstoreTables.OAuth2SigningKey]
 
 	// boot holds the configuration LoadConfig assembles, until loadLiveStore has loaded the live
 	// store and drops it.
@@ -10198,18 +10198,16 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 // single load — skipping a DB read + private-key decrypt per request. Returns an
 // error when no config store is wired.
 func (c *Config) GetOAuth2SigningKey(ctx context.Context) (*configstoreTables.OAuth2SigningKey, error) {
-	if k := c.oauth2SigningKey.Load(); k != nil {
+	if k, ok := c.oauth2SigningKey.Get(oauth2SigningKeyCacheKey); ok {
 		return k, nil
 	}
 	if c.ConfigStore == nil {
 		return nil, fmt.Errorf("config store unavailable")
 	}
-	k, err := c.ConfigStore.GetOAuth2SigningKey(ctx)
-	if err != nil {
-		return nil, err
-	}
-	c.oauth2SigningKey.Store(k)
-	return k, nil
+	return c.oauth2SigningKey.Fill(ctx, oauth2SigningKeyCacheKey, func() (*configstoreTables.OAuth2SigningKey, string, error) {
+		k, err := c.ConfigStore.GetOAuth2SigningKey(ctx)
+		return k, "", err
+	})
 }
 
 // Webhook endpoint config is served from memory on the submit path and by the

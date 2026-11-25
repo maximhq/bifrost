@@ -25,6 +25,8 @@ const (
 	// resourceEndpointTTL bounds how long a discovered upstream token endpoint
 	// is reused before discovery runs again.
 	resourceEndpointTTL = time.Hour
+	// resourceEndpointsTable names the state table of discovered endpoints.
+	resourceEndpointsTable = "oauth2_resource_endpoints"
 )
 
 // resourceEndpoint is a cached leg-2 token endpoint for one MCP client URL.
@@ -424,10 +426,9 @@ func (p *OAuth2Provider) resourceTokenEndpoint(ctx context.Context, config *sche
 	if !schemas.IsHTTPSOrLoopbackURL(issuer) {
 		return resourceEndpoint{}, fmt.Errorf("MCP client %s: token_exchange.audience %q is not an https URL to discover its authorization server from; set token_exchange.resource_token_endpoint", config.Name, issuer)
 	}
-	if v, ok := p.resourceEndpoints.Load(config.ID); ok {
-		cached := v.(resourceEndpoint)
+	if cached, ok := p.resourceEndpoints.Get(config.ID); ok {
 		if cached.issuer == issuer && time.Since(cached.fetchedAt) < resourceEndpointTTL {
-			return cached, nil
+			return *cached, nil
 		}
 	}
 	metadata, err := fetchSingleAuthServerMetadata(ctx, issuer, hasTokenEndpoint, false)
@@ -452,7 +453,7 @@ func (p *OAuth2Provider) resourceTokenEndpoint(ctx context.Context, config *sche
 		return resourceEndpoint{}, fmt.Errorf("authorization server for MCP client %s does not support the jwt-bearer grant needed to redeem an ID-JAG", config.Name)
 	}
 	discovered := resourceEndpoint{issuer: issuer, endpoint: metadata.TokenURL, authMethods: metadata.TokenAuthMethods, fetchedAt: time.Now()}
-	p.resourceEndpoints.Store(config.ID, discovered)
+	p.resourceEndpoints.Put(config.ID, &discovered)
 	return discovered, nil
 }
 

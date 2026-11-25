@@ -32,9 +32,9 @@ func newClaudeCodeGateway(t testing.TB, enforceAuth bool) (*clientGatewayEndpoin
 	t.Helper()
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, enforceAuth)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, enforceAuth)
 	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
-	cfg.LiveStore = gatewayLiveStore(t, store)
+	loadGatewayLiveStore(t, cfg)
 	return NewClientGatewayHandler(cfg, nil, nil).endpoint("claude-code"), NewOAuth2ConsentHandler(cfg, nil, nil), store, cfg
 }
 
@@ -55,14 +55,11 @@ func refreshGatewayVK(t testing.TB, cfg *lib.Config, id string) {
 	require.NoError(t, cfg.LiveStore.Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindVirtualKey, ID: id}}))
 }
 
-// gatewayLiveStore is a live store loaded from store's database, closed when the test ends.
-func gatewayLiveStore(t testing.TB, store configstore.ConfigStore) *livestore.Store {
+// loadGatewayLiveStore loads the live store newTestOAuth2Config attached to cfg from cfg's config
+// store, as boot does, so the gateway resolves the virtual keys the test writes there.
+func loadGatewayLiveStore(t testing.TB, cfg *lib.Config) {
 	t.Helper()
-	live, err := livestore.New()
-	require.NoError(t, err)
-	t.Cleanup(live.Close)
-	require.NoError(t, live.LoadAll(context.Background(), store.DB()))
-	return live
+	require.NoError(t, cfg.LiveStore.LoadAll(context.Background(), cfg.ConfigStore.DB()))
 }
 
 func jsonBody(t *testing.T, ctx *fasthttp.RequestCtx) map[string]any {
@@ -159,9 +156,9 @@ func (otherGatewayProfile) Enabled(*configtables.OAuth2ServerConfig) bool { retu
 func TestClientGateway_GrantsStayOnTheirGateway(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
-	cfg.LiveStore = gatewayLiveStore(t, store)
+	loadGatewayLiveStore(t, cfg)
 	gateways := NewClientGatewayHandler(cfg, nil, nil, claudeCodeProfile{}, otherGatewayProfile{})
 	claude, other := gateways.endpoint("claude-code"), gateways.endpoint("other-client")
 	consent := NewOAuth2ConsentHandler(cfg, nil, nil)
@@ -202,7 +199,7 @@ func TestClientGateway_GrantsStayOnTheirGateway(t *testing.T) {
 func TestClientGateway_SharedDeviceVerify(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
 	gateways := NewClientGatewayHandler(cfg, nil, nil, claudeCodeProfile{}, otherGatewayProfile{})
 	verify := func(userCode string) *fasthttp.RequestCtx {

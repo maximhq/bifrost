@@ -564,7 +564,7 @@ func TestAgentGatewayAuthenticationUserAndInvalidSelectedIdentity(t *testing.T) 
 func TestAgentGatewayRejectsMCPJWTAsIdentityAndPreservesIt(t *testing.T) {
 	key, priv := newTestSigningKey(t)
 	oauthStore := &mockOAuth2Store{signingKey: key}
-	_ = newTestOAuth2Config(oauthStore, tables.MCPServerAuthModeBoth, true)
+	_ = newTestOAuth2Config(t, oauthStore, tables.MCPServerAuthModeBoth, true)
 	middleware := newAgentAuthMiddleware(true, &agentAuthStore{})
 	raw := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
 		c["bf_mode"] = string(schemas.MCPAuthModeVK)

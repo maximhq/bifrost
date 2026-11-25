@@ -1642,7 +1642,7 @@ func TestUpdateRequestDecodesBothForms(t *testing.T) {
 
 func TestSyncIntervalHTTPValidationErrors(t *testing.T) {
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	existing := &schemas.MCPClientConfig{ID: "interval-client", Name: "interval-client", ToolSyncInterval: 7 * time.Minute}
 	cfg.MCPConfig = &schemas.MCPConfig{}
 	libtest.MCPClients(t, cfg, existing)

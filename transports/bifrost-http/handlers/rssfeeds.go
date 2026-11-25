@@ -56,11 +56,9 @@ type RSSFeedsHandler struct {
 	manager *rssfeed.Manager
 }
 
+// NewRSSFeedsHandler serves the feed API over store, fetching and caching feeds through manager.
 func NewRSSFeedsHandler(store configstore.ConfigStore, manager *rssfeed.Manager) *RSSFeedsHandler {
 	feedStore, _ := store.(configstore.RSSFeedStore)
-	if manager == nil {
-		manager = rssfeed.NewManager()
-	}
 	return &RSSFeedsHandler{store: feedStore, manager: manager}
 }
 

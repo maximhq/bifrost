@@ -2483,3 +2483,58 @@ func BenchmarkSearchLogs(b *testing.B) {
 		h.searchLogs(ctx)
 	}
 }
+
+// withFilterDataCaches gives a hand-built logging handler the filter-data caches NewLoggingHandler
+// builds, over a new live store.
+func withFilterDataCaches(t testing.TB, h *LoggingHandler) *LoggingHandler {
+	t.Helper()
+	live := liveStoreForTest(t)
+	var err error
+	h.filterDataCache, err = newFilterDataCache(live, logsFilterDataTable)
+	require.NoError(t, err)
+	h.mcpFilterDataCache, err = newFilterDataCache(live, mcpLogsFilterDataTable)
+	require.NoError(t, err)
+	return h
+}
+
+// TestFilterDataCacheSingleFlightKeepsNothingIdle pins the cache's behaviour: a request that misses
+// holds the key until it stores or releases, a request waiting on it is then served the stored
+// response, and once nobody holds a key its lock is gone (it used to stay for the life of the
+// process).
+func TestFilterDataCacheSingleFlightKeepsNothingIdle(t *testing.T) {
+	cache, err := newFilterDataCache(liveStoreForTest(t), logsFilterDataTable)
+	require.NoError(t, err)
+
+	leader, _, hit := cache.load("k")
+	require.False(t, hit)
+	served := make(chan map[string]interface{})
+	go func() {
+		_, payload, ok := cache.load("k")
+		if !ok {
+			served <- nil
+			return
+		}
+		served <- payload
+	}()
+	// Store only once the second caller holds the key too, so it is waiting on
+	// the leader's lock rather than arriving after the store.
+	require.Eventually(t, func() bool {
+		cache.mu.Lock()
+		defer cache.mu.Unlock()
+		build := cache.builds["k"]
+		return build != nil && build.refs == 2
+	}, 5*time.Second, time.Millisecond, "the second caller never waited on the key")
+	cache.store(leader, map[string]interface{}{"models": []string{"m"}})
+	got := <-served
+	require.Equal(t, map[string]interface{}{"models": []string{"m"}}, got, "the waiter must be served the leader's response")
+
+	failed, _, hit := cache.load("other")
+	require.False(t, hit)
+	cache.release(failed)
+	_, _, hit = cache.load("other")
+	require.False(t, hit, "a released miss stores nothing")
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	require.Len(t, cache.builds, 1, "only the key still held keeps a lock")
+}
