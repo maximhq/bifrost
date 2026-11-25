@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -405,7 +406,7 @@ func genAIInteractionsNative(ctx *schemas.BifrostContext, raw interface{}) bool 
 }
 
 func genAIInteractionsResponseConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-	if genAIInteractionsNative(ctx, resp.ExtraFields.RawResponse) {
+	if genAIInteractionsNative(ctx, resp.ExtraFields.RawResponse) && !genAIInteractionsCachedOtherAPI(ctx, resp.ExtraFields.RawResponse) {
 		return resp.ExtraFields.RawResponse, nil
 	}
 	return gemini.ToGeminiInteraction(resp), nil
@@ -413,6 +414,59 @@ func genAIInteractionsResponseConverter(ctx *schemas.BifrostContext, resp *schem
 
 func genAIInteractionsErrorConverter(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 	return gemini.ToGeminiInteractionsErrorBody(err)
+}
+
+// genAIInteractionsCachedOtherAPI reports whether raw was served from the cache and is not an Interaction, as when
+// generateContent answered the request that filled the entry. Only a cache hit is looked into.
+func genAIInteractionsCachedOtherAPI(ctx *schemas.BifrostContext, raw interface{}) bool {
+	lookup, ok := schemas.CacheLookupFromContext(ctx)
+	if !ok || !lookup.CacheHit {
+		return false
+	}
+	var body []byte
+	switch v := raw.(type) {
+	case string:
+		body = []byte(v)
+	case []byte:
+		body = v
+	case json.RawMessage:
+		body = v
+	default:
+		encoded, err := providerUtils.MarshalSorted(v)
+		if err != nil {
+			return true
+		}
+		body = encoded
+	}
+	fields := gjson.GetManyBytes(body, "event_type", "steps", "status", "output")
+	return !fields[0].Exists() && !fields[1].Exists() && (!fields[2].Exists() || fields[3].Exists())
+}
+
+// genAIInteractionsFrames writes the upstream events raw holds, each with its own event name. A stream captured
+// for logs joins the events no chunk stood for onto the next one.
+func genAIInteractionsFrames(raw string) string {
+	var sb strings.Builder
+	write := func(event string) {
+		eventType := gjson.Get(event, "event_type").String()
+		sb.Grow(len(event) + len(eventType) + 24)
+		sb.WriteString("event: ")
+		sb.WriteString(eventType)
+		sb.WriteString("\ndata: ")
+		sb.WriteString(event)
+		sb.WriteString("\n\n")
+		if eventType == gemini.GeminiInteractionsEventCompleted {
+			sb.WriteString(genAIInteractionsDoneFrame)
+		}
+	}
+	if !strings.Contains(raw, "\n") {
+		write(raw)
+		return sb.String()
+	}
+	gjson.ForEachLine(raw, func(event gjson.Result) bool {
+		write(event.Raw)
+		return true
+	})
+	return sb.String()
 }
 
 // genAIInteractionsDoneFrame closes an Interactions stream the way Google does.
@@ -441,14 +495,14 @@ func genAIInteractionsStreamConfig() *StreamConfig {
 const genAIInteractionsTranslatedReplayKey schemas.BifrostContextKey = "bifrost-genai-interactions-translated-replay"
 
 // genAIInteractionsTranslatedReplay reports whether a native stream is a cache hit on an entry stored without
-// Google's frames, by a route that had none. Its first chunk tells: a stored native stream opens with a frame,
-// and its chunks without one repeat an event as they did live.
+// Google's Interactions frames, by a route that had none or another API's. Its first chunk tells: a stored native
+// stream opens with a frame, and its chunks without one repeat an event as they did live.
 func genAIInteractionsTranslatedReplay(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) bool {
 	if decided, ok := ctx.Value(genAIInteractionsTranslatedReplayKey).(bool); ok {
 		return decided
 	}
 	lookup, ok := schemas.CacheLookupFromContext(ctx)
-	translated := ok && lookup.CacheHit && resp.ExtraFields.RawResponse == nil
+	translated := ok && lookup.CacheHit && (resp.ExtraFields.RawResponse == nil || genAIInteractionsCachedOtherAPI(ctx, resp.ExtraFields.RawResponse))
 	ctx.SetValue(genAIInteractionsTranslatedReplayKey, translated)
 	return translated
 }
@@ -457,14 +511,8 @@ func genAIInteractionsTranslatedReplay(ctx *schemas.BifrostContext, resp *schema
 // upstream event the chunk carries (chunks without one are skipped, so every event goes out
 // exactly once); otherwise it renders the chunk as Interactions events.
 func genAIInteractionsStreamConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-	if raw, ok := resp.ExtraFields.RawResponse.(string); ok && genAIInteractionsNative(ctx, resp.ExtraFields.RawResponse) {
-		genAIInteractionsTranslatedReplay(ctx, resp)
-		eventType := gjson.Get(raw, "event_type").String()
-		frame := "event: " + eventType + "\ndata: " + raw + "\n\n"
-		if eventType == gemini.GeminiInteractionsEventCompleted {
-			frame += genAIInteractionsDoneFrame
-		}
-		return "", frame, nil
+	if raw, ok := resp.ExtraFields.RawResponse.(string); ok && genAIInteractionsNative(ctx, resp.ExtraFields.RawResponse) && !genAIInteractionsTranslatedReplay(ctx, resp) {
+		return "", genAIInteractionsFrames(raw), nil
 	}
 	if useRaw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); useRaw && resp.ExtraFields.RawResponse == nil && !genAIInteractionsTranslatedReplay(ctx, resp) {
 		if resp.Type == schemas.ResponsesStreamResponseTypeCompleted && resp.ExtraFields.RawResponseFormat != "" && resp.Response != nil {

@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -567,6 +568,51 @@ func TestGenAIInteractionsCacheReplay(t *testing.T) {
 	framed := run(true, chunk(schemas.ResponsesStreamResponseTypeCreated, `{"event_type":"interaction.created"}`), chunk(schemas.ResponsesStreamResponseTypeInProgress, ""),
 		chunk(schemas.ResponsesStreamResponseTypeOutputTextDelta, `{"event_type":"step.delta"}`), chunk(schemas.ResponsesStreamResponseTypeOutputItemAdded, ""), chunk(schemas.ResponsesStreamResponseTypeCompleted, `{"event_type":"interaction.completed"}`))
 	assert.Equal(t, 3, strings.Count(framed, "data: {"), framed)
+
+	// A stream captured for logs joins the frames no chunk stood for; each replays as an event of its own.
+	joined := run(true, chunk(schemas.ResponsesStreamResponseTypeCreated, `{"event_type":"interaction.created"}`),
+		chunk(schemas.ResponsesStreamResponseTypeCompleted, "{\"event_type\":\"interaction.status_update\",\"status\":\"in_progress\"}\n{\"event_type\":\"interaction.completed\"}"))
+	assert.Equal(t, "event: interaction.created\ndata: {\"event_type\":\"interaction.created\"}\n\n"+
+		"event: interaction.status_update\ndata: {\"event_type\":\"interaction.status_update\",\"status\":\"in_progress\"}\n\n"+
+		"event: interaction.completed\ndata: {\"event_type\":\"interaction.completed\"}\n\n"+genAIInteractionsDoneFrame, joined)
+
+	// An entry generateContent stored, or whose frames another API sent, is rendered, not replayed.
+	foreign := run(true, chunk(schemas.ResponsesStreamResponseTypeCreated, `{"candidates":[]}`), chunk(schemas.ResponsesStreamResponseTypeOutputItemAdded, ""),
+		chunk(schemas.ResponsesStreamResponseTypeOutputTextDelta, `{"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}`), chunk(schemas.ResponsesStreamResponseTypeCompleted, `{"candidates":[{"finishReason":"STOP"}]}`))
+	assert.NotContains(t, foreign, "candidates")
+	assert.Contains(t, foreign, "hello")
+	assert.Contains(t, foreign, "event: interaction.completed")
+}
+
+// TestGenAIInteractionsCachedResponseFormat pins a unary cache hit: an Interaction is returned as Google sent it,
+// and the reply of another API is rendered as an Interaction. A response that is not a hit is Google's own.
+func TestGenAIInteractionsCachedResponseFormat(t *testing.T) {
+	convert := func(hit bool, raw interface{}) string {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		schemas.SetCacheLookupOnContext(ctx, &schemas.BifrostCacheMetadata{CacheHit: hit})
+		out, err := genAIInteractionsResponseConverter(ctx, &schemas.BifrostResponsesResponse{ID: schemas.Ptr("v1_x"), Model: "gemini-3.8-flash", Status: schemas.Ptr("completed"), ExtraFields: schemas.BifrostResponseExtraFields{RawResponse: raw}})
+		require.NoError(t, err)
+		body, err := sonic.Marshal(out)
+		require.NoError(t, err)
+		return string(body)
+	}
+	const interaction, generate = `{"id":"v1_g","status":"completed","steps":[]}`, `{"candidates":[],"responseId":"r"}`
+	for name, wrap := range map[string]func(string) interface{}{
+		"raw":    func(s string) interface{} { return json.RawMessage(s) },
+		"string": func(s string) interface{} { return s },
+		"decoded": func(s string) interface{} {
+			var v map[string]interface{}
+			require.NoError(t, sonic.UnmarshalString(s, &v))
+			return v
+		},
+	} {
+		assert.Contains(t, convert(true, wrap(interaction)), "v1_g", name)
+		rendered := convert(true, wrap(generate))
+		assert.NotContains(t, rendered, "candidates", name)
+		assert.Contains(t, rendered, `"object":"interaction"`, name)
+	}
+	assert.Contains(t, convert(false, json.RawMessage(generate)), "candidates", "only a cache hit can hold another API's reply")
 }
 
 // BenchmarkGenAIInteractionsCreate measures what the route adds to a native create before core runs:
