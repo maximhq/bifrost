@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -138,12 +140,14 @@ func TestVertexInteractionsContinuationKeys(t *testing.T) {
 			request.Params.PreviousResponseID = &previous
 		}
 		before := slices.Clone(keys)
-		for _, k := range provider.ContinuationKeys(ctx, request, keys) {
+		kept, bifrostErr := provider.ContinuationKeys(ctx, request, keys)
+		require.Nil(t, bifrostErr)
+		for _, k := range kept {
 			ids = append(ids, k.ID)
 		}
 		assert.Equal(t, before, keys, "the caller's slice is not modified")
 		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders), "the read leaves nothing on the request")
-		return ids, *seen
+		return ids, seen()
 	}
 	const flash = "gemini-3.6-flash"
 	p1, p2, p2eu, p2b, regional := key("p1", "p1", "global"), key("p2", "p2", "global"), key("p2eu", "p2", "eu"), key("p2b", "p2", ""), key("regional", "p2", "us-central1")
@@ -183,14 +187,96 @@ func TestVertexInteractionsContinuationKeys(t *testing.T) {
 	assert.Equal(t, []string{"aliased"}, ids, "a key is where its alias sends the model")
 }
 
+// TestVertexInteractionsContinuationUndecided pins a lookup that a place did not answer: the turn goes to the one
+// place not ruled out, and when more than one is left the lookup's error is returned, since any of them may hold
+// the run.
+func TestVertexInteractionsContinuationUndecided(t *testing.T) {
+	run := func(codes map[string]int) ([]string, *schemas.BifrostError) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			for project, code := range codes {
+				if strings.Contains(r.URL.Path, "/projects/"+project+"/") {
+					w.WriteHeader(code)
+					_, _ = w.Write([]byte(`{"error":{"code":` + strconv.Itoa(code) + `,"message":"no"}}`))
+				}
+			}
+		}))
+		defer server.Close()
+		client := &fasthttp.Client{Dial: func(string) (net.Conn, error) { return net.Dial("tcp", server.Listener.Addr().String()) }, TLSConfig: &tls.Config{InsecureSkipVerify: true}}
+		provider := &VertexProvider{client: client, streamingClient: client}
+		var keys []schemas.Key
+		for _, project := range []string{"p1", "p2", "p3"} {
+			k := schemas.Key{ID: project, VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar(project), Region: *schemas.NewSecretVar("global"), AuthCredentials: *schemas.NewSecretVar(`{"type":"service_account","client_email":"` + project + `"}`)}}
+			provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(k)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok", TokenType: "Bearer"}))
+			keys = append(keys, k)
+		}
+		kept, bifrostErr := provider.ContinuationKeys(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+			&schemas.BifrostResponsesRequest{Model: "gemini-3.6-flash", Params: &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr("v1_x")}}, keys)
+		var ids []string
+		for _, k := range kept {
+			ids = append(ids, k.ID)
+		}
+		return ids, bifrostErr
+	}
+	for _, code := range []int{403, 429, 500} {
+		ids, bifrostErr := run(map[string]int{"p1": 404, "p2": code, "p3": 404})
+		require.Nil(t, bifrostErr, code)
+		assert.Equal(t, []string{"p2"}, ids, code)
+
+		ids, bifrostErr = run(map[string]int{"p1": 404, "p2": code, "p3": code})
+		require.NotNil(t, bifrostErr, code)
+		assert.Equal(t, code, *bifrostErr.StatusCode)
+		assert.Empty(t, ids)
+	}
+	ids, bifrostErr := run(map[string]int{"p1": 404, "p2": 404, "p3": 404})
+	require.Nil(t, bifrostErr)
+	assert.Len(t, ids, 3, "Google answers for a run no key reaches")
+}
+
+// BenchmarkVertexInteractionsKeys measures narrowing a pool of keys with aliases, local work only.
+func BenchmarkVertexInteractionsKeys(b *testing.B) {
+	var keys []schemas.Key
+	for _, id := range []string{"p1", "p2", "p3", "p4"} {
+		keys = append(keys, schemas.Key{ID: id, VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar(id), Region: *schemas.NewSecretVar("global")},
+			Aliases: schemas.KeyAliases{"fast": {ModelID: "gemini-3.6-flash", Region: schemas.NewSecretVar("eu")}}})
+	}
+	for name, c := range map[string]struct{ model, project, location string }{"lifecycle": {}, "create at a location": {"fast", "p2", "eu"}} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				InteractionsKeys(keys, c.model, c.project, c.location)
+			}
+		})
+	}
+}
+
+// BenchmarkVertexInteractionsContinuationKeys measures the local work of placing a continued turn: keys in one
+// place, which reads nothing, and keys in two with no lookup possible, which leaves out the upstream wait.
+func BenchmarkVertexInteractionsContinuationKeys(b *testing.B) {
+	key := func(project string) schemas.Key {
+		return schemas.Key{ID: project, VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar(project), Region: *schemas.NewSecretVar("us-central1")}}
+	}
+	provider := &VertexProvider{}
+	request := &schemas.BifrostResponsesRequest{Model: "gemini-3.6-flash", Params: &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr("v1_x")}}
+	for name, keys := range map[string][]schemas.Key{"one place": {key("p1"), key("p1")}, "two places": {key("p1"), key("p2")}} {
+		b.Run(name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = provider.ContinuationKeys(ctx, request, keys)
+			}
+		})
+	}
+}
+
 // vertexInteractionsServer answers like Vertex for one run stored at home, and records the paths asked.
-func vertexInteractionsServer(t *testing.T, home string) (*VertexProvider, *[]string) {
+func vertexInteractionsServer(t *testing.T, home string) (*VertexProvider, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
-	paths := &[]string{}
+	var paths []string
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		*paths = append(*paths, r.URL.Path)
+		paths = append(paths, r.URL.Path)
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if !strings.Contains(r.URL.Path, home) {
@@ -205,7 +291,11 @@ func vertexInteractionsServer(t *testing.T, home string) (*VertexProvider, *[]st
 		Dial:      func(string) (net.Conn, error) { return net.Dial("tcp", server.Listener.Addr().String()) },
 		TLSConfig: &tls.Config{InsecureSkipVerify: true},
 	}
-	return &VertexProvider{client: client, streamingClient: client}, paths
+	return &VertexProvider{client: client, streamingClient: client}, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(paths)
+	}
 }
 
 // TestVertexInteractionsAliasRunsReachable pins that a run created through an alias that changes the
@@ -255,8 +345,8 @@ func TestVertexInteractionsAliasRunsReachable(t *testing.T) {
 				provider, paths := vertexInteractionsServer(t, home)
 				provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok", TokenType: "Bearer"}))
 				require.Nil(t, call(provider))
-				assert.Len(t, *paths, asked, "%v", *paths)
-				assert.Contains(t, (*paths)[0], "/projects/own/locations/global/", "the key's own place first")
+				assert.Len(t, paths(), asked, "%v", paths())
+				assert.Contains(t, (paths())[0], "/projects/own/locations/global/", "the key's own place first")
 			}
 		})
 	}
@@ -334,7 +424,7 @@ func TestVertexInteractionsRefusesAPIKey(t *testing.T) {
 	_, bifrostErr := provider.ResponsesRetrieve(ctx, schemas.Key{Value: *schemas.NewSecretVar("AIza-key"), VertexKeyConfig: config}, &schemas.BifrostResponsesRetrieveRequest{ResponseID: "v1_x"})
 	require.NotNil(t, bifrostErr)
 	assert.Contains(t, bifrostErr.Error.Message, "API key")
-	assert.Empty(t, *paths)
+	assert.Empty(t, paths())
 
 	_, bifrostErr = provider.ResponsesRetrieve(ctx, schemas.Key{VertexKeyConfig: config}, &schemas.BifrostResponsesRetrieveRequest{ResponseID: "v1_x"})
 	assert.Nil(t, bifrostErr)
@@ -344,10 +434,10 @@ func TestVertexInteractionsRefusesAPIKey(t *testing.T) {
 // call drops the key's cached token source, as the generateContent paths do, so the next call
 // mints a fresh token instead of reusing the rejected one. Other failures keep it.
 func TestVertexInteractionsEvictsTokenSourceOnAuthError(t *testing.T) {
-	status := http.StatusUnauthorized
+	var status atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
+		w.WriteHeader(int(status.Load()))
 		_, _ = w.Write([]byte(`{"error":{"code":401,"message":"denied","status":"UNAUTHENTICATED"}}`))
 	}))
 	defer server.Close()
@@ -405,12 +495,12 @@ func TestVertexInteractionsEvictsTokenSourceOnAuthError(t *testing.T) {
 	for name, call := range calls {
 		t.Run(name, func(t *testing.T) {
 			for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden} {
-				status = code
+				status.Store(int32(code))
 				seed()
 				require.NotNil(t, call())
 				assert.False(t, cached(), "a %d drops the cached token source", code)
 			}
-			status = http.StatusInternalServerError
+			status.Store(http.StatusInternalServerError)
 			seed()
 			require.NotNil(t, call())
 			assert.True(t, cached(), "a 500 keeps the cached token source")
@@ -422,9 +512,12 @@ func TestVertexInteractionsEvictsTokenSourceOnAuthError(t *testing.T) {
 // sends the service-tier header under the same conditions as generateContent: a supported tier on
 // the global endpoint, unless the provider's extra headers already set it.
 func TestVertexInteractionsServiceTierHeader(t *testing.T) {
+	var mu sync.Mutex
 	var got []string
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		got = append(got, r.Header.Get(VertexServiceTierHeader))
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"v1_t","object":"interaction","model":"gemini-3.5-flash-lite","status":"completed","steps":[]}`))
 	}))
@@ -471,6 +564,8 @@ func TestVertexInteractionsServiceTierHeader(t *testing.T) {
 		for range stream {
 		}
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	require.Len(t, got, 6)
 	assert.Equal(t, "priority", got[4], "a lowercase override set by the operator wins")
 	assert.Equal(t, "priority", got[5], "a lowercase override wins on the streamed create too")

@@ -129,10 +129,11 @@ func InteractionsKeys(keys []schemas.Key, model, project, location string) []sch
 // ContinuationKeys narrows keys to those that reach the stored run a continued turn names: Google keeps a run
 // in one project and location, and the request says neither. When keys would send the turn to more than one,
 // the run is read in each until one has it, so only such a request pays for the read. keys come back as they
-// are when no place has the run, so Google answers for it, and are not modified.
-func (provider *VertexProvider) ContinuationKeys(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, keys []schemas.Key) []schemas.Key {
+// are when every place answered that it has no such run, so Google answers for it. When some did not answer, the turn
+// goes to the only one left, or the lookup's error is returned: any of them may hold the run. keys is not modified.
+func (provider *VertexProvider) ContinuationKeys(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, keys []schemas.Key) ([]schemas.Key, *schemas.BifrostError) {
 	if len(keys) < 2 || request == nil || request.Params == nil || request.Params.PreviousResponseID == nil || *request.Params.PreviousResponseID == "" {
-		return keys
+		return keys, nil
 	}
 	type location struct{ project, region string }
 	places := make([]schemas.Key, len(keys))
@@ -144,12 +145,23 @@ func (provider *VertexProvider) ContinuationKeys(ctx *schemas.BifrostContext, re
 		distinct = distinct || locations[i] != locations[0]
 	}
 	if !distinct {
-		return keys
+		return keys, nil
 	}
 	// The read is the provider's own: what it learns, and an alias a failed attempt left, stay off the request.
 	readCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	defer readCtx.Cancel()
-	asked := map[location]bool{}
+	at := func(i int) []schemas.Key {
+		kept := make([]schemas.Key, 0, len(keys))
+		for k := range keys {
+			if locations[k] == locations[i] {
+				kept = append(kept, keys[k])
+			}
+		}
+		return kept
+	}
+	asked := map[location]bool{}           // places that answered that they have no such run
+	var undecided []int                    // a key of each place that did not answer
+	var undecidedErr *schemas.BifrostError // the last such answer
 	for i, key := range keys {
 		if asked[locations[i]] || !slices.Contains(vertexInteractionsLocations, locations[i].region) {
 			continue
@@ -165,26 +177,36 @@ func (provider *VertexProvider) ContinuationKeys(ctx *schemas.BifrostContext, re
 		}
 		readCtx.ClearValue(schemas.BifrostContextKeyResolvedAlias) // the place already holds what it overrides
 		target, bifrostErr := provider.interactionsTarget(readCtx, places[i])
-		if bifrostErr != nil {
-			continue
-		}
-		bifrostErr = provider.evictOnInteractionsAuthError(places[i], gemini.InteractionsExists(readCtx, target, *request.Params.PreviousResponseID))
 		if bifrostErr == nil {
-			kept := make([]schemas.Key, 0, len(keys))
-			for k := range keys {
-				if locations[k] == locations[i] {
-					kept = append(kept, keys[k])
-				}
+			bifrostErr = provider.evictOnInteractionsAuthError(places[i], gemini.InteractionsExists(readCtx, target, *request.Params.PreviousResponseID))
+			if bifrostErr != nil && bifrostErr.StatusCode != nil && *bifrostErr.StatusCode == fasthttp.StatusBadRequest {
+				return keys, nil // the id names no stored run anywhere; the create is refused for it
 			}
-			return kept
+		}
+		if bifrostErr == nil {
+			return at(i), nil
 		}
 		if ctx.Err() != nil {
-			return keys
+			return nil, bifrostErr
+		}
+		if providerUtils.IsNotFoundError(bifrostErr) {
+			asked[locations[i]] = true
+			undecided = slices.DeleteFunc(undecided, func(k int) bool { return locations[k] == locations[i] })
+			continue
 		}
 		// Another key in the same place may be let in where this one was refused.
-		asked[locations[i]] = providerUtils.IsNotFoundError(bifrostErr)
+		undecidedErr = bifrostErr
+		if !slices.ContainsFunc(undecided, func(k int) bool { return locations[k] == locations[i] }) {
+			undecided = append(undecided, i)
+		}
 	}
-	return keys
+	switch len(undecided) {
+	case 0:
+		return keys, nil
+	case 1:
+		return at(undecided[0]), nil
+	}
+	return nil, undecidedErr
 }
 
 // lookupInteraction runs a call on a stored run in each place key's runs can live until one has it. The

@@ -5820,9 +5820,9 @@ type continuationProvider struct {
 	calls int
 }
 
-func (p *continuationProvider) ContinuationKeys(_ *schemas.BifrostContext, _ *schemas.BifrostResponsesRequest, keys []schemas.Key) []schemas.Key {
+func (p *continuationProvider) ContinuationKeys(_ *schemas.BifrostContext, _ *schemas.BifrostResponsesRequest, keys []schemas.Key) ([]schemas.Key, *schemas.BifrostError) {
 	p.calls++
-	return keys[1:]
+	return keys[1:], nil
 }
 
 // TestNarrowContinuationKeys pins that only a Responses request that continues a turn, with more than one
@@ -5834,15 +5834,19 @@ func TestNarrowContinuationKeys(t *testing.T) {
 		return &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{PreviousResponseID: previous}}}
 	}
 	provider := &continuationProvider{}
-	if got := narrowContinuationKeys(ctx, provider, request(schemas.Ptr("v1_x")), keys); len(got) != 1 || got[0].ID != "b" {
+	if got, err := narrowContinuationKeys(ctx, provider, request(schemas.Ptr("v1_x")), keys); err != nil || len(got) != 1 || got[0].ID != "b" {
 		t.Errorf("got %v, want the key that reaches the turn", got)
 	}
+	narrow := func(provider schemas.Provider, req *schemas.BifrostRequest) []schemas.Key {
+		got, _ := narrowContinuationKeys(ctx, provider, req, keys)
+		return got
+	}
 	for name, got := range map[string][]schemas.Key{
-		"no previous turn": narrowContinuationKeys(ctx, provider, request(nil), keys),
-		"empty id":         narrowContinuationKeys(ctx, provider, request(schemas.Ptr("")), keys),
-		"no params":        narrowContinuationKeys(ctx, provider, &schemas.BifrostRequest{ResponsesRequest: &schemas.BifrostResponsesRequest{}}, keys),
-		"chat":             narrowContinuationKeys(ctx, provider, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}, keys),
-		"other provider":   narrowContinuationKeys(ctx, struct{ schemas.Provider }{}, request(schemas.Ptr("v1_x")), keys),
+		"no previous turn": narrow(provider, request(nil)),
+		"empty id":         narrow(provider, request(schemas.Ptr(""))),
+		"no params":        narrow(provider, &schemas.BifrostRequest{ResponsesRequest: &schemas.BifrostResponsesRequest{}}),
+		"chat":             narrow(provider, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}),
+		"other provider":   narrow(struct{ schemas.Provider }{}, request(schemas.Ptr("v1_x"))),
 	} {
 		if len(got) != 2 {
 			t.Errorf("%s: got %v, want every key", name, got)

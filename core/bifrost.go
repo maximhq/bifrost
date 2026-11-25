@@ -8440,7 +8440,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						continue
 					}
 
-					supportedKeys = narrowContinuationKeys(req.Context, provider, &req.BifrostRequest, supportedKeys)
+					var placeErr *schemas.BifrostError
+					if supportedKeys, placeErr = narrowContinuationKeys(req.Context, provider, &req.BifrostRequest, supportedKeys); placeErr != nil {
+						placeErr.ExtraFields.Provider = provider.GetProviderKey()
+						placeErr.ExtraFields.RequestType = req.RequestType
+						placeErr.ExtraFields.OriginalModelRequested = model
+						placeErr.ExtraFields.ResolvedModelUsed = model
+						bifrost.sendWorkerError(req, *placeErr)
+						continue
+					}
 
 					if len(supportedKeys) == 0 {
 						// SkipKeySelection path — keyProvider stays nil, zero Key is used.
@@ -11717,19 +11725,19 @@ func narrowVertexInteractionsKeys(ctx *schemas.BifrostContext, baseProvider sche
 
 // narrowContinuationKeys keeps the keys that reach the stored turn a Responses request continues, for a
 // provider that keeps one in the place that made it. Every other request gets keys back as they are.
-func narrowContinuationKeys(ctx *schemas.BifrostContext, provider schemas.Provider, req *schemas.BifrostRequest, keys []schemas.Key) []schemas.Key {
+func narrowContinuationKeys(ctx *schemas.BifrostContext, provider schemas.Provider, req *schemas.BifrostRequest, keys []schemas.Key) ([]schemas.Key, *schemas.BifrostError) {
 	if len(keys) < 2 || req.ResponsesRequest == nil {
-		return keys
+		return keys, nil
 	}
 	params := req.ResponsesRequest.Params
 	if params == nil || params.PreviousResponseID == nil || *params.PreviousResponseID == "" {
-		return keys
+		return keys, nil
 	}
 	placer, ok := provider.(interface {
-		ContinuationKeys(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, keys []schemas.Key) []schemas.Key
+		ContinuationKeys(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, keys []schemas.Key) ([]schemas.Key, *schemas.BifrostError)
 	})
 	if !ok {
-		return keys
+		return keys, nil
 	}
 	return placer.ContinuationKeys(ctx, req.ResponsesRequest, keys)
 }
