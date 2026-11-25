@@ -2121,7 +2121,9 @@ func (m *PartMediaResolution) UnmarshalJSON(data []byte) error {
 }
 
 // PartAudioTranscription is the transcript a Gemini transcription model returns in
-// Part.audioTranscription.
+// Part.audioTranscription. Only text is decoded: speakerLabel and words[] are
+// returned only when audioTranscriptionConfig requests diarization or word
+// timestamps, and Bifrost does not send that config on transcription requests yet.
 type PartAudioTranscription struct {
 	Text string `json:"text,omitempty"`
 }

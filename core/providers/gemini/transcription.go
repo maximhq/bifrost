@@ -207,13 +207,27 @@ func ToGeminiTranscriptionResponse(bifrostResp *schemas.BifrostTranscriptionResp
 }
 
 // transcriptText joins the transcript carried by the first candidate's parts.
-// Used for both unary responses and stream chunks.
+// Used for both unary responses and stream chunks. A single part, the common
+// case, returns its string without a copy; several parts are joined with one
+// allocation.
 func (response *GenerateContentResponse) transcriptText() string {
 	if response == nil || len(response.Candidates) == 0 || response.Candidates[0] == nil || response.Candidates[0].Content == nil {
 		return ""
 	}
+	parts := response.Candidates[0].Content.Parts
+	if len(parts) == 1 {
+		return parts[0].transcriptText()
+	}
+	n := 0
+	for _, part := range parts {
+		n += len(part.transcriptText())
+	}
+	if n == 0 {
+		return ""
+	}
 	var sb strings.Builder
-	for _, part := range response.Candidates[0].Content.Parts {
+	sb.Grow(n)
+	for _, part := range parts {
 		sb.WriteString(part.transcriptText())
 	}
 	return sb.String()

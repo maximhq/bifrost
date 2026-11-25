@@ -1,7 +1,9 @@
 package gemini
 
 import (
+	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -165,4 +167,50 @@ func TestPartAudioTranscriptionRoundTrips(t *testing.T) {
 	require.NoError(t, sonic.Unmarshal(data, &out))
 	require.NotNil(t, out.AudioTranscription)
 	assert.Equal(t, "hi", out.AudioTranscription.Text)
+}
+
+// A single-part response, the common case, must hand back the part's string
+// without copying the transcript.
+func TestTranscriptTextSinglePartIsZeroCopy(t *testing.T) {
+	transcript := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 1024)
+	for _, part := range []*Part{
+		{AudioTranscription: &PartAudioTranscription{Text: transcript}},
+		{Text: transcript},
+	} {
+		resp := &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Parts: []*Part{part}}}}}
+		got := resp.transcriptText()
+		require.Equal(t, transcript, got)
+		assert.Equal(t, unsafe.StringData(transcript), unsafe.StringData(got), "single-part transcript was copied")
+		assert.Zero(t, testing.AllocsPerRun(10, func() { _ = resp.transcriptText() }))
+	}
+}
+
+func benchmarkTranscriptionResponse(parts int, size int) *GenerateContentResponse {
+	chunk := strings.Repeat("a", size/parts)
+	ps := make([]*Part, parts)
+	for i := range ps {
+		ps[i] = &Part{AudioTranscription: &PartAudioTranscription{Text: chunk}}
+	}
+	return &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: string(RoleModel), Parts: ps}}}}
+}
+
+func BenchmarkToBifrostTranscriptionResponse(b *testing.B) {
+	for _, bc := range []struct {
+		name  string
+		parts int
+		size  int
+	}{
+		{"1part_1KB", 1, 1 << 10},
+		{"1part_1MB", 1, 1 << 20},
+		{"4parts_1KB", 4, 1 << 10},
+		{"4parts_1MB", 4, 1 << 20},
+	} {
+		resp := benchmarkTranscriptionResponse(bc.parts, bc.size)
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = resp.ToBifrostTranscriptionResponse()
+			}
+		})
+	}
 }
