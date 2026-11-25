@@ -103,7 +103,12 @@ func (route *compiledRoute) matchedHeaders(headers, operator map[string]string) 
 	return out
 }
 
+// headerValue returns the value the upstream receives for a header: the relay's own extra header
+// when it sets one, since a caller cannot replace it, else the caller's.
 func headerValue(name string, headers, operator map[string]string) (string, bool) {
+	if v, ok := operator[name]; ok {
+		return v, true
+	}
 	if v, ok := headers[name]; ok {
 		return v, true
 	}
@@ -111,9 +116,6 @@ func headerValue(name string, headers, operator map[string]string) (string, bool
 		if strings.EqualFold(k, name) {
 			return v, true
 		}
-	}
-	if v, ok := operator[name]; ok {
-		return v, true
 	}
 	return "", false
 }

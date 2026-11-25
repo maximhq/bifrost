@@ -257,13 +257,19 @@ func (e *endpoint) buildRequest(ctx *schemas.BifrostContext, req upstreamRequest
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating request", err)
 	}
-	// Headers are applied in a passthrough call's order (SetExtraHeaders, then the caller's safe
-	// headers, then the key): the operator's extra headers, the caller's x-bf-eh-* headers over them,
-	// the caller's own headers over both, and the credential last, so it always wins. A job poll is
-	// the operator's own request and takes no caller headers.
-	providerUtils.SetExtraHeadersHTTP(context.Background(), httpReq, e.cfg.ExtraHeaders, nil)
+	// A caller's x-bf-eh-* headers go first, its own headers over them, then the relay's extra headers
+	// over both, so a caller can never replace one. A job poll is the operator's own request: its
+	// headers name the operation and the job (X-Amz-Target, a {{job.id}} header), so they go over the
+	// relay's extra headers instead. The credential is applied last either way.
 	providerUtils.StripCallerAuthForInsecureURL(requestURL, req.headers)
-	if !req.internal {
+	setExtraHeaders := func() {
+		for k, v := range e.cfg.ExtraHeaders {
+			httpReq.Header.Set(k, v.GetValue())
+		}
+	}
+	if req.internal {
+		setExtraHeaders()
+	} else {
 		for k, values := range callerExtraHeaders(ctx) {
 			if e.dropsCallerHeader(k, false, true) {
 				continue
@@ -282,6 +288,9 @@ func (e *endpoint) buildRequest(ctx *schemas.BifrostContext, req upstreamRequest
 			continue
 		}
 		httpReq.Header.Set(k, v)
+	}
+	if !req.internal {
+		setExtraHeaders()
 	}
 	// net/http negotiates gzip and decodes the reply itself only when the request carries no
 	// Accept-Encoding of its own; one set here would hand the caller compressed bytes with
@@ -314,7 +323,19 @@ func (e *endpoint) dropsCallerHeader(name string, internal, extra bool) bool {
 			return true
 		}
 	}
+	// A method override would run a call as a method the relay neither routed nor priced it as (a GET
+	// sent on as a POST is never charged), so a caller's is dropped. A job poll's is the operator's
+	// own configuration (an API that reads its status with an override), so it is kept.
+	if _, override := relayMethodOverrideHeaders[lower]; override && !internal {
+		return true
+	}
 	return !internal && e.cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && strings.HasPrefix(lower, "x-amz-") && lower != "x-amz-target"
+}
+
+// relayMethodOverrideHeaders are the headers some APIs (Google's among them) read to run a call as
+// another method than the one it was sent with.
+var relayMethodOverrideHeaders = map[string]struct{}{
+	"x-http-method-override": {}, "x-http-method": {}, "x-method-override": {},
 }
 
 // relayHopByHopHeaders are the connection-level names SetExtraHeaders filters out of a passthrough

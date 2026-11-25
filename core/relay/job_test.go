@@ -306,7 +306,7 @@ func TestStatusCheckJobIDReversesThePollTemplate(t *testing.T) {
 	// A header the relay adds itself is what the upstream gets, so the caller need not send it.
 	tenant := schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}", Headers: map[string]string{"X-Tenant": "acme"}}
 	assert.Equal(t, "j1", matchStatusCheck(tenant, map[string]string{"x-tenant": "acme"}, req("GET", "/jobs/j1", nil, "")))
-	assert.Empty(t, matchStatusCheck(tenant, map[string]string{"x-tenant": "acme"}, req("GET", "/jobs/j1", map[string]string{"x-tenant": "other"}, "")), "the caller's header wins, as on the wire")
+	assert.Equal(t, "j1", matchStatusCheck(tenant, map[string]string{"x-tenant": "acme"}, req("GET", "/jobs/j1", map[string]string{"x-tenant": "other"}, "")), "the relay's header wins, as on the wire")
 }
 
 // The depth guard refuses a 100,000-level body with one count, before any key scan.

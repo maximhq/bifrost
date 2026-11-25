@@ -201,9 +201,9 @@ func TestRouteCheckAllowlist(t *testing.T) {
 	assert.False(t, allowed("GET", "/jobs/42/status"))
 }
 
-// A route matches on the header value that is actually sent: the operator's extra header when one
-// replaces the caller's, so a caller cannot select a cheaper route by naming another operation;
-// and a Go SDK caller's header names match whatever their casing.
+// A route matches on the header value that is actually sent: the operator's extra header wins over
+// the caller's, so a caller cannot select a cheaper route by naming another operation; and a Go SDK
+// caller's header names match whatever their casing.
 func TestMatchRouteSeesSentHeaders(t *testing.T) {
 	cfg := &schemas.RelayConfig{SkipRouteCheck: true, Routes: []schemas.RelayRouteConfig{
 		{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}, Billable: schemas.Ptr(false)},
@@ -212,7 +212,7 @@ func TestMatchRouteSeesSentHeaders(t *testing.T) {
 	operator := &endpoint{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(nil, nil), operatorHeaders: map[string]string{"x-amz-target": "Textract.AnalyzeDocument"}}
 	route := operator.matchRoute("POST", "/", map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis"})
 	require.NotNil(t, route)
-	assert.False(t, route.billable, "the caller's header replaces the operator's on the wire, as on a passthrough call, so its route matches")
+	assert.True(t, route.billable, "the operator's header is what is sent, so the caller's cheaper operation does not select its route")
 	route = operator.matchRoute("POST", "/", nil)
 	require.NotNil(t, route)
 	assert.True(t, route.billable, "with no caller copy the operator's header is what is sent")

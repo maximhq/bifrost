@@ -67,6 +67,13 @@ func TestQueryCredentialHandling(t *testing.T) {
 	assert.Equal(t, "x=%zz", strip("api_key=caller&x=%zz"), "a value that does not decode is the upstream's business; the credential is still stripped")
 	assert.Equal(t, "x=%zz", strip("x=%zz"), "a value that does not decode cannot hide the parameter")
 	assert.Equal(t, "q=1", strip("api_key&q=1"), "a bare name without a value is the credential too")
+	assert.Equal(t, "q=1", strip("API_KEY=caller&q=1"), "any letter case is the credential, so the caller's is not forwarded")
+	assert.Equal(t, "q=1", strip("q=1&Api_Key=caller"))
+	assert.Equal(t, "q=1", strip("API%5FKEY=caller&q=1"), "encoded and in another case")
+	// A Kelvin sign is not k to any API, so it is left alone raw and encoded alike.
+	assert.Equal(t, "API_\u212aEY=caller&q=1", strip("API_\u212aEY=caller&q=1"))
+	assert.Equal(t, "API_%E2%84%AAEY=caller&q=1", strip("API_%E2%84%AAEY=caller&q=1"))
+	assert.Equal(t, "API_%E2%84%AAEY=caller&q=%20", strip("API_%E2%84%AAEY=caller&q=%20"), "with a % elsewhere too")
 	_, err := provider.stripCallerQueryCredential("api%zzkey=caller&q=1")
 	require.Error(t, err, "a name that cannot be decoded may spell the parameter, so it is refused")
 	_, err = provider.stripCallerQueryCredential("q=1;api_key=caller")
@@ -91,4 +98,22 @@ func TestAuthHeaderName(t *testing.T) {
 	assert.Equal(t, "x-api-key", authProvider(schemas.RelayAuthConfig{Type: schemas.RelayAuthHeader, HeaderName: "x-api-key"}).authHeader())
 	assert.Equal(t, "", authProvider(schemas.RelayAuthConfig{Type: schemas.RelayAuthQuery, QueryParam: "k"}).authHeader())
 	assert.Equal(t, "", authProvider(schemas.RelayAuthConfig{Type: schemas.RelayAuthNone}).authHeader())
+}
+
+// BenchmarkStripCallerQueryCredential measures the per-request query scan under query auth: a query
+// without the parameter, one with it in another case, and one with a percent-encoded name.
+func BenchmarkStripCallerQueryCredential(b *testing.B) {
+	provider := authProvider(schemas.RelayAuthConfig{Type: schemas.RelayAuthQuery, QueryParam: "api_key"})
+	for _, q := range []struct{ name, query string }{
+		{"absent", "q=search+terms&page=2&limit=50"},
+		{"other case", "q=search+terms&API_KEY=caller&page=2"},
+		{"encoded", "q=search%20terms&api%5Fkey=caller"},
+	} {
+		b.Run(q.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = provider.stripCallerQueryCredential(q.query)
+			}
+		})
+	}
 }

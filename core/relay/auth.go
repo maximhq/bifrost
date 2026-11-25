@@ -41,7 +41,7 @@ func (e *endpoint) stripCallerQueryCredential(rawQuery string) (string, error) {
 	param := e.authQuery()
 	// Cheap gate: the parameter name appears literally, or something is percent-encoded and may
 	// spell it. Everything else is left untouched without a scan.
-	if param == "" || rawQuery == "" || (!strings.Contains(rawQuery, param) && !strings.Contains(rawQuery, "%")) {
+	if param == "" || rawQuery == "" || (!containsFold(rawQuery, param) && !strings.Contains(rawQuery, "%")) {
 		return rawQuery, nil
 	}
 	if strings.Contains(rawQuery, ";") {
@@ -55,7 +55,10 @@ func (e *endpoint) stripCallerQueryCredential(rawQuery string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("query string cannot be parsed: %w", err)
 		}
-		if decoded == param {
+		// Any ASCII letter case: a caller's KEY= next to the relay's key= would forward its own
+		// credential. ASCII only, as the gate above folds, so a raw and an encoded name always agree
+		// (strings.EqualFold would also fold a Kelvin sign into k, which no API reads as one).
+		if asciiEqualFold(decoded, param) {
 			dropped = true
 			continue
 		}
@@ -151,4 +154,39 @@ func bedrockKeyConfig(c *schemas.RelayAWSCredential) *schemas.BedrockKeyConfig {
 		cfg.SecretKey = *c.SecretKey
 	}
 	return cfg
+}
+
+// containsFold reports whether substr is in s ignoring ASCII letter case, without allocating. The
+// first byte is compared before the whole name, so a query without it costs one pass of byte checks.
+func containsFold(s, substr string) bool {
+	if substr == "" {
+		return true
+	}
+	first := lowerASCII(substr[0])
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if lowerASCII(s[i]) == first && strings.EqualFold(s[i:i+len(substr)], substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func lowerASCII(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
+// asciiEqualFold reports whether a and b are equal ignoring ASCII letter case only.
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if lowerASCII(a[i]) != lowerASCII(b[i]) {
+			return false
+		}
+	}
+	return true
 }
