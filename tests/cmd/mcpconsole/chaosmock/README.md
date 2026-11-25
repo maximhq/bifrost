@@ -385,6 +385,7 @@ default `user`). That identity is what calls are attributed to, so
 | `deny` | every authorization ends in `access_denied` |
 | `access_ttl` | access token lifetime (default `1h`) |
 | `rotate_refresh` | a refresh issues a new refresh token and retires the old one |
+| `revoke_on_reuse` | with `rotate_refresh`, presenting a retired refresh token revokes the whole grant (counted in `reuse_revocations`), as Notion's MCP server does |
 | `metadata_documents` | `"advertised"` or `"accepted"`: an https `client_id` is a Client ID Metadata Document, fetched at its first authorization; `"advertised"` also sets `client_id_metadata_document_supported` in the metadata |
 | `metadata_documents_via` | the base URL documents are fetched through, sending the document's own host and scheme as `Host` and `X-Forwarded-Proto` (default: the document URL itself) |
 
@@ -402,7 +403,7 @@ session needs only its id, and mcp-go sends it without credentials.
 
 `GET /control/<s>` gains `oauth`: clients, grants with their current tokens,
 counters (`prm`, `metadata`, `register`, `authorize`, `token_code`,
-`token_refresh`, `token_errors`, `rejected`, `metadata_document_fetches`),
+`token_refresh`, `token_errors`, `rejected`, `reuse_revocations`, `metadata_document_fetches`),
 queued failures, and a log of the
 last 500 requests with the raw secrets, verifier result (`pkce`), resource and
 tokens presented and issued. A grant's earlier access tokens stay valid until

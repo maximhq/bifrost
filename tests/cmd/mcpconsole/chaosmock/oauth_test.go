@@ -399,6 +399,147 @@ func TestRefreshRotationExpiryAndRevocation(t *testing.T) {
 	}
 }
 
+// TestRevokeOnReuseEndsTheGrant: with revoke_on_reuse, presenting a rotated-away
+// refresh token revokes the whole grant, so the current refresh token and access
+// token stop working too.
+func TestRevokeOnReuseEndsTheGrant(t *testing.T) {
+	fleet, srv := oauthFleet(t, map[string]any{
+		"rotate_refresh":  true,
+		"revoke_on_reuse": true,
+		"clients": []any{
+			map[string]any{"client_id": "c1", "client_secret": "s1"},
+			map[string]any{"client_id": "c2", "client_secret": "s2"},
+		},
+	})
+	code, verifier := codeFor(t, fleet, "dana")
+	first := exchange(t, fleet, code, verifier)
+	refresh := func(rt string) (int, map[string]any) {
+		return token(t, fleet, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt},
+			"client_id": {"c1"}, "client_secret": {"s1"}})
+	}
+	status, second := refresh(first["refresh_token"].(string))
+	if status != http.StatusOK {
+		t.Fatalf("expected the first refresh to rotate, got %d %v", status, second)
+	}
+
+	// Another client presenting the retired token is refused without touching the grant.
+	status, out := token(t, fleet, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {first["refresh_token"].(string)},
+		"client_id": {"c2"}, "client_secret": {"s2"}})
+	if status != http.StatusBadRequest || out["error_description"] != "refresh token was issued to another client" {
+		t.Fatalf("expected another client's retired token to be refused, got %d %v", status, out)
+	}
+	if status, _ := mcpStatus(t, fleet, second["access_token"].(string)); status != http.StatusOK {
+		t.Fatalf("another client's reuse must leave the grant working, got %d", status)
+	}
+
+	status, out = refresh(first["refresh_token"].(string))
+	if status != http.StatusBadRequest || out["error_description"] != "retired refresh token reused; grant revoked" {
+		t.Fatalf("expected the reused refresh token to revoke the grant, got %d %v", status, out)
+	}
+	// Presenting it again is refused the same way but revokes no further grant.
+	if status, out := refresh(first["refresh_token"].(string)); status != http.StatusBadRequest || out["error_description"] != "retired refresh token reused; grant revoked" {
+		t.Errorf("expected a repeated reuse to be refused, got %d %v", status, out)
+	}
+	if status, out := refresh(second["refresh_token"].(string)); status != http.StatusBadRequest || out["error_description"] != "refresh token revoked" {
+		t.Errorf("the current refresh token must die with the grant, got %d %v", status, out)
+	}
+	if status, _ := mcpStatus(t, fleet, second["access_token"].(string)); status != http.StatusUnauthorized {
+		t.Errorf("the current access token must die with the grant, got %d", status)
+	}
+
+	// A retired token of a grant revoked by other means is refused without counting a reuse revocation.
+	code, verifier = codeFor(t, fleet, "erin")
+	erinFirst := exchange(t, fleet, code, verifier)
+	if status, out := refresh(erinFirst["refresh_token"].(string)); status != http.StatusOK {
+		t.Fatalf("expected erin's refresh to rotate, got %d %v", status, out)
+	}
+	post(t, fleet.URL()+"/control/alpha/oauth/revoke", map[string]any{"identity": "erin"})
+	if status, out := refresh(erinFirst["refresh_token"].(string)); status != http.StatusBadRequest || out["error_description"] != "retired refresh token reused; grant revoked" {
+		t.Errorf("expected a reuse on a revoked grant to be refused, got %d %v", status, out)
+	}
+
+	state := srv.State().OAuth
+	if state.Counters.ReuseRevocations != 1 || len(state.Grants) != 2 || !state.Grants[0].Revoked || !state.Grants[1].Revoked {
+		t.Errorf("expected one grant revoked by reuse and erin's revoked by hand, got counters %+v grants %+v", state.Counters, state.Grants)
+	}
+
+	// Without rotation there is nothing to reuse, so the setting is refused.
+	resp, _ := post(t, fleet.URL()+"/control/alpha/auth", map[string]any{"auth": map[string]any{"oauth": map[string]any{"revoke_on_reuse": true}}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected revoke_on_reuse without rotate_refresh to be refused, got %d", resp.StatusCode)
+	}
+}
+
+// TestRevokeOnReuseConcurrentRedemption: two refreshes that present the same live
+// token at once are answered one after the other, so exactly one rotates it and
+// the other is a reuse that revokes the grant. Cross-replica refresh tests rely on
+// this.
+func TestRevokeOnReuseConcurrentRedemption(t *testing.T) {
+	fleet, srv := oauthFleet(t, map[string]any{
+		"rotate_refresh":  true,
+		"revoke_on_reuse": true,
+		"clients":         []any{map[string]any{"client_id": "c1", "client_secret": "s1"}},
+	})
+	code, verifier := codeFor(t, fleet, "dana")
+	live := exchange(t, fleet, code, verifier)["refresh_token"].(string)
+
+	post(t, fleet.URL()+"/control/alpha/gates/set", map[string]any{"gate": map[string]any{"name": "token", "endpoint": chaosmock.GateEndpointToken}})
+	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {live}, "client_id": {"c1"}, "client_secret": {"s1"}}
+	type answer struct {
+		status int
+		body   map[string]any
+		err    error
+	}
+	answers := make(chan answer, 2)
+	for range 2 {
+		go func() {
+			resp, err := http.PostForm(fleet.URL()+"/s/alpha/as/token", form)
+			if err != nil {
+				answers <- answer{err: err}
+				return
+			}
+			defer resp.Body.Close()
+			var body map[string]any
+			err = json.NewDecoder(resp.Body).Decode(&body)
+			answers <- answer{status: resp.StatusCode, body: body, err: err}
+		}()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		gates := srv.State().Gates
+		if len(gates) == 1 && gates[0].Waiting == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected both refreshes held at the gate, got %+v", gates)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	post(t, fleet.URL()+"/control/alpha/gates/open", map[string]any{"name": "token"})
+
+	var rotated, reused int
+	for range 2 {
+		a := <-answers
+		switch {
+		case a.err != nil:
+			t.Fatalf("refresh failed: %v", a.err)
+		case a.status == http.StatusOK:
+			rotated++
+		case a.status == http.StatusBadRequest && a.body["error_description"] == "retired refresh token reused; grant revoked":
+			reused++
+		default:
+			t.Errorf("unexpected answer %d %v", a.status, a.body)
+		}
+	}
+	if rotated != 1 || reused != 1 {
+		t.Errorf("expected one rotation and one reuse, got %d and %d", rotated, reused)
+	}
+	state := srv.State().OAuth
+	if state.Counters.ReuseRevocations != 1 || len(state.Grants) != 1 || !state.Grants[0].Revoked {
+		t.Errorf("expected the grant revoked once by reuse, got counters %+v grants %+v", state.Counters, state.Grants)
+	}
+}
+
 // TestForgetDropsDynamicClientsAndTheirGrants: oauth/forget stands in for an
 // authorization server that stops recognising the clients it registered. The
 // forgotten client is unknown at authorize and its grants end; a client

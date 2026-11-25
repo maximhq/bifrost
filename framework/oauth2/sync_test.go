@@ -3,6 +3,7 @@ package oauth2
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -47,6 +48,7 @@ type testConfigStore struct {
 	oauthFlows   map[string]*tables.TableMCPOauthFlow
 	clientConfig *configstore.ClientConfig
 	mcpClients   map[string]*schemas.MCPClientConfig
+	locks        map[string]tables.TableDistributedLock
 }
 
 func newTestConfigStore() *testConfigStore {
@@ -54,7 +56,77 @@ func newTestConfigStore() *testConfigStore {
 		oauthConfigs: make(map[string]*tables.TableOauthConfig),
 		oauthTokens:  make(map[string]*tables.TableMCPOauthToken),
 		oauthFlows:   make(map[string]*tables.TableMCPOauthFlow),
+		locks:        make(map[string]tables.TableDistributedLock),
 	}
+}
+
+// TryAcquireLock and the methods below are the in-memory equivalent of the
+// real store's distributed_locks table, shared by every provider on the store.
+func (s *testConfigStore) TryAcquireLock(_ context.Context, lock *tables.TableDistributedLock) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, held := s.locks[lock.LockKey]; held {
+		return false, nil
+	}
+	s.locks[lock.LockKey] = *lock
+	return true, nil
+}
+
+func (s *testConfigStore) GetLock(_ context.Context, lockKey string) (*tables.TableDistributedLock, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, held := s.locks[lockKey]
+	if !held {
+		return nil, nil
+	}
+	return &lock, nil
+}
+
+func (s *testConfigStore) UpdateLockExpiry(_ context.Context, lockKey, holderID string, expiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, held := s.locks[lockKey]
+	if !held || lock.HolderID != holderID {
+		return configstore.ErrLockNotHeld
+	}
+	lock.ExpiresAt = expiresAt
+	s.locks[lockKey] = lock
+	return nil
+}
+
+func (s *testConfigStore) ReleaseLock(_ context.Context, lockKey, holderID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, held := s.locks[lockKey]
+	if !held || lock.HolderID != holderID {
+		return false, nil
+	}
+	delete(s.locks, lockKey)
+	return true, nil
+}
+
+func (s *testConfigStore) CleanupExpiredLocks(_ context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var removed int64
+	for key, lock := range s.locks {
+		if time.Now().After(lock.ExpiresAt) {
+			delete(s.locks, key)
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+func (s *testConfigStore) CleanupExpiredLockByKey(_ context.Context, lockKey string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, held := s.locks[lockKey]
+	if !held || !time.Now().After(lock.ExpiresAt) {
+		return false, nil
+	}
+	delete(s.locks, lockKey)
+	return true, nil
 }
 
 func (s *testConfigStore) GetOauthConfigByID(_ context.Context, id string) (*tables.TableOauthConfig, error) {
@@ -155,6 +227,20 @@ func (s *testConfigStore) MarkOauthUserTokenNeedsReauthByID(_ context.Context, t
 	token.Status = "needs_reauth"
 	token.StatusReason = reason
 	return nil
+}
+
+// MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged is the test-double equivalent of the real
+// store's conditional flip: only an active row still holding the redeemed refresh token.
+func (s *testConfigStore) MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged(_ context.Context, tokenID, redeemedRefreshToken, reason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := s.oauthTokens[tokenID]
+	if token == nil || token.Status != "active" || token.RefreshToken != redeemedRefreshToken {
+		return false, nil
+	}
+	token.Status = "needs_reauth"
+	token.StatusReason = reason
+	return true, nil
 }
 
 // MarkOauthTokenNeedsReauthIfUnrenewable is the test-double equivalent of the real store's
@@ -841,6 +927,154 @@ func TestRefreshAccessToken_CASLostToConcurrentActiveRefresh_ReturnsNilNotExpire
 	require.NoError(t, err)
 	assert.Equal(t, "active", token.Status)
 	assert.Equal(t, "winner-access-token", token.AccessToken, "the winning concurrent refresh's credentials must survive, not this attempt's discarded result")
+	assert.Equal(t, "winner-refresh-token", token.RefreshToken)
+}
+
+// rotatingGrant stands in for an authorization server that rotates the refresh
+// token on every use and revokes the whole grant when a retired one comes back,
+// as Notion's MCP server does. The first redemption waits until every ready
+// channel is closed, then until a second request arrives or hold elapses, so
+// two unserialized refreshes overlap.
+type rotatingGrant struct {
+	mu       sync.Mutex
+	current  string
+	issued   int
+	revoked  bool
+	requests atomic.Int32
+	second   chan struct{}
+}
+
+func newRotatingGrantServer(t *testing.T, initialRefreshToken string, hold time.Duration, ready ...<-chan struct{}) (*httptest.Server, *rotatingGrant) {
+	t.Helper()
+	grant := &rotatingGrant{current: initialRefreshToken, second: make(chan struct{})}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch grant.requests.Add(1) {
+		case 1:
+			for _, read := range ready {
+				select {
+				case <-read:
+				case <-time.After(5 * time.Second):
+				}
+			}
+			select {
+			case <-grant.second:
+			case <-time.After(hold):
+			}
+		case 2:
+			close(grant.second)
+		}
+		require.NoError(t, r.ParseForm())
+		presented := r.PostForm.Get("refresh_token")
+		grant.mu.Lock()
+		defer grant.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if grant.revoked || presented != grant.current {
+			grant.revoked = true
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant", "error_description": "refresh token reused; grant revoked"})
+			return
+		}
+		grant.issued++
+		grant.current = fmt.Sprintf("rotated-refresh-%d", grant.issued)
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  fmt.Sprintf("rotated-access-%d", grant.issued),
+			"refresh_token": grant.current,
+			"token_type":    "bearer",
+			"expires_in":    3600,
+		})
+	}))
+	t.Cleanup(server.Close)
+	return server, grant
+}
+
+// readSignalStore signals once when its replica first reads a token row.
+type readSignalStore struct {
+	*testConfigStore
+	once sync.Once
+	read chan struct{}
+}
+
+func (s *readSignalStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
+	s.once.Do(func() { close(s.read) })
+	return s.testConfigStore.GetOauthTokenByID(ctx, id)
+}
+
+// Two replicas sharing one store refresh the same token at once against an
+// upstream that revokes the grant on refresh-token reuse: only one may redeem it.
+// The upstream answers only after both replicas have read the row, so each saw
+// the refresh token before either could rotate it.
+func TestRefreshAccessToken_ReplicasSerializeRotatingRefresh(t *testing.T) {
+	store := newTestConfigStore()
+	views := []*readSignalStore{{testConfigStore: store, read: make(chan struct{})}, {testConfigStore: store, read: make(chan struct{})}}
+	server, grant := newRotatingGrantServer(t, "refresh-token", 300*time.Millisecond, views[0].read, views[1].read)
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	replicaA, replicaB := NewOAuth2Provider(views[0], logger), NewOAuth2Provider(views[1], logger)
+	replicaA.retryBaseDelay, replicaB.retryBaseDelay = time.Millisecond, time.Millisecond
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, replica := range []*OAuth2Provider{replicaA, replicaB} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = replica.RefreshAccessToken(context.Background(), tokenID)
+		}()
+	}
+	wg.Wait()
+
+	assert.NoError(t, errs[0])
+	assert.NoError(t, errs[1])
+	assert.Equal(t, int32(1), grant.requests.Load(), "only one replica may redeem the refresh token")
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.Equal(t, "active", token.Status, "status_reason=%q", token.StatusReason)
+	assert.Equal(t, "rotated-refresh-1", token.RefreshToken)
+	assert.Equal(t, "rotated-access-1", token.AccessToken)
+	grant.mu.Lock()
+	defer grant.mu.Unlock()
+	assert.False(t, grant.revoked, "the upstream grant must not be revoked")
+}
+
+// A refresh rejected for a refresh token the row no longer holds must not mark
+// the row needs_reauth: whoever moved it on left it with working credentials.
+func TestRefreshAccessToken_RejectedAfterRowMovedOn_KeepsRowActive(t *testing.T) {
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-unblock
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
+	provider := newTestProvider(store)
+
+	var refreshErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		refreshErr = provider.RefreshAccessToken(context.Background(), tokenID)
+	}()
+	<-started
+	store.mu.Lock()
+	winner := *store.oauthTokens[tokenID]
+	winner.AccessToken = "winner-access-token"
+	winner.RefreshToken = "winner-refresh-token"
+	store.oauthTokens[tokenID] = &winner
+	store.mu.Unlock()
+	close(unblock)
+	<-done
+
+	assert.NoError(t, refreshErr)
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.Equal(t, "active", token.Status)
+	assert.Empty(t, token.StatusReason)
 	assert.Equal(t, "winner-refresh-token", token.RefreshToken)
 }
 

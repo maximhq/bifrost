@@ -1041,6 +1041,51 @@ func TestMarkOauthTokenNeedsReauthIfUnrenewable_DeletesTheCallersDiscovery(t *te
 	}
 }
 
+// MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged flips only an active row still holding the
+// redeemed refresh token, so a rejection for a token another writer already replaced never
+// overwrites working credentials. The flip deletes the caller's discovery.
+func TestMarkOauthTokenNeedsReauthIfRefreshTokenUnchanged(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableMCPOauthToken{}))
+	ctx := context.Background()
+	future := time.Now().Add(time.Hour)
+	for _, tc := range []struct {
+		id, status, storedRefreshToken string
+		wantMarked                     bool
+	}{
+		{"still-holds-redeemed", "active", "rt-redeemed", true},
+		{"refreshed-elsewhere", "active", "rt-newer", false},
+		{"already-needs-reauth", "needs_reauth", "rt-redeemed", false},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			user := "user-" + tc.id
+			require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
+				ID: tc.id, AuthMode: string(schemas.MCPAuthModeUser), UserID: &user, MCPClientID: "notion",
+				OauthConfigID: "cfg-" + tc.id, Status: tc.status, AccessToken: "at", RefreshToken: tc.storedRefreshToken,
+				TokenType: "Bearer", ExpiresAt: &future, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}).Error)
+			require.NoError(t, s.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, user, "notion", "search")))
+
+			marked, err := s.MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged(ctx, tc.id, "rt-redeemed", "provider rejected the refresh (HTTP 400, invalid_grant)")
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantMarked, marked)
+			stored, err := s.GetOauthTokenByID(ctx, tc.id)
+			require.NoError(t, err)
+			discovery, err := s.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, user, "notion")
+			require.NoError(t, err)
+			if tc.wantMarked {
+				assert.Equal(t, "needs_reauth", stored.Status)
+				assert.Equal(t, "provider rejected the refresh (HTTP 400, invalid_grant)", stored.StatusReason)
+				assert.Nil(t, discovery, "the discovery goes with the token it was made with")
+			} else {
+				assert.Equal(t, tc.status, stored.Status, "a row that moved on is left alone")
+				assert.Equal(t, tc.storedRefreshToken, stored.RefreshToken)
+				assert.NotNil(t, discovery)
+			}
+		})
+	}
+}
+
 // oauth2StoreBackend pairs a backend name with a fresh OAuth2-capable store.
 type oauth2StoreBackend struct {
 	name string

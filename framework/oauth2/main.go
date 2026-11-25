@@ -36,6 +36,11 @@ const (
 	// rounded up with headroom so a stuck upstream can't wedge the
 	// singleflight entry forever.
 	refreshAccessTokenTimeout = 2 * time.Minute
+	// refreshLockRetryInterval paces the wait for another replica's refresh of
+	// the same token; the wait is capped at refreshAccessTokenTimeout, the
+	// longest that refresh can hold the lock.
+	refreshLockRetryInterval = 200 * time.Millisecond
+	refreshLockKeyPrefix     = "oauth_token_refresh:"
 	// terminalStatusUpdateTimeout bounds the detached needs_reauth status
 	// write after a permanent OAuth rejection (see refreshAccessTokenLocked).
 	terminalStatusUpdateTimeout = 10 * time.Second
@@ -58,15 +63,12 @@ type OAuth2Provider struct {
 	mu             sync.RWMutex
 	retryBaseDelay time.Duration // base delay for token endpoint retry backoff; doubles each attempt (1×, 2×, 4×)
 
-	// refreshGroup serializes RefreshAccessToken per token ID instead of
-	// provider-wide: exchangeRefreshToken can make up to maxTokenRetries
-	// network attempts at networkTimeout each, and one slow identity
-	// provider's refresh must not stall every other token's refresh on this
-	// provider. Concurrent refreshes of the *same* token still collapse into
-	// a single call and share its result, which is what actually needs to
-	// be prevented (a racing double refresh_token redemption, most upstreams
-	// reject the second as replay).
+	// refreshGroup collapses concurrent refreshes of the same token ID in this
+	// process into one call; refreshLocks serializes them across replicas.
+	// Neither is provider-wide, so one slow identity provider's refresh does
+	// not stall every other token's refresh.
 	refreshGroup singleflight.Group
+	refreshLocks *configstore.DistributedLockManager
 	bindGroup    singleflight.Group // one authorization server check per oauth config at a time
 
 	// tempTokens, when non-nil and enabled in client config, is used by
@@ -127,9 +129,13 @@ func NewOAuth2Provider(configStore configstore.ConfigStore, logger schemas.Logge
 		logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 	}
 	SetLogger(logger)
+	refreshLocks := configstore.NewDistributedLockManager(configStore, logger,
+		configstore.WithRetryInterval(refreshLockRetryInterval),
+		configstore.WithMaxRetries(int(refreshAccessTokenTimeout/refreshLockRetryInterval)))
 	return &OAuth2Provider{
 		configStore:    configStore,
 		retryBaseDelay: time.Second,
+		refreshLocks:   refreshLocks,
 		userTokens:     newUserTokenCache(defaultUserTokenCacheCapacity),
 		idjagGrants:    newIDJAGGrantCache(defaultUserTokenCacheCapacity),
 	}
@@ -310,9 +316,7 @@ func (p *OAuth2Provider) GetAdminAccessToken(ctx context.Context, mcpClientID st
 // refreshAccessTokenTimeout) for whoever else still needs its result.
 func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, tokenID string) error {
 	ch := p.refreshGroup.DoChan(tokenID, func() (any, error) {
-		refreshCtx, cancel := context.WithTimeout(context.Background(), refreshAccessTokenTimeout)
-		defer cancel()
-		return nil, p.refreshAccessTokenLocked(refreshCtx, tokenID)
+		return nil, p.refreshAccessTokenAcrossReplicas(tokenID)
 	})
 	select {
 	case res := <-ch:
@@ -322,17 +326,51 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, tokenID string)
 	}
 }
 
-// refreshAccessTokenLocked is RefreshAccessToken's body, run inside
-// p.refreshGroup.DoChan so concurrent refreshes of the same token ID
-// collapse into one call instead of each redeeming the refresh token
-// independently.
-func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID string) error {
+// refreshAccessTokenAcrossReplicas holds a per-token lock shared by every
+// replica on the config store while it refreshes, so two replicas never
+// redeem the same refresh token: an upstream that rotates refresh tokens
+// (Notion) revokes the whole grant when a retired one is presented again.
+// A replica that waited for the lock and finds the row moved on returns
+// without calling the upstream.
+func (p *OAuth2Provider) refreshAccessTokenAcrossReplicas(tokenID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*refreshAccessTokenTimeout)
+	defer cancel()
+	seen, err := p.configStore.GetOauthTokenByID(ctx, tokenID)
+	if err != nil {
+		return fmt.Errorf("failed to load oauth token: %w", err)
+	}
+	if seen == nil {
+		return fmt.Errorf("oauth token not found: %s", tokenID)
+	}
+	held, release, err := p.refreshLocks.Acquire(ctx, refreshLockKeyPrefix+tokenID)
+	if err != nil {
+		return fmt.Errorf("failed to acquire oauth token refresh lock: %w", err)
+	}
+	defer release()
+	refreshCtx, cancelRefresh := context.WithTimeout(held, refreshAccessTokenTimeout)
+	defer cancelRefresh()
+	return p.refreshAccessTokenLocked(refreshCtx, tokenID, seen.RefreshToken)
+}
+
+// refreshAccessTokenLocked is RefreshAccessToken's body, run under the
+// token's refresh lock. seenRefreshToken is the row's refresh token before
+// the lock was taken.
+func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID, seenRefreshToken string) error {
 	token, err := p.configStore.GetOauthTokenByID(ctx, tokenID)
 	if err != nil {
 		return fmt.Errorf("failed to load oauth token: %w", err)
 	}
 	if token == nil {
 		return fmt.Errorf("oauth token not found: %s", tokenID)
+	}
+	if token.RefreshToken != seenRefreshToken {
+		// Refreshed or reauthorized elsewhere while this call waited for the lock.
+		p.EvictUserTokenByID(token.ID)
+		if token.Status != "active" {
+			return inactiveTokenError(token)
+		}
+		logger.Debug("OAuth refresh skipped, already refreshed elsewhere: token_id=%s auth_mode=%s", token.ID, token.AuthMode)
+		return nil
 	}
 
 	// Token-exchange admin rows have no oauth_configs template; renewal runs
@@ -393,15 +431,21 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 			// the singleflight entry indefinitely if the store hangs.
 			statusCtx, cancel := context.WithTimeout(context.Background(), terminalStatusUpdateTimeout)
 			defer cancel()
-			if markErr := p.configStore.MarkOauthUserTokenNeedsReauthByID(statusCtx, token.ID, refreshRejectionReason(permErr)); markErr != nil {
+			// Gated on the redeemed refresh token: if the row moved on while this
+			// request was in flight, the rejection says nothing about its credentials.
+			marked, markErr := p.configStore.MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged(statusCtx, token.ID, token.RefreshToken, refreshRejectionReason(permErr))
+			if markErr != nil {
 				return fmt.Errorf("oauth refresh permanently rejected but status update failed (mcp_client=%s auth_mode=%s upstream_status=%d): %w",
 					token.MCPClientID, token.AuthMode, permErr.StatusCode, markErr)
+			}
+			if !marked {
+				return p.afterRowMovedOn(statusCtx, token)
 			}
 			// The row is no longer 'active'; drop any cached copy so lookups
 			// surface the re-auth requirement instead of a dead access token.
 			p.tokenWritten(ctx, token.ID)
-			logger.Debug("OAuth refresh permanently rejected; token marked needs_reauth: mcp_client=%s auth_mode=%s upstream_status=%d",
-				token.MCPClientID, token.AuthMode, permErr.StatusCode)
+			logger.Warn("OAuth refresh permanently rejected; token marked needs_reauth: token_id=%s mcp_client=%s auth_mode=%s upstream_status=%d reason=%q",
+				token.ID, token.MCPClientID, token.AuthMode, permErr.StatusCode, refreshRejectionReason(permErr))
 			return fmt.Errorf("refresh token rejected by upstream OAuth server, re-authentication required: %w", schemas.ErrOAuth2TokenExpired)
 		}
 		// Transient failure (5xx, network blip, non-permanent 400) — keep the
@@ -437,22 +481,13 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 		return fmt.Errorf("failed to update token: %w", err)
 	}
 	if !updated {
-		// The CAS was lost — someone else (another cluster node, a concurrent
-		// refresh, an explicit reauthorize) already moved refresh_token past
-		// what this attempt read. That's not necessarily bad news: drop any
-		// stale cached copy and reload the row fresh. If it's still active,
-		// the winner already supplied current credentials — this attempt's
-		// own (now-discarded) result was simply redundant, not a sign the
-		// credential is dead. Only report ErrOAuth2TokenExpired (which
-		// callers map to NeedsReauth) when the row is genuinely gone or
-		// landed in a non-active terminal state.
-		p.EvictUserTokenByID(token.ID)
-		reloaded, reloadErr := p.configStore.GetOauthTokenByID(ctx, token.ID)
-		if reloadErr == nil && reloaded != nil && reloaded.Status == "active" {
-			logger.Debug("OAuth refresh CAS lost but the row is still active (refreshed elsewhere): token_id=%s auth_mode=%s", token.ID, token.AuthMode)
-			return nil
-		}
-		return fmt.Errorf("token was reauthorized, rotated, or already refreshed elsewhere during this refresh, discarding this refresh: %w", schemas.ErrOAuth2TokenExpired)
+		// The CAS was lost: someone else (an explicit reauthorize, a rotation,
+		// or a replica whose lock lease lapsed) already moved refresh_token
+		// past what this attempt read. Under the refresh lock only a lapsed
+		// lease lets another refresh in, and the credentials this attempt
+		// received are discarded, so it is logged at info.
+		logger.Info("OAuth refresh CAS lost; discarding this refresh's credentials: token_id=%s mcp_client=%s auth_mode=%s", token.ID, token.MCPClientID, token.AuthMode)
+		return p.afterRowMovedOn(ctx, token)
 	}
 
 	// Drop any cached copy of the old access token; the next lookup reads
@@ -462,6 +497,19 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 	logger.Debug("OAuth token refreshed successfully: token_id=%s auth_mode=%s", token.ID, token.AuthMode)
 
 	return nil
+}
+
+// afterRowMovedOn is the outcome of a refresh whose write lost to another
+// writer: nil while the row is still active, since the winner supplied
+// current credentials, and ErrOAuth2TokenExpired once it is gone or left
+// 'active'.
+func (p *OAuth2Provider) afterRowMovedOn(ctx context.Context, token *tables.TableMCPOauthToken) error {
+	p.EvictUserTokenByID(token.ID)
+	reloaded, reloadErr := p.configStore.GetOauthTokenByID(ctx, token.ID)
+	if reloadErr == nil && reloaded != nil && reloaded.Status == "active" {
+		return nil
+	}
+	return fmt.Errorf("token was reauthorized, rotated, or already refreshed elsewhere during this refresh, discarding this refresh: %w", schemas.ErrOAuth2TokenExpired)
 }
 
 // ForceRefreshAccessToken resolves the MCP OAuth token row backing config —

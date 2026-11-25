@@ -63,6 +63,10 @@ type OAuthConfig struct {
 	// RotateRefresh issues a new refresh token on every refresh and retires
 	// the one presented.
 	RotateRefresh bool `json:"rotate_refresh,omitempty"`
+	// RevokeOnReuse, with RotateRefresh, revokes the whole grant when a
+	// refresh token it rotated away is presented again, as Notion's MCP
+	// server does.
+	RevokeOnReuse bool `json:"revoke_on_reuse,omitempty"`
 	// MetadataDocuments takes a client_id that is an https URL as a Client ID
 	// Metadata Document: the server fetches it at authorization, checks it and
 	// knows the client as a public one from then on. "advertised" also
@@ -88,6 +92,9 @@ type OAuthConfig struct {
 func (c *OAuthConfig) validate() error {
 	if c.Challenge != "" && c.Challenge != "bare" {
 		return fmt.Errorf(`oauth challenge must be "bare" or empty, got %q`, c.Challenge)
+	}
+	if c.RevokeOnReuse && !c.RotateRefresh {
+		return fmt.Errorf("oauth revoke_on_reuse needs rotate_refresh")
 	}
 	if c.MetadataDocuments != "" && c.MetadataDocuments != "advertised" && c.MetadataDocuments != "accepted" {
 		return fmt.Errorf(`oauth metadata_documents must be "advertised", "accepted" or empty, got %q`, c.MetadataDocuments)
@@ -164,6 +171,8 @@ type OAuthCounters struct {
 	TokenClientCredentials int64 `json:"token_client_credentials"`
 	TokenErrors            int64 `json:"token_errors"`
 	Rejected               int64 `json:"rejected"`
+	// ReuseRevocations counts grants revoked by RevokeOnReuse.
+	ReuseRevocations int64 `json:"reuse_revocations"`
 	// MetadataDocumentFetches counts Client ID Metadata Documents fetched,
 	// whether or not they were accepted.
 	MetadataDocumentFetches int64 `json:"metadata_document_fetches"`
@@ -234,6 +243,7 @@ type oauthState struct {
 	grants   []*oauthGrant
 	access   map[string]*oauthAccess
 	refresh  map[string]*oauthGrant // live refresh tokens
+	retired  map[string]*oauthGrant // refresh tokens rotated away
 	fails    []OAuthFail
 	counters OAuthCounters
 	log      []OAuthLogEntry
@@ -270,6 +280,7 @@ func newOAuthState() *oauthState {
 		codes:   map[string]*oauthCode{},
 		access:  map[string]*oauthAccess{},
 		refresh: map[string]*oauthGrant{},
+		retired: map[string]*oauthGrant{},
 	}
 }
 
@@ -466,6 +477,7 @@ func (o *oauthState) issueAccess(g *oauthGrant, ttl time.Duration) string {
 func (o *oauthState) issueRefresh(g *oauthGrant) string {
 	if g.refreshToken != "" {
 		delete(o.refresh, g.refreshToken)
+		o.retired[g.refreshToken] = g
 	}
 	token := "rt_" + randomID()
 	o.refresh[token] = g
@@ -1104,6 +1116,19 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request, cfg *OAuthCo
 		g, ok = s.oauth.refresh[entry.RefreshToken]
 		switch {
 		case !ok:
+			retired := s.oauth.retired[entry.RefreshToken]
+			if retired != nil && retired.clientID != client.ClientID {
+				fail(http.StatusBadRequest, "invalid_grant", "refresh token was issued to another client")
+				return
+			}
+			if retired != nil && cfg.RevokeOnReuse {
+				if !retired.revoked {
+					retired.revoked = true
+					s.oauth.counters.ReuseRevocations++
+				}
+				fail(http.StatusBadRequest, "invalid_grant", "retired refresh token reused; grant revoked")
+				return
+			}
 			fail(http.StatusBadRequest, "invalid_grant", "unknown or retired refresh token")
 			return
 		case g.revoked:

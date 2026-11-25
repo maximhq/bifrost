@@ -856,6 +856,11 @@ type ConfigStore interface {
 	// still active, has no refresh token and its access token has expired, so a reauthorize that
 	// landed in between is not overwritten. Reports whether the row was flipped.
 	MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Context, tokenID string, reason string) (bool, error)
+	// MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged flips one token row to 'needs_reauth' only
+	// while it is still active and still holds redeemedRefreshToken, so a rejected refresh never
+	// overwrites credentials another writer has already moved the row on to. Reports whether the
+	// row was flipped.
+	MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged(ctx context.Context, tokenID, redeemedRefreshToken, reason string) (bool, error)
 	// MarkTokensNeedsReauthByConfigID flips status to 'needs_reauth' on every
 	// token row bound to an OAuth config in one bulk UPDATE, with no
 	// auth_mode filter — rotating an oauth_configs row's client_id/client_secret
