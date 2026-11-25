@@ -180,7 +180,9 @@ const server = http.createServer((req, res) => {
 		if (req.headers.authorization !== "Bearer test-key") {
 			return send(401, {}, errorBody("Incorrect API key provided", "invalid_request_error", "invalid_api_key"));
 		}
-		const id = decodeURIComponent(retrieve[1]);
+		let id;
+		try { id = decodeURIComponent(retrieve[1]); }
+		catch { return send(400, {}, errorBody("malformed response id", "invalid_request_error", "invalid_response_id")); }
 		if (!Object.hasOwn(responsesStreamIds, id)) {
 			return send(404, {}, errorBody(`unknown fixture response ${id}`, "invalid_request_error", "response_not_found"));
 		}
