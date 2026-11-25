@@ -389,6 +389,13 @@ func (s *Store) freeze() error {
 	return nil
 }
 
+// DB is the database the store loaded from and refreshes read, nil before LoadAll and for a store
+// loaded from records. A caller that has to read rows the way a refresh will, before it runs, reads
+// them here.
+func (s *Store) DB() *gorm.DB {
+	return s.db
+}
+
 // LoadAll fixes the registry and fills every collection from db. The kinds' rows are read
 // concurrently, since no loader reads another collection; the records are then published page by
 // page in dependency order, IDs shared as each page is published, exactly as a kind-by-kind load

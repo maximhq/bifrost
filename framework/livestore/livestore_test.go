@@ -1048,6 +1048,20 @@ func TestRefreshKindKeepsInternedValuesUntilItPublishes(t *testing.T) {
 	}
 }
 
+// TestDBIsTheDatabaseLoadAllRead pins DB's load-state contract: nil before LoadAll, then the
+// database LoadAll read, so a caller that reads rows before a refresh reads them where it will.
+func TestDBIsTheDatabaseLoadAllRead(t *testing.T) {
+	f := newFixture(t)
+	f.seed(t)
+	if db := f.s.DB(); db != nil {
+		t.Fatalf("DB before LoadAll = %p, want nil", db)
+	}
+	f.load(t)
+	if db := f.s.DB(); db != f.db {
+		t.Fatalf("DB after LoadAll = %p, want the database it loaded from, %p", db, f.db)
+	}
+}
+
 // TestLoadRecords checks file-only boot: records from the caller, the database calls that fail
 // without a database, and a Remove, which needs none and drops the record from every index.
 func TestLoadRecords(t *testing.T) {
@@ -1062,6 +1076,9 @@ func TestLoadRecords(t *testing.T) {
 	}
 	if err := s.LoadRecords(ctx, []Record{Rec(groups, &group{ID: "g1", Name: "n1"})}); err != nil {
 		t.Fatal(err)
+	}
+	if db := s.DB(); db != nil {
+		t.Fatalf("DB after LoadRecords = %p, want nil: a store loaded from records has no database", db)
 	}
 	if g, ok := groups.Get("g1"); !ok || g.Name != "n1" {
 		t.Fatalf("Get after LoadRecords = %+v, %v", g, ok)
