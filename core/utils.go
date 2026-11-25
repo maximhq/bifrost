@@ -575,6 +575,10 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+	// A plugin's sub-request is never priced for the caller: its cost already
+	// reaches the caller's result through the plugin's own metadata. False, not
+	// cleared, so the global send-back-cost setting does not apply either.
+	ctx.SetValue(schemas.BifrostContextKeySendBackCost, false)
 }
 
 // PrepareContextForInternalRequest marks ctx as an internal sub-request issued

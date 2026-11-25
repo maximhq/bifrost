@@ -984,6 +984,20 @@ func TestClearContextForInternalRequestShedsEveryKeyOnFreshChild(t *testing.T) {
 	}
 }
 
+// A plugin's sub-request must not be priced for the caller. The override is set
+// to false rather than cleared so the global send-back-cost setting cannot turn
+// it back on, and the caller's own request keeps its choice.
+func TestClearContextForInternalRequestTurnsSendBackCostOff(t *testing.T) {
+	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	caller.SetValue(schemas.BifrostContextKeySendBackCost, true)
+	internal := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+
+	ClearContextForInternalRequest(internal)
+
+	assert.Equal(t, false, internal.Value(schemas.BifrostContextKeySendBackCost))
+	assert.Equal(t, true, caller.Value(schemas.BifrostContextKeySendBackCost))
+}
+
 // This test lives in the core package, not beside the Anthropic provider, for one
 // reason: ClearContextForInternalRequest is here. The provider's streaming
 // prompt-usage witness is carried on the request context, and
