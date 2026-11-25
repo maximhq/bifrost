@@ -1,11 +1,16 @@
 package datasheet
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/oruk"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -3860,6 +3865,10 @@ func TestCalculateCost_TranscriptionProviderComputedCostPassthrough(t *testing.T
 
 func TestCalculateCost_OrukFourier2BTranscriptionDurationPricing(t *testing.T) {
 	// Oruk Fourier 2B hosted API rate: $0.0080/minute ($0.0001333333.../second).
+	// This verifies that an end-to-end OrukProvider.Transcription response carrying
+	// only top-level "duration" (no upstream "usage" object) is backfilled to
+	// Usage.Seconds and billed accurately when the operator supplies the rate via
+	// local pricing or datasheet override.
 	perSecond := 0.008 / 60.0
 	pricing := configstoreTables.TableModelPricing{
 		Model:                      "oruk-fourier-2b",
@@ -3871,33 +3880,52 @@ func TestCalculateCost_OrukFourier2BTranscriptionDurationPricing(t *testing.T) {
 		makeKeyNormalized(pricing.Model, pricing.Provider, pricing.Mode): pricing,
 	})
 
-	var usage60 schemas.TranscriptionUsage
-	require.NoError(t, json.Unmarshal([]byte(`{"type":"duration","seconds":60}`), &usage60))
-	resp60 := &schemas.BifrostResponse{
-		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{
-			Text:  "one minute sample",
-			Usage: &usage60,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.TranscriptionRequest,
-				RoutingInfo: routingInfoFor(schemas.Oruk, "oruk-fourier-2b"),
-			},
-		},
-	}
-	assert.InDelta(t, 0.008, s.CalculateCost(resp60, nil), 1e-12)
+	durations := []float64{60.0, 30.0}
+	expectedCosts := []float64{0.008, 0.004}
+	callIdx := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		dur := durations[callIdx]
+		callIdx++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"sample transcript","duration":` + jsonNumber(dur) + `,"language":"en"}`))
+	}))
+	defer server.Close()
 
-	var usage30 schemas.TranscriptionUsage
-	require.NoError(t, json.Unmarshal([]byte(`{"type":"duration","seconds":30}`), &usage30))
-	resp30 := &schemas.BifrostResponse{
-		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{
-			Text:  "half minute sample",
-			Usage: &usage30,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.TranscriptionRequest,
-				RoutingInfo: routingInfoFor(schemas.Oruk, "oruk-fourier-2b"),
-			},
+	provider, err := oruk.NewOrukProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        server.URL,
+			DefaultRequestTimeoutInSeconds: 10,
+			AllowPrivateNetwork:            true,
 		},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-oruk-key"), Models: []string{"*"}}
+	for i, wantCost := range expectedCosts {
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 5*time.Second)
+		format := "verbose_json"
+		trResp, bErr := provider.Transcription(ctx, key, &schemas.BifrostTranscriptionRequest{
+			Provider: schemas.Oruk,
+			Model:    "oruk-fourier-2b",
+			Input:    &schemas.TranscriptionInput{File: []byte("RIFF\x00\x00\x00\x00WAVEfmt "), Filename: "sample.wav"},
+			Params:   &schemas.TranscriptionParameters{ResponseFormat: &format},
+		})
+		cancel()
+		require.Nil(t, bErr)
+		require.NotNil(t, trResp.Usage, "OrukProvider must backfill Usage from top-level duration")
+		require.NotNil(t, trResp.Usage.Seconds)
+		assert.InDelta(t, durations[i], *trResp.Usage.Seconds, 1e-12)
+
+		trResp.ExtraFields.RequestType = schemas.TranscriptionRequest
+		trResp.ExtraFields.RoutingInfo = routingInfoFor(schemas.Oruk, "oruk-fourier-2b")
+		resp := &schemas.BifrostResponse{TranscriptionResponse: trResp}
+		assert.InDelta(t, wantCost, s.CalculateCost(resp, nil), 1e-12)
 	}
-	assert.InDelta(t, 0.004, s.CalculateCost(resp30, nil), 1e-12)
+}
+
+func jsonNumber(v float64) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 // Video/3D provider-reported cost hangs off VideoGenerationResponse.Usage.Cost. Runware reports an

@@ -5,8 +5,13 @@
 package oruk
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -25,6 +30,10 @@ const defaultModel = "oruk-fourier-2b"
 
 // maxAudioBytes matches Oruk's 30 MiB upload ceiling.
 const maxAudioBytes = 30 * 1024 * 1024
+
+// maxMultipartOverheadBytes bounds non-file multipart headers and form fields
+// when inspecting a streamed large-payload upload.
+const maxMultipartOverheadBytes = 1 * 1024 * 1024
 
 type catalogModel struct {
 	ID   string
@@ -137,6 +146,32 @@ func (provider *OrukProvider) ListModels(ctx *schemas.BifrostContext, keys []sch
 	)
 }
 
+func newBadRequestError(message string) *schemas.BifrostError {
+	status := http.StatusBadRequest
+	errType := "invalid_request_error"
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &status,
+		Error: &schemas.ErrorField{
+			Type:    &errType,
+			Message: message,
+		},
+	}
+}
+
+func newPayloadTooLargeError(message string) *schemas.BifrostError {
+	status := http.StatusRequestEntityTooLarge
+	errType := "invalid_request_error"
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &status,
+		Error: &schemas.ErrorField{
+			Type:    &errType,
+			Message: message,
+		},
+	}
+}
+
 func normalizeOrukLanguage(raw string) (string, *schemas.BifrostError) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -149,17 +184,10 @@ func normalizeOrukLanguage(raw string) (string, *schemas.BifrostError) {
 		return "en-US", nil
 	case "en-gb":
 		return "en-GB", nil
+	case "auto":
+		return "auto", nil
 	default:
-		status := http.StatusBadRequest
-		errType := "invalid_request_error"
-		return "", &schemas.BifrostError{
-			IsBifrostError: true,
-			StatusCode:     &status,
-			Error: &schemas.ErrorField{
-				Type:    &errType,
-				Message: fmt.Sprintf("oruk only supports English transcription (en, en-US, en-GB); got %q", raw),
-			},
-		}
+		return "", newBadRequestError(fmt.Sprintf("oruk only supports English transcription (en, en-US, en-GB, auto); got %q", raw))
 	}
 }
 
@@ -168,20 +196,13 @@ func normalizeOrukResponseFormat(raw string) (string, *schemas.BifrostError) {
 	if trimmed == "" {
 		return "", nil
 	}
-	switch strings.ToLower(trimmed) {
+	// Require exact lowercase values matching schemas.IsPlainTextTranscriptionFormat
+	// and OpenAI's case-sensitive response_format enum so core backfill stays consistent.
+	switch trimmed {
 	case "json", "verbose_json", "text":
-		return strings.ToLower(trimmed), nil
+		return trimmed, nil
 	default:
-		status := http.StatusBadRequest
-		errType := "invalid_request_error"
-		return "", &schemas.BifrostError{
-			IsBifrostError: true,
-			StatusCode:     &status,
-			Error: &schemas.ErrorField{
-				Type:    &errType,
-				Message: fmt.Sprintf("oruk supports response_format values json, verbose_json, or text; got %q", raw),
-			},
-		}
+		return "", newBadRequestError(fmt.Sprintf("oruk supports lowercase response_format values json, verbose_json, or text; got %q", raw))
 	}
 }
 
@@ -190,19 +211,10 @@ func normalizeOrukResponseFormat(raw string) (string, *schemas.BifrostError) {
 // (file, model, response_format, and optional English language).
 func sanitizeTranscriptionRequest(request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionRequest, *schemas.BifrostError) {
 	if request == nil || request.Input == nil || len(request.Input.File) == 0 {
-		return nil, providerUtils.NewBifrostOperationError("transcription input is not provided", nil)
+		return nil, newBadRequestError("transcription input is not provided")
 	}
 	if len(request.Input.File) > maxAudioBytes {
-		status := http.StatusRequestEntityTooLarge
-		errType := "invalid_request_error"
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			StatusCode:     &status,
-			Error: &schemas.ErrorField{
-				Type:    &errType,
-				Message: fmt.Sprintf("audio file exceeds Oruk's 30 MiB limit (%d bytes)", len(request.Input.File)),
-			},
-		}
+		return nil, newPayloadTooLargeError(fmt.Sprintf("audio file exceeds Oruk's 30 MiB limit (%d bytes)", len(request.Input.File)))
 	}
 
 	sanitized := *request
@@ -236,15 +248,218 @@ func sanitizeTranscriptionRequest(request *schemas.BifrostTranscriptionRequest) 
 	return &sanitized, nil
 }
 
+// sanitizeLargePayloadMultipart enforces Oruk's 30 MiB ceiling and strict field allowlist
+// (file, model, language, response_format) when Bifrost large-payload mode streams the
+// multipart request body via context rather than populating request.Input.File.
+func sanitizeLargePayloadMultipart(ctx *schemas.BifrostContext, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionRequest, *schemas.BifrostError) {
+	if contentLength, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadContentLength).(int); ok && contentLength > maxAudioBytes+maxMultipartOverheadBytes {
+		return nil, newPayloadTooLargeError(fmt.Sprintf("audio payload exceeds Oruk's 30 MiB limit (%d bytes)", contentLength))
+	}
+
+	contentType, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadContentType).(string)
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.HasPrefix(strings.ToLower(mediaType), "multipart/") || params["boundary"] == "" {
+		return nil, newBadRequestError("oruk transcription requires a multipart/form-data request body")
+	}
+
+	reader, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader)
+	mr := multipart.NewReader(io.LimitReader(reader, maxAudioBytes+maxMultipartOverheadBytes+1), params["boundary"])
+
+	var (
+		model          string
+		language       string
+		responseFormat string
+		filename       string
+		fileBytes      []byte
+		hasFile        bool
+	)
+
+	for {
+		part, nextErr := mr.NextPart()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			return nil, newBadRequestError(fmt.Sprintf("failed to read multipart transcription body: %v", nextErr))
+		}
+
+		name := part.FormName()
+		switch name {
+		case "file":
+			data, readErr := io.ReadAll(io.LimitReader(part, maxAudioBytes+1))
+			_ = part.Close()
+			if readErr != nil {
+				return nil, newBadRequestError(fmt.Sprintf("failed to read audio file part: %v", readErr))
+			}
+			if len(data) > maxAudioBytes {
+				return nil, newPayloadTooLargeError("audio file exceeds Oruk's 30 MiB limit")
+			}
+			fileBytes = data
+			filename = part.FileName()
+			hasFile = true
+		case "model":
+			data, _ := io.ReadAll(io.LimitReader(part, 1024))
+			_ = part.Close()
+			rawModel := strings.TrimSpace(string(data))
+			if rawModel != "" {
+				_, parsedModel := schemas.ParseModelString(rawModel, schemas.Oruk)
+				if parsedModel != "" {
+					model = parsedModel
+				} else {
+					model = rawModel
+				}
+			}
+		case "language":
+			data, _ := io.ReadAll(io.LimitReader(part, 256))
+			_ = part.Close()
+			normalized, bErr := normalizeOrukLanguage(string(data))
+			if bErr != nil {
+				return nil, bErr
+			}
+			language = normalized
+		case "response_format":
+			data, _ := io.ReadAll(io.LimitReader(part, 256))
+			_ = part.Close()
+			normalized, bErr := normalizeOrukResponseFormat(string(data))
+			if bErr != nil {
+				return nil, bErr
+			}
+			responseFormat = normalized
+		default:
+			// Drop fields not accepted by Oruk's strict Fourier2bRequest schema.
+			_, _ = io.Copy(io.Discard, io.LimitReader(part, maxMultipartOverheadBytes))
+			_ = part.Close()
+		}
+	}
+
+	if !hasFile || len(fileBytes) == 0 {
+		return nil, newBadRequestError("transcription input is not provided")
+	}
+
+	if model == "" {
+		if request != nil && strings.TrimSpace(request.Model) != "" {
+			_, parsedModel := schemas.ParseModelString(strings.TrimSpace(request.Model), schemas.Oruk)
+			if parsedModel != "" {
+				model = parsedModel
+			} else {
+				model = strings.TrimSpace(request.Model)
+			}
+		} else {
+			model = defaultModel
+		}
+	}
+
+	var sanitizedBuf bytes.Buffer
+	outWriter := multipart.NewWriter(&sanitizedBuf)
+	if err := outWriter.WriteField("model", model); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to write model field", err)
+	}
+	if language != "" {
+		if err := outWriter.WriteField("language", language); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to write language field", err)
+		}
+	}
+	if responseFormat != "" {
+		if err := outWriter.WriteField("response_format", responseFormat); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to write response_format field", err)
+		}
+	}
+	if filename == "" {
+		filename = providerUtils.AudioFilenameFromBytes(fileBytes)
+	}
+	filePart, err := outWriter.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to create form file", err)
+	}
+	if _, err := filePart.Write(fileBytes); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to write audio bytes", err)
+	}
+	if err := outWriter.Close(); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to close multipart writer", err)
+	}
+
+	// Update context with the sanitized multipart stream so large-payload passthrough
+	// forwards strictly allowed Oruk fields with normalized model name.
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, bytes.NewReader(sanitizedBuf.Bytes()))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, sanitizedBuf.Len())
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, outWriter.FormDataContentType())
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, nil)
+
+	var outReq schemas.BifrostTranscriptionRequest
+	if request != nil {
+		outReq = *request
+	}
+	outReq.Provider = schemas.Oruk
+	outReq.Model = model
+	if language != "" || responseFormat != "" {
+		params := &schemas.TranscriptionParameters{}
+		if language != "" {
+			params.Language = &language
+		}
+		if responseFormat != "" {
+			params.ResponseFormat = &responseFormat
+		}
+		outReq.Params = params
+	}
+	if outReq.Params != nil && schemas.IsPlainTextTranscriptionFormat(outReq.Params.ResponseFormat) {
+		outReq.Input = &schemas.TranscriptionInput{
+			File:     fileBytes,
+			Filename: filename,
+		}
+	}
+	return &outReq, nil
+}
+
+// backfillDurationUsage ensures duration-only Oruk responses populate Usage.Seconds
+// so Bifrost's model catalog CalculateCost bills per-second audio duration accurately.
+func backfillDurationUsage(resp *schemas.BifrostTranscriptionResponse) {
+	if resp == nil || resp.Duration == nil {
+		return
+	}
+	if resp.Usage == nil {
+		seconds := *resp.Duration
+		resp.Usage = &schemas.TranscriptionUsage{
+			Type:    "duration",
+			Seconds: &seconds,
+		}
+		return
+	}
+	if resp.Usage.Seconds == nil {
+		seconds := *resp.Duration
+		resp.Usage.Seconds = &seconds
+		if resp.Usage.Type == "" {
+			resp.Usage.Type = "duration"
+		}
+	}
+}
+
 // Transcription performs batch English speech-to-text transcription using Oruk's
 // OpenAI-compatible /v1/audio/transcriptions endpoint.
 func (provider *OrukProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	sanitized, err := sanitizeTranscriptionRequest(request)
-	if err != nil {
-		return nil, err
+	var (
+		sanitized *schemas.BifrostTranscriptionRequest
+		err       *schemas.BifrostError
+	)
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		sanitized, err = sanitizeLargePayloadMultipart(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		// HandleOpenAITranscriptionRequest's large-payload branch JSON-unmarshals the
+		// upstream body; temporarily route plain-text responses through the standard
+		// path using the sanitized input so text output is preserved verbatim.
+		if sanitized.Params != nil && schemas.IsPlainTextTranscriptionFormat(sanitized.Params.ResponseFormat) {
+			ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, false)
+			defer ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+		}
+	} else {
+		sanitized, err = sanitizeTranscriptionRequest(request)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return openai.HandleOpenAITranscriptionRequest(
+	resp, bifrostErr := openai.HandleOpenAITranscriptionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"),
@@ -257,6 +472,11 @@ func (provider *OrukProvider) Transcription(ctx *schemas.BifrostContext, key sch
 		nil,
 		provider.logger,
 	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	backfillDurationUsage(resp)
+	return resp, nil
 }
 
 // TranscriptionStream is not supported by the Oruk provider.

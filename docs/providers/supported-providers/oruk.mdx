@@ -87,6 +87,8 @@ case schemas.Oruk:
 
 ## Transcription Example
 
+Direct gateway access (or `https://host/<prefix>/v1/audio/transcriptions` when Bifrost is deployed behind a reverse proxy with `server.base_path`):
+
 ```bash
 curl -X POST http://localhost:8080/v1/audio/transcriptions \
   -F "file=@sample.wav" \
@@ -95,9 +97,19 @@ curl -X POST http://localhost:8080/v1/audio/transcriptions \
   -F "response_format=json"
 ```
 
+With a configured `server.base_path` prefix:
+
+```bash
+curl -X POST https://host/<prefix>/v1/audio/transcriptions \
+  -F "file=@sample.wav" \
+  -F "model=oruk/oruk-fourier-2b" \
+  -F "language=en" \
+  -F "response_format=json"
+```
+
 ## Pricing Configuration
 
-For local pricing files or custom datasheet overrides, configure `oruk-fourier-2b` at `$0.0080/minute` (`0.00013333333333333334` USD per audio second):
+Oruk's `$0.0080/minute` rate is not yet bundled in the remote default datasheet (`https://getbifrost.ai/datasheet`). Until it is added upstream, production cost tracking requires configuring a local pricing file or datasheet override for `oruk/oruk-fourier-2b` (`0.00013333333333333334` USD per audio second):
 
 ```json
 {
