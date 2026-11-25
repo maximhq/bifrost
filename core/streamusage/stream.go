@@ -169,6 +169,36 @@ func toolJSON(id, name, kind, arguments string) string {
 // imageDataURL matches a generated image streamed as a base64 data URL in content.
 var imageDataURL = regexp.MustCompile(`data:image/[^;,\s]+;base64,[A-Za-z0-9+/=]*`)
 
+// anthropicPassthroughText returns the output text (text and tool input) and the thinking that the
+// Anthropic Messages SSE events of a passthrough stream carried. Claude passthrough streams are the
+// only passthrough streams whose usage is provisional, so their deltas are the only ones read.
+func anthropicPassthroughText(body []byte) (string, []string) {
+	var text, thinking strings.Builder
+	for line := range strings.Lines(string(body)) {
+		data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:")
+		if !ok {
+			continue
+		}
+		event := gjson.Parse(data)
+		if event.Get("type").String() != "content_block_delta" {
+			continue
+		}
+		delta := event.Get("delta")
+		switch delta.Get("type").String() {
+		case "text_delta":
+			text.WriteString(delta.Get("text").String())
+		case "input_json_delta":
+			text.WriteString(delta.Get("partial_json").String())
+		case "thinking_delta":
+			thinking.WriteString(delta.Get("thinking").String())
+		}
+	}
+	if thinking.Len() == 0 {
+		return text.String(), nil
+	}
+	return text.String(), []string{thinking.String()}
+}
+
 // responseText returns the output text a snapshot holds (content, refusals and
 // tool calls, with image data URLs removed) and its reasoning parts, which are
 // counted separately.
@@ -178,6 +208,9 @@ func responseText(response *schemas.BifrostResponse) (string, []string) {
 	}
 	if response.ResponsesResponse != nil {
 		return responsesOutputText(response.ResponsesResponse.Output)
+	}
+	if response.PassthroughResponse != nil {
+		return anthropicPassthroughText(response.PassthroughResponse.Body)
 	}
 	var text strings.Builder
 	var reasoning []string

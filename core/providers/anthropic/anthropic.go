@@ -3641,9 +3641,9 @@ func (provider *AnthropicProvider) PassthroughStream(
 	if idx := strings.IndexByte(strippedPath, '?'); idx >= 0 {
 		strippedPath = strippedPath[:idx]
 	}
-	var messagesUsage *AnthropicPassthroughStreamUsage
+	var observeMessages func(event []byte) *schemas.BifrostPassthroughUsage
 	if strings.HasSuffix(strippedPath, "/messages") {
-		messagesUsage = &AnthropicPassthroughStreamUsage{RequestBody: req.Body}
+		observeMessages = (&AnthropicPassthroughStreamUsage{RequestBody: req.Body}).StreamObserver(ctx)
 	}
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream,
@@ -3657,8 +3657,8 @@ func (provider *AnthropicProvider) PassthroughStream(
 			Logger:           provider.logger,
 			HasUsage:         HasAnthropicPassthroughUsage,
 			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
-				if messagesUsage != nil {
-					return messagesUsage.ObserveEvent(event)
+				if observeMessages != nil {
+					return observeMessages(event)
 				}
 				return ExtractAnthropicPassthroughUsage(req.Path, req.Body, event)
 			},

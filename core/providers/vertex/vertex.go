@@ -5281,9 +5281,8 @@ func (provider *VertexProvider) PassthroughStream(
 	usageOnProviderJob := false
 	switch PassthroughWireFormat(req.Path) {
 	case schemas.Anthropic:
-		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{}
 		hasUsage = anthropic.HasAnthropicPassthroughUsage
-		observe = messagesUsage.ObserveEvent
+		observe = (&anthropic.AnthropicPassthroughStreamUsage{}).StreamObserver(ctx)
 	case schemas.Mistral:
 		hasUsage = openai.HasOpenAIPassthroughUsage
 		observe = func(event []byte) *schemas.BifrostPassthroughUsage {

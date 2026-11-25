@@ -157,6 +157,27 @@ type AnthropicPassthroughStreamUsage struct {
 	iterations []AnthropicUsage
 	container  *AnthropicResponseContainer
 	seen       bool
+	outputSeen bool // a top-level usage frame (message_delta) made the output count authoritative
+}
+
+// StreamObserver returns ObserveEvent for a stream on ctx that also marks the stream's usage
+// provisional, as the typed Anthropic stream handlers do: message_start's output count stands only
+// until a message_delta reports usage, so a stream cancelled before then has its output estimated
+// from the text it forwarded.
+func (a *AnthropicPassthroughStreamUsage) StreamObserver(ctx *schemas.BifrostContext) func(event []byte) *schemas.BifrostPassthroughUsage {
+	var marked, settled bool
+	return func(event []byte) *schemas.BifrostPassthroughUsage {
+		u := a.ObserveEvent(event)
+		switch {
+		case a.outputSeen && !settled:
+			settled = true
+			ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, false)
+		case a.seen && !a.outputSeen && !marked:
+			marked = true
+			ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, true)
+		}
+		return u
+	}
 }
 
 // anthropicPromptSplit is the prompt side of a usage frame: the counters that make up prompt_tokens.
@@ -223,6 +244,7 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 
 	a.seen = true
 	if topLevel {
+		a.outputSeen = true
 		// Only a delta with a non-zero prompt counter speaks for the prompt split, so the presence
 		// scan is skipped for output-only deltas.
 		if u.InputTokens != 0 || u.CacheReadInputTokens != 0 || u.CacheCreationInputTokens != 0 ||
