@@ -38,6 +38,7 @@ type BifrostConfig struct {
 	Tracer                   Tracer          // Tracer for distributed tracing (nil = NoOpTracer)
 	InitialPoolSize          int             // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
 	DropExcessRequests       bool            // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	SendBackCost             bool            // If true, responses and errors carry Bifrost's computed cost in ExtraFields.Cost
 	MCPConfig                *MCPConfig      // MCP (Model Context Protocol) configuration for tool integration
 	KeySelector              KeySelector     // Custom key selector function
 	KeyPoolFilter            KeyPoolFilter   // Optional hook to filter available keys before selection; nil = all keys eligible
@@ -341,6 +342,7 @@ const (
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool (per-request override — read by bifrost.go, never overwritten)
 	BifrostContextKeyPromptCacheAutoInject               BifrostContextKey = "bifrost-prompt-cache-auto-inject"                 // bool (per-request override of prompt_cache.auto_inject — read by bifrost.go, never overwritten)
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool (per-request override — read by bifrost.go, never overwritten)
+	BifrostContextKeySendBackCost                        BifrostContextKey = "bifrost-send-back-cost"                           // bool (per-request override of SendBackCost — read by responsecost.go, set to false on plugin sub-requests)
 	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
 	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
@@ -1667,6 +1669,228 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	return &BifrostResponseExtraFields{}
 }
 
+// WithCost returns a copy of r whose active response variant carries cost in
+// ExtraFields.Cost. Post-hook plugins may still read r from their own
+// goroutines, so r itself is never written: the envelope and the variant struct
+// that holds ExtraFields are both copied, and everything below them is shared.
+// It returns r unchanged when r is nil or has no variant with ExtraFields
+// (LiveSession). The variant order matches GetExtraFields.
+func (r *BifrostResponse) WithCost(cost *BifrostCost) *BifrostResponse {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	switch {
+	case r.ListModelsResponse != nil:
+		sub := *r.ListModelsResponse
+		sub.ExtraFields.Cost = cost
+		out.ListModelsResponse = &sub
+	case r.ModelRetrieveResponse != nil:
+		sub := *r.ModelRetrieveResponse
+		sub.ExtraFields.Cost = cost
+		out.ModelRetrieveResponse = &sub
+	case r.TextCompletionResponse != nil:
+		sub := *r.TextCompletionResponse
+		sub.ExtraFields.Cost = cost
+		out.TextCompletionResponse = &sub
+	case r.ChatResponse != nil:
+		sub := *r.ChatResponse
+		sub.ExtraFields.Cost = cost
+		out.ChatResponse = &sub
+	case r.ResponsesResponse != nil:
+		sub := *r.ResponsesResponse
+		sub.ExtraFields.Cost = cost
+		out.ResponsesResponse = &sub
+	case r.ResponsesStreamResponse != nil:
+		sub := *r.ResponsesStreamResponse
+		sub.ExtraFields.Cost = cost
+		out.ResponsesStreamResponse = &sub
+	case r.ResponsesDeleteResponse != nil:
+		sub := *r.ResponsesDeleteResponse
+		sub.ExtraFields.Cost = cost
+		out.ResponsesDeleteResponse = &sub
+	case r.ResponsesInputItemsResponse != nil:
+		sub := *r.ResponsesInputItemsResponse
+		sub.ExtraFields.Cost = cost
+		out.ResponsesInputItemsResponse = &sub
+	case r.CountTokensResponse != nil:
+		sub := *r.CountTokensResponse
+		sub.ExtraFields.Cost = cost
+		out.CountTokensResponse = &sub
+	case r.CompactionResponse != nil:
+		sub := *r.CompactionResponse
+		sub.ExtraFields.Cost = cost
+		out.CompactionResponse = &sub
+	case r.EmbeddingResponse != nil:
+		sub := *r.EmbeddingResponse
+		sub.ExtraFields.Cost = cost
+		out.EmbeddingResponse = &sub
+	case r.RerankResponse != nil:
+		sub := *r.RerankResponse
+		sub.ExtraFields.Cost = cost
+		out.RerankResponse = &sub
+	case r.DecisionResponse != nil:
+		sub := *r.DecisionResponse
+		sub.ExtraFields.Cost = cost
+		out.DecisionResponse = &sub
+	case r.OCRResponse != nil:
+		sub := *r.OCRResponse
+		sub.ExtraFields.Cost = cost
+		out.OCRResponse = &sub
+	case r.SpeechResponse != nil:
+		sub := *r.SpeechResponse
+		sub.ExtraFields.Cost = cost
+		out.SpeechResponse = &sub
+	case r.SpeechStreamResponse != nil:
+		sub := *r.SpeechStreamResponse
+		sub.ExtraFields.Cost = cost
+		out.SpeechStreamResponse = &sub
+	case r.TranscriptionResponse != nil:
+		sub := *r.TranscriptionResponse
+		sub.ExtraFields.Cost = cost
+		out.TranscriptionResponse = &sub
+	case r.TranscriptionStreamResponse != nil:
+		sub := *r.TranscriptionStreamResponse
+		sub.ExtraFields.Cost = cost
+		out.TranscriptionStreamResponse = &sub
+	case r.ImageGenerationResponse != nil:
+		sub := *r.ImageGenerationResponse
+		sub.ExtraFields.Cost = cost
+		out.ImageGenerationResponse = &sub
+	case r.ImageGenerationStreamResponse != nil:
+		sub := *r.ImageGenerationStreamResponse
+		sub.ExtraFields.Cost = cost
+		out.ImageGenerationStreamResponse = &sub
+	case r.FileUploadResponse != nil:
+		sub := *r.FileUploadResponse
+		sub.ExtraFields.Cost = cost
+		out.FileUploadResponse = &sub
+	case r.FileListResponse != nil:
+		sub := *r.FileListResponse
+		sub.ExtraFields.Cost = cost
+		out.FileListResponse = &sub
+	case r.FileRetrieveResponse != nil:
+		sub := *r.FileRetrieveResponse
+		sub.ExtraFields.Cost = cost
+		out.FileRetrieveResponse = &sub
+	case r.FileDeleteResponse != nil:
+		sub := *r.FileDeleteResponse
+		sub.ExtraFields.Cost = cost
+		out.FileDeleteResponse = &sub
+	case r.FileContentResponse != nil:
+		sub := *r.FileContentResponse
+		sub.ExtraFields.Cost = cost
+		out.FileContentResponse = &sub
+	case r.LiveContentResponse != nil:
+		sub := *r.LiveContentResponse
+		sub.ExtraFields.Cost = cost
+		out.LiveContentResponse = &sub
+	case r.VideoGenerationResponse != nil:
+		sub := *r.VideoGenerationResponse
+		sub.ExtraFields.Cost = cost
+		out.VideoGenerationResponse = &sub
+	case r.VideoDownloadResponse != nil:
+		sub := *r.VideoDownloadResponse
+		sub.ExtraFields.Cost = cost
+		out.VideoDownloadResponse = &sub
+	case r.VideoListResponse != nil:
+		sub := *r.VideoListResponse
+		sub.ExtraFields.Cost = cost
+		out.VideoListResponse = &sub
+	case r.VideoDeleteResponse != nil:
+		sub := *r.VideoDeleteResponse
+		sub.ExtraFields.Cost = cost
+		out.VideoDeleteResponse = &sub
+	case r.BatchCreateResponse != nil:
+		sub := *r.BatchCreateResponse
+		sub.ExtraFields.Cost = cost
+		out.BatchCreateResponse = &sub
+	case r.BatchListResponse != nil:
+		sub := *r.BatchListResponse
+		sub.ExtraFields.Cost = cost
+		out.BatchListResponse = &sub
+	case r.BatchRetrieveResponse != nil:
+		sub := *r.BatchRetrieveResponse
+		sub.ExtraFields.Cost = cost
+		out.BatchRetrieveResponse = &sub
+	case r.BatchCancelResponse != nil:
+		sub := *r.BatchCancelResponse
+		sub.ExtraFields.Cost = cost
+		out.BatchCancelResponse = &sub
+	case r.BatchDeleteResponse != nil:
+		sub := *r.BatchDeleteResponse
+		sub.ExtraFields.Cost = cost
+		out.BatchDeleteResponse = &sub
+	case r.BatchResultsResponse != nil:
+		sub := *r.BatchResultsResponse
+		sub.ExtraFields.Cost = cost
+		out.BatchResultsResponse = &sub
+	case r.ContainerCreateResponse != nil:
+		sub := *r.ContainerCreateResponse
+		sub.ExtraFields.Cost = cost
+		out.ContainerCreateResponse = &sub
+	case r.ContainerListResponse != nil:
+		sub := *r.ContainerListResponse
+		sub.ExtraFields.Cost = cost
+		out.ContainerListResponse = &sub
+	case r.ContainerRetrieveResponse != nil:
+		sub := *r.ContainerRetrieveResponse
+		sub.ExtraFields.Cost = cost
+		out.ContainerRetrieveResponse = &sub
+	case r.ContainerDeleteResponse != nil:
+		sub := *r.ContainerDeleteResponse
+		sub.ExtraFields.Cost = cost
+		out.ContainerDeleteResponse = &sub
+	case r.ContainerFileCreateResponse != nil:
+		sub := *r.ContainerFileCreateResponse
+		sub.ExtraFields.Cost = cost
+		out.ContainerFileCreateResponse = &sub
+	case r.ContainerFileListResponse != nil:
+		sub := *r.ContainerFileListResponse
+		sub.ExtraFields.Cost = cost
+		out.ContainerFileListResponse = &sub
+	case r.ContainerFileRetrieveResponse != nil:
+		sub := *r.ContainerFileRetrieveResponse
+		sub.ExtraFields.Cost = cost
+		out.ContainerFileRetrieveResponse = &sub
+	case r.ContainerFileContentResponse != nil:
+		sub := *r.ContainerFileContentResponse
+		sub.ExtraFields.Cost = cost
+		out.ContainerFileContentResponse = &sub
+	case r.ContainerFileDeleteResponse != nil:
+		sub := *r.ContainerFileDeleteResponse
+		sub.ExtraFields.Cost = cost
+		out.ContainerFileDeleteResponse = &sub
+	case r.PassthroughResponse != nil:
+		sub := *r.PassthroughResponse
+		sub.ExtraFields.Cost = cost
+		out.PassthroughResponse = &sub
+	case r.CachedContentCreateResponse != nil:
+		sub := *r.CachedContentCreateResponse
+		sub.ExtraFields.Cost = cost
+		out.CachedContentCreateResponse = &sub
+	case r.CachedContentListResponse != nil:
+		sub := *r.CachedContentListResponse
+		sub.ExtraFields.Cost = cost
+		out.CachedContentListResponse = &sub
+	case r.CachedContentRetrieveResponse != nil:
+		sub := *r.CachedContentRetrieveResponse
+		sub.ExtraFields.Cost = cost
+		out.CachedContentRetrieveResponse = &sub
+	case r.CachedContentUpdateResponse != nil:
+		sub := *r.CachedContentUpdateResponse
+		sub.ExtraFields.Cost = cost
+		out.CachedContentUpdateResponse = &sub
+	case r.CachedContentDeleteResponse != nil:
+		sub := *r.CachedContentDeleteResponse
+		sub.ExtraFields.Cost = cost
+		out.CachedContentDeleteResponse = &sub
+	default:
+		return r
+	}
+	return &out
+}
+
 // syncDeprecatedFromRoutingInfo backfills the deprecated Provider /
 // OriginalModelRequested / ResolvedModelUsed triplet on an ExtraFields-like
 // target from a finalized RoutingInfo, applying the rules documented on each
@@ -2133,6 +2357,7 @@ type BifrostResponseExtraFields struct {
 	CacheDebug                *BifrostCacheMetadata     `json:"cache_debug,omitempty"`
 	RoutingMetadata           *BifrostRoutingMetadata   `json:"routing_metadata,omitempty"`
 	GuardrailDebug            *BifrostGuardrailMetadata `json:"guardrail_debug,omitempty"`
+	Cost                      *BifrostCost              `json:"cost,omitempty"`         // Bifrost's computed cost, set only when send-back-cost is on
 	ParseErrors               []BatchError              `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
 	ConvertedRequestType      RequestType               `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string                  `json:"dropped_compat_plugin_params,omitempty"` // params dropped by the compat plugin based on model catalog
@@ -2330,6 +2555,17 @@ func (e *BifrostError) PopulateExtraFields(requestType RequestType, provider Mod
 	} else {
 		e.ExtraFields.ResolvedModelUsed = originalModelRequested
 	}
+}
+
+// WithCost returns a copy of e with ExtraFields.Cost set to cost. Post-hook
+// plugins may still hold e, so e itself is never written.
+func (e *BifrostError) WithCost(cost *BifrostCost) *BifrostError {
+	if e == nil {
+		return nil
+	}
+	out := *e
+	out.ExtraFields.Cost = cost
+	return &out
 }
 
 // Here, not in package bifrost, so EffectiveHTTPStatus can match them without a cycle.
@@ -2556,7 +2792,8 @@ type BifrostErrorExtraFields struct {
 	// the provider actually billed us for. Nil when the failure consumed no
 	// tokens (e.g. 401/403/429 before the model ran).
 	BilledUsage         *BifrostLLMUsage `json:"billed_usage,omitempty"`
-	NativeErrorResponse json.RawMessage  `json:"-"` // provider error body verbatim for native drop-in routes; never serialized
+	Cost                *BifrostCost     `json:"cost,omitempty"` // Bifrost's computed cost of the failed request, set only when send-back-cost is on
+	NativeErrorResponse json.RawMessage  `json:"-"`              // provider error body verbatim for native drop-in routes; never serialized
 
 	// ErrorType is this failure's normalized classification, declared by whoever
 	// produced the error. ClassifyErrorType returns it verbatim when set and infers
