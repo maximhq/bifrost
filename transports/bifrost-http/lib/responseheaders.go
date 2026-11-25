@@ -132,6 +132,12 @@ const (
 	HeaderBifrostRetryAfterMs            = "x-bifrost-retry-after-ms"
 )
 
+// HeaderBifrostCost is Bifrost's computed cost of the request in USD, sent when
+// send-back cost is on (client.send_back_cost or x-bf-send-back-cost) and the
+// request cost something. Written in every extra_fields placement mode, because
+// integration routes return provider-shaped bodies with no extra_fields.
+const HeaderBifrostCost = "x-bifrost-cost"
+
 // HeaderMCPSessionID is the MCP Streamable HTTP session id the /mcp gateway answers initialize with.
 // A browser MCP client reads it to send it back on later requests.
 const HeaderMCPSessionID = "mcp-session-id"
@@ -153,7 +159,7 @@ var ExposedResponseHeaders = strings.Join([]string{
 	HeaderBifrostCacheThreshold, HeaderBifrostCacheProviderUsed, HeaderBifrostCacheModelUsed, HeaderBifrostCacheInputTokens,
 	HeaderBifrostLatency, HeaderBifrostPricingRequestType, HeaderBifrostConvertedRequestType,
 	HeaderBifrostDroppedCompatParams, HeaderBifrostDroppedUnsupportedTools, HeaderBifrostPassthroughPath,
-	HeaderBifrostErrorType, HeaderBifrostRetryAfterMs, HeaderMCPSessionID,
+	HeaderBifrostErrorType, HeaderBifrostRetryAfterMs, HeaderMCPSessionID, HeaderBifrostCost,
 }, ", ")
 
 // extraFieldsKey is the top-level JSON key every Bifrost response and error carries its metadata under.
@@ -285,6 +291,7 @@ func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		Latency:                   extra.Latency,
 		ConvertedRequestType:      extra.ConvertedRequestType,
 		DroppedCompatPluginParams: extra.DroppedCompatPluginParams,
+		Cost:                      extra.Cost,
 	}, false)
 	if !ExtraFieldsInHeaders(ctx) {
 		return
@@ -388,7 +395,18 @@ func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 		}
 	}
 	applyCacheMetadataHeaders(ctx, extra.CacheDebug)
+	ApplyBifrostCostHeader(ctx, extra.Cost)
 	if ExtraFieldsInHeaders(ctx) {
 		applyExtraFieldsScalarHeaders(ctx, extra, latencyKnown)
 	}
+}
+
+// ApplyBifrostCostHeader writes x-bifrost-cost from a cost breakdown core
+// attached to a result. Nothing billable (nil or a total of zero) writes no
+// header, never a 0.
+func ApplyBifrostCostHeader(ctx *fasthttp.RequestCtx, cost *schemas.BifrostCost) {
+	if cost == nil || cost.TotalCost <= 0 {
+		return
+	}
+	ctx.Response.Header.Set(HeaderBifrostCost, strconv.FormatFloat(cost.TotalCost, 'f', -1, 64))
 }

@@ -389,6 +389,47 @@ func TestSendJSON_ExtraFieldsPlacement(t *testing.T) {
 	}
 }
 
+// The send-back cost is part of extra_fields: native responses and errors carry it
+// in the body in body mode, and in headers mode only x-bifrost-cost remains.
+func TestSendJSON_SendBackCostPlacement(t *testing.T) {
+	cost := &schemas.BifrostCost{InputCost: 0.25, TotalCost: 0.25}
+	resp := &schemas.BifrostChatResponse{
+		ID:          "chatcmpl-1",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Cost: cost},
+	}
+	bifrostErr := &schemas.BifrostError{
+		StatusCode:  new(fasthttp.StatusBadGateway),
+		Error:       &schemas.ErrorField{Message: "upstream failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest, Cost: cost},
+	}
+	const bodyCost = `"cost":{"input_cost":0.25,"total_cost":0.25}`
+
+	bodyCtx := &fasthttp.RequestCtx{}
+	SendJSON(bodyCtx, resp)
+	if !strings.Contains(string(bodyCtx.Response.Body()), bodyCost) {
+		t.Fatalf("body mode must carry extra_fields.cost, got %s", bodyCtx.Response.Body())
+	}
+	errorBodyCtx := &fasthttp.RequestCtx{}
+	SendBifrostError(errorBodyCtx, bifrostErr)
+	if !strings.Contains(string(errorBodyCtx.Response.Body()), bodyCost) {
+		t.Fatalf("an error must carry extra_fields.cost in body mode, got %s", errorBodyCtx.Response.Body())
+	}
+	if got := string(errorBodyCtx.Response.Header.Peek(lib.HeaderBifrostCost)); got != "0.25" {
+		t.Fatalf("error cost header got %q, want 0.25", got)
+	}
+
+	headersCtx := &fasthttp.RequestCtx{}
+	headersCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+	lib.ApplyBifrostResponseHeaders(headersCtx, nil, resp.ExtraFields)
+	SendJSON(headersCtx, resp)
+	if strings.Contains(string(headersCtx.Response.Body()), `"cost"`) {
+		t.Fatalf("headers mode must drop the cost from the body, got %s", headersCtx.Response.Body())
+	}
+	if got := string(headersCtx.Response.Header.Peek(lib.HeaderBifrostCost)); got != "0.25" {
+		t.Fatalf("cost header got %q, want 0.25", got)
+	}
+}
+
 // TestSendBifrostError_ExtraFieldsPlacement pins the same contract on native error responses.
 func TestSendBifrostError_ExtraFieldsPlacement(t *testing.T) {
 	newErr := func() *schemas.BifrostError {
