@@ -931,7 +931,6 @@
 			"tokensNotPricedValue": "输入 {{input}} / 输出 {{output}}",
 			"matchedRoute": "匹配的路由",
 			"parentLog": "父日志",
-			"jobPolls": "状态查询尝试次数",
 			"jobLastStatus": "最后的作业状态",
 			"jobLastHttpStatus": "最后一次轮询的 HTTP 状态",
 			"jobSettledAt": "结算时间",

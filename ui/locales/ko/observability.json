@@ -931,7 +931,6 @@
 			"tokensNotPricedValue": "입력 {{input}} / 출력 {{output}}",
 			"matchedRoute": "일치한 라우트",
 			"parentLog": "상위 로그",
-			"jobPolls": "상태 확인 시도 횟수",
 			"jobLastStatus": "마지막 작업 상태",
 			"jobLastHttpStatus": "마지막 폴링 HTTP 상태",
 			"jobSettledAt": "정산 시각",

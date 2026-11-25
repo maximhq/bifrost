@@ -727,12 +727,6 @@ export function RelayLogDetailSheet({
 											)}
 											{display.job_debug && (
 												<>
-													<LogEntryDetailsView
-														className="w-full"
-														label={t("relayLogs.detail.jobPolls")}
-														testId="relay-log-job-polls"
-														value={display.job_debug.polls.toLocaleString(getLocale())}
-													/>
 													{display.job_debug.last_status && (
 														<LogEntryDetailsView
 															className="w-full"
