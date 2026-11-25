@@ -514,10 +514,13 @@ func (provider *MistralProvider) Speech(ctx *schemas.BifrostContext, key schemas
 		return nil, providerUtils.EnrichError(ctx, parseErr, jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if mistralResp.AudioData == "" {
-		// An error body sent with a 200 (e.g. by a proxy) is reported as that error.
+		// An error body sent with a 200 (e.g. by a proxy) is reported as that error,
+		// as a 502: the upstream status would otherwise reach the client as a success.
 		var errorResp MistralErrorResponse
 		if sonic.Unmarshal(body, &errorResp) == nil && (errorResp.Error != nil || errorResp.Object == "error") {
-			return nil, providerUtils.EnrichError(ctx, ParseMistralError(resp), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+			parsedErr := ParseMistralError(resp)
+			parsedErr.StatusCode = schemas.Ptr(fasthttp.StatusBadGateway)
+			return nil, providerUtils.EnrichError(ctx, parsedErr, jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("Mistral speech response contained no audio", nil), jsonData, body, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}

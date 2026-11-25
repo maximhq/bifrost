@@ -132,6 +132,10 @@ func TestSpeechErrorBodyWithOK(t *testing.T) {
 			assert.Equal(t, "rate limited", bifrostErr.Error.Message)
 			require.NotNil(t, bifrostErr.Error.Type)
 			assert.Equal(t, "rate_limit_error", *bifrostErr.Error.Type)
+			// A 200 carrying an error must not resolve to a success status for the client.
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusBadGateway, *bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusBadGateway, bifrostErr.EffectiveHTTPStatus())
 		})
 	}
 }
@@ -262,4 +266,42 @@ func TestSpeechErrorKeepsRawResponse(t *testing.T) {
 			assert.JSONEq(t, upstream, string(raw))
 		})
 	}
+}
+
+// BenchmarkSpeech measures the request conversion and the response decode of the
+// speech path (MarshalSorted of the converted body, then the audio_data JSON and its
+// base64), with a ~30 KB mp3, the size of a short sentence.
+func BenchmarkSpeech(b *testing.B) {
+	req := &schemas.BifrostSpeechRequest{
+		Model: "voxtral-mini-tts-latest",
+		Input: &schemas.SpeechInput{Input: "Hello from the gateway, a short sentence to synthesize."},
+		Params: &schemas.SpeechParameters{
+			VoiceConfig:    &schemas.SpeechVoiceInput{Voice: schemas.Ptr("gb_jane_neutral")},
+			ResponseFormat: "mp3",
+		},
+	}
+	body := []byte(`{"audio_data":"` + base64.StdEncoding.EncodeToString([]byte(strings.Repeat("ID3fake-mp3-frame", 30<<10/17))) + `"}`)
+
+	b.Run("request", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := providerUtils.MarshalSorted(ToMistralSpeechRequest(req)); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("response", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.SetBytes(int64(len(body)))
+		b.ReportAllocs()
+		for b.Loop() {
+			var resp MistralSpeechResponse
+			if _, _, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &resp, nil, false, false); bifrostErr != nil {
+				b.Fatal(bifrostErr)
+			}
+			if _, err := base64.StdEncoding.DecodeString(resp.AudioData); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
