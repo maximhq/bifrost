@@ -347,7 +347,7 @@ func TestDurableResetEvidenceRestart(t *testing.T) {
 	resetRate, ok := store.ResetRateLimitAt(ctx, rate.ID, &tokenBoundary, nil)
 	require.True(t, ok)
 	require.NoError(t, store.ResetExpiredBudgets(ctx, []*configstoreTables.TableBudget{resetBudget}))
-	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*configstoreTables.TableRateLimit{resetRate}))
+	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*RateLimitReset{resetRate}))
 	restarted, err := NewLocalGovernanceStore(ctx, NewMockLogger(), fixture.configStore, nil, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, budgetBoundary.UnixNano(), restarted.LoadBudget(ctx, budget.ID).UsageResetEpoch)
@@ -425,7 +425,7 @@ func TestDurableResetEvidenceStaleDumpDimensions(t *testing.T) {
 	require.Equal(t, target.UnixNano(), loadedBudget.UsageResetEpoch)
 	resetRate, ok := store.ResetRateLimitAt(ctx, rate.ID, &target, nil)
 	require.True(t, ok)
-	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*configstoreTables.TableRateLimit{resetRate}))
+	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*RateLimitReset{resetRate}))
 	require.NoError(t, store.dumpRateLimitBatch(ctx, fixture.configStore.DB(), []rateLimitDumpRow{{
 		ID: rate.ID, TokenCurrentUsage: 99, TokenLastReset: target,
 		RequestCurrentUsage: 8, RequestLastReset: target, RequestUsageResetEpoch: target.UnixNano(),
@@ -467,4 +467,49 @@ func TestDurableResetPostgresSQL(t *testing.T) {
 	require.Contains(t, statements, "token_usage_reset_epoch = v.e")
 	require.Contains(t, statements, "t.token_usage_reset_epoch <= v.e")
 	require.Contains(t, statements, "::bigint")
+}
+
+// TestRateLimitResetPreservesCalendarAdoptedRequests checks that a token reset
+// leaves the adopted request boundary and usage for the ordinary dump.
+func TestRateLimitResetPreservesCalendarAdoptedRequests(t *testing.T) {
+	ctx := context.Background()
+	fixture := newDumpSkipFixture(t)
+	store := fixture.store
+	adoption := time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC)
+	old := adoption.Add(-24 * time.Hour)
+	hour, day := "1h", "1d"
+	rate := buildRateLimitWithUsage("adopted-requests", 1000, 17, 100, 19)
+	rate.CreatedAt, rate.TokenLastReset, rate.RequestLastReset = old, old, old
+	rate.TokenResetDuration, rate.RequestResetDuration = &hour, &day
+	require.NoError(t, fixture.configStore.CreateRateLimit(ctx, rate))
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+
+	require.True(t, store.AdoptRateLimitCalendarAlignmentInMemory(ctx, rate.ID, adoption))
+	adopted := store.LoadRateLimit(ctx, rate.ID)
+	require.True(t, adopted.RequestLastReset.After(old))
+	require.Equal(t, int64(19), adopted.RequestCurrentUsage)
+	reset := store.resetExpiredRateLimitFromSnapshot(ctx, adopted, adoption.Add(time.Hour))
+	require.NotNil(t, reset)
+	require.Zero(t, reset.TokenCurrentUsage)
+	require.Equal(t, int64(19), reset.RequestCurrentUsage)
+	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*RateLimitReset{reset}))
+
+	persisted, err := fixture.configStore.GetRateLimit(ctx, rate.ID)
+	require.NoError(t, err)
+	require.Zero(t, persisted.TokenCurrentUsage)
+	require.Equal(t, reset.TokenUsageResetEpoch, persisted.TokenUsageResetEpoch)
+	require.Equal(t, int64(19), persisted.RequestCurrentUsage)
+	require.True(t, persisted.RequestLastReset.Equal(old))
+	require.Zero(t, persisted.RequestUsageResetEpoch)
+
+	// A dump can persist post-reset traffic before the reset write is retried.
+	fixture.bumpRateLimitTokens(t, rate.ID, 7)
+	require.NoError(t, store.GetRateLimitDumper(ctx, nil, nil)(ctx))
+	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*RateLimitReset{reset}))
+	persisted, err = fixture.configStore.GetRateLimit(ctx, rate.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(19), persisted.RequestCurrentUsage)
+	require.Equal(t, int64(7), persisted.TokenCurrentUsage)
+	require.True(t, persisted.RequestLastReset.Equal(adopted.RequestLastReset))
+	require.Zero(t, persisted.RequestUsageResetEpoch)
 }

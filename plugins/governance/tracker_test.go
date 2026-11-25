@@ -550,7 +550,7 @@ type cleanupOrderingStore struct {
 	finalBeforeWorkerExit atomic.Bool
 }
 
-func (s *cleanupOrderingStore) ResetExpiredRateLimitsInMemory(context.Context, bool, ...string) []*configstoreTables.TableRateLimit {
+func (s *cleanupOrderingStore) ResetExpiredRateLimitsInMemory(context.Context, bool, ...string) []*RateLimitReset {
 	return nil
 }
 
@@ -558,7 +558,7 @@ func (s *cleanupOrderingStore) ResetExpiredBudgetsInMemory(context.Context, bool
 	return nil
 }
 
-func (s *cleanupOrderingStore) ResetExpiredRateLimits(context.Context, []*configstoreTables.TableRateLimit) error {
+func (s *cleanupOrderingStore) ResetExpiredRateLimits(context.Context, []*RateLimitReset) error {
 	return nil
 }
 
