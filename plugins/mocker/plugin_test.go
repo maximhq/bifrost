@@ -49,6 +49,11 @@ func (baseAccount *BaseAccount) GetConfigForMCPClient(string) (*schemas.MCPClien
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (baseAccount *BaseAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // TestMockerPlugin_GetName tests the plugin name
 func TestMockerPlugin_GetName(t *testing.T) {
 	plugin, err := Init(MockerConfig{})

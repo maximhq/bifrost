@@ -28,14 +28,15 @@ func TestValidateToolSpecs_NamesAClientByID(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
 	// A disabled client registers without connecting to anything.
-	manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &mockLogger{}, nil)
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+	alpha := &schemas.MCPClientConfig{
 		ID:               "client-alpha",
 		Name:             "alpha",
 		ConnectionType:   schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:0/mcp"),
 		Disabled:         true,
-	}))
+	}
+	manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, mcpClientsAccount{clients: []*schemas.MCPClientConfig{alpha}}, nil, &mockLogger{}, nil)
+	require.NoError(t, manager.AddClient(context.Background(), alpha.ID))
 	client.SetMCPManager(manager)
 	h := &VirtualMCPHandler{client: client, logger: &mockLogger{}}
 

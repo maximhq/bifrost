@@ -502,6 +502,11 @@ func (a wsTwoKeyAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a wsTwoKeyAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // fakeOpenAIResponses serves both Responses surfaces from one base URL: the WS mode socket and
 // the HTTP stream the bridge uses. With refuseEncrypted set, either surface refuses a turn that
 // replays encrypted_content, the way OpenAI refuses ciphertext another organization minted.

@@ -1086,6 +1086,31 @@ func (ma *MockAccount) AddMCPClients(clients ...*schemas.MCPClientConfig) {
 	ma.mcpClients = append(ma.mcpClients, clients...)
 }
 
+// SetMCPClient stores client as the record for its ID, replacing the record added with that ID or
+// adding it last. A record is read-only once stored: to edit a client, store a changed copy.
+func (ma *MockAccount) SetMCPClient(client *schemas.MCPClientConfig) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	for i, existing := range ma.mcpClients {
+		if existing.ID == client.ID {
+			ma.mcpClients[i] = client
+			return
+		}
+	}
+	ma.mcpClients = append(ma.mcpClients, client)
+}
+
+// addMCPClient stores client on b's MockAccount and adds it, as a caller writes the client's
+// configuration and then adds the client by ID.
+func addMCPClient(ctx context.Context, b *Bifrost, client *schemas.MCPClientConfig) error {
+	account, ok := b.account.(*MockAccount)
+	if !ok {
+		return fmt.Errorf("addMCPClient: the Bifrost account is a %T, not a *MockAccount", b.account)
+	}
+	account.SetMCPClient(client)
+	return b.AddMCPClient(ctx, client.ID)
+}
+
 // GetConfiguredMCPClients lists the IDs of the MCP clients added with AddMCPClients.
 func (ma *MockAccount) GetConfiguredMCPClients() ([]string, error) {
 	ma.mu.RLock()
@@ -1107,6 +1132,18 @@ func (ma *MockAccount) GetConfigForMCPClient(clientID string) (*schemas.MCPClien
 		}
 	}
 	return nil, fmt.Errorf("MCP client %s not configured", clientID)
+}
+
+// GetConfigForMCPClientByName returns the MCP client added with this name.
+func (ma *MockAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+	ma.mu.RLock()
+	defer ma.mu.RUnlock()
+	for _, client := range ma.mcpClients {
+		if client.Name == name {
+			return client, nil
+		}
+	}
+	return nil, fmt.Errorf("MCP client %s not configured", name)
 }
 
 func (ma *MockAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
@@ -4058,10 +4095,18 @@ func newAgentLoopClient(t *testing.T, account *MockAccount, plugins ...schemas.L
 	}
 	for _, state := range client.MCPManager.GetClients() {
 		if state.ExecutionConfig.ID == "bifrostInternal" {
-			state.ExecutionConfig.ToolsToAutoExecute = []string{"*"}
-			if err := client.MCPManager.UpdateClient(state.ExecutionConfig.ID, state.ExecutionConfig); err != nil {
+			// The reported configuration is the read-only record: edit a copy and store that.
+			edited := *state.ExecutionConfig
+			edited.ToolsToAutoExecute = []string{"*"}
+			account.SetMCPClient(&edited)
+			if err := client.MCPManager.UpdateClient(edited.ID); err != nil {
 				t.Fatalf("UpdateClient failed: %v", err)
 			}
+		}
+	}
+	for _, state := range client.MCPManager.GetClients() {
+		if state.ExecutionConfig.ID == "bifrostInternal" && !reflect.DeepEqual(state.ExecutionConfig.ToolsToAutoExecute, schemas.WhiteList{"*"}) {
+			t.Fatalf("the internal client's tools are not auto-executed after the edit (ToolsToAutoExecute = %v): core ignored its edited configuration", state.ExecutionConfig.ToolsToAutoExecute)
 		}
 	}
 	return client
@@ -8992,15 +9037,16 @@ func TestSetMCPManager_ReceivesTheRegisteredFactory(t *testing.T) {
 	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
 		return server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false)), nil
 	}
-	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	account := NewMockAccount()
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 	defer b.Shutdown()
 	b.SetMCPInProcessServerFactory(factory)
-	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, account, nil, NewNoOpLogger(), nil)
 	b.SetMCPManager(injected)
-	err = b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{ID: "oa-id", Name: "oa", ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}})
+	err = addMCPClient(context.Background(), b, &schemas.MCPClientConfig{ID: "oa-id", Name: "oa", ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}})
 	if err != nil {
 		t.Fatalf("the injected manager did not get the registered factory: %v", err)
 	}
@@ -9010,7 +9056,7 @@ func TestSetMCPManager_ReceivesTheRegisteredFactory(t *testing.T) {
 	go func() { defer wg.Done(); b.SetMCPInProcessServerFactory(factory) }()
 	go func() {
 		defer wg.Done()
-		b.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil))
+		b.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, account, nil, NewNoOpLogger(), nil))
 	}()
 	wg.Wait()
 }
@@ -9030,7 +9076,7 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 		}
 		var wg sync.WaitGroup
 		wg.Add(3)
-		go func() { defer wg.Done(); _ = b.AddMCPClient(context.Background(), client("a")) }()
+		go func() { defer wg.Done(); _ = addMCPClient(context.Background(), b, client("a")) }()
 		go func() {
 			defer wg.Done()
 			_, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
@@ -9043,14 +9089,15 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 		b.Shutdown()
 	}
 
-	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	account := NewMockAccount()
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
 	if err != nil {
 		t.Fatalf("Init failed: %v", err)
 	}
 	defer b.Shutdown()
-	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, account, nil, NewNoOpLogger(), nil)
 	b.SetMCPManager(injected)
-	_ = b.AddMCPClient(context.Background(), client("d"))
+	_ = addMCPClient(context.Background(), b, client("d"))
 	if b.MCPManager != mcp.MCPManagerInterface(injected) {
 		t.Fatal("an injected MCP manager was replaced by the lazy one")
 	}
@@ -9101,7 +9148,7 @@ func TestSetMCPDiscoveryChangeCallback_ReachesLazyManager(t *testing.T) {
 		})
 		return s, nil
 	})
-	if err := b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{
+	if err := addMCPClient(context.Background(), b, &schemas.MCPClientConfig{
 		ID:             "first-id",
 		Name:           "first",
 		ConnectionType: schemas.MCPConnectionTypeOpenAPI,
@@ -9215,10 +9262,10 @@ func TestSetMCPInProcessServerFactory_RacesLazyManagerCreation(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			_ = b.AddMCPClient(context.Background(), openAPIClient("first"))
+			_ = addMCPClient(context.Background(), b, openAPIClient("first"))
 		}()
 		wg.Wait()
-		if err := b.AddMCPClient(context.Background(), openAPIClient("second")); err != nil {
+		if err := addMCPClient(context.Background(), b, openAPIClient("second")); err != nil {
 			t.Fatalf("iteration %d: the manager lost the registered factory: %v", i, err)
 		}
 		b.Shutdown()

@@ -39,13 +39,13 @@ func TestConnectConfiguredClients_ReportsEachClientAsItFinishes(t *testing.T) {
 		upstream.ServeHTTP(w, r)
 	}))
 	t.Cleanup(slow.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	account := newTestAccount(bootClient("slow", slow.URL), bootClient("fast", fast.URL))
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, account, nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	var mu sync.Mutex
 	var done []string
-	configs := []*schemas.MCPClientConfig{bootClient("slow", slow.URL), bootClient("fast", fast.URL)}
-	m.ConnectConfiguredClients(context.Background(), configs, func(clientID string) {
+	m.ConnectConfiguredClients(context.Background(), func(clientID string) {
 		mu.Lock()
 		defer mu.Unlock()
 		done = append(done, clientID)
@@ -61,10 +61,10 @@ func TestConnectConfiguredClients_FailedDialIsKeptAndRecovered(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(bootClient("down", ts.URL)), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
-	m.ConnectConfiguredClients(context.Background(), []*schemas.MCPClientConfig{bootClient("down", ts.URL)}, nil)
+	m.ConnectConfiguredClients(context.Background(), nil)
 	state, ok := snapshotAddClientState(m, "down")
 	require.True(t, ok, "the client is kept")
 	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
@@ -100,12 +100,12 @@ func TestConnectConfiguredClients_ClientRemovedDuringTheDialStaysRemoved(t *test
 			close(release)
 		}
 	})
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(bootClient("removed", ts.URL)), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	dialDone := make(chan struct{})
 	go func() {
-		m.ConnectConfiguredClients(context.Background(), []*schemas.MCPClientConfig{bootClient("removed", ts.URL)}, nil)
+		m.ConnectConfiguredClients(context.Background(), nil)
 		close(dialDone)
 	}()
 	select {
@@ -113,6 +113,8 @@ func TestConnectConfiguredClients_ClientRemovedDuringTheDialStaysRemoved(t *test
 	case <-time.After(10 * time.Second):
 		t.Fatal("the boot dial never reached the upstream")
 	}
+	// An admin deletes the client: its record goes, then the manager's entry.
+	accountOf(m).remove("removed")
 	require.NoError(t, m.RemoveClient("removed"))
 	close(release)
 	select {

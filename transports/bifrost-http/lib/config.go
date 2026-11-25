@@ -8672,23 +8672,12 @@ func (c *Config) liveMCPClient(id string) (*registry.MCPClient, bool) {
 
 // refreshMCPClient re-reads an MCP client's row into the live store; a row that is gone removes it.
 func (c *Config) refreshMCPClient(ctx context.Context, id string) error {
-	return c.refreshMCPClientRef(ctx, livestore.Ref{Kind: livestore.KindMCPClient, ID: id})
+	return c.refreshRef(ctx, "MCP client", livestore.Ref{Kind: livestore.KindMCPClient, ID: id})
 }
 
-// forgetMCPClient drops a deleted MCP client from the live store without reading the database.
-func (c *Config) forgetMCPClient(ctx context.Context, id string) error {
-	return c.refreshMCPClientRef(ctx, livestore.Ref{Kind: livestore.KindMCPClient, ID: id, Remove: true})
-}
-
-// refreshMCPClientRef runs one MCP client refresh on the live store.
-func (c *Config) refreshMCPClientRef(ctx context.Context, ref livestore.Ref) error {
-	if c.LiveStore == nil {
-		return fmt.Errorf("MCP client %s: %w", ref.ID, livestore.ErrNoLiveStore)
-	}
-	if err := c.LiveStore.Refresh(ctx, []livestore.Ref{ref}); err != nil {
-		return fmt.Errorf("failed to refresh MCP client %s: %w", ref.ID, err)
-	}
-	return nil
+// removeMCPClient drops a deleted MCP client from the live store without reading the database.
+func (c *Config) removeMCPClient(ctx context.Context, id string) error {
+	return c.refreshRef(ctx, "MCP client", livestore.Ref{Kind: livestore.KindMCPClient, ID: id, Remove: true})
 }
 
 // mcpClientRegistered reports whether the runtime holds the MCP client.
@@ -9908,29 +9897,34 @@ func (c *Config) SetBifrostClient(client *bifrost.Bifrost) {
 	c.client = client
 }
 
-// AddMCPClient connects a new MCP client whose row the caller has written, then loads the row
-// into the live store and its tool prices into the MCP catalog. When connecting fails nothing
-// changes in memory and the error is returned as is, so the caller can report a failed connect
-// and delete the row; when loading the row fails, the client is disconnected again for the same
-// reason.
-func (c *Config) AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
+// AddMCPClient connects the MCP client whose row the caller has written: it loads the row into the
+// live store, then the runtime connects the client from it, and its tool prices go into the MCP
+// catalog. When connecting fails the client is dropped from the live store again and the error is
+// returned as is, so the caller can report a failed connect and delete the row.
+//
+// A client the live store held before the call is never dropped: the runtime refuses an ID it
+// already has and keeps serving that client, so the live store keeps it too.
+func (c *Config) AddMCPClient(ctx context.Context, id string) error {
 	if c.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
 	if c.ConfigStore == nil {
 		return ErrNoConfigStore
 	}
-	if err := c.client.AddMCPClient(ctx, clientConfig); err != nil {
+	_, held := c.liveMCPClient(id)
+	if err := c.refreshMCPClient(ctx, id); err != nil {
+		return err
+	}
+	if err := c.client.AddMCPClient(ctx, id); err != nil {
+		if !held {
+			if removeErr := c.removeMCPClient(ctx, id); removeErr != nil {
+				logger.Warn("failed to drop MCP client %s from memory after its connect failed: %v", id, removeErr)
+			}
+		}
 		// Returned as is: the caller reports it as a failed connect.
 		return err
 	}
-	if err := c.refreshMCPClient(ctx, clientConfig.ID); err != nil {
-		if removeErr := c.client.RemoveMCPClient(clientConfig.ID); removeErr != nil {
-			logger.Warn("failed to disconnect MCP client %s after loading its row failed: %v", clientConfig.ID, removeErr)
-		}
-		return err
-	}
-	if stored, ok := c.liveMCPClient(clientConfig.ID); ok && c.MCPCatalog != nil {
+	if stored, ok := c.liveMCPClient(id); ok && c.MCPCatalog != nil {
 		for toolName, costPerExecution := range stored.Config.ToolPricing {
 			c.MCPCatalog.UpdatePricingData(stored.Config.Name, toolName, costPerExecution)
 		}
@@ -9939,13 +9933,13 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClie
 	return nil
 }
 
-// UpdateMCPClient applies an MCP client edit whose row the caller has written: to the runtime
-// client, then to the MCP catalog prices, then to the runtime's disabled state when it changed,
-// and finally the live store re-reads the row. An error from an edit that still stands (only
-// reconnecting failed: mcp.ErrMCPSharedConnectFailedAfterUpdate or mcp.ErrMCPEnableConnectFailed)
-// is returned after the live store has the row; any other error returns before it, so the caller
-// can roll the row back.
-func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error {
+// UpdateMCPClient applies an MCP client edit whose row the caller has written: the live store
+// re-reads the row, then the runtime client takes it (disabling or enabling the client when the
+// edit did), then the MCP catalog prices follow it. An error from an edit that still stands (only reconnecting
+// failed: mcp.ErrMCPSharedConnectFailedAfterUpdate or mcp.ErrMCPEnableConnectFailed) is returned
+// once everything has applied. On any other error the caller rolls the row back and refreshes
+// its live-store record again.
+func (c *Config) UpdateMCPClient(ctx context.Context, id string) error {
 	if c.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
@@ -9957,15 +9951,23 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 		return fmt.Errorf("MCP client '%s' not found", id)
 	}
 	oldConfig := &stored.Config
+	if err := c.refreshMCPClient(ctx, id); err != nil {
+		return err
+	}
+	edited, ok := c.liveMCPClient(id)
+	if !ok {
+		return fmt.Errorf("MCP client '%s' not found", id)
+	}
+	updatedConfig := &edited.Config
 	var committedErr error
 	// A client is configured but not registered at runtime when its initialization failed.
 	clientRegistered := c.mcpClientRegistered(id)
 	if clientRegistered {
-		if err := c.client.UpdateMCPClient(id, updatedConfig); err != nil {
-			// The runtime saved the update but could not reconnect with it; the caller has
-			// stored it too, so the live store takes it as well and the error is returned
-			// once it has.
-			if !errors.Is(err, mcp.ErrMCPSharedConnectFailedAfterUpdate) {
+		if err := c.client.UpdateMCPClient(id); err != nil {
+			// The runtime took the update, enabling the client when the edit did, but could
+			// not connect with it; the row and the live store have it too, so the error is
+			// returned once the rest has applied.
+			if !errors.Is(err, mcp.ErrMCPSharedConnectFailedAfterUpdate) && !errors.Is(err, mcp.ErrMCPEnableConnectFailed) {
 				return fmt.Errorf("failed to edit MCP client: %w", err)
 			}
 			// Not "failed to edit": the edit stands, only the dial failed.
@@ -9995,37 +9997,12 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 		logger.Debug("updated MCP catalog pricing for client: %s (%d tools)", updatedConfig.Name, len(updatedConfig.ToolPricing))
 	}
 
-	// Handle disable/enable lifecycle when the Disabled flag toggles and the client
-	// is registered at runtime. We call the core bifrost methods directly (not the
-	// Config wrappers) to avoid a redundant DB write — the caller is responsible for
-	// persisting the disabled flag to the DB before calling UpdateMCPClient.
-	if oldConfig.Disabled != updatedConfig.Disabled && clientRegistered {
-		if updatedConfig.Disabled {
-			if err := c.client.DisableMCPClient(id); err != nil {
-				return fmt.Errorf("failed to disable MCP client: %w", err)
-			}
-		} else if err := c.client.EnableMCPClient(id); err != nil {
-			// A dial failure is not a failed enable: the runtime has the client
-			// un-disabled with a checker retrying, so the live store takes the row
-			// like the runtime did (see ErrMCPEnableConnectFailed). Any other error
-			// means the enable itself did not happen.
-			if !errors.Is(err, mcp.ErrMCPEnableConnectFailed) {
-				return fmt.Errorf("failed to enable MCP client: %w", err)
-			}
-			// Not "failed to enable": the enable stands, only the dial failed.
-			committedErr = err
-		}
-	}
-	if err := c.refreshMCPClient(ctx, id); err != nil {
-		return err
-	}
 	return committedErr
 }
 
 // UpdateMCPClientCredentials reconnects an existing MCP client with the credentials the caller
-// has written to its row, then the live store re-reads the row. When reconnecting fails nothing
-// changes in memory.
-func (c *Config) UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
+// has written to its row: the live store re-reads the row, then the runtime reconnects from it.
+func (c *Config) UpdateMCPClientCredentials(ctx context.Context, id string) error {
 	if c.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
@@ -10035,10 +10012,13 @@ func (c *Config) UpdateMCPClientCredentials(ctx context.Context, id string, newC
 	if _, ok := c.liveMCPClient(id); !ok {
 		return fmt.Errorf("MCP client %s not found in in-memory MCP config", id)
 	}
-	if err := c.client.UpdateMCPClientCredentials(id, newConfig); err != nil {
+	if err := c.refreshMCPClient(ctx, id); err != nil {
+		return err
+	}
+	if err := c.client.UpdateMCPClientCredentials(id); err != nil {
 		return fmt.Errorf("failed to update MCP client credentials: %w", err)
 	}
-	return c.refreshMCPClient(ctx, id)
+	return nil
 }
 
 // RemoveMCPClient removes an MCP client whose row the caller has deleted: from the runtime, from
@@ -10067,12 +10047,12 @@ func (c *Config) RemoveMCPClient(ctx context.Context, id string) error {
 			c.MCPCatalog.DeletePricingData(stored.Config.Name, toolName)
 		}
 	}
-	return c.forgetMCPClient(ctx, id)
+	return c.removeMCPClient(ctx, id)
 }
 
-// DisableMCPClient persists disabled=true to the DB, shuts down the client's
-// connection, health monitor, and tool syncer at runtime, and re-reads the row
-// into the live store.
+// DisableMCPClient persists disabled=true to the DB, re-reads the row into the
+// live store, and shuts down the client's connection, health monitor, and tool
+// syncer at runtime.
 func (c *Config) DisableMCPClient(ctx context.Context, id string) error {
 	if c.client == nil {
 		return fmt.Errorf("bifrost client not set")
@@ -10086,16 +10066,26 @@ func (c *Config) DisableMCPClient(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("MCP client '%s' not found: %w", id, err)
 	}
-	if err := c.client.DisableMCPClient(id); err != nil {
-		return fmt.Errorf("failed to disable MCP client: %w", err)
-	}
-
+	wasDisabled := dbClient.Disabled
 	dbClient.Disabled = true
 	if err := c.ConfigStore.UpdateMCPClientConfig(ctx, id, dbClient); err != nil {
-		_ = c.client.EnableMCPClient(id) // rollback
 		return fmt.Errorf("failed to persist disabled state: %w", err)
 	}
-	return c.refreshMCPClient(ctx, id)
+	if err := c.refreshMCPClient(ctx, id); err != nil {
+		return err
+	}
+	if err := c.client.UpdateMCPClient(id); err != nil {
+		// The runtime keeps the client as it was, so the row and the live store go back to the flag
+		// the row held before: a client that was already disabled stays disabled.
+		dbClient.Disabled = wasDisabled
+		if rollbackErr := c.ConfigStore.UpdateMCPClientConfig(ctx, id, dbClient); rollbackErr != nil {
+			logger.Error("failed to restore MCP client %s to disabled=%t after disabling it failed: %v", id, wasDisabled, rollbackErr)
+		} else if refreshErr := c.refreshMCPClient(ctx, id); refreshErr != nil {
+			logger.Error("failed to load MCP client %s after restoring it to disabled=%t: %v", id, wasDisabled, refreshErr)
+		}
+		return fmt.Errorf("failed to disable MCP client: %w", err)
+	}
+	return nil
 }
 
 // EnableMCPClient persists disabled=false to the DB, re-reads the row into the
@@ -10120,7 +10110,7 @@ func (c *Config) EnableMCPClient(ctx context.Context, id string) error {
 	if err := c.refreshMCPClient(ctx, id); err != nil {
 		return err
 	}
-	return c.client.EnableMCPClient(id)
+	return c.client.UpdateMCPClient(id)
 }
 
 // RedactMCPClientConfig creates a redacted copy of a MCPClientConfig configuration.

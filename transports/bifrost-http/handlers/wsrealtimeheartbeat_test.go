@@ -1288,6 +1288,11 @@ func (a geminiLiveAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConf
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a geminiLiveAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // liveTurnRecorder records the turns the pipeline logs and bills.
 type liveTurnRecorder struct {
 	mu        sync.Mutex

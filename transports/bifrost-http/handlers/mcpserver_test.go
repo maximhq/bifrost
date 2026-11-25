@@ -2103,14 +2103,14 @@ func newAppsGateway(tb testing.TB) *MCPServerHandler {
 	tb.Cleanup(ts.Close)
 
 	ctx := context.Background()
-	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
-	tb.Cleanup(func() { _ = m.Cleanup() })
-	require.NoError(tb, m.AddClient(ctx, &schemas.MCPClientConfig{
+	cfg := &lib.Config{LiveStore: liveStoreForTest(tb), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}}
+	libtest.MCPClients(tb, cfg, &schemas.MCPClientConfig{
 		ID: "apps", Name: "apps", EndpointSlug: "apps", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"},
-	}))
-	cfg := &lib.Config{LiveStore: liveStoreForTest(tb), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}}
-	libtest.MCPClients(tb, cfg, &schemas.MCPClientConfig{ID: "apps", Name: "apps", EndpointSlug: "apps"})
+	})
+	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, lib.NewBaseAccount(cfg), nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
+	tb.Cleanup(func() { _ = m.Cleanup() })
+	require.NoError(tb, m.AddClient(ctx, "apps"))
 	admitter := slugAdmitter{vmcps: map[string][]string{"bundle": {"apps-view", "apps-refresh", "apps-item"}}, clients: map[string][]string{"apps": {"apps-*"}}}
 	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, admitter, nil, nil)
 	require.NoError(tb, err)
@@ -2143,12 +2143,12 @@ func newCodeModeGateway(tb testing.TB, codeMode bool, slug schemas.MCPServerType
 
 	ctx := context.Background()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, nil, logger, starlark.NewStarlarkCodeMode(nil, logger))
-	tb.Cleanup(func() { _ = m.Cleanup() })
-	require.NoError(tb, m.AddClient(ctx, github))
-	require.NoError(tb, m.AddClient(ctx, slack))
 	cfg := &lib.Config{LiveStore: liveStoreForTest(tb), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}}
 	libtest.MCPClients(tb, cfg, github, slack)
+	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, lib.NewBaseAccount(cfg), nil, logger, starlark.NewStarlarkCodeMode(nil, logger))
+	tb.Cleanup(func() { _ = m.Cleanup() })
+	require.NoError(tb, m.AddClient(ctx, github.ID))
+	require.NoError(tb, m.AddClient(ctx, slack.ID))
 	admitter := slugAdmitter{
 		vmcps:   map[string][]string{"bundle": {"github-create_issue", "slack-post"}},
 		clients: map[string][]string{"github": {"github-*"}, "slack": {"slack-*"}},
@@ -2481,18 +2481,21 @@ func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
 	// other's "apps-view" is installed as other-apps-view; the name apps-view stays apps's view.
 	otherURL := startNamedUpstream(t, "other", mcp.NewTool("status"), mcp.NewTool("apps-view"))
 
-	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
-	t.Cleanup(func() { _ = m.Cleanup() })
-	for name, url := range map[string]string{"apps": appsURL, "other": otherURL} {
-		require.NoError(t, m.AddClient(ctx, &schemas.MCPClientConfig{
+	var clients []*schemas.MCPClientConfig
+	for _, name := range []string{"apps", "other"} {
+		url := map[string]string{"apps": appsURL, "other": otherURL}[name]
+		clients = append(clients, &schemas.MCPClientConfig{
 			ID: name, Name: name, EndpointSlug: name, ConnectionType: schemas.MCPConnectionTypeHTTP,
 			ConnectionString: schemas.NewSecretVar(url), ToolsToExecute: []string{"*"},
-		}))
+		})
 	}
 	cfg := &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}}
-	libtest.MCPClients(t, cfg, []*schemas.MCPClientConfig{
-		{ID: "apps", Name: "apps", EndpointSlug: "apps"}, {ID: "other", Name: "other", EndpointSlug: "other"},
-	}...)
+	libtest.MCPClients(t, cfg, clients...)
+	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, lib.NewBaseAccount(cfg), nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	for _, client := range clients {
+		require.NoError(t, m.AddClient(ctx, client.ID))
+	}
 	admitter := slugAdmitter{
 		vmcps:   map[string][]string{"bundle": {"apps-status", "apps-view"}, "withrefresh": {"apps-view", "apps-refresh"}},
 		clients: map[string][]string{"apps": {"apps-*"}, "other": {"other-*"}},

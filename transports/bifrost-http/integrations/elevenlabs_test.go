@@ -57,6 +57,11 @@ func (a elevenlabsAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConf
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a elevenlabsAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // elevenlabsUpstreamRequest is what reached the fake ElevenLabs.
 type elevenlabsUpstreamRequest struct {
 	method, path, query, body string

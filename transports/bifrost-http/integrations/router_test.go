@@ -1395,6 +1395,11 @@ func (a passthroughTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClien
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a passthroughTestAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // passthroughTestStore reports the test account's custom providers the way lib.Config does.
 func passthroughTestStore() *mockHandlerStore {
 	return &mockHandlerStore{customProviders: map[schemas.ModelProvider]mockCustomProvider{
@@ -1805,6 +1810,11 @@ func (a passthroughRewriteAccount) GetConfigForMCPClient(string) (*schemas.MCPCl
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a passthroughRewriteAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // passthroughRewritingPlugin stands in for a plugin that redacts a passthrough request: it records what the router
 // handed over and rewrites the body through the registered rewriter, as it would after finding a value.
 type passthroughRewritingPlugin struct {
@@ -2178,6 +2188,11 @@ func (a directKeyTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClientC
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a directKeyTestAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // A direct key is the caller's credential for the provider whose SDK called the route. A drop-in
 // model listing that names no provider used to ask every configured provider and send the key to
 // each of them; it now asks only the route's own provider, refuses when that provider is not
@@ -2389,6 +2404,11 @@ func (codexPassthroughAccount) GetConfigForMCPClient(string) (*schemas.MCPClient
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (codexPassthroughAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // codexPassthroughReceipt witnesses the real router-to-core request before an explicit synthetic policy denial.
 type codexPassthroughReceipt struct {
 	request          *schemas.BifrostRequest
@@ -2520,6 +2540,11 @@ func (geminiPassthroughAccount) GetConfiguredMCPClients() ([]string, error) {
 
 // GetConfigForMCPClient finds no MCP client: this account configures none.
 func (geminiPassthroughAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (geminiPassthroughAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
 	return nil, nil
 }
 
@@ -3317,6 +3342,11 @@ func (a heldDeadlineAccount) GetConfiguredMCPClients() ([]string, error) {
 
 // GetConfigForMCPClient finds no MCP client: this account configures none.
 func (a heldDeadlineAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a heldDeadlineAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
 	return nil, nil
 }
 

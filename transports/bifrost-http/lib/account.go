@@ -106,6 +106,19 @@ func (baseAccount *BaseAccount) GetConfigForMCPClient(clientID string) (*schemas
 	return &client.Config, nil
 }
 
+// GetConfigForMCPClientByName returns the configuration of the MCP client with this name as the
+// live store holds it, so the caller must not change it. Implements the Account interface.
+func (baseAccount *BaseAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+	if baseAccount.store == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	client, ok := baseAccount.store.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientByName, name)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return &client.Config, nil
+}
+
 // GetConfigForProvider returns the complete configuration for a specific provider.
 // Configuration is already fully processed (environment variables, key configs) by the store.
 // Implements the Account interface.

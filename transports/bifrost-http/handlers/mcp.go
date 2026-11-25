@@ -4083,6 +4083,9 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, oldDBConfig); rollbackErr != nil {
 					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
 				}
+				if refreshErr := h.refreshMCPClientRow(ctx, id); refreshErr != nil {
+					logger.Error(fmt.Sprintf("failed to reload MCP client %s after rolling back its update: %v", id, refreshErr))
+				}
 			}
 			logger.Error(fmt.Sprintf("Failed to update MCP client: %v", err))
 			if perUserDiscoveryChanged {
@@ -4111,9 +4114,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	//
 	// The same credentials already completed a full connect during the
 	// pre-flight above, so a failure here is a transient dial problem rather
-	// than a bad credential — and UpdateClientCredentials restores the
-	// previous ExecutionConfig on failure, leaving the connection checker to
-	// retry. Reported as a partial success for that reason, not a hard
+	// than a bad credential, and UpdateClientCredentials keeps the old
+	// connection on failure, leaving the connection checker to retry. Reported as a partial success for that reason, not a hard
 	// failure: every other effect of this request already committed.
 	// Tracked separately from sharedConnectErr: a client that ends up
 	// per-call has no connection to swap, so its failure here is the
@@ -4157,8 +4159,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		if rotated {
 			h.mcpCredentialCacheManager.EvictOauthTokenCacheByMCPClient(ctx, id)
 			// Rotation just cascaded every token bound to this oauth_config to
-			// needs_reauth in the DB, but the in-memory client above only had
-			// its ExecutionConfig replaced — its live connection, if any, is
+			// needs_reauth in the DB, but the in-memory client above only took
+			// the edited record; its live connection, if any, is
 			// still open on the now-invalidated Authorization header. Close
 			// it and flip the in-memory state to match, rather than leaving
 			// a stale connection serving calls until the health monitor
@@ -5062,6 +5064,9 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
 					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
 				}
+				if refreshErr := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); refreshErr != nil {
+					logger.Error(fmt.Sprintf("failed to reload MCP client %s after rolling back its update: %v", mcpClientConfig.ID, refreshErr))
+				}
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update MCP client: %v", err))
 				return
 			}
@@ -5217,6 +5222,9 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			} else {
 				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
 					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
+				}
+				if refreshErr := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); refreshErr != nil {
+					logger.Error(fmt.Sprintf("failed to reload MCP client %s after rolling back its update: %v", mcpClientConfig.ID, refreshErr))
 				}
 				logger.Error(fmt.Sprintf("Failed to reconnect MCP client after OAuth DB update for client %s: %v", mcpClientConfig.ID, err))
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reconnect MCP client with updated OAuth credentials: %v", err))

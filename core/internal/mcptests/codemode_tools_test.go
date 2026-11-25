@@ -1040,7 +1040,7 @@ func runResultShapesCode(t *testing.T, code string) string {
 func runResultShapesCall(t *testing.T, code string) *schemas.ChatMessage {
 	t.Helper()
 	manager := setupMCPManager(t)
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+	require.NoError(t, addClient(context.Background(), manager, &schemas.MCPClientConfig{
 		ID:               "result-shapes-id",
 		Name:             "shapes",
 		ConnectionType:   schemas.MCPConnectionTypeInProcess,

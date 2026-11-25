@@ -734,6 +734,11 @@ func (a *injectedToolsAccount) GetConfigForMCPClient(string) (*schemas.MCPClient
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a *injectedToolsAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 func setupInjectedToolsBifrost(t *testing.T, fake *fakeOpenAI, searches *[]string) *bifrost.Bifrost {
 	return setupInjectedToolsBifrostFor(t, schemas.OpenAI, fake, searches)
 }
@@ -1592,6 +1597,11 @@ func (a *retryingInjectedAccount) GetConfiguredMCPClients() ([]string, error) {
 
 // GetConfigForMCPClient finds no MCP client: this account configures none.
 func (a *retryingInjectedAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a *retryingInjectedAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
 	return nil, nil
 }
 

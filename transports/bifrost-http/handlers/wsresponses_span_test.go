@@ -62,6 +62,11 @@ func (wsSpanTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig
 	return nil, nil
 }
 
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (wsSpanTestAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // wsLLMSpanCapture is an ObservabilityPlugin that records whether the flushed
 // trace contains an llm.call span and, if so, the provider/model/usage
 // attributes carried on it. Attributes are read from the export snapshot, which
