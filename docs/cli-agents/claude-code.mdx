@@ -443,6 +443,8 @@ Settings files apply in this order, highest first: managed settings, `--settings
 Claude Code sends `x-claude-code-session-id` on every request, so a session sticks to the provider and key that served it and keeps hitting the same prompt cache, with nothing to configure. See [Session Affinity](/providers/session-affinity).
 </Tip>
 
+A subagent's requests share the parent's session ID. Claude Code names the subagent in `x-claude-code-agent-id`, and Bifrost records that value as the log's `agent_correlation_id` when the request carries no `x-bf-agent-correlation-id`. Filter logs by `agent_correlation_id` to separate a subagent's requests from the main conversation's, which leave it empty.
+
 Claude Code maps its `sonnet`, `opus`, and `haiku` aliases through `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL`. `ANTHROPIC_MODEL` or `--model` selects the session model. A `model` value in settings that names a specific model ID overrides the alias mapping for new sessions, so remove it or set it to an alias when you manage models through these variables.
 
 The `env` snippets below show only the model variables. Add them to the same `env` block as your base URL and credential.
