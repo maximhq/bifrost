@@ -282,6 +282,10 @@ func ExtraFieldsInHeaders(ctx *fasthttp.RequestCtx) bool {
 //   - x-bf-prompt-cache-auto-inject: override prompt_cache.auto_inject for this request
 //   - x-bf-send-back-raw-response: include raw provider response in the BifrostResponse returned to the caller
 //   - x-bf-store-raw-request-response: capture raw request/response for logging only (stripped from client response)
+//
+// 10. Cost Header (accepts "true" or "false"; always honored, not gated by allow_per_request_raw_override):
+//   - x-bf-send-back-cost: return Bifrost's computed cost for this request (extra_fields.cost and x-bifrost-cost),
+//     overriding the client send_back_cost setting in either direction
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -753,6 +757,14 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		if keyStr == "x-bf-send-back-raw-response" {
 			if b, err := strconv.ParseBool(string(value)); err == nil {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, b)
+			}
+			return true
+		}
+		// Per-request override of client.send_back_cost, in either direction. Not gated:
+		// the cost carries no request or response content.
+		if keyStr == "x-bf-send-back-cost" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackCost, b)
 			}
 			return true
 		}

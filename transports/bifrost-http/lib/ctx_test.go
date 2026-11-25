@@ -161,6 +161,30 @@ func TestConvertToBifrostContext_ClientIPOffByDefault(t *testing.T) {
 	}
 }
 
+// x-bf-send-back-cost overrides client.send_back_cost in either direction and,
+// unlike the raw-response headers, needs no allow_per_request_raw_override.
+// Anything ParseBool rejects leaves the global setting in charge.
+func TestConvertToBifrostContext_SendBackCostHeader(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  any
+	}{
+		{value: "true", want: true},
+		{value: "false", want: false},
+		{value: "maybe", want: nil},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-send-back-cost", test.value)
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+			if got := bifrostCtx.Value(schemas.BifrostContextKeySendBackCost); got != test.want {
+				t.Errorf("send-back-cost override = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestConvertToBifrostContext_SecondCallReturnsSameSharedContext(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 
