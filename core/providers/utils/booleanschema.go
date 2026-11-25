@@ -98,8 +98,9 @@ func RewriteResponsesToolBooleanSchemaNodes(tools []schemas.ResponsesTool) ([]sc
 // its member tools. Each schema is walked as a whole schema object, so its root
 // keywords are covered too.
 //
-// Only rewritten schemas are re-encoded and spliced back in; every other byte of the
-// body is kept as it was. A body with no boolean subschema is returned as-is.
+// Only the boolean subschemas are replaced, each spliced in at its own offset; every
+// other byte of the body, number tokens and whitespace included, is kept as it was.
+// A body with no boolean subschema is returned as-is.
 func RewriteToolBooleanSchemaNodesJSON(body []byte) ([]byte, bool, error) {
 	tools := gjson.GetBytes(body, "tools")
 	if !tools.IsArray() {
@@ -175,9 +176,10 @@ func toolSchemaPath(prefix string, index int, suffix string) string {
 	return path
 }
 
-// collectSchemaEdit rewrites value, the schema object at suffix of the tool at index in
-// the tools array at prefix, and records the edit when it changed. A missing or
-// non-object value is not a schema and is skipped.
+// collectSchemaEdit records one edit per boolean subschema of value, the schema object
+// at suffix of the tool at index in the tools array at prefix. A missing or non-object
+// value is not a schema and is skipped. The schema is walked in place and never
+// re-encoded, so number tokens beyond float64 precision keep their exact bytes.
 func collectSchemaEdit(toolsRaw string, value gjson.Result, prefix string, index int, suffix string, edits *[]rawSchemaEdit) error {
 	if !value.IsObject() {
 		return nil
@@ -185,20 +187,71 @@ func collectSchemaEdit(toolsRaw string, value gjson.Result, prefix string, index
 	if value.Index <= 0 || value.Index+len(value.Raw) > len(toolsRaw) || toolsRaw[value.Index:value.Index+len(value.Raw)] != value.Raw {
 		return fmt.Errorf("cannot locate tool schema %s in the request body", toolSchemaPath(prefix, index, suffix))
 	}
-	var schema schemas.OrderedMap
-	if err := schemas.Unmarshal([]byte(value.Raw), &schema); err != nil {
-		return fmt.Errorf("failed to decode tool schema %s: %w", toolSchemaPath(prefix, index, suffix), err)
+	if !gjson.Valid(value.Raw) {
+		return fmt.Errorf("failed to decode tool schema %s: invalid JSON", toolSchemaPath(prefix, index, suffix))
 	}
-	rewritten, changed := rewriteBooleanSchemaObject(&schema)
-	if !changed {
-		return nil
-	}
-	raw, err := rewritten.MarshalJSON()
-	if err != nil {
-		return fmt.Errorf("failed to encode tool schema %s: %w", toolSchemaPath(prefix, index, suffix), err)
-	}
-	*edits = append(*edits, rawSchemaEdit{start: value.Index, end: value.Index + len(value.Raw), raw: raw})
+	collectRawBooleanSchemaObject(value, edits)
 	return nil
+}
+
+// rawTrueSchema and rawFalseSchema are the object forms spliced over a raw boolean
+// subschema. Edits only read them.
+var (
+	rawTrueSchema  = []byte(`{}`)
+	rawFalseSchema = []byte(`{"not":{}}`)
+)
+
+// collectRawBooleanSchemaObject walks one raw schema object with the keyword rules of
+// rewriteBooleanSchemaKeyword. Offsets from ForEach are relative to toolsRaw because
+// every walked value descends from a Result located in it.
+func collectRawBooleanSchemaObject(schema gjson.Result, edits *[]rawSchemaEdit) {
+	schema.ForEach(func(key, value gjson.Result) bool {
+		switch booleanSchemaKeywordKind(key.Str) {
+		case keywordSchemaMembers:
+			if value.IsObject() {
+				collectRawBooleanSchemaEntries(value, edits)
+			}
+		case keywordSchemaList:
+			if value.IsArray() {
+				collectRawBooleanSchemaEntries(value, edits)
+			}
+		case keywordItems:
+			if value.IsArray() {
+				collectRawBooleanSchemaEntries(value, edits)
+			} else {
+				collectRawBooleanSchema(value, edits)
+			}
+		case keywordSchema:
+			collectRawBooleanSchema(value, edits)
+		case keywordBooleanOrSchema:
+			if value.IsObject() {
+				collectRawBooleanSchemaObject(value, edits)
+			}
+		}
+		return true
+	})
+}
+
+// collectRawBooleanSchemaEntries walks every value of a raw object or array whose
+// entries are all schema positions.
+func collectRawBooleanSchemaEntries(container gjson.Result, edits *[]rawSchemaEdit) {
+	container.ForEach(func(_, entry gjson.Result) bool {
+		collectRawBooleanSchema(entry, edits)
+		return true
+	})
+}
+
+// collectRawBooleanSchema handles the raw value at a schema position: a boolean is
+// replaced by its object form and an object is walked as a schema.
+func collectRawBooleanSchema(value gjson.Result, edits *[]rawSchemaEdit) {
+	switch {
+	case value.Type == gjson.True:
+		*edits = append(*edits, rawSchemaEdit{start: value.Index, end: value.Index + len(value.Raw), raw: rawTrueSchema})
+	case value.Type == gjson.False:
+		*edits = append(*edits, rawSchemaEdit{start: value.Index, end: value.Index + len(value.Raw), raw: rawFalseSchema})
+	case value.IsObject():
+		collectRawBooleanSchemaObject(value, edits)
+	}
 }
 
 // booleanSchemaObject returns the object form of a boolean schema. Each call returns a
@@ -249,34 +302,85 @@ func rewriteBooleanSchema(value any) (any, bool) {
 	return value, false
 }
 
-// rewriteBooleanSchemaKeyword rewrites one keyword of a schema object.
-func rewriteBooleanSchemaKeyword(key string, value any) (any, bool) {
+// booleanSchemaKeyword classifies how a schema keyword's value holds subschemas. The
+// decoded and the raw walks both switch on it, so they rewrite the same positions.
+type booleanSchemaKeyword uint8
+
+const (
+	// keywordNoSchema: instance data, required, names and unknown keywords.
+	keywordNoSchema booleanSchemaKeyword = iota
+	// keywordSchemaMembers: a name-to-schema map such as properties.
+	keywordSchemaMembers
+	// keywordSchemaList: a list whose every entry is a schema, such as anyOf.
+	keywordSchemaList
+	// keywordItems: one schema, or the draft-07 tuple form, a list of schemas.
+	keywordItems
+	// keywordSchema: a single schema, such as not.
+	keywordSchema
+	// keywordBooleanOrSchema: a boolean is the keyword's standard form and upstreams
+	// accept it, so only an object there is walked.
+	keywordBooleanOrSchema
+)
+
+// booleanSchemaKeywordKind returns how key holds subschemas.
+func booleanSchemaKeywordKind(key string) booleanSchemaKeyword {
 	switch key {
 	case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
-		return rewriteBooleanSchemaMemberValues(value)
+		return keywordSchemaMembers
 	case "dependencies":
 		// Draft-07: each value is a schema or a list of property names. A list is not
-		// a schema, so rewriteBooleanSchema leaves it as it is.
-		return rewriteBooleanSchemaMemberValues(value)
+		// a schema, so the schema rewrite leaves it as it is.
+		return keywordSchemaMembers
 	case "anyOf", "oneOf", "allOf", "prefixItems":
-		if list, ok := value.([]any); ok {
-			return rewriteBooleanSchemaList(value, list)
-		}
+		return keywordSchemaList
 	case "items":
-		// Draft-07 tuple form: every entry is a schema.
-		if list, ok := value.([]any); ok {
-			return rewriteBooleanSchemaList(value, list)
+		return keywordItems
+	case "contains", "propertyNames", "not", "if", "then", "else", "additionalItems", "contentSchema":
+		return keywordSchema
+	case "additionalProperties", "unevaluatedProperties", "unevaluatedItems":
+		return keywordBooleanOrSchema
+	}
+	return keywordNoSchema
+}
+
+// rewriteBooleanSchemaKeyword rewrites one keyword of a schema object.
+func rewriteBooleanSchemaKeyword(key string, value any) (any, bool) {
+	switch booleanSchemaKeywordKind(key) {
+	case keywordSchemaMembers:
+		return rewriteBooleanSchemaMemberValues(value)
+	case keywordSchemaList:
+		rewritten, changed, _ := rewriteBooleanSchemaListValue(value)
+		return rewritten, changed
+	case keywordItems:
+		if rewritten, changed, isList := rewriteBooleanSchemaListValue(value); isList {
+			return rewritten, changed
 		}
 		return rewriteBooleanSchema(value)
-	case "contains", "propertyNames", "not", "if", "then", "else", "additionalItems", "contentSchema":
+	case keywordSchema:
 		return rewriteBooleanSchema(value)
-	case "additionalProperties", "unevaluatedProperties", "unevaluatedItems":
-		// A boolean is this keyword's standard form and upstreams accept it.
+	case keywordBooleanOrSchema:
 		if _, ok := value.(bool); !ok {
 			return rewriteBooleanSchema(value)
 		}
 	}
 	return value, false
+}
+
+// rewriteBooleanSchemaListValue rewrites a list of schemas, decoded as []any or built
+// in code as []schemas.OrderedMap (the type of the top-level anyOf); isList reports
+// whether value is such a list. An unchanged list is returned as value itself.
+func rewriteBooleanSchemaListValue(value any) (rewritten any, changed bool, isList bool) {
+	switch list := value.(type) {
+	case []any:
+		rewritten, changed = rewriteBooleanSchemaList(value, list)
+		return rewritten, changed, true
+	case []schemas.OrderedMap:
+		if updated, changed := rewriteBooleanSchemaObjects(list); changed {
+			return updated, true, true
+		}
+		return value, false, true
+	}
+	return value, false, false
 }
 
 // rewriteBooleanSchemaMemberValues rewrites a name-to-schema map such as properties.

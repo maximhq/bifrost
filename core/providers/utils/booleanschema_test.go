@@ -29,41 +29,85 @@ func marshalBooleanSchemaParams(t *testing.T, params *schemas.ToolFunctionParame
 	return string(data)
 }
 
+// booleanSchemaPositionsIn holds a boolean at every schema position, beside boolean
+// keyword values and instance data; booleanSchemaPositionsOut is its rewrite.
+const booleanSchemaPositionsIn = `{"type":"object","properties":{` +
+	`"state":true,` +
+	`"deny":false,` +
+	`"tags":{"type":"array","items":true},` +
+	`"choice":{"anyOf":[{"type":"array","items":true},{"type":"null"}]},` +
+	`"tuple":{"type":"array","prefixItems":[true,{"type":"string"}],"items":false},` +
+	`"legacy":{"type":"array","items":[true,{"type":"string"}],"additionalItems":false},` +
+	`"guarded":{"not":true,"if":true,"then":false,"else":true,"contains":true,"propertyNames":true,"contentSchema":true},` +
+	`"keyed":{"type":"object","patternProperties":{"^x":true},"dependentSchemas":{"a":false},"$defs":{"d":true},"definitions":{"e":true},"additionalProperties":false},` +
+	`"open":{"type":"object","additionalProperties":{"type":"object","properties":{"x":true}},"unevaluatedProperties":false,"unevaluatedItems":true},` +
+	`"data":{"type":"boolean","enum":[true,false],"const":true,"default":true,"examples":[true]}` +
+	`},"required":["state"],"additionalProperties":false,"$defs":{"anything":true},"anyOf":[{"properties":{"z":true}}]}`
+
+const booleanSchemaPositionsOut = `{"type":"object","properties":{` +
+	`"state":{},` +
+	`"deny":{"not":{}},` +
+	`"tags":{"type":"array","items":{}},` +
+	`"choice":{"anyOf":[{"type":"array","items":{}},{"type":"null"}]},` +
+	`"tuple":{"type":"array","prefixItems":[{},{"type":"string"}],"items":{"not":{}}},` +
+	`"legacy":{"type":"array","items":[{},{"type":"string"}],"additionalItems":{"not":{}}},` +
+	`"guarded":{"not":{},"if":{},"then":{"not":{}},"else":{},"contains":{},"propertyNames":{},"contentSchema":{}},` +
+	`"keyed":{"type":"object","patternProperties":{"^x":{}},"dependentSchemas":{"a":{"not":{}}},"$defs":{"d":{}},"definitions":{"e":{}},"additionalProperties":false},` +
+	`"open":{"type":"object","additionalProperties":{"type":"object","properties":{"x":{}}},"unevaluatedProperties":false,"unevaluatedItems":true},` +
+	`"data":{"type":"boolean","enum":[true,false],"const":true,"default":true,"examples":[true]}` +
+	`},"required":["state"],"additionalProperties":false,"$defs":{"anything":{}},"anyOf":[{"properties":{"z":{}}}]}`
+
 // The upstream that motivated the rewrite fails with "argument of type 'bool' is not
 // iterable" on any boolean in a schema position. Every one becomes its object form, in
 // place, while boolean keyword values and instance data keep their booleans.
 func TestRewriteBooleanSchemaNodes_RewritesSchemaPositions(t *testing.T) {
-	params := booleanSchemaParams(t, `{"type":"object","properties":{`+
-		`"state":true,`+
-		`"deny":false,`+
-		`"tags":{"type":"array","items":true},`+
-		`"choice":{"anyOf":[{"type":"array","items":true},{"type":"null"}]},`+
-		`"tuple":{"type":"array","prefixItems":[true,{"type":"string"}],"items":false},`+
-		`"legacy":{"type":"array","items":[true,{"type":"string"}],"additionalItems":false},`+
-		`"guarded":{"not":true,"if":true,"then":false,"else":true,"contains":true,"propertyNames":true,"contentSchema":true},`+
-		`"keyed":{"type":"object","patternProperties":{"^x":true},"dependentSchemas":{"a":false},"$defs":{"d":true},"definitions":{"e":true},"additionalProperties":false},`+
-		`"open":{"type":"object","additionalProperties":{"type":"object","properties":{"x":true}},"unevaluatedProperties":false,"unevaluatedItems":true},`+
-		`"data":{"type":"boolean","enum":[true,false],"const":true,"default":true,"examples":[true]}`+
-		`},"required":["state"],"additionalProperties":false,"$defs":{"anything":true},"anyOf":[{"properties":{"z":true}}]}`)
+	params := booleanSchemaParams(t, booleanSchemaPositionsIn)
 
 	rewritten, changed := RewriteBooleanSchemaNodes(params)
 	if !changed {
 		t.Fatal("boolean subschemas were not rewritten")
 	}
-	want := `{"type":"object","properties":{` +
-		`"state":{},` +
-		`"deny":{"not":{}},` +
-		`"tags":{"type":"array","items":{}},` +
-		`"choice":{"anyOf":[{"type":"array","items":{}},{"type":"null"}]},` +
-		`"tuple":{"type":"array","prefixItems":[{},{"type":"string"}],"items":{"not":{}}},` +
-		`"legacy":{"type":"array","items":[{},{"type":"string"}],"additionalItems":{"not":{}}},` +
-		`"guarded":{"not":{},"if":{},"then":{"not":{}},"else":{},"contains":{},"propertyNames":{},"contentSchema":{}},` +
-		`"keyed":{"type":"object","patternProperties":{"^x":{}},"dependentSchemas":{"a":{"not":{}}},"$defs":{"d":{}},"definitions":{"e":{}},"additionalProperties":false},` +
-		`"open":{"type":"object","additionalProperties":{"type":"object","properties":{"x":{}}},"unevaluatedProperties":false,"unevaluatedItems":true},` +
-		`"data":{"type":"boolean","enum":[true,false],"const":true,"default":true,"examples":[true]}` +
-		`},"required":["state"],"additionalProperties":false,"$defs":{"anything":{}},"anyOf":[{"properties":{"z":{}}}]}`
+	if got := marshalBooleanSchemaParams(t, rewritten); got != booleanSchemaPositionsOut {
+		t.Fatalf("rewritten schema mismatch\n got: %s\nwant: %s", got, booleanSchemaPositionsOut)
+	}
+}
+
+// Schemas built in code can hold a composition list or tuple-form items typed as
+// []schemas.OrderedMap below the root, which serializes like the decoded []any. Its
+// entries are rewritten on a copied slice and the caller's slice is left as it was.
+func TestRewriteBooleanSchemaNodes_TypedSchemaSlices(t *testing.T) {
+	alternatives := []schemas.OrderedMap{
+		*schemas.NewOrderedMapFromPairs(schemas.KV("type", "array"), schemas.KV("items", true)),
+		*schemas.NewOrderedMapFromPairs(schemas.KV("type", "null")),
+	}
+	tuple := []schemas.OrderedMap{
+		*schemas.NewOrderedMapFromPairs(schemas.KV("not", false)),
+	}
+	clean := []schemas.OrderedMap{*schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))}
+	props := schemas.NewOrderedMap()
+	props.Set("choice", schemas.NewOrderedMapFromPairs(schemas.KV("anyOf", alternatives)))
+	props.Set("pair", schemas.NewOrderedMapFromPairs(schemas.KV("type", "array"), schemas.KV("items", tuple)))
+	props.Set("plain", schemas.NewOrderedMapFromPairs(schemas.KV("oneOf", clean)))
+	params := &schemas.ToolFunctionParameters{Type: "object", Properties: props}
+
+	rewritten, changed := RewriteBooleanSchemaNodes(params)
+	if !changed {
+		t.Fatal("boolean subschemas inside typed schema slices were not rewritten")
+	}
+	want := `{"type":"object","properties":{"choice":{"anyOf":[{"type":"array","items":{}},{"type":"null"}]},"pair":{"type":"array","items":[{"not":{"not":{}}}]},"plain":{"oneOf":[{"type":"string"}]}}}`
 	if got := marshalBooleanSchemaParams(t, rewritten); got != want {
-		t.Fatalf("rewritten schema mismatch\n got: %s\nwant: %s", got, want)
+		t.Fatalf("typed slice rewrite mismatch\n got: %s\nwant: %s", got, want)
+	}
+	if items, _ := alternatives[0].Get("items"); items != true {
+		t.Fatalf("caller's anyOf slice was mutated: items = %#v", items)
+	}
+	if not, _ := tuple[0].Get("not"); not != false {
+		t.Fatalf("caller's items slice was mutated: not = %#v", not)
+	}
+	plain, _ := props.Get("plain")
+	rewrittenPlain, _ := rewritten.Properties.Get("plain")
+	if plain != rewrittenPlain {
+		t.Fatal("a schema with an unchanged typed slice was copied instead of shared")
 	}
 }
 
@@ -341,6 +385,38 @@ func TestRewriteToolBooleanSchemaNodesJSON(t *testing.T) {
 		if err != nil || changed || string(got) != unchanged {
 			t.Fatalf("body without boolean subschemas changed: changed=%t err=%v got=%s", changed, err, got)
 		}
+	}
+}
+
+// The raw path replaces only the boolean subschemas. Number tokens are never decoded,
+// so an integer past float64 precision, a trailing zero and an exponent keep their
+// exact bytes, and so does the whitespace around them.
+func TestRewriteToolBooleanSchemaNodesJSON_PreservesNumberTokens(t *testing.T) {
+	body := `{"model":"m","tools":[{"type":"function","function":{"name":"f","parameters":` +
+		`{"type":"object","properties":{"flag":true,"id":{"const":9007199254740993},` +
+		`"ratio":{"type":"number","minimum":1.50,"multipleOf":1E-7,"enum":[ 12345678901234567890 ]}}}}}]}`
+	want := `{"model":"m","tools":[{"type":"function","function":{"name":"f","parameters":` +
+		`{"type":"object","properties":{"flag":{},"id":{"const":9007199254740993},` +
+		`"ratio":{"type":"number","minimum":1.50,"multipleOf":1E-7,"enum":[ 12345678901234567890 ]}}}}}]}`
+	got, changed, err := RewriteToolBooleanSchemaNodesJSON([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || string(got) != want {
+		t.Fatalf("raw body rewrite mismatch (changed=%t)\n got: %s\nwant: %s", changed, got, want)
+	}
+}
+
+// The raw walk rewrites exactly the positions the decoded walk does.
+func TestRewriteToolBooleanSchemaNodesJSON_MatchesDecodedRewrite(t *testing.T) {
+	body := `{"tools":[{"name":"f","parameters":` + booleanSchemaPositionsIn + `}]}`
+	want := `{"tools":[{"name":"f","parameters":` + booleanSchemaPositionsOut + `}]}`
+	got, changed, err := RewriteToolBooleanSchemaNodesJSON([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || string(got) != want {
+		t.Fatalf("raw rewrite differs from the decoded rewrite\n got: %s\nwant: %s", got, want)
 	}
 }
 
