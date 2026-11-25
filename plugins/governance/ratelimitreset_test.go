@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -120,9 +121,10 @@ func TestRequestTimeRateLimitResetSkipsReferenceRefresh(t *testing.T) {
 		t.Fatalf("expected request-time reset hook to fire once, got %d", resetHookCalls)
 	}
 
-	store.LastDBUsagesRateLimitsRequestsMu.RLock()
-	lastDBRequests := store.LastDBUsagesRequestsRateLimits[rateLimitID]
-	store.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+	_, lastDBRequests, ok := rateLimitBaselines(store, rateLimitID)
+	if !ok {
+		t.Fatal("expected the rate limit to hold a state")
+	}
 	if lastDBRequests != 0 {
 		t.Fatalf("expected request LastDB baseline to reset to 0, got %d", lastDBRequests)
 	}
@@ -159,13 +161,15 @@ func TestBackgroundRateLimitResetRefreshesReferences(t *testing.T) {
 	if keyRateLimit == nil {
 		t.Fatal("expected the key's rate limit to resolve after a background reset")
 	}
-	if keyRateLimit != resetRateLimits[0].TableRateLimit {
+	// Reads hand out copies, so the key resolving to the reset rate limit means reading back what
+	// the reset stored.
+	if !reflect.DeepEqual(*keyRateLimit, *resetRateLimits[0].TableRateLimit) {
 		t.Fatal("expected the key to resolve to the canonical reset object")
 	}
 	if vk.RateLimitID != rateLimitID {
 		t.Fatal("expected background reset to preserve owner-to-rate-limit ID mapping")
 	}
-	if resetRateLimits[0].TableRateLimit == staleRateLimit {
+	if reflect.DeepEqual(*resetRateLimits[0].TableRateLimit, *staleRateLimit) {
 		t.Fatal("expected canonical reset to replace stale rate-limit snapshot")
 	}
 }
@@ -182,13 +186,13 @@ func TestBackgroundRateLimitResetRefreshesReferences(t *testing.T) {
 // reset, the reset target must no longer be due.
 func TestRateLimitResetConvergesForCalendarAlignedSubDayDuration(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	rateLimitID := "calendar-aligned-subday-converge-rate-limit"
 	rateLimit := buildRateLimit(rateLimitID, 1_000_000, 1_000_000) // "1m" durations
 	rateLimit.IsCalendarAligned = true
 	rateLimit.TokenLastReset = time.Now().Add(-2 * time.Minute)
 	rateLimit.RequestLastReset = time.Now().Add(-2 * time.Minute)
-	store.rateLimits.Store(rateLimitID, rateLimit)
+	putRateLimit(t, store, rateLimitID, rateLimit)
 
 	tokenTarget, requestTarget := store.rateLimitResetTargets(rateLimit, time.Now())
 	if tokenTarget == nil && requestTarget == nil {
@@ -210,12 +214,12 @@ func TestRateLimitResetConvergesForCalendarAlignedSubDayDuration(t *testing.T) {
 // resetting, or BumpBudgetUsage spins forever.
 func TestBudgetResetConvergesForCalendarAlignedSubDayDuration(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	budgetID := "calendar-aligned-subday-converge-budget"
 	budget := buildBudgetWithUsage(budgetID, 100, 42, "5h")
 	budget.IsCalendarAligned = true
 	budget.LastReset = time.Now().Add(-6 * time.Hour)
-	store.budgets.Store(budgetID, budget)
+	putBudget(t, store, budgetID, budget)
 
 	if store.budgetResetTarget(budget, time.Now()) == nil {
 		t.Fatal("expected expired budget to be due for reset before the first reset")
@@ -239,7 +243,7 @@ func TestNonPositiveDurationsAreNeverDue(t *testing.T) {
 	ctx := context.Background()
 	for _, duration := range []string{"0s", "-5m"} {
 		t.Run(duration, func(t *testing.T) {
-			store := newStandaloneStoreForResetBenchmark()
+			store := newStandaloneStore(t)
 			d := duration
 
 			rateLimitID := "non-positive-duration-rate-limit-" + duration
@@ -248,7 +252,7 @@ func TestNonPositiveDurationsAreNeverDue(t *testing.T) {
 			rateLimit.RequestResetDuration = &d
 			rateLimit.TokenLastReset = time.Now().Add(-time.Hour)
 			rateLimit.RequestLastReset = time.Now().Add(-time.Hour)
-			store.rateLimits.Store(rateLimitID, rateLimit)
+			putRateLimit(t, store, rateLimitID, rateLimit)
 
 			tokenTarget, requestTarget := store.rateLimitResetTargets(rateLimit, time.Now())
 			if tokenTarget != nil || requestTarget != nil {
@@ -265,7 +269,7 @@ func TestNonPositiveDurationsAreNeverDue(t *testing.T) {
 			budgetID := "non-positive-duration-budget-" + duration
 			budget := buildBudgetWithUsage(budgetID, 100, 5, duration)
 			budget.LastReset = time.Now().Add(-time.Hour)
-			store.budgets.Store(budgetID, budget)
+			putBudget(t, store, budgetID, budget)
 
 			if target := store.budgetResetTarget(budget, time.Now()); target != nil {
 				t.Fatalf("non-positive duration %q must never be due (%v): a due target here spins BumpBudgetUsage forever (issue #4851)", duration, target)
@@ -288,11 +292,11 @@ func TestNonPositiveDurationsAreNeverDue(t *testing.T) {
 // this one catches the hang on nanosecond-resolution clocks (Linux CI).
 func TestBumpRateLimitUsageCalendarAlignedSubDayDurationTerminates(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	rateLimitID := "calendar-aligned-subday-rate-limit"
 	rateLimit := buildRateLimit(rateLimitID, 1_000_000, 1_000_000) // "1m" durations
 	rateLimit.IsCalendarAligned = true
-	store.rateLimits.Store(rateLimitID, rateLimit)
+	putRateLimit(t, store, rateLimitID, rateLimit)
 
 	done := make(chan error, 1)
 	go func() {
@@ -324,11 +328,11 @@ func TestBumpRateLimitUsageCalendarAlignedSubDayDurationTerminates(t *testing.T)
 // reset duration ("5h") must not spin BumpBudgetUsage forever.
 func TestBumpBudgetUsageCalendarAlignedSubDayDurationTerminates(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	budgetID := "calendar-aligned-subday-budget"
 	budget := buildBudgetWithUsage(budgetID, 100, 0, "5h")
 	budget.IsCalendarAligned = true
-	store.budgets.Store(budgetID, budget)
+	putBudget(t, store, budgetID, budget)
 
 	done := make(chan error, 1)
 	go func() {
@@ -433,7 +437,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	now := time.Now()
 
 	t.Run("mixed expiry resets only the expired counter", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		tokenDuration, requestDuration := "1m", "1h"
 		rl := buildRateLimit("mixed-expiry", 1_000_000, 1_000_000)
 		rl.TokenResetDuration = &tokenDuration
@@ -442,7 +446,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 		rl.TokenLastReset = now.Add(-2 * time.Minute) // expired
 		rl.RequestCurrentUsage = 7
 		rl.RequestLastReset = now.Add(-30 * time.Minute) // NOT expired
-		store.rateLimits.Store(rl.ID, rl)
+		putRateLimit(t, store, rl.ID, rl)
 
 		if err := store.BumpRateLimitUsage(ctx, rl.ID, 10, true, true); err != nil {
 			t.Fatal(err)
@@ -457,7 +461,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	})
 
 	t.Run("exact rolling boundary is due", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		rl := buildRateLimit("exact-boundary", 1_000_000, 1_000_000)
 		probe := time.Now()
 		rl.TokenLastReset = probe.Add(-time.Minute) // exactly one window ago
@@ -468,7 +472,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	})
 
 	t.Run("one nanosecond before the boundary is not due", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		rl := buildRateLimit("pre-boundary", 1_000_000, 1_000_000)
 		probe := time.Now()
 		rl.TokenLastReset = probe.Add(-time.Minute + time.Nanosecond)
@@ -480,7 +484,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	})
 
 	t.Run("calendar day snaps LastReset to period start not now", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		duration := "1d"
 		rl := buildRateLimit("calendar-day", 1_000_000, 1_000_000)
 		rl.TokenResetDuration = &duration
@@ -488,7 +492,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 		rl.IsCalendarAligned = true
 		rl.TokenLastReset = now.Add(-26 * time.Hour) // last reset yesterday
 		rl.RequestLastReset = now.Add(-26 * time.Hour)
-		store.rateLimits.Store(rl.ID, rl)
+		putRateLimit(t, store, rl.ID, rl)
 
 		if reset := store.ResetExpiredRateLimitsInMemory(ctx, rl.ID); len(reset) != 1 {
 			t.Fatalf("expected one reset, got %d", len(reset))
@@ -501,7 +505,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	})
 
 	t.Run("calendar aligned within current period is not due", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		duration := "1d"
 		rl := buildRateLimit("calendar-current-period", 1_000_000, 1_000_000)
 		rl.TokenResetDuration = &duration
@@ -517,12 +521,12 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	})
 
 	t.Run("future LastReset from clock skew is not due and does not spin", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		rl := buildRateLimit("future-last-reset", 1_000_000, 1_000_000)
 		rl.TokenCurrentUsage = 3
 		rl.TokenLastReset = now.Add(time.Hour) // another node's clock ahead
 		rl.RequestLastReset = now.Add(time.Hour)
-		store.rateLimits.Store(rl.ID, rl)
+		putRateLimit(t, store, rl.ID, rl)
 
 		if err := store.BumpRateLimitUsage(ctx, rl.ID, 4, true, true); err != nil {
 			t.Fatal(err)
@@ -660,14 +664,13 @@ func TestBudgetResetAccuracyAt100kKeysAllDue(t *testing.T) {
 		if attempt > 0 {
 			for i := 0; i < keyCount; i++ {
 				id := fmt.Sprintf("acc-budget-%06d", i)
-				raw, ok := store.budgets.Load(id)
-				if !ok || raw == nil {
+				if !store.UpdateBudgetState(id, func(s LimitState) (LimitState, bool) {
+					s.setLastReset(BudgetSlot, staleResets[i])
+					s.Usage[BudgetSlot] = DollarCount(float64(i%997) + 1)
+					return s, true
+				}) {
 					t.Fatalf("budget %06d missing before retry", i)
 				}
-				clone := *(raw.(*configstoreTables.TableBudget))
-				clone.LastReset = staleResets[i]
-				clone.CurrentUsage = float64(i%997) + 1
-				store.budgets.Store(id, &clone)
 			}
 		}
 		beforeSweep = time.Now()
@@ -764,14 +767,13 @@ func TestBudgetResetAccuracyAt100kKeysSparse(t *testing.T) {
 		if attempt > 0 {
 			for i := 0; i < keyCount; i += 100 {
 				id := fmt.Sprintf("acc-budget-%06d", i)
-				raw, ok := store.budgets.Load(id)
-				if !ok || raw == nil {
+				if !store.UpdateBudgetState(id, func(s LimitState) (LimitState, bool) {
+					s.setLastReset(BudgetSlot, staleWeek)
+					s.Usage[BudgetSlot] = DollarCount(500)
+					return s, true
+				}) {
 					t.Fatalf("budget %06d missing before retry", i)
 				}
-				clone := *(raw.(*configstoreTables.TableBudget))
-				clone.LastReset = staleWeek
-				clone.CurrentUsage = 500
-				store.budgets.Store(id, &clone)
 			}
 		}
 		start := time.Now()
@@ -812,17 +814,6 @@ func TestBudgetResetAccuracyAt100kKeysSparse(t *testing.T) {
 	t.Logf("sparse sweep: %d/%d budgets reset in %v", dueCount, keyCount, bestElapsed)
 	if bestElapsed > sweepBudget {
 		t.Fatalf("sparse 100k sweep took %v (budget %v) across %d attempts; expected well under the 10s tick", bestElapsed, sweepBudget, timingBudgetAttempts)
-	}
-}
-
-// newStandaloneStoreForResetBenchmark creates an in-memory-only store so benchmark
-// profiles isolate sync.Map/reference-update CPU rather than DB IO.
-func newStandaloneStoreForResetBenchmark() *LocalGovernanceStore {
-	return &LocalGovernanceStore{
-		logger:                         NewMockLogger(),
-		LastDBUsagesBudgets:            map[string]float64{},
-		LastDBUsagesTokensRateLimits:   map[string]int64{},
-		LastDBUsagesRequestsRateLimits: map[string]int64{},
 	}
 }
 
@@ -894,16 +885,9 @@ func resetTestRecordsStore(tb testing.TB, cfg *configstore.GovernanceConfig) *Lo
 // markRequestRateLimitExpired forces BumpRateLimitUsage down the request-time
 // reset path on the next call.
 func markRequestRateLimitExpired(store *LocalGovernanceStore, rateLimitID string) {
-	raw, ok := store.rateLimits.Load(rateLimitID)
-	if !ok || raw == nil {
-		return
-	}
-	rateLimit, ok := raw.(*configstoreTables.TableRateLimit)
-	if !ok || rateLimit == nil {
-		return
-	}
-	clone := *rateLimit
-	clone.RequestCurrentUsage = 123
-	clone.RequestLastReset = time.Now().Add(-2 * time.Minute)
-	store.rateLimits.Store(rateLimitID, &clone)
+	store.UpdateRateLimitState(rateLimitID, func(s LimitState) (LimitState, bool) {
+		s.Usage[RequestSlot] = WholeCount(123)
+		s.setLastReset(RequestSlot, time.Now().Add(-2*time.Minute))
+		return s, true
+	})
 }

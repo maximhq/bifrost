@@ -13,6 +13,7 @@ import (
 
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -105,14 +106,12 @@ func (f *dumpSkipFixture) take() int64 {
 	return f.updates.Swap(0)
 }
 
-// bumpRateLimitTokens adds tokens to a rate limit's in-memory counter.
+// bumpRateLimitTokens adds tokens to a rate limit's in-memory counter only, so
+// the database row keeps its old value until a dump writes the new one.
 func (f *dumpSkipFixture) bumpRateLimitTokens(t *testing.T, id string, tokens int64) {
 	t.Helper()
-	rl := f.store.LoadRateLimit(context.Background(), id)
-	require.NotNil(t, rl)
-	clone := *rl
-	clone.TokenCurrentUsage += tokens
-	f.store.rateLimits.Store(id, &clone)
+	require.NotNil(t, f.store.LoadRateLimit(context.Background(), id))
+	require.NoError(t, f.store.BumpRateLimitUsageBy(context.Background(), id, tokens, 0))
 }
 
 // TestDumpRetriesFailedWrites pins that a failed or deadlocked dump loses no
@@ -269,14 +268,14 @@ func TestDumpDefersWritesAndRetainsCapturedUsage(t *testing.T) {
 // invalidating dumps while detecting operator resets at an unchanged boundary.
 func TestDumpResetGenerationIgnoresCharges(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	boundary := time.Now().UTC().Truncate(time.Hour)
 	budget := buildBudgetWithUsage("budget", 100, 3, "24h")
 	budget.LastReset = boundary
-	store.SeedBudgetConfig(ctx, budget.ID, budget)
+	reloadBudget(t, store, budget.ID, budget)
 	rate := buildRateLimit("rate", 1000, 1000)
 	rate.TokenLastReset, rate.RequestLastReset = boundary, boundary
-	store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+	reloadRateLimit(t, store, rate.ID, rate)
 	unchanged := store.CaptureDumpResetGeneration()
 	require.True(t, unchanged())
 	require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 2))
@@ -309,23 +308,25 @@ func TestDumpResetGenerationIgnoresCharges(t *testing.T) {
 func TestDumpResetGenerationResourceRemoval(t *testing.T) {
 	for _, resource := range []string{"budget", "rate"} {
 		t.Run(resource, func(t *testing.T) {
-			ctx := context.Background()
-			store := newStandaloneStoreForResetBenchmark()
+			store := newStandaloneStore(t)
 			budget := buildBudgetWithUsage("budget", 100, 3, "24h")
-			store.SeedBudgetConfig(ctx, budget.ID, budget)
+			reloadBudget(t, store, budget.ID, budget)
 			rate := buildRateLimit("rate", 1000, 1000)
-			store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+			// Zero window starts read back the same from every read of the row, so the replacement's
+			// boundaries match the original's and only its removal tells them apart.
+			rate.TokenLastReset, rate.RequestLastReset = time.Time{}, time.Time{}
+			reloadRateLimit(t, store, rate.ID, rate)
 			unchanged := store.CaptureDumpResetGeneration()
 			if resource == "budget" {
-				store.DeleteBudget(ctx, budget.ID)
+				dropLimit(t, store, livestore.KindBudget, budget.ID)
 			} else {
-				store.DeleteRateLimit(ctx, rate.ID)
+				dropLimit(t, store, livestore.KindRateLimit, rate.ID)
 			}
 			require.False(t, unchanged())
 			if resource == "budget" {
-				store.SeedBudgetConfig(ctx, budget.ID, budget)
+				reloadBudget(t, store, budget.ID, budget)
 			} else {
-				store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+				reloadRateLimit(t, store, rate.ID, rate)
 			}
 			require.False(t, unchanged())
 		})
@@ -343,12 +344,12 @@ func TestDurableResetEvidenceRestart(t *testing.T) {
 	budgetConfig := *budget
 	budgetConfig.ResetDuration = "1d"
 	require.NoError(t, fixture.configStore.UpdateBudget(ctx, &budgetConfig))
-	store.UpsertBudgetConfig(ctx, budget.ID, &budgetConfig)
+	refreshLimit(t, store, livestore.KindBudget, budget.ID, false)
 	rateConfig := *rate
 	day := "1d"
 	rateConfig.TokenResetDuration, rateConfig.RequestResetDuration = &day, &day
 	require.NoError(t, fixture.configStore.UpdateRateLimit(ctx, &rateConfig))
-	store.UpsertRateLimitConfig(ctx, rate.ID, &rateConfig)
+	refreshLimit(t, store, livestore.KindRateLimit, rate.ID, false)
 	budgetBoundary := budget.LastReset.Add(time.Hour)
 	tokenBoundary := rate.TokenLastReset.Add(time.Hour)
 	resetBudget, ok := store.ResetBudgetAt(ctx, budget.ID, budgetBoundary)
@@ -396,14 +397,14 @@ func restartedStore(t *testing.T, ctx context.Context, configStore configstore.C
 // monotonic and only accepted dimensions can install received markers.
 func TestDurableResetEvidenceBaselineInstallation(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	boundary := time.Now().UTC().Truncate(time.Second)
 	budget := buildBudgetWithUsage("budget", 100, 7, "1h")
 	budget.LastReset = boundary
 	rate := buildRateLimitWithUsage("rate", 1000, 9, 100, 3)
 	rate.TokenLastReset, rate.RequestLastReset = boundary, boundary
-	store.budgets.Store(budget.ID, budget)
-	store.rateLimits.Store(rate.ID, rate)
+	putBudget(t, store, budget.ID, budget)
+	putRateLimit(t, store, rate.ID, rate)
 	epoch := boundary.UnixNano() - 1
 	require.True(t, store.ApplyBudgetBaselineWithResetEpoch(ctx, budget.ID, 5, boundary, epoch))
 	require.True(t, store.ApplyBudgetBaselineWithResetEpoch(ctx, budget.ID, 6, boundary, epoch-1))
@@ -418,8 +419,8 @@ func TestDurableResetEvidenceBaselineInstallation(t *testing.T) {
 	require.True(t, acceptedRequests)
 	require.Equal(t, epoch, store.LoadRateLimit(ctx, rate.ID).TokenUsageResetEpoch)
 	require.Equal(t, epoch-2, store.LoadRateLimit(ctx, rate.ID).RequestUsageResetEpoch)
-	store.UpsertBudgetConfig(ctx, budget.ID, budget)
-	store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+	reloadBudget(t, store, budget.ID, budget)
+	reloadRateLimit(t, store, rate.ID, rate)
 	require.Equal(t, epoch, store.LoadBudget(ctx, budget.ID).UsageResetEpoch)
 	require.Equal(t, epoch, store.LoadRateLimit(ctx, rate.ID).TokenUsageResetEpoch)
 	require.Equal(t, epoch-2, store.LoadRateLimit(ctx, rate.ID).RequestUsageResetEpoch)
@@ -467,7 +468,7 @@ func TestDurableResetPostgresSQL(t *testing.T) {
 		Logger: gormlogger.New(log.New(&output, "", 0), gormlogger.Config{LogLevel: gormlogger.Info}),
 	})
 	require.NoError(t, err)
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	ctx := context.Background()
 	boundary := time.Unix(1793975176, 42292000).UTC()
 	epoch := boundary.UnixNano()
@@ -501,7 +502,10 @@ func TestRateLimitResetPreservesCalendarAdoptedRequests(t *testing.T) {
 	rate.CreatedAt, rate.TokenLastReset, rate.RequestLastReset = old, old, old
 	rate.TokenResetDuration, rate.RequestResetDuration = &hour, &day
 	require.NoError(t, fixture.configStore.CreateRateLimit(ctx, rate))
-	store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+	// Adoption follows its holder switching calendar alignment on, and the holder's flag is what
+	// makes the rate limit calendar aligned in the store.
+	recordCalendarFlag(t, store, livestore.KindRateLimit, rate.ID, true)
+	refreshLimit(t, store, livestore.KindRateLimit, rate.ID, false)
 
 	require.True(t, store.AdoptRateLimitCalendarAlignmentInMemory(ctx, rate.ID, adoption))
 	adopted := store.LoadRateLimit(ctx, rate.ID)

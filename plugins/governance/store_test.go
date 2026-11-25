@@ -245,14 +245,12 @@ func TestGovernanceStore_CheckBudget_HierarchyValidation(t *testing.T) {
 	assert.NoError(t, err, "Should pass when all budgets are under limit")
 
 	// Test: If VK budget exceeds limit, should fail
-	// Update the budget directly in the budgets map (since a key refresh preserves usage)
+	// Update the budget's usage directly (since a key refresh preserves usage)
 	if len(rec.BudgetIDs) > 0 {
 		budgetID := rec.BudgetIDs[0]
-		if budgetValue, exists := store.budgets.Load(budgetID); exists && budgetValue != nil {
-			if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
-				budget.CurrentUsage = 100.0
-				store.budgets.Store(budgetID, budget)
-			}
+		if budget := store.LoadBudget(context.Background(), budgetID); budget != nil {
+			budget.CurrentUsage = 100.0
+			putBudget(t, store, budgetID, budget)
 		}
 	}
 	_, err = checkGrantBudgets(store, emptyCtx(), rec, schemas.OpenAI, "", nil)
@@ -363,23 +361,23 @@ func TestGovernanceStore_MultiBudget_UsageUpdatesAllBudgets(t *testing.T) {
 	require.NoError(t, err)
 
 	// Both budgets should reflect the cost
-	hourlyVal, exists := store.budgets.Load("hourly")
-	require.True(t, exists)
-	assert.InDelta(t, 3.50, hourlyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01, "Hourly budget should reflect usage")
+	hourlyVal := store.LoadBudget(context.Background(), "hourly")
+	require.NotNil(t, hourlyVal)
+	assert.InDelta(t, 3.50, hourlyVal.CurrentUsage, 0.01, "Hourly budget should reflect usage")
 
-	dailyVal, exists := store.budgets.Load("daily")
-	require.True(t, exists)
-	assert.InDelta(t, 3.50, dailyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01, "Daily budget should reflect usage")
+	dailyVal := store.LoadBudget(context.Background(), "daily")
+	require.NotNil(t, dailyVal)
+	assert.InDelta(t, 3.50, dailyVal.CurrentUsage, 0.01, "Daily budget should reflect usage")
 
 	// Second request: $7.00 — should push hourly over limit
 	err = chargeGrantBudgets(store, context.Background(), rec, schemas.OpenAI, 7.00)
 	require.NoError(t, err)
 
-	hourlyVal, _ = store.budgets.Load("hourly")
-	assert.InDelta(t, 10.50, hourlyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01, "Hourly budget should accumulate")
+	hourlyVal = store.LoadBudget(context.Background(), "hourly")
+	assert.InDelta(t, 10.50, hourlyVal.CurrentUsage, 0.01, "Hourly budget should accumulate")
 
-	dailyVal, _ = store.budgets.Load("daily")
-	assert.InDelta(t, 10.50, dailyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01, "Daily budget should accumulate")
+	dailyVal = store.LoadBudget(context.Background(), "daily")
+	assert.InDelta(t, 10.50, dailyVal.CurrentUsage, 0.01, "Daily budget should accumulate")
 
 	// Now CheckBudget should fail (hourly exceeded)
 	_, err = checkGrantBudgets(store, emptyCtx(), rec, schemas.OpenAI, "", nil)
@@ -550,9 +548,9 @@ func TestGovernanceStore_MultiBudget_UsageDrivesBlockAfterRequests(t *testing.T)
 	assert.Contains(t, result.Reason, "budget exceeded")
 
 	// Verify daily budget is still under limit
-	dailyVal, exists := store.budgets.Load("daily")
-	require.True(t, exists)
-	assert.InDelta(t, 2.40, dailyVal.(*configstoreTables.TableBudget).CurrentUsage, 0.01,
+	dailyVal := store.LoadBudget(context.Background(), "daily")
+	require.NotNil(t, dailyVal)
+	assert.InDelta(t, 2.40, dailyVal.CurrentUsage, 0.01,
 		"Daily budget should be at $2.40, well under $100 limit")
 }
 
@@ -794,9 +792,9 @@ func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {
 	// Create
 	h.putVirtualKey(vk)
 
-	_, exists := store.budgets.Load("b1")
+	exists := store.LoadBudget(context.Background(), "b1") != nil
 	assert.True(t, exists, "Budget b1 should be in memory after create")
-	_, exists = store.budgets.Load("b2")
+	exists = store.LoadBudget(context.Background(), "b2") != nil
 	assert.True(t, exists, "Budget b2 should be in memory after create")
 
 	retrieved, found := store.GetVirtualKey(context.Background(), "sk-bf-test")
@@ -806,9 +804,9 @@ func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {
 	// Delete
 	h.deleteVirtualKey("vk1")
 
-	_, exists = store.budgets.Load("b1")
+	exists = store.LoadBudget(context.Background(), "b1") != nil
 	assert.False(t, exists, "Budget b1 should be removed after delete")
-	_, exists = store.budgets.Load("b2")
+	exists = store.LoadBudget(context.Background(), "b2") != nil
 	assert.False(t, exists, "Budget b2 should be removed after delete")
 
 	_, found = store.GetVirtualKey(context.Background(), "sk-bf-test")
@@ -1359,7 +1357,7 @@ func TestGovernanceStoreResetBudgetAdvancesOverride(t *testing.T) {
 	store := newStandaloneStore(t)
 	finite := buildBudgetWithUsage("finite-override", 100, 75, "1d")
 	require.NoError(t, finite.SetOverride(25, configstoreTables.BudgetOverrideModeCycles, 2))
-	store.budgets.Store(finite.ID, finite)
+	putBudget(t, store, finite.ID, finite)
 
 	firstReset := finite.LastReset.Add(24 * time.Hour)
 	reset, ok := store.ResetBudgetAt(context.Background(), finite.ID, firstReset)
@@ -1376,24 +1374,25 @@ func TestGovernanceStoreResetBudgetAdvancesOverride(t *testing.T) {
 
 	permanent := buildBudgetWithUsage("forever-override", 100, 75, "1d")
 	require.NoError(t, permanent.SetOverride(50, configstoreTables.BudgetOverrideModeForever, 0))
-	store.budgets.Store(permanent.ID, permanent)
+	putBudget(t, store, permanent.ID, permanent)
 	reset, ok = store.ResetBudgetAt(context.Background(), permanent.ID, permanent.LastReset.Add(24*time.Hour))
 	require.True(t, ok)
 	assert.True(t, reset.HasActiveOverride())
 	assert.Equal(t, 150.0, reset.EffectiveMaxLimit())
 }
 
-// TestGovernanceStoreUpsertBudgetConfigRefreshesOverride verifies cache refreshes config without clobbering runtime counters.
-func TestGovernanceStoreUpsertBudgetConfigRefreshesOverride(t *testing.T) {
+// TestGovernanceStoreBudgetReloadRefreshesOverride verifies a reload of a budget's row refreshes its
+// config and override without clobbering runtime counters.
+func TestGovernanceStoreBudgetReloadRefreshesOverride(t *testing.T) {
 	store := newStandaloneStore(t)
 	lastReset := time.Now().Add(-30 * time.Minute)
 	live := buildBudgetWithUsage("cache-override", 100, 40, "1h")
 	live.LastReset = lastReset
-	store.budgets.Store(live.ID, live)
+	putBudget(t, store, live.ID, live)
 
 	refreshed := buildBudgetWithUsage(live.ID, 120, 0, "2h")
 	require.NoError(t, refreshed.SetOverride(30, configstoreTables.BudgetOverrideModeCycles, 3))
-	store.UpsertBudgetConfig(context.Background(), live.ID, refreshed)
+	reloadBudget(t, store, live.ID, refreshed)
 
 	got := store.LoadBudget(context.Background(), live.ID)
 	require.NotNil(t, got)
@@ -1486,7 +1485,7 @@ func TestGovernanceStore_RateLimitStatus(t *testing.T) {
 	}, nil, nil)
 	require.NoError(t, err)
 
-	store.rateLimits.Store(rateLimitID, rl)
+	putRateLimit(t, store, rateLimitID, rl)
 
 	// Get status
 	status := store.GetBudgetAndRateLimitStatus(emptyCtx(), schemas.ModelProvider("openai"), "", nil, nil, nil)
@@ -1496,6 +1495,7 @@ func TestGovernanceStore_RateLimitStatus(t *testing.T) {
 
 	// Update usage to exhausted state
 	rl.TokenCurrentUsage = 1000
+	putRateLimit(t, store, rateLimitID, rl)
 	status = store.GetBudgetAndRateLimitStatus(emptyCtx(), schemas.ModelProvider("openai"), "", nil, nil, nil)
 
 	assert.Equal(t, 100.0, status.RateLimitTokenPercentUsed)
@@ -1519,7 +1519,7 @@ func TestGovernanceStore_StatusWithNoResolvedAccess(t *testing.T) {
 	h.putRateLimit(&row)
 
 	h.putProvider(&configstoreTables.TableProvider{Name: "openai", RateLimitID: &rateLimitID})
-	store.rateLimits.Store(rateLimitID, rl)
+	putRateLimit(t, store, rateLimitID, rl)
 
 	ctx := emptyCtx()
 	require.Nil(t, ctx.Grant().Access(), "nothing resolved on this request")
@@ -1557,7 +1557,7 @@ func TestGovernanceStore_BudgetStatus(t *testing.T) {
 	}, nil, nil)
 	require.NoError(t, err)
 
-	store.budgets.Store(budgetID, budget)
+	putBudget(t, store, budgetID, budget)
 
 	// Get status
 	status := store.GetBudgetAndRateLimitStatus(emptyCtx(), schemas.ModelProvider("openai"), "", nil, nil, nil)
@@ -1567,6 +1567,7 @@ func TestGovernanceStore_BudgetStatus(t *testing.T) {
 
 	// Update usage to exhausted state
 	budget.CurrentUsage = 100.0
+	putBudget(t, store, budgetID, budget)
 	status = store.GetBudgetAndRateLimitStatus(emptyCtx(), schemas.ModelProvider("openai"), "", nil, nil, nil)
 
 	assert.Equal(t, 100.0, status.BudgetPercentUsed)
@@ -1738,16 +1739,12 @@ func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory(t *testing.T) {
 
 	h.putCustomer(customer)
 
-	rawBudget, ok := store.budgets.Load(budgetID)
-	require.True(t, ok, "budget should be in memory after create")
-	storedBudget, ok := rawBudget.(*configstoreTables.TableBudget)
-	require.True(t, ok)
+	storedBudget := store.LoadBudget(context.Background(), budgetID)
+	require.NotNil(t, storedBudget, "budget should be in memory after create")
 	assert.True(t, storedBudget.IsCalendarAligned, "budget.IsCalendarAligned should be true when customer.CalendarAligned=true")
 
-	rawRL, ok := store.rateLimits.Load(rlID)
-	require.True(t, ok, "rate limit should be in memory after create")
-	storedRL, ok := rawRL.(*configstoreTables.TableRateLimit)
-	require.True(t, ok)
+	storedRL := store.LoadRateLimit(context.Background(), rlID)
+	require.NotNil(t, storedRL, "rate limit should be in memory after create")
 	assert.True(t, storedRL.IsCalendarAligned, "rate_limit.IsCalendarAligned should be true when customer.CalendarAligned=true")
 }
 
@@ -1770,10 +1767,8 @@ func TestGovernanceStore_Customer_CalendarAligned_CreateInMemory_False(t *testin
 
 	h.putCustomer(customer)
 
-	rawBudget, ok := store.budgets.Load(budgetID)
-	require.True(t, ok)
-	storedBudget, ok := rawBudget.(*configstoreTables.TableBudget)
-	require.True(t, ok)
+	storedBudget := store.LoadBudget(context.Background(), budgetID)
+	require.NotNil(t, storedBudget)
 	assert.False(t, storedBudget.IsCalendarAligned, "budget.IsCalendarAligned should be false when customer.CalendarAligned=false")
 }
 
@@ -1810,20 +1805,21 @@ func TestGovernanceStore_Customer_CalendarAligned_UpdateInMemory(t *testing.T) {
 	store := h.mustGovernanceStore(logger, nil)
 
 	// Budget and rate limit should start as non-calendar-aligned
-	rawBudget, _ := store.budgets.Load(budgetID)
-	assert.False(t, rawBudget.(*configstoreTables.TableBudget).IsCalendarAligned)
+	rawBudget := store.LoadBudget(context.Background(), budgetID)
+	require.NotNil(t, rawBudget)
+	assert.False(t, rawBudget.IsCalendarAligned)
 
 	// Toggle calendar_aligned to true and update in memory
 	customer.CalendarAligned = true
 	h.putCustomer(customer)
 
-	rawBudget, ok := store.budgets.Load(budgetID)
-	require.True(t, ok)
-	assert.True(t, rawBudget.(*configstoreTables.TableBudget).IsCalendarAligned, "budget.IsCalendarAligned should be true after update with CalendarAligned=true")
+	rawBudget = store.LoadBudget(context.Background(), budgetID)
+	require.NotNil(t, rawBudget)
+	assert.True(t, rawBudget.IsCalendarAligned, "budget.IsCalendarAligned should be true after update with CalendarAligned=true")
 
-	rawRL, ok := store.rateLimits.Load(rlID)
-	require.True(t, ok)
-	assert.True(t, rawRL.(*configstoreTables.TableRateLimit).IsCalendarAligned, "rate_limit.IsCalendarAligned should be true after update with CalendarAligned=true")
+	rawRL := store.LoadRateLimit(context.Background(), rlID)
+	require.NotNil(t, rawRL)
+	assert.True(t, rawRL.IsCalendarAligned, "rate_limit.IsCalendarAligned should be true after update with CalendarAligned=true")
 }
 
 // Utility functions for tests
@@ -3272,23 +3268,34 @@ func TestGovernanceStore_ResetDoesNotRevertAConcurrentTeamEdit(t *testing.T) {
 }
 
 // TestModelConfigRefreshPreservesRateLimitResetEvidence checks that a stale
-// config refresh preserves both live accounting tuples and applies new limits. A
-// model config's rate limit is refreshed as its own row, which the live store
-// re-seeds through SeedRateLimitConfig.
+// config refresh preserves both live accounting tuples and applies new limits. The
+// model config is written again with new caps on its rate limit and refreshed: the
+// rate limit arrives as the model config's child, and the store keeps the usage it
+// holds while it applies the caps.
 func TestModelConfigRefreshPreservesRateLimitResetEvidence(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	h := newLiveHarness(t, nil, nil)
+	store := h.mustGovernanceStore(NewMockLogger(), nil)
+	h.putModelConfig(buildModelConfig("mc-1", "gpt-4o", nil, nil, buildRateLimit("rate", 1000, 1000)))
 	rate := buildRateLimit("rate", 1000, 1000)
 	rate.TokenLastReset = time.Now().UTC().Truncate(time.Hour)
 	rate.RequestLastReset = rate.TokenLastReset.Add(-time.Hour)
 	rate.TokenUsageResetEpoch = rate.TokenLastReset.UnixNano()
 	rate.RequestUsageResetEpoch = rate.RequestLastReset.UnixNano()
 	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
-	store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+	setUsage(store.rateLimitUsage, rate.ID, func(s *LimitState) {
+		s.Usage[TokenSlot] = WholeCount(rate.TokenCurrentUsage)
+		s.Usage[RequestSlot] = WholeCount(rate.RequestCurrentUsage)
+		s.setLastReset(TokenSlot, rate.TokenLastReset)
+		s.setLastReset(RequestSlot, rate.RequestLastReset)
+		s.ResetEpoch[TokenSlot] = rate.TokenUsageResetEpoch
+		s.ResetEpoch[RequestSlot] = rate.RequestUsageResetEpoch
+	})
 
 	incoming := buildRateLimit(rate.ID, 2000, 3000)
-	store.SeedRateLimitConfig(ctx, rate.ID, incoming)
+	h.putModelConfig(buildModelConfig("mc-1", "gpt-4o", nil, nil, incoming))
 	live := store.LoadRateLimit(ctx, rate.ID)
+	require.NotNil(t, live, "the model config refresh delivers its rate limit")
 	require.Equal(t, incoming.TokenMaxLimit, live.TokenMaxLimit)
 	require.Equal(t, incoming.RequestMaxLimit, live.RequestMaxLimit)
 	require.Equal(t, rate.TokenCurrentUsage, live.TokenCurrentUsage)
@@ -3312,7 +3319,7 @@ func TestConfigRefreshPreservesBudgetAndProviderAccounting(t *testing.T) {
 
 	modelBudget := buildBudgetWithUsage("model-budget", 100, 7, "1M")
 	modelBudget.LastReset, modelBudget.UsageResetEpoch = boundary, boundary.UnixNano()
-	store.UpsertBudgetConfig(ctx, modelBudget.ID, modelBudget)
+	putBudget(t, store, modelBudget.ID, modelBudget)
 	staleModelBudget := buildBudgetWithUsage(modelBudget.ID, 200, 42, "1M")
 	h.putModelConfig(&configstoreTables.TableModelConfig{
 		ID: "model", ModelName: "gpt-4o", CalendarAligned: true, Budgets: []configstoreTables.TableBudget{*staleModelBudget},
@@ -3325,13 +3332,13 @@ func TestConfigRefreshPreservesBudgetAndProviderAccounting(t *testing.T) {
 
 	providerBudget := buildBudgetWithUsage("provider-budget", 100, 9, "1M")
 	providerBudget.LastReset, providerBudget.UsageResetEpoch = boundary, boundary.UnixNano()
-	store.UpsertBudgetConfig(ctx, providerBudget.ID, providerBudget)
+	putBudget(t, store, providerBudget.ID, providerBudget)
 	rate := buildRateLimit("provider-rate", 1000, 1000)
 	rate.TokenLastReset = boundary
 	rate.RequestLastReset = boundary.Add(-time.Hour)
 	rate.TokenUsageResetEpoch, rate.RequestUsageResetEpoch = rate.TokenLastReset.UnixNano(), rate.RequestLastReset.UnixNano()
 	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
-	store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+	putRateLimit(t, store, rate.ID, rate)
 
 	staleBudget := buildBudgetWithUsage(providerBudget.ID, 200, 42, "1M")
 	staleRate := buildRateLimit(rate.ID, 2000, 3000)
@@ -3347,18 +3354,18 @@ func TestConfigRefreshPreservesBudgetAndProviderAccounting(t *testing.T) {
 // evidence, while actual resets publish evidence before hooks run.
 func TestUsageResetEpochsIgnoreAdoption(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	now := time.Date(2026, 2, 5, 12, 0, 0, 0, time.UTC)
 	old := time.Date(2026, 1, 10, 9, 0, 0, 0, time.UTC)
 	budget := buildBudgetWithUsage("budget", 100, 42, "1M")
 	budget.LastReset, budget.CreatedAt = old, old
-	store.budgets.Store(budget.ID, budget)
+	putBudget(t, store, budget.ID, budget)
 	rate := buildRateLimit("rate", 1000, 1000)
 	month := "1M"
 	rate.TokenResetDuration, rate.RequestResetDuration = &month, &month
 	rate.TokenLastReset, rate.RequestLastReset, rate.CreatedAt = old, old, old
 	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
-	store.rateLimits.Store(rate.ID, rate)
+	putRateLimit(t, store, rate.ID, rate)
 	if !store.AdoptCalendarAlignmentInMemory(ctx, budget.ID, now) || !store.AdoptRateLimitCalendarAlignmentInMemory(ctx, rate.ID, now) {
 		t.Fatal("expected calendar adoption")
 	}
@@ -3378,26 +3385,20 @@ func TestUsageResetEpochsIgnoreAdoption(t *testing.T) {
 	if !ok || reset.TokenCurrentUsage != 0 || reset.RequestCurrentUsage != 19 {
 		t.Fatal("token reset changed retained requests")
 	}
-	// Immutable snapshots remain readable under archive baseline locks.
-	store.LastDBUsagesRateLimitsRequestsMu.Lock()
-	store.LastDBUsagesRateLimitsTokensMu.Lock()
+	// Each state is immutable, so a read never waits on a writer.
 	tokens, requests := store.LoadRateLimit(ctx, rate.ID).TokenUsageResetEpoch, store.LoadRateLimit(ctx, rate.ID).RequestUsageResetEpoch
-	store.LastDBUsagesRateLimitsTokensMu.Unlock()
-	store.LastDBUsagesRateLimitsRequestsMu.Unlock()
 	if tokens != target.UnixNano() || requests != 0 {
 		t.Fatalf("independent evidence = %v, %v", tokens, requests)
 	}
 	if _, ok := store.ResetBudgetAt(ctx, budget.ID, target); !ok {
 		t.Fatal("expected budget reset")
 	}
-	store.LastDBUsagesBudgetsMu.Lock()
 	epoch := store.LoadBudget(ctx, budget.ID).UsageResetEpoch
-	store.LastDBUsagesBudgetsMu.Unlock()
 	if epoch != target.UnixNano() {
 		t.Fatalf("budget evidence = %v", epoch)
 	}
-	store.UpsertBudgetConfig(ctx, budget.ID, budget)
-	store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+	reloadBudget(t, store, budget.ID, budget)
+	reloadRateLimit(t, store, rate.ID, rate)
 	if store.LoadBudget(ctx, budget.ID).UsageResetEpoch != target.UnixNano() {
 		t.Fatal("config replacement lost evidence")
 	}
@@ -3405,8 +3406,8 @@ func TestUsageResetEpochsIgnoreAdoption(t *testing.T) {
 	if tokens != target.UnixNano() || requests != 0 {
 		t.Fatal("config replacement changed rate evidence")
 	}
-	store.DeleteBudget(ctx, budget.ID)
-	store.DeleteRateLimit(ctx, rate.ID)
+	dropLimit(t, store, livestore.KindBudget, budget.ID)
+	dropLimit(t, store, livestore.KindRateLimit, rate.ID)
 	if store.LoadBudget(ctx, budget.ID) != nil {
 		t.Fatal("deleted budget retained evidence")
 	}
@@ -3419,15 +3420,15 @@ func TestUsageResetEpochsIgnoreAdoption(t *testing.T) {
 // verifies a rate hook cannot mistake an untouched request boundary for a reset.
 func TestUsageResetEpochsPublishedBeforeHooks(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	old := time.Now().Add(-2 * time.Hour)
 	budget := buildBudgetWithUsage("budget", 100, 42, "1h")
 	budget.LastReset = old
-	store.budgets.Store(budget.ID, budget)
+	putBudget(t, store, budget.ID, budget)
 	rate := buildRateLimit("rate", 1000, 1000)
 	rate.TokenLastReset = old
 	rate.RequestLastReset = time.Now()
-	store.rateLimits.Store(rate.ID, rate)
+	putRateLimit(t, store, rate.ID, rate)
 	budgetHook, rateHook := false, false
 	store.SetResetHooks(func(rows []*configstoreTables.TableBudget) {
 		budgetHook = true
@@ -3452,15 +3453,15 @@ func TestUsageResetEpochsPublishedBeforeHooks(t *testing.T) {
 // lifetime through full reloads. Operator clears preserve window reset evidence.
 func TestUsageResetEpochsReloadAndOperatorReset(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	old := time.Now().Add(-time.Hour)
 	target := old.Add(time.Minute)
 	budget := buildBudgetWithUsage("budget", 100, 42, "1h")
 	budget.LastReset = old
 	rate := buildRateLimit("rate", 100, 100)
 	rate.TokenLastReset, rate.RequestLastReset = old, old
-	store.budgets.Store(budget.ID, budget)
-	store.rateLimits.Store(rate.ID, rate)
+	putBudget(t, store, budget.ID, budget)
+	putRateLimit(t, store, rate.ID, rate)
 	// The rows a reload re-reads, captured before the resets: they carry no reset evidence, so a
 	// seed that took the incoming row's epochs would erase what the resets record below.
 	budgetRow, rateRow := *budget, *rate
@@ -3488,17 +3489,30 @@ func TestUsageResetEpochsReloadAndOperatorReset(t *testing.T) {
 	// A reload re-reads each limit's row: the live store hands the governance store every row it
 	// still holds, and a row it no longer holds arrives as a removal. The rows reseeded here were
 	// read before the resets, so the evidence survives only if seeding keeps the store's own epochs.
-	store.SeedBudgetConfig(ctx, budget.ID, &budgetRow)
-	store.SeedRateLimitConfig(ctx, rate.ID, &rateRow)
-	if store.LoadBudget(ctx, budget.ID).UsageResetEpoch != target.UnixNano() {
+	heldBudget, heldRate := *store.LoadBudget(ctx, budget.ID), *store.LoadRateLimit(ctx, rate.ID)
+	reloadBudget(t, store, budget.ID, &budgetRow)
+	reloadRateLimit(t, store, rate.ID, &rateRow)
+	reloadedBudget := store.LoadBudget(ctx, budget.ID)
+	if reloadedBudget.UsageResetEpoch != target.UnixNano() {
 		t.Fatal("reload lost budget evidence")
 	}
-	tokens, requests = store.LoadRateLimit(ctx, rate.ID).TokenUsageResetEpoch, store.LoadRateLimit(ctx, rate.ID).RequestUsageResetEpoch
+	// The rows carry the usage and reset times from before the resets, so the held values must win
+	// for those too, not only for the epochs.
+	if reloadedBudget.CurrentUsage != heldBudget.CurrentUsage || !reloadedBudget.LastReset.Equal(heldBudget.LastReset) {
+		t.Fatalf("reload restored the row's budget usage %v and reset %v, want the held %v and %v",
+			reloadedBudget.CurrentUsage, reloadedBudget.LastReset, heldBudget.CurrentUsage, heldBudget.LastReset)
+	}
+	reloadedRate := store.LoadRateLimit(ctx, rate.ID)
+	tokens, requests = reloadedRate.TokenUsageResetEpoch, reloadedRate.RequestUsageResetEpoch
 	if tokens != 0 || requests != target.UnixNano() {
 		t.Fatal("reload changed rate evidence")
 	}
-	store.DeleteBudget(ctx, budget.ID)
-	store.DeleteRateLimit(ctx, rate.ID)
+	if reloadedRate.TokenCurrentUsage != heldRate.TokenCurrentUsage || reloadedRate.RequestCurrentUsage != heldRate.RequestCurrentUsage ||
+		!reloadedRate.TokenLastReset.Equal(heldRate.TokenLastReset) || !reloadedRate.RequestLastReset.Equal(heldRate.RequestLastReset) {
+		t.Fatal("reload restored the row's rate-limit usage or reset times instead of the held ones")
+	}
+	dropLimit(t, store, livestore.KindBudget, budget.ID)
+	dropLimit(t, store, livestore.KindRateLimit, rate.ID)
 	if store.LoadBudget(ctx, budget.ID) != nil {
 		t.Fatal("reload retained removed budget evidence")
 	}
@@ -3601,9 +3615,9 @@ func TestReloadAdoptsCalendarWithNewDuration(t *testing.T) {
 	}
 }
 
-// TestReloadKeepsDueCalendarReset checks that reloading an owner that was already
-// aligned does not adopt, even when memory holds its limits without the flag. The
-// overdue window must still reset.
+// TestReloadKeepsDueCalendarReset checks that neither the first load of an owner that
+// is already aligned nor a later reload of it adopts. The overdue window must still
+// reset.
 func TestReloadKeepsDueCalendarReset(t *testing.T) {
 	for name, reload := range calendarOwners() {
 		t.Run(name, func(t *testing.T) {
@@ -3611,10 +3625,7 @@ func TestReloadKeepsDueCalendarReset(t *testing.T) {
 			h, store := calendarHarness(t)
 			monthStart, budget, rate := openWindow()
 			reload(h, true, budget, rate)
-			unstampedBudget, unstampedRate := budget, rate
-			store.budgets.Store(budget.ID, &unstampedBudget)
-			store.rateLimits.Store(rate.ID, &unstampedRate)
-			// A changed setting is what makes the reload re-install the limits.
+			// A changed setting is what makes the reload bring the limits in again.
 			raised := int64(101)
 			budget.MaxLimit, rate.TokenMaxLimit = 101, &raised
 			reload(h, true, budget, rate)
@@ -3653,8 +3664,10 @@ func TestLaterBoundaryKeepsUnfoldedUsageWithoutReset(t *testing.T) {
 			rate.TokenCurrentUsage, rate.RequestCurrentUsage = 100, 100
 			rate.TokenLastReset, rate.RequestLastReset = opened, opened
 			rate.TokenUsageResetEpoch, rate.RequestUsageResetEpoch = test.local, test.local
-			store.SeedBudgetConfig(ctx, budget.ID, budget)
-			store.SeedRateLimitConfig(ctx, rate.ID, rate)
+			putBudget(t, store, budget.ID, budget)
+			putRateLimit(t, store, rate.ID, rate)
+			setBudgetBaseline(t, store, budget.ID, 100)
+			setRateLimitBaselines(t, store, rate.ID, 100, 100)
 			require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 7))
 			require.NoError(t, store.BumpRateLimitUsageBy(ctx, rate.ID, 7, 7))
 

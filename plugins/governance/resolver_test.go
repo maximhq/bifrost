@@ -478,7 +478,7 @@ func TestBudgetResolver_EvaluateRequest_MultiLevelBudgetHierarchy(t *testing.T) 
 	vkBudgetToUpdate := governanceData.Budgets["vk-budget"]
 	if vkBudgetToUpdate != nil {
 		vkBudgetToUpdate.CurrentUsage = 100.0
-		store.budgets.Store("vk-budget", vkBudgetToUpdate)
+		putBudget(t, store, "vk-budget", vkBudgetToUpdate)
 	}
 	result = evaluateVirtualKey(resolver, ctx, "sk-bf-test", schemas.OpenAI, "gpt-4", schemas.ChatCompletionRequest, false, false)
 	assertDecision(t, DecisionBudgetExceeded, result)
@@ -1402,7 +1402,7 @@ func TestEvaluateLimitsEnforcesAnUnfamiliarHolderKind(t *testing.T) {
 	require.NoError(t, err)
 	// The live store loads only the limits a holder it knows names; a deployment's own holder
 	// installs its limits into the store directly.
-	store.SeedBudgetConfig(context.Background(), exhausted.ID, exhausted)
+	reloadBudget(t, store, exhausted.ID, exhausted)
 
 	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()

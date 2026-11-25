@@ -771,6 +771,56 @@ func overlayRateLimitUsage(ctx context.Context, store governance.GovernanceStore
 	rateLimit.RequestUsageResetEpoch = live.RequestUsageResetEpoch
 }
 
+// heldUnaligned reports whether the live store holds the owner of this kind and ID with calendar
+// alignment off, so a row of it read with alignment on is the owner switching it on.
+func (s *BifrostHTTPServer) heldUnaligned(kind livestore.Kind, id string) bool {
+	live, err := s.liveStore()
+	if err != nil {
+		return false
+	}
+	switch kind {
+	case livestore.KindVirtualKey:
+		rec, ok := live.Collections.VirtualKeys.Get(id)
+		return ok && !rec.CalendarAligned
+	case livestore.KindTeam:
+		rec, ok := live.Collections.Teams.Get(id)
+		return ok && !rec.CalendarAligned
+	case livestore.KindCustomer:
+		rec, ok := live.Collections.Customers.Get(id)
+		return ok && !rec.CalendarAligned
+	case livestore.KindModelConfig:
+		rec, ok := live.Collections.ModelConfigs.Get(id)
+		return ok && !rec.CalendarAligned
+	}
+	return false
+}
+
+// adoptCalendarBeforeRefresh moves onto the calendar grid the open windows of the limits a written
+// owner's row names that memory still holds unaligned, when switchedOn: the row has calendar
+// alignment on and memory holds the owner with it off (see heldUnaligned). It runs before the
+// refresh brings the limits in with the owner's flag, since brought in first an open window would
+// read as overdue and a sweep or charge would clear its usage. A limit memory does not hold, or an
+// owner it does not hold yet, has nothing to move. Memory holds each limit's previous settings
+// until the refresh, so a window whose duration the same write changes is moved by governance once
+// the refresh brings the new duration in.
+func adoptCalendarBeforeRefresh(ctx context.Context, store governance.GovernanceStore, switchedOn bool, budgets []tables.TableBudget, rateLimitID *string) {
+	if !switchedOn {
+		return
+	}
+	now := time.Now()
+	for i := range budgets {
+		if live := store.LoadBudget(ctx, budgets[i].ID); live != nil && !live.IsCalendarAligned {
+			store.AdoptCalendarAlignmentInMemory(ctx, budgets[i].ID, now)
+		}
+	}
+	if rateLimitID == nil || *rateLimitID == "" {
+		return
+	}
+	if live := store.LoadRateLimit(ctx, *rateLimitID); live != nil && !live.IsCalendarAligned {
+		store.AdoptRateLimitCalendarAlignmentInMemory(ctx, *rateLimitID, now)
+	}
+}
+
 // refreshRows runs one live store refresh of refs. A read that fails is retried with
 // lib.AdminRetry, unless opts are given, which then apply instead: its callers answer for a write
 // they just made, so when the retries run out the refresh keeps the previous records and returns
@@ -807,6 +857,8 @@ func (s *BifrostHTTPServer) evictVirtualKeyCaches(id string) {
 // key are dropped. The row returned carries the usage and last resets counted in memory for its
 // limits and its provider configs' limits. The live store is refreshed even without the governance
 // plugin, whose absence is still the error returned.
+// A write switching calendar alignment on has its limits' open windows moved first; see
+// adoptCalendarBeforeRefresh.
 func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil, fmt.Errorf("config store not found")
@@ -832,6 +884,15 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 		return nil, fmt.Errorf("virtual key type assertion failed")
 	}
 	governancePlugin, pluginErr := s.getGovernancePlugin()
+	if pluginErr == nil {
+		store := governancePlugin.GetGovernanceStore()
+		switchedOn := virtualKey.CalendarAligned && s.heldUnaligned(livestore.KindVirtualKey, id)
+		adoptCalendarBeforeRefresh(ctx, store, switchedOn, virtualKey.Budgets, virtualKey.RateLimitID)
+		for i := range virtualKey.ProviderConfigs {
+			pc := &virtualKey.ProviderConfigs[i]
+			adoptCalendarBeforeRefresh(ctx, store, switchedOn, pc.Budgets, pc.RateLimitID)
+		}
+	}
 	refreshErr := s.refreshRow(ctx, livestore.KindVirtualKey, id)
 	if pluginErr != nil {
 		return nil, pluginErr
@@ -998,6 +1059,8 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 // live store, which re-reads its budgets, rate limit and the keys under it with it. The row
 // returned carries the usage and last resets counted in memory for its limits. The live store is
 // refreshed even without the governance plugin, whose absence is still the error returned.
+// A write switching calendar alignment on has its limits' open windows moved first; see
+// adoptCalendarBeforeRefresh.
 func (s *BifrostHTTPServer) ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil, fmt.Errorf("config store not found")
@@ -1008,6 +1071,9 @@ func (s *BifrostHTTPServer) ReloadTeam(ctx context.Context, id string) (*tables.
 		return nil, err
 	}
 	governancePlugin, pluginErr := s.getGovernancePlugin()
+	if pluginErr == nil && preloadedTeam != nil {
+		adoptCalendarBeforeRefresh(ctx, governancePlugin.GetGovernanceStore(), preloadedTeam.CalendarAligned && s.heldUnaligned(livestore.KindTeam, id), preloadedTeam.Budgets, preloadedTeam.RateLimitID)
+	}
 	refreshErr := s.refreshRow(ctx, livestore.KindTeam, id)
 	if pluginErr != nil {
 		return nil, pluginErr
@@ -1040,6 +1106,8 @@ func (s *BifrostHTTPServer) RemoveTeam(ctx context.Context, id string) error {
 // refreshed in the live store, which re-reads its budgets and rate limit with it. The row returned
 // carries the usage and last resets counted in memory for its limits. The live store is refreshed
 // even without the governance plugin, whose absence is still the error returned.
+// A write switching calendar alignment on has its limits' open windows moved first; see
+// adoptCalendarBeforeRefresh.
 func (s *BifrostHTTPServer) ReloadCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil, fmt.Errorf("config store not found")
@@ -1049,6 +1117,9 @@ func (s *BifrostHTTPServer) ReloadCustomer(ctx context.Context, id string) (*tab
 		return nil, err
 	}
 	governancePlugin, pluginErr := s.getGovernancePlugin()
+	if pluginErr == nil && preloadedCustomer != nil {
+		adoptCalendarBeforeRefresh(ctx, governancePlugin.GetGovernanceStore(), preloadedCustomer.CalendarAligned && s.heldUnaligned(livestore.KindCustomer, id), preloadedCustomer.Budgets, preloadedCustomer.RateLimitID)
+	}
 	refreshErr := s.refreshRow(ctx, livestore.KindCustomer, id)
 	if pluginErr != nil {
 		return nil, pluginErr
@@ -1095,6 +1166,8 @@ const modelConfigReloadReadTimeout = 30 * time.Second
 // and returns its row carrying the usage and last resets counted in memory for them.
 // The live store is refreshed even without the governance plugin, whose absence is still the
 // error returned.
+// A write switching calendar alignment on has its limits' open windows moved first; see
+// adoptCalendarBeforeRefresh.
 func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error) {
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil, fmt.Errorf("config store not found")
@@ -1110,6 +1183,9 @@ func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*
 		return nil, err
 	}
 	governancePlugin, pluginErr := s.getGovernancePlugin()
+	if pluginErr == nil && preloadedMC != nil {
+		adoptCalendarBeforeRefresh(ctx, governancePlugin.GetGovernanceStore(), preloadedMC.CalendarAligned && s.heldUnaligned(livestore.KindModelConfig, id), preloadedMC.Budgets, preloadedMC.RateLimitID)
+	}
 	refreshErr := s.refreshRow(readCtx, livestore.KindModelConfig, id)
 	if pluginErr != nil {
 		return nil, pluginErr

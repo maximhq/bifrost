@@ -574,12 +574,12 @@ func passthroughResponseWithUsage(requestType schemas.RequestType, model string,
 // settleAccounting waits for the accounting the post hook handed to a goroutine, rather than
 // guessing at a duration that passes on an idle machine and flakes on a loaded one.
 //
-// Cleanup is the join: it waits on the same wait group PostLLMHook adds to. It is guarded by a
-// sync.Once, so the fixture's own deferred Cleanup is a no-op afterwards and a test may cross
-// this barrier once, at the end. The plugin is spent once it returns.
+// It joins the wait group PostLLMHook adds to, which is what Cleanup waits on, without cleaning
+// up: Cleanup closes the store, which drops the usage the test is about to read. The fixture's own
+// deferred Cleanup tears the plugin down when the test ends.
 func settleAccounting(t *testing.T, plugin *GovernancePlugin) {
 	t.Helper()
-	require.NoError(t, plugin.Cleanup())
+	plugin.wg.Wait()
 }
 
 // A passthrough request that names no model is still charged to the limits it was
@@ -1040,17 +1040,17 @@ func TestInitFromStoreAppliesLogTimestampPrecision(t *testing.T) {
 // path, where a response is the first operation to observe an expired window.
 func TestAccountingUsesRequestStartWhenChargeTriggersReset(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	anchor := time.Now().Add(-2 * time.Hour)
 	budget := buildBudgetWithUsage("budget", 100, 12, "1h")
 	budget.LastReset = anchor
-	store.budgets.Store(budget.ID, budget)
+	putBudget(t, store, budget.ID, budget)
 	rate := buildRateLimit("rate", 100, 100)
 	hour := "1h"
 	rate.TokenResetDuration, rate.RequestResetDuration = &hour, &hour
 	rate.TokenLastReset, rate.RequestLastReset = anchor, anchor
 	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 9, 8
-	store.rateLimits.Store(rate.ID, rate)
+	putRateLimit(t, store, rate.ID, rate)
 
 	requestCtx := context.WithValue(ctx, usageRequestStartKey, anchor.Add(time.Minute))
 	require.NoError(t, store.BumpBudgetUsage(requestCtx, budget.ID, 2))

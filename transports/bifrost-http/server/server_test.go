@@ -3570,14 +3570,20 @@ func TestReloadTeamAnswersWithLiveUsageAndWritesNothing(t *testing.T) {
 // last resets memory counts it from, with a budget's override cycles re-derived from the result, and
 // the row's own values for a limit memory does not hold.
 func TestOverlayUsageCarriesMemoryState(t *testing.T) {
-	_, gs := governedServer(t)
+	server, gs := governedServer(t)
 	ctx := context.Background()
 	memoryReset := time.Now().Add(-time.Hour).Truncate(time.Second)
 	rowReset := memoryReset.Add(-24 * time.Hour)
-	gs.UpsertBudgetConfig(ctx, "b", &configstoreTables.TableBudget{ID: "b", MaxLimit: 10, ResetDuration: "1d", LastReset: memoryReset})
+	store := server.Config.ConfigStore
+	require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{ID: "b", MaxLimit: 10, ResetDuration: "1d", LastReset: memoryReset, CreatedAt: memoryReset}))
+	require.NoError(t, store.CreateRateLimit(ctx, &configstoreTables.TableRateLimit{ID: "rl", TokenMaxLimit: schemas.Ptr(int64(10)), TokenResetDuration: schemas.Ptr("1d"), TokenLastReset: memoryReset, RequestLastReset: memoryReset}))
+	require.NoError(t, server.Config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindBudget, ID: "b"}, {Kind: livestore.KindRateLimit, ID: "rl"}}))
 	require.NoError(t, gs.BumpBudgetUsage(ctx, "b", 2))
-	gs.UpsertRateLimitConfig(ctx, "rl", &configstoreTables.TableRateLimit{ID: "rl", TokenMaxLimit: schemas.Ptr(int64(10)), TokenResetDuration: schemas.Ptr("1d"), TokenLastReset: memoryReset, RequestLastReset: memoryReset})
 	require.NoError(t, gs.BumpRateLimitUsage(ctx, "rl", 5, true, true))
+	// The resets memory counts from, which a write of the row may have stamped.
+	memoryBudget, memoryRateLimit := gs.LoadBudget(ctx, "b"), gs.LoadRateLimit(ctx, "rl")
+	require.NotNil(t, memoryBudget)
+	require.NotNil(t, memoryRateLimit)
 
 	// A two-cycle override anchored at the row's reset: memory's reset is one window later, so one
 	// cycle has closed and one remains.
@@ -3586,15 +3592,15 @@ func TestOverlayUsageCarriesMemoryState(t *testing.T) {
 		OverrideCyclesRemaining: 2, OverrideAnchorReset: &rowReset}
 	overlayBudgetUsage(ctx, gs, &budget)
 	require.Equal(t, 2.0, budget.CurrentUsage)
-	require.True(t, budget.LastReset.Equal(memoryReset), "memory's last reset, not the row's")
+	require.True(t, budget.LastReset.Equal(memoryBudget.LastReset), "memory's last reset, not the row's")
 	require.Equal(t, 1, budget.OverrideCyclesRemaining, "override cycles are re-derived from memory's last reset")
 
 	rateLimit := configstoreTables.TableRateLimit{ID: "rl", TokenLastReset: rowReset, RequestLastReset: rowReset}
 	overlayRateLimitUsage(ctx, gs, &rateLimit)
 	require.Equal(t, int64(5), rateLimit.TokenCurrentUsage)
 	require.Equal(t, int64(1), rateLimit.RequestCurrentUsage)
-	require.True(t, rateLimit.TokenLastReset.Equal(memoryReset), "memory's last resets, not the row's")
-	require.True(t, rateLimit.RequestLastReset.Equal(memoryReset))
+	require.True(t, rateLimit.TokenLastReset.Equal(memoryRateLimit.TokenLastReset), "memory's last resets, not the row's")
+	require.True(t, rateLimit.RequestLastReset.Equal(memoryRateLimit.RequestLastReset))
 
 	unknown := configstoreTables.TableBudget{ID: "not-in-memory", CurrentUsage: 7, LastReset: rowReset}
 	overlayBudgetUsage(ctx, gs, &unknown)

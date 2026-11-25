@@ -66,8 +66,8 @@ func TestBudgetResetTargetIsDeterministicAcrossNodes(t *testing.T) {
 	// Two independent nodes, identical starting row, tickers ~7s out of phase.
 	nodeA := newStandaloneStore(t)
 	nodeB := newStandaloneStore(t)
-	nodeA.budgets.Store("shared-budget", newCycleTestBudget("shared-budget", 100, 10))
-	nodeB.budgets.Store("shared-budget", newCycleTestBudget("shared-budget", 100, 10))
+	putBudget(t, nodeA, "shared-budget", newCycleTestBudget("shared-budget", 100, 10))
+	putBudget(t, nodeB, "shared-budget", newCycleTestBudget("shared-budget", 100, 10))
 
 	// Node A's ticker lands 1s into each window, node B's lands 8s in.
 	phaseA := []time.Duration{61 * time.Second, 125 * time.Second, 181 * time.Second}
@@ -101,7 +101,7 @@ func TestBudgetResetTargetIsDeterministicAcrossNodes(t *testing.T) {
 func TestBudgetResetCadenceIsExactlyOneWindow(t *testing.T) {
 	anchor := cycleTestAnchor()
 	store := newStandaloneStore(t)
-	store.budgets.Store("cadence-budget", newCycleTestBudget("cadence-budget", 100, 10))
+	putBudget(t, store, "cadence-budget", newCycleTestBudget("cadence-budget", 100, 10))
 
 	// Deliberately ragged tick offsets inside each window, as a real 10s ticker
 	// produces.
@@ -128,23 +128,23 @@ func TestBudgetResetCadenceIsExactlyOneWindow(t *testing.T) {
 	}
 }
 
-// TestUpsertBudgetConfigDoesNotResurrectOverrideCycles proves a config reload
+// TestBudgetReloadDoesNotResurrectOverrideCycles proves a config reload
 // cannot hand back a cycle the reset path already spent.
 //
-// UpsertBudgetConfig preserves CurrentUsage and LastReset from the live snapshot
-// but takes the override fields wholesale from the incoming config. Every reload
-// path funnels through it, so a reload carrying the database's pre-reset row
+// A reload of a budget's row preserves CurrentUsage and LastReset from the live
+// state but takes the override fields wholesale from the row. Every reload path
+// funnels through it, so a reload carrying the database's pre-reset row
 // restores the old cycle count while LastReset stays advanced. That window's
 // cycle can never be spent again, so the override outlives the grant it was
 // given, and it does so by a different amount on every node.
-func TestUpsertBudgetConfigDoesNotResurrectOverrideCycles(t *testing.T) {
+func TestBudgetReloadDoesNotResurrectOverrideCycles(t *testing.T) {
 	ctx := context.Background()
 	anchor := cycleTestAnchor()
 	store := newStandaloneStore(t)
 
 	budget := newCycleTestBudget("resurrect-budget", 100, 75)
 	require.NoError(t, budget.SetOverride(25, configstoreTables.BudgetOverrideModeCycles, 3))
-	store.budgets.Store(budget.ID, budget)
+	putBudget(t, store, budget.ID, budget)
 
 	// The snapshot a reload would carry: read before the reset, so it still
 	// holds the pre-reset cycle count. This is exactly what a database row looks
@@ -159,7 +159,7 @@ func TestUpsertBudgetConfigDoesNotResurrectOverrideCycles(t *testing.T) {
 	require.Equal(t, 2, reset.OverrideCyclesRemaining, "one window closed, so one cycle should be spent")
 
 	// Now the reload lands, carrying the stale pre-reset override state.
-	store.UpsertBudgetConfig(ctx, budget.ID, stale)
+	reloadBudget(t, store, budget.ID, stale)
 
 	got := store.LoadBudget(ctx, budget.ID)
 	require.NotNil(t, got)
@@ -181,7 +181,7 @@ func TestBudgetCycleSurvivesInterleavedConfigReload(t *testing.T) {
 	const grantedCycles = 3
 	budget := newCycleTestBudget("reload-race-budget", 100, 0)
 	require.NoError(t, budget.SetOverride(25, configstoreTables.BudgetOverrideModeCycles, grantedCycles))
-	store.budgets.Store(budget.ID, budget)
+	putBudget(t, store, budget.ID, budget)
 
 	// The pristine row as the database holds it at grant time. A reload replays
 	// this same config every time, which is what makes the race reproducible.
@@ -196,7 +196,7 @@ func TestBudgetCycleSurvivesInterleavedConfigReload(t *testing.T) {
 		}
 		// A config reload lands mid window, carrying the pristine grant.
 		reloaded := pristine
-		store.UpsertBudgetConfig(ctx, budget.ID, &reloaded)
+		reloadBudget(t, store, budget.ID, &reloaded)
 	}
 
 	got := store.LoadBudget(ctx, budget.ID)
@@ -218,7 +218,7 @@ func TestBudgetCycleGrantsExactlyNWindows(t *testing.T) {
 	const grantedCycles = 3
 	budget := newCycleTestBudget("exact-cycles-budget", 100, 0)
 	require.NoError(t, budget.SetOverride(25, configstoreTables.BudgetOverrideModeCycles, grantedCycles))
-	store.budgets.Store(budget.ID, budget)
+	putBudget(t, store, budget.ID, budget)
 
 	for window := 1; window <= grantedCycles+2; window++ {
 		sweepBudgetAt(t, store, budget.ID, anchor.Add(time.Duration(window)*cycleTestWindow+time.Second))
@@ -244,7 +244,7 @@ func TestBudgetCycleLongIdleSkipsToCurrentWindow(t *testing.T) {
 
 	budget := newCycleTestBudget("long-idle-budget", 100, 90)
 	require.NoError(t, budget.SetOverride(25, configstoreTables.BudgetOverrideModeCycles, 3))
-	store.budgets.Store(budget.ID, budget)
+	putBudget(t, store, budget.ID, budget)
 
 	// Ten days of downtime on a one minute window: 14400 windows elapsed.
 	const idleWindows = 14400
@@ -282,7 +282,7 @@ func TestCheckBudgetHonoursResetSemantics(t *testing.T) {
 		budget := buildBudgetWithUsage("zero-duration-budget", 10, 50, "0s")
 		budget.CreatedAt = cycleTestAnchor()
 		budget.LastReset = time.Now()
-		store.budgets.Store(budget.ID, budget)
+		putBudget(t, store, budget.ID, budget)
 
 		decision, err := store.CheckBudget(ctx, EntityWiseBudgets{
 			"virtual_key": {budget},
@@ -309,7 +309,7 @@ func TestCheckBudgetHonoursResetSemantics(t *testing.T) {
 		// rolled over, so the budget is expired and must not be enforced.
 		budget.LastReset = periodStart.Add(-time.Second)
 		budget.IsCalendarAligned = true
-		store.budgets.Store(budget.ID, budget)
+		putBudget(t, store, budget.ID, budget)
 
 		decision, _ := store.CheckBudget(ctx, EntityWiseBudgets{
 			"virtual_key": {budget},
@@ -381,7 +381,7 @@ func TestResetExpiredRateLimitsPersistsLastResetUnderTraffic(t *testing.T) {
 // path cannot hand back an override cycle the reset path already spent.
 //
 // This is the hole the in-process budget tests missed and a live cluster run found.
-// UpsertBudgetConfig was documented as the single funnel for installing a budget, but
+// The budget install was documented as the single funnel for installing a budget, but
 // UpdateVirtualKeyInMemory (which every VK reload goes through) wrote into the budgets
 // map directly. It hand-rolled the CurrentUsage and LastReset preservation and so
 // looked correct, but it never re-derived the override lifecycle, meaning the persisted
@@ -415,15 +415,15 @@ func TestVirtualKeyReloadDoesNotResurrectOverrideCycles(t *testing.T) {
 		"virtual key reload should preserve the advanced boundary, got %s", got.LastReset.UTC())
 }
 
-// TestUpsertBudgetConfigDoesNotAliasOrMutateCallerConfig proves the store never
-// mutates the budget it is handed, and never publishes it as the live map entry.
+// TestBudgetReloadDoesNotAliasOrMutateCallerConfig proves the store never mutates
+// the budget a reload is built from, and never publishes it as the live entry.
 //
 // Both first-write branches used to refresh the caller's struct in place and then
 // store that same pointer. Callers legitimately pass a pointer into a slice they keep
 // using (a bulk loader passing &p.Budgets[j] did), so the caller's copy would
 // be silently rewritten and any later write through it would race BumpBudgetUsage's
 // clone-and-CAS. sync.Map makes the map operation atomic, not the pointed-to struct.
-func TestUpsertBudgetConfigDoesNotAliasOrMutateCallerConfig(t *testing.T) {
+func TestBudgetReloadDoesNotAliasOrMutateCallerConfig(t *testing.T) {
 	ctx := context.Background()
 	anchor := cycleTestAnchor()
 
@@ -433,9 +433,12 @@ func TestUpsertBudgetConfigDoesNotAliasOrMutateCallerConfig(t *testing.T) {
 		seed func(store *LocalGovernanceStore, budgetID string)
 	}{
 		{name: "first write", seed: func(*LocalGovernanceStore, string) {}},
-		{name: "replacing an unusable entry", seed: func(store *LocalGovernanceStore, budgetID string) {
-			// A non-budget value forces the type-assertion branch.
-			store.budgets.Store(budgetID, "not a budget")
+		{name: "replacing a held entry", seed: func(store *LocalGovernanceStore, budgetID string) {
+			// An earlier install with other settings and the same window, so the
+			// replacement path runs against usage the store already holds.
+			earlier := newCycleTestBudget(budgetID, 50, 0)
+			earlier.LastReset = anchor.Add(2 * cycleTestWindow)
+			reloadBudget(t, store, budgetID, earlier)
 		}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -449,12 +452,12 @@ func TestUpsertBudgetConfigDoesNotAliasOrMutateCallerConfig(t *testing.T) {
 			testCase.seed(store, caller.ID)
 
 			before := *caller
-			store.UpsertBudgetConfig(ctx, caller.ID, caller)
+			reloadBudget(t, store, caller.ID, caller)
 
 			assert.Equal(t, before.OverrideCyclesRemaining, caller.OverrideCyclesRemaining,
-				"UpsertBudgetConfig rewrote the caller's remaining count in place")
+				"the reload rewrote the caller's remaining count in place")
 			assert.True(t, before.LastReset.Equal(caller.LastReset),
-				"UpsertBudgetConfig rewrote the caller's boundary in place")
+				"the reload rewrote the caller's boundary in place")
 
 			stored := store.LoadBudget(ctx, caller.ID)
 			require.NotNil(t, stored)
@@ -538,13 +541,12 @@ func TestDumpBudgetsPersistsUsageAndNeverRewindsBoundary(t *testing.T) {
 		seeded := seedBudget("dump-rewind-budget")
 		store, configStore := newStore(t, seeded)
 
-		// This node is a window behind and has not swept yet.
-		stale := store.LoadBudget(ctx, seeded.ID)
-		require.NotNil(t, stale)
-		rewound := *stale
-		rewound.LastReset = now.Add(-window)
-		rewound.CurrentUsage = 5
-		store.budgets.Store(seeded.ID, &rewound)
+		// This node is a window behind and has not swept yet: only its memory holds the old boundary.
+		require.NotNil(t, store.LoadBudget(ctx, seeded.ID))
+		setUsage(store.budgetUsage, seeded.ID, func(s *LimitState) {
+			s.Usage[BudgetSlot] = DollarCount(5)
+			s.setLastReset(BudgetSlot, now.Add(-window))
+		})
 
 		require.NoError(t, store.GetBudgetDumper(ctx, nil)(ctx))
 
@@ -582,8 +584,8 @@ func TestQuarterlyBudgetResetTargetIsDeterministicAcrossNodes(t *testing.T) {
 		t.Run(quarterStart.String(), func(t *testing.T) {
 			nodeA := newStandaloneStore(t)
 			nodeB := newStandaloneStore(t)
-			nodeA.budgets.Store("shared-quarterly", newQuarterlyBudget("shared-quarterly", quarterStart, 250))
-			nodeB.budgets.Store("shared-quarterly", newQuarterlyBudget("shared-quarterly", quarterStart, 250))
+			putBudget(t, nodeA, "shared-quarterly", newQuarterlyBudget("shared-quarterly", quarterStart, 250))
+			putBudget(t, nodeB, "shared-quarterly", newQuarterlyBudget("shared-quarterly", quarterStart, 250))
 
 			// Sweep across two years. Node A's ticker lands early in each month,
 			// node B's lands late, so any dependence on wall-clock phase shows up.
@@ -622,7 +624,7 @@ func TestQuarterlyBudgetResetTargetIsDeterministicAcrossNodes(t *testing.T) {
 // which reads as "the budget never enforces" rather than as an error.
 func TestQuarterlyBudgetIsNotDueImmediatelyAfterReset(t *testing.T) {
 	store := newStandaloneStore(t)
-	store.budgets.Store("quarterly", newQuarterlyBudget("quarterly", time.February, 500))
+	putBudget(t, store, "quarterly", newQuarterlyBudget("quarterly", time.February, 500))
 
 	// First sweep well inside a quarter: the budget is due because LastReset is
 	// still on the 2025 boundary.
@@ -651,7 +653,7 @@ func TestQuarterlyBudgetResetsExactlyOncePerQuarter(t *testing.T) {
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	budget := newQuarterlyBudget("quarterly", time.April, 100)
 	budget.LastReset = configstoreTables.GetCalendarPeriodStart("1Q", start, time.April)
-	store.budgets.Store("quarterly", budget)
+	putBudget(t, store, "quarterly", budget)
 
 	resets := 0
 	for day := 1; day <= 365; day++ {
@@ -728,7 +730,7 @@ func TestQuarterDefinitionSurvivesVirtualKeyReload(t *testing.T) {
 		cached := store.LoadBudget(ctx, "vk-quarterly-budget")
 		require.NotNil(t, cached)
 		cached.CurrentUsage = 250
-		store.storeBudget(cached.ID, cached)
+		putBudget(t, store, cached.ID, cached)
 
 		h.putVirtualKey(newQuarterlyVK(time.February, 0))
 		assertQuarterly(t, store.LoadBudget(ctx, "vk-quarterly-budget"), 250)
@@ -740,7 +742,7 @@ func TestQuarterDefinitionSurvivesVirtualKeyReload(t *testing.T) {
 //
 // It must zero usage without touching LastReset. Moving the boundary is ruled
 // out: every persistence path guards it forward-only, and the intended target
-// would often be earlier than the current value. Clearing the LastDBUsages
+// would often be earlier than the current value. Clearing the LastDBUsage
 // baseline alongside is not optional - the dump path writes the delta between
 // in-memory usage and that baseline, so a stale baseline would immediately
 // re-add the spend that was just cleared.
@@ -751,10 +753,8 @@ func TestResetBudgetUsageInMemory(t *testing.T) {
 	anchor := cycleTestAnchor()
 	budget := buildBudgetWithUsage("operator-reset", 1000, 425, "1M")
 	budget.LastReset = anchor
-	store.budgets.Store(budget.ID, budget)
-	store.LastDBUsagesBudgetsMu.Lock()
-	store.LastDBUsagesBudgets[budget.ID] = 300
-	store.LastDBUsagesBudgetsMu.Unlock()
+	putBudget(t, store, budget.ID, budget)
+	setBudgetBaseline(t, store, budget.ID, 300)
 
 	reset, ok := store.ResetBudgetUsageInMemory(ctx, budget.ID)
 	require.True(t, ok, "reset should apply to a budget that exists")
@@ -769,9 +769,8 @@ func TestResetBudgetUsageInMemory(t *testing.T) {
 	assert.Zero(t, loaded.CurrentUsage, "the stored budget must reflect the reset")
 	assert.True(t, loaded.LastReset.Equal(anchor))
 
-	store.LastDBUsagesBudgetsMu.RLock()
-	baseline := store.LastDBUsagesBudgets[budget.ID]
-	store.LastDBUsagesBudgetsMu.RUnlock()
+	baseline, ok := budgetBaseline(store, budget.ID)
+	require.True(t, ok)
 	assert.Zero(t, baseline, "a stale baseline would re-add the cleared spend on the next dump")
 }
 
@@ -924,7 +923,7 @@ func TestEnablingCalendarAlignmentCanResetAtTheBoundaryAlreadyPassed(t *testing.
 		budget := alignedBudget(time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC))
 		budget.ID = "align-boundary-request-path-budget"
 		openedAt := budget.LastReset
-		store.budgets.Store(budget.ID, budget)
+		putBudget(t, store, budget.ID, budget)
 
 		// No sweepBudgetAt call anywhere in this subtest: the bump is the only
 		// thing that touches the budget.
