@@ -134,6 +134,10 @@ BifrostCacheInputTokens:
   description: "Embedding input tokens. Sent when a semantic search ran."
   schema: {type: integer}
 
+BifrostCost:
+  description: "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams."
+  schema: {type: number}
+
 # Sent on errors. /v1 error responses never carry x-bifrost-fallback-index or
 # x-bifrost-upstream-latency-ms, and no error carries cache headers.
 InferenceErrorHeaders:
@@ -175,6 +179,8 @@ InferenceErrorHeaders:
     $ref: '#/BifrostOriginalModel'
   x-bifrost-resolved-model:
     $ref: '#/BifrostResolvedModel'
+  x-bifrost-cost:
+    $ref: '#/BifrostCost'
 
 InferenceSuccessHeaders:
   x-bifrost-request-id:
@@ -219,6 +225,8 @@ InferenceSuccessHeaders:
     $ref: '#/BifrostFallbackIndex'
   x-bifrost-upstream-latency-ms:
     $ref: '#/BifrostUpstreamLatencyMs'
+  x-bifrost-cost:
+    $ref: '#/BifrostCost'
   x-bifrost-cache-hit:
     $ref: '#/BifrostCacheHit'
   x-bifrost-cache-id:

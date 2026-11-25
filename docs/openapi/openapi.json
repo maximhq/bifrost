@@ -392,6 +392,12 @@
               "x-bifrost-upstream-latency-ms": {
                 "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
               },
+              "x-bifrost-cost": {
+                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+                "schema": {
+                  "type": "number"
+                }
+              },
               "x-bifrost-cache-hit": {
                 "$ref": "#/components/headers/BifrostCacheHit"
               },
@@ -779,6 +785,12 @@
               "x-bifrost-upstream-latency-ms": {
                 "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
               },
+              "x-bifrost-cost": {
+                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+                "schema": {
+                  "type": "number"
+                }
+              },
               "x-bifrost-cache-hit": {
                 "$ref": "#/components/headers/BifrostCacheHit"
               },
@@ -1162,6 +1174,12 @@
               },
               "x-bifrost-upstream-latency-ms": {
                 "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
+              },
+              "x-bifrost-cost": {
+                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+                "schema": {
+                  "type": "number"
+                }
               },
               "x-bifrost-cache-hit": {
                 "$ref": "#/components/headers/BifrostCacheHit"
@@ -2405,6 +2423,12 @@
               },
               "x-bifrost-upstream-latency-ms": {
                 "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
+              },
+              "x-bifrost-cost": {
+                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+                "schema": {
+                  "type": "number"
+                }
               },
               "x-bifrost-cache-hit": {
                 "$ref": "#/components/headers/BifrostCacheHit"
@@ -44878,6 +44902,15 @@
             }
           },
           {
+            "name": "include_aliases",
+            "in": "query",
+            "description": "If true together with `unfiltered`, also return the alias names on the provider's enabled keys, where each key's own allow and block lists admit them. Pattern aliases are left out. A listing without `unfiltered` already includes alias names.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
             "name": "include_deprecated",
             "in": "query",
             "description": "If true, include deprecated models when `query` is empty. Without a `query` they are hidden by default; with a `query` they are always included, listed after the live models.",
@@ -45029,6 +45062,15 @@
             "name": "unfiltered",
             "in": "query",
             "description": "If true, return the provider's whole catalog, including models filtered out by provider-level restrictions or by what the caller's virtual key or access allows",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "include_aliases",
+            "in": "query",
+            "description": "If true together with `unfiltered`, also return the alias names on the provider's enabled keys, where each key's own allow and block lists admit them. Pattern aliases are left out. A listing without `unfiltered` already includes alias names.",
             "schema": {
               "type": "boolean",
               "default": false
@@ -98119,7 +98161,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Logs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get logs",
-        "description": "Retrieves logs with filtering, search, and pagination via query parameters.\n",
+        "description": "Retrieves logs with filtering, search, and pagination via query parameters.\n\nEach entry is a summary row, not the full log:\n\n- `input_history` and `responses_input_history` hold only the last input message. Realtime turn rows (`object` is `realtime.turn`) keep their full history.\n- Response payloads are left out. Realtime turn rows keep `output_message`.\n- Of the other request payloads, only `speech_input`, `transcription_input` and `image_generation_input` are returned.\n- Provider error payloads are left out, except for guardrail blocks.\n- These fields are left out: `alias_model_family`, `server_side_fallback_model`, `served_model`, `routing_engines_used`, `complexity_mechanism`, `model_router_id`, `model_router_name`, `video_generation_input` and `cache_debug`.\n\nFetch a single entry with `GET /api/logs/{id}` for the full log.\n",
         "tags": [
           "Logging"
         ],
@@ -128199,6 +128241,12 @@
           },
           "x-bifrost-resolved-model": {
             "$ref": "#/components/headers/BifrostResolvedModel"
+          },
+          "x-bifrost-cost": {
+            "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+            "schema": {
+              "type": "number"
+            }
           }
         },
         "content": {
@@ -128268,6 +128316,12 @@
           },
           "x-bifrost-resolved-model": {
             "$ref": "#/components/headers/BifrostResolvedModel"
+          },
+          "x-bifrost-cost": {
+            "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+            "schema": {
+              "type": "number"
+            }
           }
         },
         "content": {
@@ -131525,6 +131579,10 @@
           "billed_usage": {
             "$ref": "#/components/schemas/BifrostLLMUsage",
             "description": "Usage the provider reported and billed even though the request failed"
+          },
+          "cost": {
+            "$ref": "#/components/schemas/BifrostCost",
+            "description": "Bifrost's computed cost of the failed request (billed usage plus side calls), sent when send back cost is on and the request cost something."
           }
         }
       },
@@ -131615,6 +131673,10 @@
           },
           "guardrail_debug": {
             "$ref": "#/components/schemas/BifrostGuardrailMetadata"
+          },
+          "cost": {
+            "$ref": "#/components/schemas/BifrostCost",
+            "description": "Bifrost's computed cost of the request, sent when send back cost is on (client.send_back_cost or the x-bf-send-back-cost header) and the request cost something. On a stream, only the final chunk carries it."
           },
           "parse_errors": {
             "type": "array",
@@ -131991,28 +132053,87 @@
       },
       "BifrostCost": {
         "type": "object",
-        "description": "Cost breakdown for the request",
+        "description": "Cost breakdown in USD. input_cost + output_cost + additional_cost == total_cost. Zero\nfields are omitted. On usage.cost it is the provider's own figure (OpenRouter, Perplexity,\nxAI); on extra_fields.cost it is the cost Bifrost computed (send back cost).\n",
         "properties": {
-          "input_tokens_cost": {
+          "input_cost": {
             "type": "number"
           },
-          "output_tokens_cost": {
+          "input_cost_details": {
+            "type": "object",
+            "properties": {
+              "text_cost": {
+                "type": "number"
+              },
+              "audio_cost": {
+                "type": "number"
+              },
+              "image_cost": {
+                "type": "number"
+              },
+              "cached_read_cost": {
+                "type": "number"
+              },
+              "cached_write_cost": {
+                "type": "number"
+              },
+              "request_cost": {
+                "type": "number",
+                "description": "Flat per-request surcharge (also OCR per page, container per session)"
+              }
+            }
+          },
+          "output_cost": {
             "type": "number"
           },
-          "reasoning_tokens_cost": {
-            "type": "number",
-            "description": "Cost for reasoning/thinking tokens (reasoning models)"
+          "output_cost_details": {
+            "type": "object",
+            "properties": {
+              "text_cost": {
+                "type": "number"
+              },
+              "audio_cost": {
+                "type": "number"
+              },
+              "image_cost": {
+                "type": "number"
+              },
+              "reasoning_cost": {
+                "type": "number",
+                "description": "Cost for reasoning/thinking tokens (reasoning models)"
+              },
+              "citation_cost": {
+                "type": "number"
+              },
+              "search_queries_cost": {
+                "type": "number",
+                "description": "Cost for web search queries"
+              }
+            }
           },
-          "citation_tokens_cost": {
+          "additional_cost": {
             "type": "number",
-            "description": "Cost for citation tokens"
+            "description": "Side calls with no token category"
           },
-          "search_queries_cost": {
-            "type": "number",
-            "description": "Cost for web search queries"
-          },
-          "request_cost": {
-            "type": "number"
+          "additional_cost_details": {
+            "type": "object",
+            "properties": {
+              "guardrail_cost": {
+                "type": "number",
+                "description": "Guardrail judge calls"
+              },
+              "mcp_cost": {
+                "type": "number",
+                "description": "MCP tool executions priced by the client's tool_pricing"
+              },
+              "semantic_cache_cost": {
+                "type": "number",
+                "description": "The semantic cache's embedding lookup"
+              },
+              "routing_cost": {
+                "type": "number",
+                "description": "Routing classification calls that count toward budgets"
+              }
+            }
           },
           "total_cost": {
             "type": "number"
@@ -145550,6 +145671,11 @@
                 "default": false,
                 "description": "Allow individual requests to override raw request/response visibility via the x-bf-send-back-raw-request and x-bf-send-back-raw-response headers. When false (default), provider-level settings are authoritative and per-request overrides are ignored."
               },
+              "send_back_cost": {
+                "type": "boolean",
+                "default": false,
+                "description": "Return Bifrost's computed cost of each request to the caller, in extra_fields.cost on native /v1 responses, errors and final stream chunks, and in the x-bifrost-cost response header on every route. A request can turn it on or off for itself with the x-bf-send-back-cost header, which applies regardless of this setting."
+              },
               "enforce_auth_on_inference": {
                 "type": "boolean",
                 "description": "Whether to enforce virtual key authentication on inference requests"
@@ -146444,6 +146570,11 @@
                 "type": "boolean",
                 "default": false,
                 "description": "Allow individual requests to override raw request/response visibility via the x-bf-send-back-raw-request and x-bf-send-back-raw-response headers. When false (default), provider-level settings are authoritative and per-request overrides are ignored."
+              },
+              "send_back_cost": {
+                "type": "boolean",
+                "default": false,
+                "description": "Return Bifrost's computed cost of each request to the caller, in extra_fields.cost on native /v1 responses, errors and final stream chunks, and in the x-bifrost-cost response header on every route. A request can turn it on or off for itself with the x-bf-send-back-cost header, which applies regardless of this setting."
               },
               "enforce_auth_on_inference": {
                 "type": "boolean",
@@ -160347,7 +160478,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Routing engines that acted on this request (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core). core records fallback transitions; loadbalancing and circuit-breaker appear only in Bifrost Enterprise."
+            "description": "Routing engines that acted on this request (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core). core records fallback transitions; loadbalancing and circuit-breaker appear only in Bifrost Enterprise. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "tool_call_names": {
             "type": "array",
@@ -160368,11 +160499,12 @@
           "model_router_id": {
             "type": "string",
             "nullable": true,
-            "description": "The model router that took the request; omitted when none did."
+            "description": "The model router that took the request; omitted when none did. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "model_router_name": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "complexity_tier": {
             "type": "string",
@@ -160398,7 +160530,7 @@
               "skipped",
               null
             ],
-            "description": "How the effective complexity tier was determined. decision means the configured decision model supplied the tier; session means retained session state supplied it; skipped means classification was demanded but produced no tier."
+            "description": "How the effective complexity tier was determined. decision means the configured decision model supplied the tier; session means retained session state supplied it; skipped means classification was demanded but produced no tier. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "complexity_score": {
             "type": "number",
@@ -161607,7 +161739,8 @@
           },
           "cache_debug": {
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": true,
+            "description": "Semantic cache result for the request. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "metadata": {
             "type": "object",
@@ -161655,7 +161788,7 @@
           "video_generation_input": {
             "type": "object",
             "additionalProperties": true,
-            "description": "Video generation request input"
+            "description": "Video generation request input. Returned only by GET /api/logs/{id}; GET /api/logs leaves it out."
           },
           "video_generation_output": {
             "type": "object",

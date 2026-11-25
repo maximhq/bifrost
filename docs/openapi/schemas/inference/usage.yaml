@@ -84,22 +84,65 @@ ChatCompletionTokensDetails:
 
 BifrostCost:
   type: object
-  description: Cost breakdown for the request
+  description: |
+    Cost breakdown in USD. input_cost + output_cost + additional_cost == total_cost. Zero
+    fields are omitted. On usage.cost it is the provider's own figure (OpenRouter, Perplexity,
+    xAI); on extra_fields.cost it is the cost Bifrost computed (send back cost).
   properties:
-    input_tokens_cost:
+    input_cost:
       type: number
-    output_tokens_cost:
+    input_cost_details:
+      type: object
+      properties:
+        text_cost:
+          type: number
+        audio_cost:
+          type: number
+        image_cost:
+          type: number
+        cached_read_cost:
+          type: number
+        cached_write_cost:
+          type: number
+        request_cost:
+          type: number
+          description: Flat per-request surcharge (also OCR per page, container per session)
+    output_cost:
       type: number
-    reasoning_tokens_cost:
+    output_cost_details:
+      type: object
+      properties:
+        text_cost:
+          type: number
+        audio_cost:
+          type: number
+        image_cost:
+          type: number
+        reasoning_cost:
+          type: number
+          description: Cost for reasoning/thinking tokens (reasoning models)
+        citation_cost:
+          type: number
+        search_queries_cost:
+          type: number
+          description: Cost for web search queries
+    additional_cost:
       type: number
-      description: Cost for reasoning/thinking tokens (reasoning models)
-    citation_tokens_cost:
-      type: number
-      description: Cost for citation tokens
-    search_queries_cost:
-      type: number
-      description: Cost for web search queries
-    request_cost:
-      type: number
+      description: Side calls with no token category
+    additional_cost_details:
+      type: object
+      properties:
+        guardrail_cost:
+          type: number
+          description: Guardrail judge calls
+        mcp_cost:
+          type: number
+          description: MCP tool executions priced by the client's tool_pricing
+        semantic_cache_cost:
+          type: number
+          description: The semantic cache's embedding lookup
+        routing_cost:
+          type: number
+          description: Routing classification calls that count toward budgets
     total_cost:
       type: number
