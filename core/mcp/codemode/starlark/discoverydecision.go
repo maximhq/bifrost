@@ -99,7 +99,9 @@ func (r *decisionDiscoveryRanker) rank(ctx context.Context, input discoveryRankR
 		if toolCtx, ok := ctx.(*schemas.BifrostContext); ok {
 			call := r.call(model, started, resp, bifrostErr)
 			if rejected != nil {
-				call.Error = &schemas.BifrostError{Error: &schemas.ErrorField{Message: "decision answer was rejected: " + rejected.Error()}}
+				// The row may hold the reason but nothing from the answer itself,
+				// such as a candidate id the model echoed back.
+				call.Error = &schemas.BifrostError{Error: &schemas.ErrorField{Message: "decision answer was rejected: " + rankRejectionReason(rejected)}}
 			}
 			schemas.AppendMCPDiscoveryRankerCallOnContext(toolCtx, call)
 		}
@@ -234,7 +236,7 @@ func decisionRankResponse(req discoveryRankRequest, resp *schemas.BifrostDecisio
 		relevance := 1.0
 		if c := relevant.Confidence; c != nil {
 			if !validDiscoveryProbability(*c) {
-				return out, fmt.Errorf("decision response has confidence %v outside [0, 1]", *c)
+				return out, rankRejection{reason: "decision response has a confidence outside [0, 1]", detail: fmt.Sprintf("%v", *c)}
 			}
 			relevance = *c
 		}

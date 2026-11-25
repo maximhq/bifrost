@@ -23,6 +23,37 @@ const decisionSystemPrompt = "You are a judgment engine. Read the given state an
 	"distribution over its options or levels; the probabilities must sum to 1. For choice, select an option " +
 	"with the highest probability. Base every answer only on the state; do not invent facts."
 
+// decisionServedNatively reports whether provider serves model on its native
+// decisions endpoint, by the same rules the compat plugin uses to mark a
+// decision for emulation: the datasheet's supports_decisions row, or without a
+// row the decisions model families each provider recognizes by name. Typesafe,
+// vLLM and SGLang serve every model natively. A custom provider is native on
+// the bases whose Decision method sends every model (Typesafe, OpenAI, vLLM,
+// SGLang), and on the Gemini base for Gemini Decision models.
+func (bifrost *Bifrost) decisionServedNatively(provider schemas.ModelProvider, model string) bool {
+	if config, err := bifrost.account.GetConfigForProvider(provider); err == nil && config != nil && config.CustomProviderConfig != nil {
+		switch config.CustomProviderConfig.BaseProviderType {
+		case schemas.Typesafe, schemas.OpenAI, schemas.VLLM, schemas.SGL:
+			return true
+		case schemas.Gemini:
+			return schemas.IsGeminiDecisionModel(model)
+		}
+		return false
+	}
+	if provider == schemas.Typesafe || provider == schemas.VLLM || provider == schemas.SGL {
+		return true
+	}
+	fallback := (provider == schemas.OpenAI && schemas.DefaultSupportsDecisions(model)) || schemas.IsTypesafeModel(model) ||
+		(provider == schemas.Cloudflare && schemas.IsClefModel(model)) ||
+		(provider == schemas.Perplexity && schemas.IsPerplexityDeciderModel(model)) ||
+		(provider == schemas.Ollama && schemas.IsOllamaDecisionModel(model)) ||
+		(provider == schemas.Azure && (schemas.IsMicrosoftDecisionModel(model) || schemas.DefaultSupportsDecisions(model))) ||
+		(provider == schemas.Databricks && schemas.IsDatabricksDecisionModel(model)) ||
+		(provider == schemas.Baseten && schemas.IsBasetenDecisionModel(model)) ||
+		(provider == schemas.Gemini && schemas.IsGeminiDecisionModel(model))
+	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback)
+}
+
 // emulateDecisionViaResponses answers a decision request through a general model
 // when the provider has no native decision support. It runs against the provider's
 // own Responses API - the richest interface every provider implements (natively on

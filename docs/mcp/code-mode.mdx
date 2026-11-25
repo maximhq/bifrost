@@ -512,6 +512,8 @@ The environment variables `BIFROST_CODE_MODE_DISCOVERY_RANKER_URL` and `BIFROST_
 
 To rank by meaning without running a ranking service, point the ranker at a decision model instead of a URL. Bifrost asks the model through its own [decision API](/quickstart/gateway/decisions) and turns the answer into the same ranking the external ranker returns, so the shortlist, the `sufficient` hint and the lexical fallback work the same way.
 
+The model does not need a native decisions endpoint. A decisions model (for example `openai/gpt-6-luna` or `typesafe/system-one`) is asked on its provider's decisions API; any other model, such as `openai/gpt-5-nano`, is answered through its Responses API, the same [emulation](/features/compat-plugin#4-decision-to-responses-emulation) the compat setting `convert_decision_to_responses` turns on for requests. Configuring the model here is the opt-in, so the ranker does not need that setting.
+
 ```json
 {
   "mcp": {

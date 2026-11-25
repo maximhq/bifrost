@@ -1742,12 +1742,25 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 // shed, so the ranker call is not governed or routed as the caller's. The code
 // mode records the call on the tool call's context instead, and the logging
 // plugin writes it as its own row from the tool call's PostMCPHook.
+//
+// With the plugin pipeline skipped, the compat plugin cannot mark a model that
+// has no native decisions endpoint for emulation, so the path is chosen here
+// for every call: a native decisions model goes to the provider's decision
+// API, any other model is answered through its Responses API. Configuring a
+// general model as the ranker's decision model is the operator's opt-in.
 func (bifrost *Bifrost) codeModeDecisionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	PrepareContextForInternalRequest(ctx)
 	// An agent loop marks its tool calls with the route that served its first
 	// turn. The ranker call is not a turn of that conversation: left set, it
 	// would be pinned to the conversation's model instead of the ranker's.
 	ctx.ClearValue(schemas.BifrostContextKeyMCPAgentServedRoute)
+	// Set or cleared on every call: a conversion the caller's own request was
+	// marked with must not decide the ranker call's path.
+	if bifrost.decisionServedNatively(req.Provider, req.Model) {
+		ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
+	} else {
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+	}
 	return bifrost.DecisionRequest(ctx, req)
 }
 

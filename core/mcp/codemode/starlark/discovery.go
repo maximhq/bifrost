@@ -377,17 +377,41 @@ func validateDiscoveryRankResponse(req discoveryRankRequest, resp discoveryRankR
 	scores := make(map[string]float64, len(resp.Candidates))
 	for _, c := range resp.Candidates {
 		if !allowed[c.ID] {
-			return nil, fmt.Errorf("response names unknown candidate %q", c.ID)
+			return nil, rankRejection{reason: "response names an unknown candidate", detail: fmt.Sprintf("%q", c.ID)}
 		}
 		if _, dup := scores[c.ID]; dup {
-			return nil, fmt.Errorf("response scores candidate %q twice", c.ID)
+			return nil, rankRejection{reason: "response scores a candidate twice", detail: fmt.Sprintf("%q", c.ID)}
 		}
 		if c.Relevance == nil || !validDiscoveryProbability(*c.Relevance) {
-			return nil, fmt.Errorf("relevance of candidate %q must be between 0 and 1", c.ID)
+			return nil, rankRejection{reason: "a candidate's relevance is not between 0 and 1", detail: fmt.Sprintf("%q", c.ID)}
 		}
 		scores[c.ID] = *c.Relevance
 	}
 	return scores, nil
+}
+
+// rankRejection is a ranker answer that failed validation. reason never holds
+// anything taken from the answer, so it can be stored where response content
+// must not go (the decision ranker's log rows); detail names the offending
+// value for the operator's warning log.
+type rankRejection struct {
+	reason, detail string
+}
+
+func (e rankRejection) Error() string {
+	if e.detail == "" {
+		return e.reason
+	}
+	return e.reason + ": " + e.detail
+}
+
+// rankRejectionReason is err without any content from the ranker's answer.
+func rankRejectionReason(err error) string {
+	var rejection rankRejection
+	if errors.As(err, &rejection) {
+		return rejection.reason
+	}
+	return err.Error()
 }
 
 func validDiscoveryProbability(n float64) bool {

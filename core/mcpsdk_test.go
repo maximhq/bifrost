@@ -882,3 +882,126 @@ func TestDecisionRankerIgnoresAgentServedRoute(t *testing.T) {
 		t.Fatal("the ranker call cleared the agent route on the tool call's own context")
 	}
 }
+
+// A ranker decision call skips the plugin pipeline, so the compat plugin never
+// marks it for emulation. A general model configured as the ranker's decision
+// model must still be answered, through its Responses API, and a native
+// decisions model must still go to the decisions endpoint even when the tool
+// call's own request was marked for conversion.
+func TestDecisionRankerChoosesDecisionPath(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"native decisions unavailable","type":"server_error"}}`))
+			return
+		}
+		// Answer the emit_decision tool over the offered choices: the first
+		// one is the relevant tool.
+		var body struct {
+			Tools []struct {
+				Parameters struct {
+					Properties map[string]struct {
+						Properties struct {
+							Choice struct {
+								Enum []string `json:"enum"`
+							} `json:"choice"`
+						} `json:"properties"`
+					} `json:"properties"`
+				} `json:"parameters"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Tools) != 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		options := body.Tools[0].Parameters.Properties["relevant_tool"].Properties.Choice.Enum
+		if len(options) == 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		probabilities := map[string]float64{}
+		for i, option := range options {
+			probabilities[option] = 0
+			if i == 0 {
+				probabilities[option] = 1
+			}
+		}
+		args, _ := json.Marshal(map[string]any{
+			"relevant_tool":       map[string]any{"choice": options[0], "confidence": 0.9, "probabilities": probabilities},
+			"tools_cover_request": map[string]any{"value": 0.9},
+		})
+		out, _ := json.Marshal(map[string]any{
+			"id": "resp_1", "object": "response", "created_at": 1, "model": "gpt-5-nano", "status": "completed",
+			"output": []any{map[string]any{"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "emit_decision", "arguments": string(args), "status": "completed"}},
+			"usage":  map[string]any{"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+		})
+		_, _ = w.Write(out)
+	}))
+	t.Cleanup(upstream.Close)
+
+	for _, tc := range []struct {
+		name, model string
+		// callerMarked marks the tool call's own request for conversion to Responses.
+		callerMarked bool
+		wantPath     string
+		wantRanked   bool
+	}{
+		{name: "general model is emulated", model: "gpt-5-nano", wantPath: "/v1/responses", wantRanked: true},
+		{name: "general model is emulated under a marked caller", model: "gpt-5-nano", callerMarked: true, wantPath: "/v1/responses", wantRanked: true},
+		{name: "native decisions model stays native", model: "gpt-6-luna", wantPath: "/v1/decisions"},
+		{name: "native decisions model stays native under a marked caller", model: "gpt-6-luna", callerMarked: true, wantPath: "/v1/decisions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			paths = nil
+			mu.Unlock()
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, upstream.URL)
+			account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+			a := newAlphaServer(t)
+			logger := &warnRecorder{Logger: NewNoOpLogger()}
+			b := newSDKClient(t, schemas.BifrostConfig{Account: account, Logger: logger})
+			client := alphaClient(a.url)
+			client.IsCodeModeClient = true
+			if err := addMCPClient(context.Background(), b, client); err != nil {
+				t.Fatalf("AddMCPClient: %v", err)
+			}
+			b.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
+				CodeModeDiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{DecisionModel: "openai/" + tc.model},
+			})
+
+			ctx := newCtx()
+			if tc.callerMarked {
+				ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+			}
+			msg, bErr := b.ExecuteChatMCPTool(ctx, &schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("c1"),
+				Type:     schemas.Ptr("function"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("listToolFiles"), Arguments: `{"query":"echo this text back"}`},
+			})
+			if bErr != nil {
+				t.Fatalf("listToolFiles: %s", errorText(bErr))
+			}
+			mu.Lock()
+			got := slices.Clone(paths)
+			mu.Unlock()
+			if len(got) != 1 || got[0] != tc.wantPath {
+				t.Fatalf("upstream paths = %v, want one call to %s; warnings:\n%s", got, tc.wantPath, logger.joined())
+			}
+			if ranked := strings.Contains(contentOf(msg), "(discovery ranker)"); ranked != tc.wantRanked {
+				t.Fatalf("ranked by the decision model = %t, want %t:\n%s\nwarnings:\n%s", ranked, tc.wantRanked, contentOf(msg), logger.joined())
+			}
+			if changeType, _ := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); (changeType == schemas.ResponsesRequest) != tc.callerMarked {
+				t.Fatalf("the ranker call changed the tool call's own request type mark to %q", changeType)
+			}
+		})
+	}
+}

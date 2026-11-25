@@ -381,7 +381,18 @@ func TestListToolFilesDecisionRankerRecordsCalls(t *testing.T) {
 				return resp, nil
 			},
 			want:      schemas.MCPDiscoveryRankerCall{Provider: "openai", Model: "gpt-5-nano", Usage: usage},
-			wantError: `decision answer was rejected: relevance of candidate "servers/github/create_issue.pyi" must be between 0 and 1`,
+			wantError: "decision answer was rejected: a candidate's relevance is not between 0 and 1",
+		},
+		// A choice the model invented is rejected, and the row does not echo it:
+		// rows carry no candidate ids or other text from the answer.
+		"unknown candidate": {
+			answer: func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				resp := decisionAnswers(map[string]float64{"servers/secret/leak.pyi": 1}, nil)
+				resp.Usage, resp.ExtraFields.RoutingInfo = usage, served
+				return resp, nil
+			},
+			want:      schemas.MCPDiscoveryRankerCall{Provider: "openai", Model: "gpt-5-nano", Usage: usage},
+			wantError: "decision answer was rejected: response names an unknown candidate",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
