@@ -1626,6 +1626,53 @@ func TestListModels_DecisionsResolvesKeyAliases(t *testing.T) {
 	}
 }
 
+// TestListModels_DecisionsUnfilteredAliases pins what the decisions guide states: an
+// unfiltered decisions listing is the provider catalog, which holds no key aliases, and
+// include_aliases=true brings back the aliases that point at decision models.
+func TestListModels_DecisionsUnfilteredAliases(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	key := schemas.Key{ID: "key-a", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+		"complexity-judge": {ModelID: "gpt-6-luna"},
+		"fast-chat":        {ModelID: "gpt-4o"},
+	}}
+	catalogModels := []string{"gpt-4o", "gpt-6-luna"}
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{key}, catalogModels, catalogModels)
+	catalog := modelCatalogForPricingJSON(t, []byte(`{"openai/gpt-4o": {"provider":"openai","mode":"chat"}}`))
+	catalog.SetKeyConfigForProvider(schemas.OpenAI, []schemas.Key{key})
+	h.config.ModelCatalog = catalog
+
+	for _, tc := range []struct {
+		query string
+		want  []string
+	}{
+		{"unfiltered=true", []string{"gpt-6-luna"}},
+		{"unfiltered=true&include_aliases=true", []string{"complexity-judge", "gpt-6-luna"}},
+	} {
+		ctx := newBareRequestCtx()
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=openai&decisions=true&limit=10&" + tc.query)
+
+		h.listModels(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", tc.query, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("%s: failed to unmarshal response: %v", tc.query, err)
+		}
+		names := make([]string, 0, len(resp.Models))
+		for _, model := range resp.Models {
+			names = append(names, model.Name)
+		}
+		slices.Sort(names)
+		if !slices.Equal(names, tc.want) {
+			t.Fatalf("%s: expected %v, got %v", tc.query, tc.want, names)
+		}
+	}
+}
+
 // TestListModels_DecisionsKeepsTypesafeBasedModels pins that decisions=true
 // lists every model of a Typesafe-based provider, which serves whichever model
 // it is given, without a datasheet row: Typesafe itself and a custom provider
