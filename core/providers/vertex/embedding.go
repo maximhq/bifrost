@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"maps"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
@@ -68,39 +69,67 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Ver
 	return vertexReq, nil
 }
 
-// ToVertexGeminiEmbeddingRequest converts a Bifrost embedding request to Vertex Gemini embedding format.
-// Only a single content entry is supported (len == 1); batch is not supported by this endpoint.
+// ToVertexGeminiEmbeddingRequest converts a Bifrost embedding request to the Vertex :embedContent format.
+// Callers route several inputs to ToVertexGeminiBatchEmbeddingRequest.
 func ToVertexGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*VertexGeminiEmbeddingRequest, error) {
 	if bifrostReq == nil || len(bifrostReq.Input) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("embedding input is not provided")
-	}
-
-	if len(bifrostReq.Input) > 1 {
-		return nil, providerUtils.InvalidRequestErrorf("this model does not support batch embedding inputs (multiple contents); use a single content entry")
 	}
 
 	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
-	content := bifrostReq.Input[0].Content
-	params := bifrostReq.Params
+	req, err := toVertexGeminiEmbeddingEntry(bifrostReq.Input[0].Content, bifrostReq.Params)
+	if err != nil {
+		return nil, err
+	}
+	if bifrostReq.Params != nil {
+		req.ExtraParams = bifrostReq.Params.ExtraParams
+	}
+	return req, nil
+}
+
+// ToVertexGeminiBatchEmbeddingRequest converts a multi-input Bifrost embedding request to the Vertex :batchEmbedContents format.
+func ToVertexGeminiBatchEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*VertexGeminiBatchEmbeddingRequest, error) {
+	if bifrostReq == nil || len(bifrostReq.Input) == 0 {
+		return nil, providerUtils.InvalidRequestErrorf("embedding input is not provided")
+	}
+
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
+		return nil, providerUtils.InvalidRequestErrorf("%s", err)
+	}
+
+	batch := &VertexGeminiBatchEmbeddingRequest{Requests: make([]VertexGeminiEmbeddingRequest, 0, len(bifrostReq.Input))}
+	if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
+		// embedContentConfig is applied per entry; Vertex rejects it at the batch top level.
+		batch.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
+		delete(batch.ExtraParams, "embedContentConfig")
+	}
+	for _, item := range bifrostReq.Input {
+		entry, err := toVertexGeminiEmbeddingEntry(item.Content, bifrostReq.Params)
+		if err != nil {
+			return nil, err
+		}
+		batch.Requests = append(batch.Requests, *entry)
+	}
+	return batch, nil
+}
+
+// toVertexGeminiEmbeddingEntry builds one embedContent body (also a batchEmbedContents entry) without extra params.
+func toVertexGeminiEmbeddingEntry(content schemas.EmbeddingContent, params *schemas.EmbeddingParameters) (*VertexGeminiEmbeddingRequest, error) {
 	gemContent, err := gemini.EmbeddingContentToGeminiContent(content, geminiImageURLSchemes...)
 	if err != nil {
 		return nil, err
 	}
-	req := &VertexGeminiEmbeddingRequest{
-		Content: gemContent,
-	}
+	req := &VertexGeminiEmbeddingRequest{Content: gemContent}
 	if params != nil {
 		req.TaskType = params.TaskType
 		req.Title = params.Title
 		req.OutputDimensionality = params.Dimensions
 		req.AutoTruncate = params.AutoTruncate
-
 		if params.ExtraParams != nil {
-			req.ExtraParams = params.ExtraParams
-			req.EmbedContentConfig = gemini.ReadEmbedContentConfig(req.ExtraParams)
+			req.EmbedContentConfig = gemini.ReadEmbedContentConfig(params.ExtraParams)
 		}
 	}
 	return req, nil
