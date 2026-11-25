@@ -162,7 +162,7 @@ func TestConcurrent_AddRemoveClients(t *testing.T) {
 				ToolsToAutoExecute: []string{},
 			}
 
-			err := manager.AddClient(context.Background(), &clientConfig)
+			err := addClient(context.Background(), manager, &clientConfig)
 			if err != nil {
 				// InProcess connections without a server instance will fail
 				// This is expected - we're just testing that the operations are concurrent and don't deadlock
@@ -262,7 +262,7 @@ func TestConcurrent_EditClientDuringExecution_Advanced(t *testing.T) {
 						ConnectionType: client.ExecutionConfig.ConnectionType,
 						ToolsToExecute: []string{"echo"},
 					}
-					err := manager.UpdateClient(newConfig.ID, newConfig)
+					err := updateClient(manager, newConfig.ID, newConfig)
 					if err != nil {
 						errors <- fmt.Errorf("edit %d failed: %v", id, err)
 					}

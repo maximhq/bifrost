@@ -252,10 +252,10 @@ func TestValidateRoutingDecision_MissingModel(t *testing.T) {
 
 // TestEvaluateRoutingRules_NilContext tests EvaluateRoutingRules with nil context
 func TestEvaluateRoutingRules_NilContext(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	_, err = engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), nil)
@@ -265,10 +265,10 @@ func TestEvaluateRoutingRules_NilContext(t *testing.T) {
 
 // TestEvaluateRoutingRules_NoRulesMatch tests EvaluateRoutingRules when no rules match
 func TestEvaluateRoutingRules_NoRulesMatch(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	ctx := &EvaluationContext{
@@ -285,11 +285,11 @@ func TestEvaluateRoutingRules_NoRulesMatch(t *testing.T) {
 
 // TestEvaluateRoutingRules_GlobalRuleMatches tests global scope rule matching
 func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Create a global routing rule
@@ -306,7 +306,7 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 	}
 
 	// Store the rule
-	require.NoError(t, store.UpsertRule(context.Background(), rule))
+	require.NoError(t, store.Put(context.Background(), rule))
 
 	// Create routing context
 	ctx := &EvaluationContext{
@@ -337,10 +337,10 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 // Decision. Propagation from there onto the request context is covered by the plugin-level
 // test in the parent package.
 func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
@@ -372,7 +372,7 @@ func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), rule))
+	require.NoError(t, store.Put(context.Background(), rule))
 
 	routingCtx := &EvaluationContext{
 		Provider:    schemas.OpenAI,
@@ -397,11 +397,11 @@ func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T
 
 // TestEvaluateRoutingRules_ScopePrecedence tests virtual_key scope takes precedence over global
 func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Create global rule
@@ -416,7 +416,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), globalRule))
+	require.NoError(t, store.Put(context.Background(), globalRule))
 
 	// Create VK-specific rule (should take precedence)
 	vkRule := &configstoreTables.TableRoutingRule{
@@ -431,7 +431,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 		ScopeID:  bifrost.Ptr("vk-123"),
 		Priority: 10,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), vkRule))
+	require.NoError(t, store.Put(context.Background(), vkRule))
 
 	// Create routing context with VirtualKey
 	vk := &configstoreTables.TableVirtualKey{
@@ -461,11 +461,11 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 // TestEvaluateRoutingRules_PriorityOrdering tests rules within scope are evaluated by priority.
 // Lower numeric Priority is higher precedence (model/UI semantics); rules are ordered ASC.
 func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Low precedence rule (evaluated second): higher priority number
@@ -480,7 +480,7 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 		Scope:    "global",
 		Priority: 10,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), rule1))
+	require.NoError(t, store.Put(context.Background(), rule1))
 
 	// High precedence rule (evaluated first): lower priority number
 	rule2 := &configstoreTables.TableRoutingRule{
@@ -494,7 +494,7 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), rule2))
+	require.NoError(t, store.Put(context.Background(), rule2))
 
 	ctx := &EvaluationContext{
 		Provider:    schemas.OpenAI,
@@ -514,7 +514,7 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 
 // TestResolveRoutingWithFallback_RuleMatches tests resolving with matching rule
 func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
@@ -529,7 +529,7 @@ func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), rule))
+	require.NoError(t, store.Put(context.Background(), rule))
 
 	ctx := &EvaluationContext{
 		Provider:    schemas.OpenAI,
@@ -538,7 +538,7 @@ func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
 		QueryParams: map[string]string{},
 	}
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	decision, err := resolveRoutingWithFallback(bgCtx, ctx, engine)
@@ -551,7 +551,7 @@ func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
 
 // TestResolveRoutingWithFallback_NoMatch tests resolving when no rule matches
 func TestResolveRoutingWithFallback_NoMatch(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 
 	ctx := &EvaluationContext{
@@ -561,7 +561,7 @@ func TestResolveRoutingWithFallback_NoMatch(t *testing.T) {
 		QueryParams: map[string]string{},
 	}
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	decision, err := resolveRoutingWithFallback(schemas.NewBifrostContext(context.Background(), time.Now()), ctx, engine)
@@ -576,11 +576,11 @@ func TestResolveRoutingWithFallback_NoMatch(t *testing.T) {
 
 // TestEvaluateRoutingRules_DisabledRulesIgnored tests that disabled rules are ignored
 func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Create disabled rule
@@ -595,7 +595,7 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 		Scope:    "global",
 		Priority: 10,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), disabledRule))
+	require.NoError(t, store.Put(context.Background(), disabledRule))
 
 	// Create enabled rule
 	enabledRule := &configstoreTables.TableRoutingRule{
@@ -609,7 +609,7 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), enabledRule))
+	require.NoError(t, store.Put(context.Background(), enabledRule))
 
 	ctx := &EvaluationContext{
 		Provider:    schemas.OpenAI,
@@ -628,11 +628,11 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 
 // TestEvaluateRoutingRules_ComplexExpression tests evaluation with complex CEL expression
 func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -646,7 +646,7 @@ func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), rule))
+	require.NoError(t, store.Put(context.Background(), rule))
 
 	// Test with matching headers
 	ctx := &EvaluationContext{
@@ -672,11 +672,11 @@ func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 
 // TestEvaluateRoutingRules_NilVirtualKey tests evaluation without VirtualKey
 func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -690,7 +690,7 @@ func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), rule))
+	require.NoError(t, store.Put(context.Background(), rule))
 
 	ctx := &EvaluationContext{
 		Provider:    schemas.OpenAI,
@@ -708,11 +708,11 @@ func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 
 // TestEvaluateRoutingRules_MissingHeaderGracefully tests that missing headers don't cause evaluation errors
 func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Create a rule that checks for a header that may not be present
@@ -727,7 +727,7 @@ func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), rule))
+	require.NoError(t, store.Put(context.Background(), rule))
 
 	// Create context WITHOUT the header
 	ctx := &EvaluationContext{
@@ -754,10 +754,10 @@ func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
 // a team's rule wins over its customer's, and a customer's over the global one, whatever their
 // priorities, since priority only orders rules within one scope.
 func TestEvaluateRoutingRules_TeamBeatsCustomerBeatsGlobal(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	for _, r := range []struct {
@@ -769,7 +769,7 @@ func TestEvaluateRoutingRules_TeamBeatsCustomerBeatsGlobal(t *testing.T) {
 		{"customer", "customer", "anthropic", bifrost.Ptr("cust-1"), 50},
 		{"team", "team", "azure", bifrost.Ptr("team-1"), 99},
 	} {
-		require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 			ID: r.id, Name: r.id, Scope: r.scope, ScopeID: r.scopeID, Priority: r.priority, Enabled: bifrost.Ptr(true),
 			CelExpression: "model == 'gpt-4o'",
 			Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr(r.provider), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0}},
@@ -805,18 +805,18 @@ func TestEvaluateRoutingRules_TeamBeatsCustomerBeatsGlobal(t *testing.T) {
 // trail entry that says so, and the next rule in line still matches. A bad header must not take
 // routing down with it.
 func TestEvaluateRoutingRules_RuntimeErrorSkipsTheRule(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID: "erroring", Name: "Erroring", Scope: "global", Priority: 0, Enabled: bifrost.Ptr(true),
 		CelExpression: "int(headers['x-count']) > 5",
 		Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0}},
 	}))
-	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	require.NoError(t, store.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID: "next", Name: "Next", Scope: "global", Priority: 1, Enabled: bifrost.Ptr(true),
 		CelExpression: "model == 'gpt-4o'",
 		Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("anthropic"), Model: bifrost.Ptr("gpt-4o"), Weight: 1.0}},
@@ -843,11 +843,11 @@ func TestEvaluateRoutingRules_RuntimeErrorSkipsTheRule(t *testing.T) {
 // TestEvaluateRoutingRules_ChainRuleReEvaluation tests that chain_rule=true causes re-evaluation
 // with the resolved provider/model fed back into the engine.
 func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Rule A: matches gpt-4o → routes to gpt-4-turbo, chain_rule=true so re-evaluation continues.
@@ -863,7 +863,7 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 		Priority:  0,
 		ChainRule: true,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), ruleA))
+	require.NoError(t, store.Put(context.Background(), ruleA))
 
 	// Rule B: matches gpt-4-turbo → routes to azure/gpt-4, terminal (chain_rule=false).
 	ruleB := &configstoreTables.TableRoutingRule{
@@ -878,7 +878,7 @@ func TestEvaluateRoutingRules_ChainRuleReEvaluation(t *testing.T) {
 		Priority:  1,
 		ChainRule: false,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), ruleB))
+	require.NoError(t, store.Put(context.Background(), ruleB))
 
 	ctx := &EvaluationContext{
 		Provider:    schemas.OpenAI,
@@ -919,12 +919,12 @@ func TestEvaluateRoutingRules_TTFTTimeoutFollowsSelectedTarget(t *testing.T) {
 	}
 	evaluate := func(t *testing.T, rules ...*configstoreTables.TableRoutingRule) *Decision {
 		t.Helper()
-		store, err := newTestRuleStore()
+		store, err := newTestRuleStore(t)
 		require.NoError(t, err)
 		for _, rule := range rules {
-			require.NoError(t, store.UpsertRule(context.Background(), rule))
+			require.NoError(t, store.Put(context.Background(), rule))
 		}
-		engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+		engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 		require.NoError(t, err)
 		decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), &EvaluationContext{
 			Provider: schemas.OpenAI, Model: "gpt-4o", Headers: map[string]string{}, QueryParams: map[string]string{},
@@ -972,11 +972,11 @@ func TestEvaluateRoutingRules_TTFTTimeoutFollowsSelectedTarget(t *testing.T) {
 // TestEvaluateRoutingRules_TerminalRuleStopsChain tests that a terminal rule (chain_rule=false)
 // halts the chaining loop immediately without re-evaluation.
 func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Rule A: matches gpt-4o → routes to gpt-4-turbo, terminal (chain_rule=false).
@@ -992,7 +992,7 @@ func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
 		Priority:  0,
 		ChainRule: false,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), ruleA))
+	require.NoError(t, store.Put(context.Background(), ruleA))
 
 	// Rule B: would match gpt-4-turbo, but should never be reached because Rule A is terminal.
 	ruleB := &configstoreTables.TableRoutingRule{
@@ -1007,7 +1007,7 @@ func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
 		Priority:  1,
 		ChainRule: false,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), ruleB))
+	require.NoError(t, store.Put(context.Background(), ruleB))
 
 	ctx := &EvaluationContext{
 		Provider:    schemas.OpenAI,
@@ -1029,11 +1029,11 @@ func TestEvaluateRoutingRules_TerminalRuleStopsChain(t *testing.T) {
 // TestEvaluateRoutingRules_SelfLoopContinuesToNextRule tests that a chain_rule=true rule which
 // resolves to the same provider/model (self-loop) fires once and then allows the next rule to run.
 func TestEvaluateRoutingRules_SelfLoopContinuesToNextRule(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	// Rule A: matches gpt-4o, chain_rule=true but resolves back to openai/gpt-4o (self-loop).
@@ -1050,7 +1050,7 @@ func TestEvaluateRoutingRules_SelfLoopContinuesToNextRule(t *testing.T) {
 		Priority:  0,
 		ChainRule: true,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), ruleA))
+	require.NoError(t, store.Put(context.Background(), ruleA))
 
 	// Rule B: also matches gpt-4o, terminal — should be reached after Rule A fires once.
 	ruleB := &configstoreTables.TableRoutingRule{
@@ -1065,7 +1065,7 @@ func TestEvaluateRoutingRules_SelfLoopContinuesToNextRule(t *testing.T) {
 		Priority:  1,
 		ChainRule: false,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), ruleB))
+	require.NoError(t, store.Put(context.Background(), ruleB))
 
 	ctx := &EvaluationContext{
 		Provider:    schemas.OpenAI,
@@ -1087,11 +1087,11 @@ func TestEvaluateRoutingRules_SelfLoopContinuesToNextRule(t *testing.T) {
 // TestEvaluateRoutingRules_SelfLoopAloneTerminates tests that a self-looping chain rule with no
 // other rules terminates cleanly after firing once (TERMINATION 1: no remaining rule matches).
 func TestEvaluateRoutingRules_SelfLoopAloneTerminates(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	ruleA := &configstoreTables.TableRoutingRule{
@@ -1106,7 +1106,7 @@ func TestEvaluateRoutingRules_SelfLoopAloneTerminates(t *testing.T) {
 		Priority:  0,
 		ChainRule: true,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), ruleA))
+	require.NoError(t, store.Put(context.Background(), ruleA))
 
 	ctx := &EvaluationContext{
 		Provider:    schemas.OpenAI,
@@ -1128,12 +1128,12 @@ func TestEvaluateRoutingRules_SelfLoopAloneTerminates(t *testing.T) {
 // TestEvaluateRoutingRules_MaxDepthCutoff tests that the chain stops once chainMaxDepth is reached,
 // returning the last successfully resolved decision rather than continuing further.
 func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	// Use maxDepth=2: steps 0 and 1 are allowed; step 2 is cut off before any rule is evaluated.
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(2))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(2))
 	require.NoError(t, err)
 
 	// Rule A: gpt-4o → gpt-4-turbo, chain continues.
@@ -1149,7 +1149,7 @@ func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
 		Priority:  0,
 		ChainRule: true,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), ruleA))
+	require.NoError(t, store.Put(context.Background(), ruleA))
 
 	// Rule B: gpt-4-turbo → azure/gpt-4, chain continues (would proceed to step 2 if depth allowed).
 	ruleB := &configstoreTables.TableRoutingRule{
@@ -1164,7 +1164,7 @@ func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
 		Priority:  1,
 		ChainRule: true,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), ruleB))
+	require.NoError(t, store.Put(context.Background(), ruleB))
 
 	// Rule C: gpt-4 → anthropic/claude-3, would match at step 2 but max depth is 2.
 	ruleC := &configstoreTables.TableRoutingRule{
@@ -1179,7 +1179,7 @@ func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
 		Priority:  2,
 		ChainRule: false,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), ruleC))
+	require.NoError(t, store.Put(context.Background(), ruleC))
 
 	ctx := &EvaluationContext{
 		Provider:    schemas.OpenAI,
@@ -1205,8 +1205,9 @@ func TestEvaluateRoutingRules_MaxDepthCutoff(t *testing.T) {
 func TestCompileAndCacheProgram_ValidExpression_Routing(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1232,8 +1233,9 @@ func TestCompileAndCacheProgram_ValidExpression_Routing(t *testing.T) {
 func TestCompileAndCacheProgram_EmptyExpression_Routing(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1254,8 +1256,9 @@ func TestCompileAndCacheProgram_EmptyExpression_Routing(t *testing.T) {
 func TestCompileAndCacheProgram_InvalidExpression_Routing(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1275,8 +1278,9 @@ func TestCompileAndCacheProgram_InvalidExpression_Routing(t *testing.T) {
 func TestCompileAndCacheProgram_NilRule(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	_, err = store.GetProgram(context.Background(), nil)
 	assert.Error(t, err)
@@ -1287,8 +1291,9 @@ func TestCompileAndCacheProgram_NilRule(t *testing.T) {
 func TestCompileAndCacheProgram_ListExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1309,8 +1314,9 @@ func TestCompileAndCacheProgram_ListExpression(t *testing.T) {
 func TestCompileAndCacheProgram_RegexExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1331,8 +1337,9 @@ func TestCompileAndCacheProgram_RegexExpression(t *testing.T) {
 func TestCompileAndCacheProgram_HeaderExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1353,8 +1360,9 @@ func TestCompileAndCacheProgram_HeaderExpression(t *testing.T) {
 func TestCompileAndCacheProgram_RateLimitExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1375,8 +1383,9 @@ func TestCompileAndCacheProgram_RateLimitExpression(t *testing.T) {
 func TestCompileAndCacheProgram_BudgetExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1397,8 +1406,9 @@ func TestCompileAndCacheProgram_BudgetExpression(t *testing.T) {
 func TestCompileAndCacheProgram_ComplexExpression(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1453,8 +1463,9 @@ func TestValidateCELExpression_Invalid(t *testing.T) {
 func TestEvaluateCELExpression_TrueResult(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1484,8 +1495,9 @@ func TestEvaluateCELExpression_TrueResult(t *testing.T) {
 func TestEvaluateCELExpression_FalseResult(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1515,8 +1527,9 @@ func TestEvaluateCELExpression_FalseResult(t *testing.T) {
 func TestEvaluateCELExpression_ListMembership(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -1553,8 +1566,9 @@ func TestEvaluateCELExpression_ListMembership(t *testing.T) {
 func TestEvaluateCELExpression_HeaderAccess(t *testing.T) {
 	ctx := context.Background()
 	logger := NewMockLogger()
-	store, err := NewLocalStore(ctx, logger, nil)
+	store, err := NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(store.Close)
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -2126,11 +2140,11 @@ func getDefaultRouting(ctx *EvaluationContext) *Decision {
 // only for the matching resolved user and is skipped for other users and for
 // requests carrying no user identity.
 func TestEvaluateRoutingRules_UserScopedRule(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -2145,7 +2159,7 @@ func TestEvaluateRoutingRules_UserScopedRule(t *testing.T) {
 		ScopeID:  bifrost.Ptr("user-1"),
 		Priority: 0,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), rule))
+	require.NoError(t, store.Put(context.Background(), rule))
 
 	baseCtx := func(userID string) *EvaluationContext {
 		return &EvaluationContext{
@@ -2175,11 +2189,11 @@ func TestEvaluateRoutingRules_UserScopedRule(t *testing.T) {
 // TestEvaluateRoutingRules_VirtualKeyPreemptsUser verifies chain precedence:
 // when both a virtual_key-scoped and a user-scoped rule match, the VK rule wins.
 func TestEvaluateRoutingRules_VirtualKeyPreemptsUser(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	userRule := &configstoreTables.TableRoutingRule{
@@ -2194,7 +2208,7 @@ func TestEvaluateRoutingRules_VirtualKeyPreemptsUser(t *testing.T) {
 		ScopeID:  bifrost.Ptr("user-1"),
 		Priority: 0,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), userRule))
+	require.NoError(t, store.Put(context.Background(), userRule))
 
 	vkRule := &configstoreTables.TableRoutingRule{
 		ID:            "vk-rule",
@@ -2208,7 +2222,7 @@ func TestEvaluateRoutingRules_VirtualKeyPreemptsUser(t *testing.T) {
 		ScopeID:  bifrost.Ptr("vk-123"),
 		Priority: 10,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), vkRule))
+	require.NoError(t, store.Put(context.Background(), vkRule))
 
 	decision, err := engine.EvaluateRoutingRules(bgCtx, &EvaluationContext{
 		Scope:       withUser(scopeOf(&configstoreTables.TableVirtualKey{ID: "vk-123", Name: "test-vk"}), "user-1"),
@@ -2226,11 +2240,11 @@ func TestEvaluateRoutingRules_VirtualKeyPreemptsUser(t *testing.T) {
 // TestEvaluateRoutingRules_UserIDCELVariable verifies rule CEL expressions can
 // target the resolved user via the user_id variable.
 func TestEvaluateRoutingRules_UserIDCELVariable(t *testing.T) {
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -2244,7 +2258,7 @@ func TestEvaluateRoutingRules_UserIDCELVariable(t *testing.T) {
 		Scope:    "global",
 		Priority: 0,
 	}
-	require.NoError(t, store.UpsertRule(context.Background(), rule))
+	require.NoError(t, store.Put(context.Background(), rule))
 
 	decision, err := engine.EvaluateRoutingRules(bgCtx, &EvaluationContext{
 		Provider:    schemas.OpenAI,
@@ -2311,9 +2325,9 @@ func TestEvaluateRoutingRules_FallbacksReachDecision(t *testing.T) {
 	schemas.RegisterKnownProvider(custom)
 	t.Cleanup(func() { schemas.UnregisterKnownProvider(custom) })
 
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -2327,7 +2341,7 @@ func TestEvaluateRoutingRules_FallbacksReachDecision(t *testing.T) {
 		Scope:   "global",
 	}
 	require.NoError(t, rule.AfterFind(nil))
-	require.NoError(t, store.UpsertRule(context.Background(), rule))
+	require.NoError(t, store.Put(context.Background(), rule))
 
 	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), &EvaluationContext{
 		Provider: schemas.OpenAI, Model: "gpt-4o", Headers: map[string]string{}, QueryParams: map[string]string{},
@@ -2358,9 +2372,9 @@ func TestEvaluateRoutingRules_ChainRuleUsesLastMatchedRuleFallbacks(t *testing.T
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store, err := newTestRuleStore()
+			store, err := newTestRuleStore(t)
 			require.NoError(t, err)
-			engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+			engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 			require.NoError(t, err)
 
 			ruleA := &configstoreTables.TableRoutingRule{
@@ -2375,7 +2389,7 @@ func TestEvaluateRoutingRules_ChainRuleUsesLastMatchedRuleFallbacks(t *testing.T
 			}
 			for _, r := range []*configstoreTables.TableRoutingRule{ruleA, ruleB} {
 				require.NoError(t, r.AfterFind(nil))
-				require.NoError(t, store.UpsertRule(context.Background(), r))
+				require.NoError(t, store.Put(context.Background(), r))
 			}
 
 			decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), &EvaluationContext{
@@ -2456,6 +2470,68 @@ func TestSelectWeightedTargetSplitFollowsTheWeights(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			counts := countTargetPicks(t, weightedTargets(tc.providers, tc.weights), targetDraws)
 			requireTargetSplit(t, tc.providers, counts, tc.weights)
+		})
+	}
+}
+
+// BenchmarkEvaluateRoutingRules measures what a request pays for routing rules, the store's gate
+// and then the evaluation, as the plugin runs them: with no rule configured, and over 300 rules (20
+// global, four for each of 70 virtual keys) when the request's key's first rule matches and when
+// its four rules miss and the fifth global rule matches. The request carries a team and a customer
+// with no rules, so every scope level is looked up.
+func BenchmarkEvaluateRoutingRules(b *testing.B) {
+	_, emptyEngine, err := newTestEngine(b, 10)
+	require.NoError(b, err)
+	store, engine, err := newTestEngine(b, 10)
+	require.NoError(b, err)
+	put := store.Put
+	target := []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o-mini"), Weight: 1.0}}
+	for i := range 20 {
+		require.NoError(b, put(context.Background(), &configstoreTables.TableRoutingRule{
+			ID: fmt.Sprintf("global-%02d", i), Name: fmt.Sprintf("Global %02d", i), Scope: "global", Priority: i,
+			CelExpression: fmt.Sprintf("model == 'global-model-%d'", i), Targets: target, Enabled: bifrost.Ptr(true),
+		}))
+	}
+	for k := range 70 {
+		vkID := fmt.Sprintf("vk-%03d", k)
+		for j := range 4 {
+			expression := fmt.Sprintf("model == 'vk-model-%d'", j)
+			if j == 0 {
+				expression = "model == 'gpt-4o'"
+			}
+			require.NoError(b, put(context.Background(), &configstoreTables.TableRoutingRule{
+				ID: fmt.Sprintf("%s-%d", vkID, j), Name: fmt.Sprintf("%s rule %d", vkID, j), Scope: "virtual_key", ScopeID: bifrost.Ptr(vkID),
+				Priority: j, CelExpression: expression, Targets: target, Enabled: bifrost.Ptr(true),
+			}))
+		}
+	}
+	scope := GovernanceScope{VirtualKeyID: "vk-007", VirtualKeyName: "vk-007", TeamID: "team-1", TeamName: "team-1", CustomerID: "customer-1", CustomerName: "customer-1"}
+	for _, tc := range []struct {
+		name    string
+		engine  *Engine
+		model   string
+		matched string
+	}{
+		{"no-rules", emptyEngine, "gpt-4o", ""},
+		{"key-rule-matches", engine, "gpt-4o", "vk-007-0"},
+		{"global-rule-matches", engine, "global-model-4", "global-04"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			routingCtx := &EvaluationContext{Scope: scope, Provider: schemas.OpenAI, Model: tc.model, RequestType: "chat_completion", Headers: map[string]string{}, QueryParams: map[string]string{}}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if !tc.engine.rules.HasRules(ctx) {
+					if tc.matched != "" {
+						b.Fatal("HasRules reported no rules")
+					}
+					continue
+				}
+				decision, err := tc.engine.EvaluateRoutingRules(ctx, routingCtx)
+				if err != nil || decision == nil || decision.MatchedRuleID != tc.matched {
+					b.Fatalf("EvaluateRoutingRules: %v %+v", err, decision)
+				}
+			}
 		})
 	}
 }

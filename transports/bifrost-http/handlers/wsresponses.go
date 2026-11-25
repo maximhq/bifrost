@@ -206,8 +206,8 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, setupHe
 		return
 	}
 
-	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(provider); cfgErr == nil &&
-		providerCfg.OpenAIConfig != nil && providerCfg.OpenAIConfig.DisableStore {
+	if stored, ok := h.config.LiveStore.Collections.Providers.Get(string(provider)); ok &&
+		stored.Config.OpenAIConfig != nil && stored.Config.OpenAIConfig.DisableStore {
 		event.Store = schemas.Ptr(false)
 	} else {
 		event.Store = schemas.Ptr(true)
@@ -321,8 +321,8 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 	upstreamFromPool := true
 
 	var proxyConfig *schemas.ProxyConfig
-	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(req.Provider); cfgErr == nil && providerCfg != nil {
-		proxyConfig = providerCfg.ProxyConfig
+	if stored, ok := h.config.LiveStore.Collections.Providers.Get(string(req.Provider)); ok {
+		proxyConfig = stored.Config.ProxyConfig
 	}
 
 	// Validate the pinned upstream matches the current request's provider/key.
@@ -566,9 +566,9 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 func resolveWSStreamIdleTimeout(config *lib.Config, provider schemas.ModelProvider) time.Duration {
 	idleTimeoutSeconds := schemas.DefaultStreamIdleTimeoutInSeconds
 	if config != nil {
-		if providerCfg, err := config.GetProviderConfigRaw(provider); err == nil && providerCfg != nil &&
-			providerCfg.NetworkConfig != nil && providerCfg.NetworkConfig.StreamIdleTimeoutInSeconds > 0 {
-			idleTimeoutSeconds = providerCfg.NetworkConfig.StreamIdleTimeoutInSeconds
+		if stored, ok := config.LiveStore.Collections.Providers.Get(string(provider)); ok &&
+			stored.Config.NetworkConfig != nil && stored.Config.NetworkConfig.StreamIdleTimeoutInSeconds > 0 {
+			idleTimeoutSeconds = stored.Config.NetworkConfig.StreamIdleTimeoutInSeconds
 		}
 	}
 	if idleTimeoutSeconds <= 0 {
@@ -823,6 +823,9 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 		if err := sonic.Unmarshal(event.Text, &text); err == nil {
 			params.Text = &text
 		}
+	}
+	if event.AccessPrograms != nil {
+		params.AccessPrograms = event.AccessPrograms
 	}
 	if event.Metadata != nil {
 		var metadata map[string]any
@@ -1110,6 +1113,7 @@ var wsResponsesKnownFields = map[string]bool{
 	"metadata":             true,
 	"text":                 true,
 	"truncation":           true,
+	"access_programs":      true,
 }
 
 // rewriteUpstreamEvent modifies the raw JSON event for upstream consumption:

@@ -147,12 +147,16 @@ func alphaClient(url string) *schemas.MCPClientConfig {
 	}
 }
 
-// newSDKClient initializes Bifrost with cfg, filling in an account and a logger, and shuts it
-// down when the test ends.
-func newSDKClient(t *testing.T, cfg schemas.BifrostConfig) *Bifrost {
+// newSDKClient initializes Bifrost with cfg, filling in an account that configures mcpClients and
+// a logger, and shuts it down when the test ends.
+func newSDKClient(t *testing.T, cfg schemas.BifrostConfig, mcpClients ...*schemas.MCPClientConfig) *Bifrost {
 	t.Helper()
 	if cfg.Account == nil {
-		cfg.Account = NewMockAccount()
+		account := NewMockAccount()
+		account.AddMCPClients(mcpClients...)
+		cfg.Account = account
+	} else if len(mcpClients) > 0 {
+		t.Fatal("newSDKClient: MCP clients come from the default account; add them to cfg.Account instead")
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = NewNoOpLogger()
@@ -172,7 +176,7 @@ func connectedAlpha(t *testing.T, a *alphaServer, edit func(*schemas.MCPClientCo
 	if edit != nil {
 		edit(client)
 	}
-	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{client}}})
+	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}}, client)
 	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	return b
 }
@@ -259,7 +263,7 @@ func lastPid(path string) int {
 // killed, and is healthy again within 30s with no admin action.
 func testSDKSTDIORespawn(t *testing.T) {
 	pidFile := t.TempDir() + "/pids"
-	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}}, &schemas.MCPClientConfig{
 		ID:               "stdio-id",
 		Name:             "stdioalpha",
 		ConnectionType:   schemas.MCPConnectionTypeSTDIO,
@@ -267,7 +271,7 @@ func testSDKSTDIORespawn(t *testing.T) {
 		AuthType:         schemas.MCPAuthTypeNone,
 		ToolsToExecute:   schemas.WhiteList{"*"},
 		ToolSyncInterval: 2 * time.Second,
-	}}}})
+	})
 	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if got := clientNamed(t, b, "stdioalpha").State; got != schemas.MCPConnectionStateHealthy {
 		t.Fatalf("state after connect = %q, want healthy", got)
@@ -299,7 +303,7 @@ func testSDKSTDIORespawn(t *testing.T) {
 // does, after which alpha is healthy with its two tools.
 func testSDKConnectGating(t *testing.T) {
 	a := newAlphaServer(t)
-	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{alphaClient(a.url)}}})
+	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}}, alphaClient(a.url))
 	clients, err := b.GetMCPClients()
 	if err != nil {
 		t.Fatalf("GetMCPClients before connect: %v", err)
@@ -376,7 +380,7 @@ func testSDKWithoutMCPConfig(t *testing.T) {
 	if got := errorText(bErr); got != "mcp is not configured in this bifrost instance" {
 		t.Fatalf("execute error = %q, want \"mcp is not configured in this bifrost instance\"", got)
 	}
-	if err := b.AddMCPClient(context.Background(), alphaClient(a.url)); err != nil {
+	if err := addMCPClient(context.Background(), b, alphaClient(a.url)); err != nil {
 		t.Fatalf("AddMCPClient: %v", err)
 	}
 	msg, bErr := execChat(b, "alpha-echo_tool", `{"text":"go23"}`)
@@ -463,8 +467,8 @@ func testSDKPluginShortCircuit(t *testing.T) {
 	plugin := &shortCircuitPlugin{}
 	b := newSDKClient(t, schemas.BifrostConfig{
 		MCPPlugins: []schemas.MCPPlugin{plugin},
-		MCPConfig:  &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{alphaClient(a.url)}},
-	})
+		MCPConfig:  &schemas.MCPConfig{},
+	}, alphaClient(a.url))
 	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if alpha := clientNamed(t, b, "alpha"); alpha.State != schemas.MCPConnectionStateHealthy || !slices.Contains(toolNames(alpha), "echo_tool") {
 		t.Fatalf("control: alpha is %q with tools %v, want healthy with echo_tool", alpha.State, toolNames(alpha))
@@ -550,10 +554,10 @@ func testSDKInProcessClient(t *testing.T) {
 		return mcpgo.NewToolResultText("pong from inproc"), nil
 	})
 	tracer := &spanTracer{NoOpTracer: &schemas.NoOpTracer{}, attrs: map[string]map[string]any{}}
-	b := newSDKClient(t, schemas.BifrostConfig{Tracer: tracer, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+	b := newSDKClient(t, schemas.BifrostConfig{Tracer: tracer, MCPConfig: &schemas.MCPConfig{}},
 		alphaClient(a.url),
-		{ID: "inproc-id", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, InProcessServer: inproc, ToolsToExecute: schemas.WhiteList{"*"}},
-	}}})
+		&schemas.MCPClientConfig{ID: "inproc-id", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, InProcessServer: inproc, ToolsToExecute: schemas.WhiteList{"*"}},
+	)
 	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if got := clientNamed(t, b, "inproc").State; got != schemas.MCPConnectionStateHealthy {
 		t.Fatalf("in-process state = %q, want healthy", got)
@@ -583,7 +587,7 @@ func testSDKInProcessClient(t *testing.T) {
 func testSDKInProcessNoServer(t *testing.T) {
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}})
 	start := time.Now()
-	err := b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{ID: "inproc-id", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, ToolsToExecute: schemas.WhiteList{"*"}})
+	err := addMCPClient(context.Background(), b, &schemas.MCPClientConfig{ID: "inproc-id", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, ToolsToExecute: schemas.WhiteList{"*"}})
 	if err == nil || !strings.Contains(err.Error(), "InProcess connection requires a server instance") {
 		t.Fatalf("AddMCPClient error = %v, want \"InProcess connection requires a server instance\"", err)
 	}
@@ -623,7 +627,7 @@ func countingFactory(calls *atomic.Int64, noServer bool) schemas.InProcessServer
 func testSDKOpenAPINoFactory(t *testing.T) {
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}})
 	start := time.Now()
-	err := b.AddMCPClient(context.Background(), openAPIClient("spec"))
+	err := addMCPClient(context.Background(), b, openAPIClient("spec"))
 	if err == nil || !strings.Contains(err.Error(), "openapi connection type requires MCPConfig.InProcessServerFactory") {
 		t.Fatalf("AddMCPClient error = %v, want the missing factory", err)
 	}
@@ -637,7 +641,7 @@ func testSDKOpenAPINoFactory(t *testing.T) {
 func testSDKOpenAPIFactory(t *testing.T) {
 	var calls atomic.Int64
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{InProcessServerFactory: countingFactory(&calls, false)}})
-	if err := b.AddMCPClient(context.Background(), openAPIClient("spec")); err != nil {
+	if err := addMCPClient(context.Background(), b, openAPIClient("spec")); err != nil {
 		t.Fatalf("AddMCPClient: %v", err)
 	}
 	if got := calls.Load(); got != 1 {
@@ -661,7 +665,7 @@ func testSDKOpenAPIFactory(t *testing.T) {
 func testSDKOpenAPIFactoryNil(t *testing.T) {
 	var calls atomic.Int64
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{InProcessServerFactory: countingFactory(&calls, true)}})
-	err := b.AddMCPClient(context.Background(), openAPIClient("spec"))
+	err := addMCPClient(context.Background(), b, openAPIClient("spec"))
 	if err == nil || !strings.Contains(err.Error(), "in-process server factory returned no server") {
 		t.Fatalf("AddMCPClient error = %v, want \"in-process server factory returned no server\"", err)
 	}
@@ -676,7 +680,7 @@ func testSDKOpenAPIFactoryAfterInit(t *testing.T) {
 	var calls atomic.Int64
 	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}})
 	b.SetMCPInProcessServerFactory(countingFactory(&calls, false))
-	if err := b.AddMCPClient(context.Background(), openAPIClient("spec")); err != nil {
+	if err := addMCPClient(context.Background(), b, openAPIClient("spec")); err != nil {
 		t.Fatalf("AddMCPClient: %v", err)
 	}
 	if got := clientNamed(t, b, "spec").State; got != schemas.MCPConnectionStateHealthy {
@@ -746,10 +750,10 @@ func testSDKInProcessResults(t *testing.T) {
 		<-ctx.Done()
 		return mcpgo.NewToolResultText("stopped"), nil
 	})
-	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+	b := newSDKClient(t, schemas.BifrostConfig{MCPConfig: &schemas.MCPConfig{}}, &schemas.MCPClientConfig{
 		ID: "results-id", Name: "results", ConnectionType: schemas.MCPConnectionTypeInProcess, InProcessServer: s,
 		ToolsToExecute: schemas.WhiteList{"*"}, ToolExecutionTimeout: time.Second,
-	}}}})
+	})
 	b.ConnectConfiguredMCPClients(context.Background(), nil)
 	if msg, bErr := execChat(b, "results-echo", `{"text":"round trip"}`); bErr != nil || contentOf(msg) != "round trip" {
 		t.Fatalf("results-echo = %q, %q; want \"round trip\"", contentOf(msg), errorText(bErr))

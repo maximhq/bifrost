@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -114,22 +115,22 @@ func TestInteractionPollerReadsTheRunWithTheCreatingKey(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := &lib.Config{
-		ModelCatalog: modelcatalog.NewTestCatalog(nil),
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.Gemini: {
-				Keys: []schemas.Key{
-					{ID: "key-other", Value: *schemas.NewSecretVar("gk-other"), Models: schemas.WhiteList{"*"}, Weight: 1},
-					{ID: "key-creator", Value: *schemas.NewSecretVar("gk-creator"), Models: schemas.WhiteList{"*"}, Weight: 1},
-				},
-				NetworkConfig: &schemas.NetworkConfig{
-					BaseURL:                        upstream.URL + "/v1beta",
-					AllowPrivateNetwork:            true,
-					DefaultRequestTimeoutInSeconds: 5,
-				},
+	cfg := libtest.FileOnly(t, &lib.Config{
+		ModelCatalog: catalogForTest(t, nil),
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Gemini: {
+			NetworkConfig: &schemas.NetworkConfig{
+				BaseURL:                        upstream.URL + "/v1beta",
+				AllowPrivateNetwork:            true,
+				DefaultRequestTimeoutInSeconds: 5,
 			},
 		},
-	}
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Gemini: {
+			{ID: "key-other", Value: *schemas.NewSecretVar("gk-other"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: "key-creator", Value: *schemas.NewSecretVar("gk-creator"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		},
+	})
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: lib.NewBaseAccount(cfg),
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
@@ -172,4 +173,16 @@ func TestInteractionPollerReadsTheRunWithTheCreatingKey(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, http.StatusNotFound, jobaccounting.ProviderCallStatus(err), "a 404 answered as a passthrough response becomes a provider call error")
 	assert.Equal(t, jobaccounting.ProviderCallGone, jobaccounting.ClassifyProviderCall(err))
+}
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }

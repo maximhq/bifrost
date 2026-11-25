@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -430,7 +431,7 @@ func TestLiveDialMapsProviderRefusals(t *testing.T) {
 
 	pool := bfws.NewPool(nil)
 	t.Cleanup(pool.Close)
-	h := &WSLiveHandler{config: &lib.Config{}, pool: pool}
+	h := &WSLiveHandler{config: libtest.FileOnly(t, &lib.Config{}, nil, nil), pool: pool}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	key := schemas.Key{ID: "key-1"}
 
@@ -579,7 +580,7 @@ func TestLiveAttachRefusesBeforeUpgrade(t *testing.T) {
 	t.Parallel()
 
 	attach := func(enforceAuth bool, id string) *fasthttp.RequestCtx {
-		config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}}
+		config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}}, nil, nil)
 		h := &WSLiveHandler{gateway: &liveGateway{config: config}, config: config}
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.SetRequestURI("/v1/live/sessions/" + id + "/attach")

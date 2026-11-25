@@ -71,19 +71,18 @@ curl -X POST http://localhost:8080/api/mcp/client \
 </Tab>
 <Tab title="Go SDK">
 
+Set it on the client configuration your Account serves (see [Go SDK Setup](./connecting-to-servers#go-sdk-setup)):
+
 ```go
-mcpConfig := &schemas.MCPConfig{
-    ClientConfigs: []schemas.MCPClientConfig{
-        {
-            Name:           "filesystem",
-            ConnectionType: schemas.MCPConnectionTypeSTDIO,
-            StdioConfig: &schemas.MCPStdioConfig{
-                Command: "npx",
-                Args:    []string{"-y", "@anthropic/mcp-filesystem"},
-            },
-            ToolsToExecute: []string{"read_file", "list_directory"}, // Only these tools
-        },
+filesystem := &schemas.MCPClientConfig{
+    ID:             "filesystem",
+    Name:           "filesystem",
+    ConnectionType: schemas.MCPConnectionTypeSTDIO,
+    StdioConfig: &schemas.MCPStdioConfig{
+        Command: "npx",
+        Args:    []string{"-y", "@anthropic/mcp-filesystem"},
     },
+    ToolsToExecute: []string{"read_file", "list_directory"}, // Only these tools
 }
 ```
 

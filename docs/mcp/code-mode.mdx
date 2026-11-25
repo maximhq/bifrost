@@ -260,27 +260,27 @@ curl -X PUT http://localhost:8080/api/mcp/client/{id} \
 
 ### Go SDK Setup
 
+Mark the clients your Account serves as code mode clients (see [Go SDK Setup](./connecting-to-servers#go-sdk-setup)):
+
 ```go
-mcpConfig := &schemas.MCPConfig{
-    ClientConfigs: []schemas.MCPClientConfig{
-        {
-            Name:             "youtube",
-            ConnectionType:   schemas.MCPConnectionTypeHTTP,
-            ConnectionString: bifrost.Ptr("http://localhost:3001/mcp"),
-            ToolsToExecute:   []string{"*"},
-            IsCodeModeClient: true, // Enable code mode
-        },
-        {
-            Name:           "filesystem",
-            ConnectionType: schemas.MCPConnectionTypeSTDIO,
-            StdioConfig: &schemas.MCPStdioConfig{
-                Command: "npx",
-                Args:    []string{"-y", "@anthropic/mcp-filesystem"},
-            },
-            ToolsToExecute:   []string{"*"},
-            IsCodeModeClient: true, // Enable code mode
-        },
+youtube := &schemas.MCPClientConfig{
+    ID:               "youtube",
+    Name:             "youtube",
+    ConnectionType:   schemas.MCPConnectionTypeHTTP,
+    ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
+    ToolsToExecute:   []string{"*"},
+    IsCodeModeClient: true, // Enable code mode
+}
+filesystem := &schemas.MCPClientConfig{
+    ID:             "filesystem",
+    Name:           "filesystem",
+    ConnectionType: schemas.MCPConnectionTypeSTDIO,
+    StdioConfig: &schemas.MCPStdioConfig{
+        Command: "npx",
+        Args:    []string{"-y", "@anthropic/mcp-filesystem"},
     },
+    ToolsToExecute:   []string{"*"},
+    IsCodeModeClient: true, // Enable code mode
 }
 ```
 
@@ -762,9 +762,7 @@ mcpConfig := &schemas.MCPConfig{
     ToolManagerConfig: &schemas.MCPToolManagerConfig{
         CodeModeBindingLevel: schemas.CodeModeBindingLevelTool, // or CodeModeBindingLevelServer
     },
-    ClientConfigs: []schemas.MCPClientConfig{
-        // ... clients
-    },
+    // MCP clients come from the Account.
 }
 ```
 

@@ -48,6 +48,8 @@ virtual-mcps:
               $ref: '../../schemas/management/virtualmcps.yaml#/VirtualMCPListResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createVirtualMCP
@@ -82,6 +84,8 @@ virtual-mcps:
         $ref: '../../openapi.yaml#/components/responses/Conflict'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 virtual-mcps-by-id:
   get:
@@ -112,6 +116,8 @@ virtual-mcps-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updateVirtualMCP
@@ -155,6 +161,8 @@ virtual-mcps-by-id:
         $ref: '../../openapi.yaml#/components/responses/Conflict'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteVirtualMCP
@@ -184,6 +192,8 @@ virtual-mcps-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 virtual-mcps-virtual-key:
   post:
@@ -225,6 +235,8 @@ virtual-mcps-virtual-key:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: detachVirtualMCPVirtualKey
@@ -259,3 +271,5 @@ virtual-mcps-virtual-key:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'

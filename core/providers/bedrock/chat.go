@@ -138,6 +138,13 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				}
 				contentBlocks = append(contentBlocks, chatContentBlock)
 			}
+			if contentBlock.CitationsContent != nil {
+				for _, part := range contentBlock.CitationsContent.Content {
+					if part.Text != nil && *part.Text != "" {
+						contentBlocks = append(contentBlocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: part.Text})
+					}
+				}
+			}
 
 			if contentBlock.ToolUse != nil {
 				// Check if this is the structured output tool
@@ -247,6 +254,22 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 
 				contentBlocks = append(contentBlocks, fileBlock)
 			}
+		}
+	}
+
+	// When the synthetic structured-output tool answered, its JSON is the content.
+	// Prose beside it (plain or cited) would replace that JSON in the fold below,
+	// so it is dropped, as the streaming path drops it.
+	if usedStructuredOutputTool && len(contentBlocks) > 0 {
+		kept := contentBlocks[:0]
+		for _, block := range contentBlocks {
+			if block.Type != schemas.ChatContentBlockTypeText {
+				kept = append(kept, block)
+			}
+		}
+		contentBlocks = kept
+		if len(contentBlocks) == 0 {
+			contentBlocks = nil
 		}
 	}
 

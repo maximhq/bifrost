@@ -119,8 +119,8 @@ func perUserDiscoveryOn(config *schemas.MCPClientConfig) bool {
 func (m *MCPManager) discoveryForID(ctx context.Context, clientID string) *schemas.MCPDiscovery {
 	m.mu.RLock()
 	var config *schemas.MCPClientConfig
-	if client, ok := m.clientMap[clientID]; ok {
-		config = client.ExecutionConfig
+	if _, ok := m.clientMap[clientID]; ok {
+		config = m.config(clientID)
 	}
 	m.mu.RUnlock()
 	if config == nil {
