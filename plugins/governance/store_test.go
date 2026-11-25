@@ -2209,6 +2209,26 @@ func TestGovernanceStore_ProviderScopedModelLimitMatchesEverySpelling(t *testing
 	assert.NoError(t, err, "another provider must not be governed by the openai-scoped budget")
 }
 
+// ModelConfigGoverns answers what a request-time limit lookup would: a gpt-4o config governs the
+// dated model on its provider (and on every provider when it names none), not a sibling model or
+// another provider, and an alias reaches the limit of the model the provider's keys map it to.
+func TestGovernanceStore_ModelConfigGovernsMatchesRequestLookup(t *testing.T) {
+	ctx := context.Background()
+	store := modelKeyStore(t)
+	openai := "openai"
+	assert.True(t, store.ModelConfigGoverns(ctx, "gpt-4o", &openai, schemas.OpenAI, "gpt-4o-2024-08-06"))
+	assert.True(t, store.ModelConfigGoverns(ctx, "gpt-4o", nil, schemas.Azure, "gpt-4o-2024-08-06"))
+	assert.False(t, store.ModelConfigGoverns(ctx, "gpt-4o", &openai, schemas.OpenAI, "gpt-4o-mini"))
+	assert.False(t, store.ModelConfigGoverns(ctx, "gpt-4o", &openai, schemas.Anthropic, "gpt-4o"))
+
+	bedrock := "bedrock"
+	const sonnet = "us.anthropic.claude-sonnet-4-6"
+	store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Bedrock: {Keys: []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+	}}
+	assert.True(t, store.ModelConfigGoverns(ctx, sonnet, &bedrock, schemas.Bedrock, "claude-sonnet"))
+}
+
 // The spelling an operator stores a provider-scoped config under is canonicalised the same way a
 // request is, on both the load path and the in-memory create/update path, so existing rows keep
 // matching without a migration.

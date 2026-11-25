@@ -2394,6 +2394,30 @@ func (gs *LocalGovernanceStore) ModelConfigIndexKey(model string, provider *stri
 	return base
 }
 
+// ModelConfigGoverns reports whether a model config for (configModel, configProvider) governs a
+// request for model on provider: whether collectModelConfigsFor would reach it, by the model's
+// canonical or base name or by a model the provider's key aliases map the name to.
+func (gs *LocalGovernanceStore) ModelConfigGoverns(ctx context.Context, configModel string, configProvider *string, provider schemas.ModelProvider, model string) bool {
+	if configProvider != nil && *configProvider != string(provider) {
+		return false
+	}
+	want := gs.ModelConfigIndexKey(configModel, configProvider)
+	reaches := func(name string) bool {
+		canonical, base := gs.modelConfigKeys(name, configProvider)
+		return canonical == want || base == want
+	}
+	if reaches(model) {
+		return true
+	}
+	providerName := string(provider)
+	for _, target := range gs.aliasTargets(ctx, &providerName, model) {
+		if reaches(target) {
+			return true
+		}
+	}
+	return false
+}
+
 // storeModelConfig indexes a model config under the key lookups will ask for. A provider-scoped
 // config keeps its canonical spelling, so a dated alias can carry its own limit alongside the base
 // model's; a provider-less config collapses to the base model, so one cross-provider limit covers

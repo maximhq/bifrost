@@ -2437,6 +2437,43 @@ func TestGetVirtualKeyQuota_UpstreamHealthFoldsAllProviderModelLimits(t *testing
 	}
 }
 
+// TestGetVirtualKeyQuota_UpstreamHealthAllowAllProviders: a key that allows all providers can send
+// to providers it has no config for, so their pairs are reported, not dropped as unreachable.
+func TestGetVirtualKeyQuota_UpstreamHealthAllowAllProviders(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:                "vk-1",
+			Name:              "Production",
+			IsActive:          &active,
+			AllowAllProviders: true,
+		},
+	}
+	h := &GovernanceHandler{configStore: store}
+	h.SetUpstreamHealthSource(func(time.Time) []schemas.UpstreamHealth {
+		return []schemas.UpstreamHealth{{Provider: schemas.Anthropic, Model: "claude-x", Status: schemas.UpstreamHealthCoolingDown}}
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp struct {
+		UpstreamHealth []schemas.UpstreamHealth `json:"upstream_health"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if len(resp.UpstreamHealth) != 1 || resp.UpstreamHealth[0].Provider != schemas.Anthropic || resp.UpstreamHealth[0].Available {
+		t.Fatalf("expected the cooling-down pair on the unnamed provider, got %+v", resp.UpstreamHealth)
+	}
+}
+
 // TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets verifies the
 // AP-managed-VK path: when a registered ExternalQuotaBudgetResolver returns budgets
 // (enterprise access-profile budgets, which carry the real usage), they REPLACE the VK's

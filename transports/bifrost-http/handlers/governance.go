@@ -294,6 +294,9 @@ type GovernanceHandler struct {
 	// upstreamHealth reports the gateway's per provider/model upstream health for the quota
 	// endpoint. Set by SetUpstreamHealthSource; nil reports none.
 	upstreamHealth UpstreamHealthSource
+	// modelConfigMatcher matches the key's per-model limits to an upstream_health pair. Set by
+	// SetModelConfigMatcher; nil matches canonical spellings only.
+	modelConfigMatcher ModelConfigMatcher
 	// now is the clock, overridden in tests.
 	now func() time.Time
 }
@@ -5996,7 +5999,11 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 
 	upstreamHealth := []schemas.UpstreamHealth{}
 	if source := h.upstreamHealth; source != nil {
-		upstreamHealth = vkUpstreamHealth(source(time.Now()), vk.ProviderConfigs, models)
+		match := h.modelConfigMatcher
+		if match == nil {
+			match = canonicalModelConfigMatch
+		}
+		upstreamHealth = vkUpstreamHealth(ctx, source(time.Now()), vk.ProviderConfigs, vk.AllowAllProviders, models, match)
 	}
 
 	SendJSON(ctx, map[string]interface{}{

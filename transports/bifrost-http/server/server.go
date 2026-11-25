@@ -1107,6 +1107,22 @@ func (s *BifrostHTTPServer) ModelConfigIndexKey(model string, provider *string) 
 	return governance.CanonicalModelConfigName(model, provider)
 }
 
+// modelConfigGoverner is the governance store's request-time model limit matching.
+type modelConfigGoverner interface {
+	ModelConfigGoverns(ctx context.Context, configModel string, configProvider *string, provider schemas.ModelProvider, model string) bool
+}
+
+// modelConfigGoverns matches a model config to a request the way the governance store resolves
+// request limits; a store without that matching falls back to canonical spellings.
+func (s *BifrostHTTPServer) modelConfigGoverns(ctx context.Context, configModel string, configProvider *string, provider schemas.ModelProvider, model string) bool {
+	if governancePlugin, err := s.getGovernancePlugin(); err == nil && governancePlugin != nil {
+		if store, ok := governancePlugin.GetGovernanceStore().(modelConfigGoverner); ok {
+			return store.ModelConfigGoverns(ctx, configModel, configProvider, provider, model)
+		}
+	}
+	return governance.CanonicalModelConfigName(configModel, configProvider) == governance.CanonicalModelConfigName(model, configProvider)
+}
+
 // modelConfigReloadReadTimeout bounds the store read a model config reload makes on the server's
 // own context, since it no longer inherits the caller's deadline.
 const modelConfigReloadReadTimeout = 30 * time.Second
@@ -3146,6 +3162,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 			}
 			return s.Client.UpstreamHealthSnapshot(now)
 		})
+		governanceHandler.SetModelConfigMatcher(s.modelConfigGoverns)
 		s.GovernanceHandler = governanceHandler
 	}
 	// Routing rules and the complexity analyzer config live in the config store, so these
