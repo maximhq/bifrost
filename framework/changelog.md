@@ -21,4 +21,5 @@
 - fix: configstore - customer and team saves no longer rewrite their associations
 - fix: jobaccounting - Seedance video settlements record output tokens
 - fix: openapimcp - every tool argument gets a name clients accept
+- fix: grant - wildcard model authorization is separated from catalog-backed provider discovery
 - chore: upgraded Go to 1.27.4 and core to v1.16.0

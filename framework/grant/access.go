@@ -52,6 +52,8 @@ type Access struct {
 	matcher      ModelMatcher
 	keyMatcher   KeyScopedModelMatcher // optional; replaces matcher when set
 	aliasTargets AliasTargets          // optional; what a requested name can become through key aliases
+
+	unrestrictedModelPermits bool // a wildcard allowed-models list authorizes every name; see WithUnrestrictedModelPermits
 }
 
 // KeyScopedModelMatcher is a ModelMatcher that is also told which of the provider's keys the
@@ -81,6 +83,17 @@ func (a *Access) WithModelMatcher(matcher ModelMatcher) *Access {
 	literal.keyMatcher = nil
 	literal.aliasTargets = nil
 	return &literal
+}
+
+// WithUnrestrictedModelPermits makes a wildcard allowed-models list authorize every model name on its
+// provider without asking the matcher, so a name missing from the model catalog is not refused for a
+// provider the permit leaves unrestricted. Blacklists still apply. Explicit lists and provider
+// discovery (ProvidersForModel) still match through the matcher. Returns the access; nil is left alone.
+func (a *Access) WithUnrestrictedModelPermits() *Access {
+	if a != nil {
+		a.unrestrictedModelPermits = true
+	}
+	return a
 }
 
 // AliasTargets calls visit with each model that key aliases map model to on provider, considering
@@ -475,6 +488,13 @@ func (a *Access) unionKeysHeldBy(permits []schemas.Permit, provider string, mode
 func (a *Access) ProvidersForModel(model string) []schemas.ProviderCandidate {
 	if a == nil || model == "" {
 		return nil
+	}
+	if a.unrestrictedModelPermits {
+		// Candidate selection uses the matcher for wildcards too. The local view keeps the composed
+		// model, blacklist, weight and key rules intact without changing the cached access.
+		discovery := *a
+		discovery.unrestrictedModelPermits = false
+		a = &discovery
 	}
 
 	candidates := make([]schemas.ProviderCandidate, 0, a.providerPermitCount())
@@ -1082,10 +1102,14 @@ func keyIDsServing(pps []schemas.ProviderPermit, provider string) schemas.WhiteL
 	return keyIDs
 }
 
-// permitsModel applies one provider permit's allowed-models rule, through the key-scoped matcher or
-// the matcher when there is one and by name otherwise. keyIDs is the key restriction the request is
-// served under; only the key-scoped matcher reads it.
+// permitsModel applies one provider permit's allowed-models rule: a wildcard list permits every name
+// under unrestricted model permits, otherwise through the key-scoped matcher or the matcher when there
+// is one and by name otherwise. keyIDs is the key restriction the request is served under; only the
+// key-scoped matcher reads it.
 func (a *Access) permitsModel(pp *schemas.ProviderPermit, model string, keyIDs schemas.WhiteList) bool {
+	if a.unrestrictedModelPermits && pp.AllowedModels.IsUnrestricted() {
+		return true
+	}
 	if a.keyMatcher != nil {
 		return a.keyMatcher(pp.Provider, model, pp.AllowedModels, keyIDs)
 	}

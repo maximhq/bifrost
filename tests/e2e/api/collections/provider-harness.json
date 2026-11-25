@@ -315683,7 +315683,7 @@
     },
     {
       "name": "261. ElevenLabs Scribe wildcard permissions (#8467) [SERIAL]",
-      "description": "ElevenLabs Scribe models must survive partial TTS/STS discovery and wildcard virtual-key authorization (#8467). Requires an ElevenLabs provider configured with a valid STT-capable credential and models=[\"*\"]. A run-scoped virtual key is created with allowed_models=[\"*\"], key_ids=[\"*\"], and allow_all_providers=true, then deleted. Covers management-catalog discovery separately from upstream provider listing, native transcription, OpenAI-compatible transcription, and a 403 model_blocked denial for an unknown model. No provider settings or existing keys are modified. Run with PROVIDER=elevenlabs FEATURE=\"scribe wildcard\". The transcription rows make paid provider calls only when the operator explicitly runs the live harness.",
+      "description": "ElevenLabs Scribe models must survive partial TTS/STS discovery and wildcard virtual-key authorization (#8467). Requires an ElevenLabs provider configured with a valid STT-capable credential and models=[\"*\"]. A run-scoped virtual key is created with allowed_models=[\"*\"], key_ids=[\"*\"], and allow_all_providers=true, then deleted. Covers management-catalog discovery separately from upstream provider listing, native transcription, OpenAI-compatible transcription, and an unknown model that the wildcard admits so ElevenLabs itself refuses it (#8878). No provider settings or existing keys are modified. Run with PROVIDER=elevenlabs FEATURE=\"scribe wildcard\". The transcription rows make paid provider calls only when the operator explicitly runs the live harness.",
       "item": [
         {
           "name": "elevenlabs scribe_v2 scribe wildcard setup: create virtual key - #8467",
@@ -315835,15 +315835,15 @@
           }
         },
         {
-          "name": "[EXPECT-403] elevenlabs scribe wildcard unknown model denial - #8467",
+          "name": "[EXPECT-4XX] elevenlabs scribe wildcard unknown model reaches the provider - #8467 / #8878",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('scribe wildcard: expected HTTP 403', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(403); });",
-                  "pm.test('scribe wildcard: unknown model is rejected by governance', function () { var j = pm.response.json(); pm.expect(j.type, pm.response.text()).to.eql('model_blocked'); pm.expect(j.error.message, pm.response.text()).to.include('not allowed'); });"
+                  "pm.test('scribe wildcard: expected an HTTP 4xx from the provider', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(400, 499); });",
+                  "pm.test('scribe wildcard: unknown model is admitted by governance and refused by ElevenLabs', function () { var j = pm.response.json(); pm.expect(j.type, pm.response.text()).to.not.eql('model_blocked'); pm.expect(j.extra_fields && j.extra_fields.provider, pm.response.text()).to.eql('elevenlabs'); });"
                 ]
               }
             }
@@ -349742,6 +349742,374 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "382. Explicit-provider virtual key wildcard admission (OpenRouter) (#8878 / PR #8905)",
+      "description": "wildcard-admission: an unrestricted virtual key on an explicitly named OpenRouter provider must not require catalog membership. Nitro is a dynamic variant omitted from model lists, so these admissions were 403 model_blocked even with a live catalog. Each row creates and removes its own key. Flag-only and explicit wildcard rows cover chat, streaming, Responses and OpenAI-compatible ingress; explicit allowlist and blacklist controls remain 403. Requests use a throwaway direct provider key and must reach OpenRouter auth rejection (401 plus routing_info), not paid inference. No provider configuration or global settings are changed. Prerequisite: client_config.allow_direct_keys must be true. The standard integration config enables it; enable it manually on reused gateways. This folder deliberately does not mutate this security-sensitive global setting. The bare claude-haiku-5.5 case reproduces the original inconsistent-base-model lookup; the Responses streaming case independently pins admission on that streaming route.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var base = pm.variables.get('baseUrl');",
+              "pm.variables.unset('openrouterWildcardVKID');",
+              "var vk = { name: 'harness-or-wildcard-' + Date.now() + '-' + Math.floor(Math.random() * 1e9), is_active: true, allow_all_providers: true };",
+              "var row = { provider: 'openrouter', allowed_models: ['*'], key_ids: ['*'] };",
+              "if (pm.request.name.indexOf('restricted allowlist') !== -1) { row.allowed_models = ['openai/gpt-6-luna']; }",
+              "if (pm.request.name.indexOf('blacklist') !== -1) { row.blacklisted_models = ['openai/gpt-6-luna:nitro']; }",
+              "if (pm.request.name.indexOf('explicit wildcard') !== -1 || pm.request.name.indexOf('[EXPECT-403]') !== -1) { vk.provider_configs = [row]; }",
+              "pm.sendRequest({ url: base + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(vk) } }, function (err, res) {",
+              "  pm.test('wildcard-admission: create virtual key', function () {",
+              "    pm.expect(!err && res && res.code, err ? String(err) : (res ? res.text() : 'no response')).to.eql(200);",
+              "  });",
+              "  if (err || !res || res.code !== 200) { return; }",
+              "  var created = res.json().virtual_key;",
+              "  var value = typeof created.value === 'object' ? created.value.value : created.value;",
+              "  pm.variables.set('openrouterWildcardVKID', created.id);",
+              "  pm.request.headers.upsert({ key: 'x-bf-vk', value: value });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "var denied = pm.request.name.indexOf('[EXPECT-403]') !== -1;",
+              "try {",
+              "  pm.test('wildcard-admission: exact expected status', function () {",
+              "    pm.expect(pm.response.code, text).to.eql(denied ? 403 : 401);",
+              "  });",
+              "  pm.test('wildcard-admission: policy denial or upstream rejection, not missing authentication', function () {",
+              "    var body = pm.response.json();",
+              "    if (denied) {",
+              "      pm.expect(body.type, text).to.eql('model_blocked');",
+              "    } else {",
+              "      pm.expect(((body.extra_fields || {}).routing_info || {}).provider, text).to.eql('openrouter');",
+              "    }",
+              "  });",
+              "} finally {",
+              "  var id = pm.variables.get('openrouterWildcardVKID');",
+              "  if (id) {",
+              "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + encodeURIComponent(id), method: 'DELETE' }, function (err, res) {",
+              "      pm.test('wildcard-admission: remove virtual key', function () {",
+              "        pm.expect(!err && res && res.code, err ? String(err) : (res ? res.text() : 'no response')).to.eql(200);",
+              "      });",
+              "    });",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro allow_all_providers /v1/chat/completions - wildcard-admission - #8878",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-or-v1-harness-wildcard-invalid"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-6-luna:nitro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro explicit wildcard /v1/chat/completions stream - wildcard-admission - #8878",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-or-v1-harness-wildcard-invalid"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-6-luna:nitro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro allow_all_providers /v1/responses - wildcard-admission - #8878",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-or-v1-harness-wildcard-invalid"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-6-luna:nitro\",\n  \"input\": \"Hi\",\n  \"max_output_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro allow_all_providers /openai/v1/chat/completions - wildcard-admission - #8878",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-or-v1-harness-wildcard-invalid"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-6-luna:nitro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openrouter gpt-6-luna:nitro restricted allowlist still denies /v1/chat/completions - wildcard-admission - #8878",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-or-v1-harness-wildcard-invalid"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-6-luna:nitro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openrouter gpt-6-luna:nitro wildcard blacklist still denies /v1/chat/completions - wildcard-admission - #8878",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-or-v1-harness-wildcard-invalid"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-6-luna:nitro\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openrouter claude-haiku-5.5 allow_all_providers /v1/chat/completions - wildcard-admission - #8878",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-or-v1-harness-wildcard-invalid"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/claude-haiku-5.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro allow_all_providers /v1/responses stream - wildcard-admission - #8878",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-or-v1-harness-wildcard-invalid"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-6-luna:nitro\",\n  \"input\": \"Hi\",\n  \"max_output_tokens\": 1,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
         }
       ]
     }

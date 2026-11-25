@@ -1086,11 +1086,13 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 }
 
 // newAccess folds the permits into an access whose model checks resolve key aliases the way key
-// selection will for this request: through the model catalog, over the keys that can serve it.
+// selection will for this request: through the model catalog, over the keys that can serve it. A
+// wildcard allowed-models list authorizes any name without the catalog (see WithUnrestrictedModelPermits).
 func (p *GovernancePlugin) newAccess(ctx *schemas.BifrostContext, bases []schemas.Permit, levelMode grant.CompositionMode, scoping schemas.Permit, mode grant.CompositionMode) *grant.Access {
 	return grant.NewAccess(bases, levelMode, scoping, mode, nil).
 		WithKeyScopedMatcher(p.modelMatcher(ctx)).
-		WithAliasTargets(p.aliasTargets(ctx))
+		WithAliasTargets(p.aliasTargets(ctx)).
+		WithUnrestrictedModelPermits()
 }
 
 // modelMatcher is how an access resolves a model name against a provider's allowed-models list:
@@ -1827,6 +1829,15 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// Each provider in the fallback chain restarts its retries at 0, so the attempt's place in
 		// the chain is what tells a fallback's attempts from the primary's.
 		fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
+		var capturedCost *float64
+		isStreaming := bifrost.IsStreamRequestType(requestType)
+		if p.modelCatalog != nil && result != nil && (fallbackIndex > 0 || isStreaming) && (!isStreaming || isFinalChunk) {
+			// Core rewrites terminal stream routing info and decorates fallbacks
+			// after the post-hook returns. Price those responses while their
+			// metadata is stable, before the asynchronous worker can race that write.
+			cost := p.modelCatalog.CalculateCost(result, pricingScopes)
+			capturedCost = &cost
+		}
 		routingMetadata, _ := schemas.InitialAttemptRoutingMetadataFromContext(ctx)
 		// A live session's continuation bills its usage but was already counted as a request at admission.
 		sessionContinuation := isLiveSessionContinuation(ctx)
@@ -1842,7 +1853,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, capturedCost)
 		}()
 	}
 
@@ -2275,7 +2286,8 @@ func responseSucceeded(result *schemas.BifrostResponse) bool {
 //   - isFinalChunk: Whether the request is the final chunk
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
+//   - capturedCost: Cost captured before core rewrites routing metadata, nil for stable unary primary responses
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, capturedCost *float64) {
 	success := responseSucceeded(result)
 	billedReason := "success"
 
@@ -2284,7 +2296,9 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 
 	if !isStreaming || (isStreaming && isFinalChunk) {
 		var cost float64
-		if p.modelCatalog != nil && result != nil {
+		if capturedCost != nil {
+			cost = *capturedCost
+		} else if p.modelCatalog != nil && result != nil {
 			cost = p.modelCatalog.CalculateCost(result, pricingScopes)
 		}
 		tokensUsed := 0

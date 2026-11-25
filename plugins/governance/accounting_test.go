@@ -920,7 +920,7 @@ func TestPostHookWorkerBillsEstimatedCancelledStream(t *testing.T) {
 	}
 
 	settled := settleLimits(fixture.store, "sk-bf-acct", schemas.OpenAI, "gpt-4o", &UsageUpdate{})
-	plugin.postHookWorker(nil, cancelled, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionStreamRequest, "estimated-cancel", "", true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
+	plugin.postHookWorker(nil, cancelled, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionStreamRequest, "estimated-cancel", "", true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil, nil)
 
 	// gpt-4o testdata: 2.5e-6 input, 1e-5 output.
 	want := float64(120)*2.5e-6 + float64(40)*1e-5

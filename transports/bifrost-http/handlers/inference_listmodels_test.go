@@ -88,6 +88,12 @@ func newElevenlabsScribeHandler(tb testing.TB, keys []schemas.Key, virtualKeys [
 				return
 			}
 			defer r.MultipartForm.RemoveAll()
+			if r.FormValue("model_id") == "nonexistent-scribe" {
+				// The provider, not governance, refuses a name a wildcard admits.
+				w.WriteHeader(400)
+				fmt.Fprint(w, `{"detail":{"status":"invalid_model","message":"model not found"}}`)
+				return
+			}
 			if r.FormValue("model_id") != "scribe_v1" && r.FormValue("model_id") != "scribe_v2" {
 				tb.Errorf("unexpected upstream model_id %q", r.FormValue("model_id"))
 			}
@@ -106,6 +112,10 @@ func newElevenlabsScribeHandler(tb testing.TB, keys []schemas.Key, virtualKeys [
 				tb.Errorf("audio changed: filename=%q, body=%q, err=%v", header.Filename, data, err)
 			}
 			fmt.Fprint(w, `{"language_code":"en","text":"mock scribe transcription","words":[]}`)
+		case "/v1/audio/transcriptions":
+			calls.Add(1)
+			w.WriteHeader(404)
+			fmt.Fprint(w, `{"error":{"message":"The model does not exist","type":"invalid_request_error","code":"model_not_found"}}`)
 		default:
 			tb.Errorf("unexpected upstream request %s", r.URL.Path)
 			w.WriteHeader(404)
@@ -202,6 +212,9 @@ func TestElevenlabsScribeTranscriptionVirtualKey(t *testing.T) {
 		{"unrelated provider", "openai/scribe_v2", scribeVirtualKey("provider", schemas.WhiteList{"*"}, nil, false), false},
 		{"unrelated provider under allow all", "openai/scribe_v2", scribeVirtualKey("provider-all", schemas.WhiteList{"*"}, nil, true), false},
 	}
+	// A wildcard on a named provider does not require catalog membership (#8878): governance admits
+	// these and the provider refuses the name itself.
+	upstreamRefuses := map[string]bool{"unknown model": true, "unrelated provider under allow all": true}
 	vks := make([]configtables.TableVirtualKey, 0, len(cases))
 	for _, tc := range cases {
 		vks = append(vks, tc.vk)
@@ -221,7 +234,12 @@ func TestElevenlabsScribeTranscriptionVirtualKey(t *testing.T) {
 					ctx.Request.SetRequestURI("/openai/v1/audio/transcriptions")
 					openaiRouter.Handler(ctx)
 				}
-				if tc.allow {
+				if upstreamRefuses[tc.name] {
+					require.NotEqual(t, 403, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+					require.GreaterOrEqual(t, ctx.Response.StatusCode(), 400, string(ctx.Response.Body()))
+					require.NotContains(t, string(ctx.Response.Body()), "model_blocked")
+					require.Equal(t, before+1, calls.Load(), "an admitted request must reach the provider")
+				} else if tc.allow {
 					require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 					require.Contains(t, string(ctx.Response.Body()), "mock scribe transcription")
 					require.Equal(t, before+1, calls.Load())
