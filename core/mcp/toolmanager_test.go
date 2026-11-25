@@ -1564,6 +1564,19 @@ func BenchmarkParseAndAddToolsToRequest_WithInstructions(b *testing.B) {
 	}
 }
 
+// BenchmarkParseAndAddToolsToRequest with one code mode client: the four meta-tools are
+// inserted into every request and recorded on BifrostContextKeyMCPAddedTools.
+func BenchmarkParseAndAddToolsToRequest_CodeMode(b *testing.B) {
+	tm := newCodeModeToolsManagerForTest()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+		_ = tm.ParseAndAddToolsToRequest(ctx, req)
+	}
+}
+
 // BenchmarkParseAndAddToolsToRequest with every client on per_user_discovery, for a
 // virtual-key caller whose discoveries are cached.
 func BenchmarkParseAndAddToolsToRequest_PerUserClients(b *testing.B) {
