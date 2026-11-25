@@ -2873,6 +2873,87 @@ func TestAdminVerification_RecordsTheStepAndKeepsOnlyWhatTheClientUses(t *testin
 	}
 }
 
+// Verification dials the client's stored connection string, so it follows the
+// rule client creation already has: a caller that reached the API with no
+// credential check may only point Bifrost at a public address. An authenticated
+// admin keeps the documented ability to verify a client on a private network.
+func TestVerifyMCPClient_PrivateTargetNeedsAnAuthenticatedCaller(t *testing.T) {
+	ctx := context.Background()
+	headersClient := &schemas.MCPClientConfig{
+		ID: "client-private-notes", Name: "private_notes", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:3001/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders,
+		PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: []string{"*"}, PendingVerification: true,
+	}
+	exchangeClient := &schemas.MCPClientConfig{
+		ID: "client-private-jira", Name: "private_jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:3002/mcp"), AuthType: schemas.MCPAuthTypeTokenExchange,
+		TokenExchange:  &schemas.MCPTokenExchangeConfig{Audience: "api://jira", ClientID: schemas.NewSecretVar("exchange-app")},
+		ToolsToExecute: []string{"*"}, PendingVerification: true,
+	}
+
+	t.Run("verify-headers without a credential check is refused", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t, headersClient))
+		require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, headersClient))
+
+		status, body := doMCPRequest(t, h.verifyMCPClientHeaders, fasthttp.MethodPost, `{"user_headers":{"x-api-key":"sample"}}`, headersClient.ID, true)
+		require.Equal(t, fasthttp.StatusForbidden, status, body)
+
+		stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, headersClient.ID)
+		require.NoError(t, err)
+		assert.True(t, stored.PendingVerification, "nothing was verified")
+		assert.Empty(t, recorder.activated)
+	})
+
+	t.Run("verify-headers from an authenticated admin still works", func(t *testing.T) {
+		h, _ := newVerificationHandler(t, newVerificationRuntime(t, headersClient))
+		require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, headersClient))
+
+		status, body := doMCPRequest(t, h.verifyMCPClientHeaders, fasthttp.MethodPost, `{"user_headers":{"x-api-key":"sample"}}`, headersClient.ID, false)
+		require.Equal(t, fasthttp.StatusOK, status, body)
+	})
+
+	t.Run("verify-exchange without a credential check is refused", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+		require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, exchangeClient))
+
+		status, body := doMCPRequest(t, h.verifyMCPClientExchange, fasthttp.MethodPost, ``, exchangeClient.ID, true)
+		require.Equal(t, fasthttp.StatusForbidden, status, body)
+		assert.Empty(t, recorder.activated)
+	})
+}
+
+// The address check before verification resolves the hostname once, and the
+// verification then dials it again. So the dial itself follows the public-address
+// rule for a caller that passed no credential check: verification runs on a copy of
+// the client config with RequirePublicTarget set. The stored config is not changed,
+// and an authenticated caller verifies with the config as stored.
+func TestVerificationConfigFor_UnauthenticatedCallerDialsPublicOnly(t *testing.T) {
+	stored := &schemas.MCPClientConfig{
+		ID: "client-notes", Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://mcp.example.com/mcp"),
+	}
+	newCtx := func(authBypassed bool) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		ctx := initCtx(&req)
+		if authBypassed {
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		}
+		return ctx
+	}
+
+	forUnauthenticated := verificationConfigFor(newCtx(true), stored)
+	require.NotSame(t, stored, forUnauthenticated)
+	assert.True(t, forUnauthenticated.RequirePublicTarget)
+	assert.False(t, stored.RequirePublicTarget, "the stored config is left as it was")
+	assert.Equal(t, stored.ID, forUnauthenticated.ID)
+	assert.Same(t, stored.ConnectionString, forUnauthenticated.ConnectionString)
+
+	assert.Same(t, stored, verificationConfigFor(newCtx(false), stored), "an authenticated caller verifies with the stored config")
+
+	alreadyPublic := &schemas.MCPClientConfig{ID: "p", RequirePublicTarget: true}
+	assert.Same(t, alreadyPublic, verificationConfigFor(newCtx(true), alreadyPublic))
+}
+
 // TestReauthorizeMCPClient_RefusesAClientStillPendingVerification: a client
 // still needing its first sign-in (a config.json client with its bootstrap
 // stash) is sent to initiate-verification by both routes, and nothing is

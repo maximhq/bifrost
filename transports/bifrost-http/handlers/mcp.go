@@ -723,6 +723,12 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load MCP client: %v", err))
 		return
 	}
+	// Verification dials the stored connection string, so it carries the same rule
+	// as creating the client: a caller that reached this endpoint with no credential
+	// check may only have Bifrost dial a public address.
+	if rejectPrivateMCPTargetIfAuthBypassed(ctx, string(clientConfig.ConnectionType), clientConfig.ConnectionString) {
+		return
+	}
 	if clientConfig.AuthType != schemas.MCPAuthTypePerUserHeaders {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("verify-headers only applies to auth_type='per_user_headers' clients, got %q", clientConfig.AuthType))
 		return
@@ -763,7 +769,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	discovery, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, clientConfig, canonUserHeaders)
+	discovery, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, verificationConfigFor(ctx, clientConfig), canonUserHeaders)
 	if verifyErr != nil {
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 		return
@@ -985,6 +991,12 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load MCP client: %v", err))
 		return
 	}
+	// Verification dials the stored connection string, so it carries the same rule
+	// as creating the client: a caller that reached this endpoint with no credential
+	// check may only have Bifrost dial a public address.
+	if rejectPrivateMCPTargetIfAuthBypassed(ctx, string(clientConfig.ConnectionType), clientConfig.ConnectionString) {
+		return
+	}
 	if clientConfig.AuthType != schemas.MCPAuthTypeTokenExchange {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("verify-exchange only applies to auth_type='token_exchange' clients, got %q", clientConfig.AuthType))
 		return
@@ -1022,7 +1034,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	discovery, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, clientConfig, adminResponse.AccessToken)
+	discovery, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, verificationConfigFor(ctx, clientConfig), adminResponse.AccessToken)
 	if verifyErr != nil {
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 		return
@@ -2354,6 +2366,22 @@ func rejectPrivateMCPTargetIfAuthBypassed(ctx *fasthttp.RequestCtx, connType str
 		return false
 	}
 	return rejectPrivateURLIfAuthBypassed(ctx, connectionString.GetValue())
+}
+
+// verificationConfigFor returns the client config a verification dials with. The gate
+// above resolves the hostname once, before verification, and the verification transport
+// resolves it again when it connects. For a caller that reached the endpoint with no
+// credential check, the dial therefore follows the public-address rule as well: the
+// config handed to verification is a copy with RequirePublicTarget set, which selects the
+// dialer that checks every resolved address as it connects. The stored client is not
+// modified, so an authenticated admin still verifies a private client as before.
+func verificationConfigFor(ctx *fasthttp.RequestCtx, clientConfig *schemas.MCPClientConfig) *schemas.MCPClientConfig {
+	if clientConfig == nil || clientConfig.RequirePublicTarget || !isAuthBypassed(ctx) {
+		return clientConfig
+	}
+	publicOnly := *clientConfig
+	publicOnly.RequirePublicTarget = true
+	return &publicOnly
 }
 
 // rejectPrivateURLIfAuthBypassed is the URL-shaped form of the gate above,
