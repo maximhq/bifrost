@@ -304,7 +304,7 @@ curl --location 'http://localhost:8080/api/providers/openai/decisions/probe' \
 }
 ```
 
-`provider` and `model` name what answered, as the provider reported it. Add `"key_id"` to probe through one provider key instead of the load-balanced pool. A key alias is then checked as that key maps it. The provider's request timeout bounds the whole probe, including any wait for a free slot in the provider's queue.
+`provider` and `model` name what answered: the model the provider reported, else the model Bifrost sent it (a key alias's target), else the requested model. A failed probe carries no reported model, so it names the alias target Bifrost sent or, when there is none, the requested model. Add `"key_id"` to probe through one provider key instead of the load-balanced pool. A key alias is then checked as that key maps it. The provider's request timeout bounds the whole probe, including any wait for a free slot in the provider's queue.
 
 A probe that reached the provider returns `200` either way. `ok` is `true` only when the answer is usable: one predicate answer with a probability from 0 to 1 (and, if it carries a distribution, one that sums to about 1). A refusal, a missing or out-of-range probability, or no answer at all is a failure with `status_code` `502` and a `message` naming the problem. When the route fails, `ok` is `false` and `error` carries the provider's `status_code`, `type`, `code`, and `message`, with the provider's credentials (key values, client secrets, private keys, AWS keys and session tokens, extra header values) and any credentials in URLs removed:
 

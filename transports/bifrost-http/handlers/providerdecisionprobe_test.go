@@ -39,11 +39,13 @@ func (u *decisionProbeUpstream) recorded() ([]map[string]any, []string) {
 }
 
 // probeUpstreamReply is one canned upstream answer. With hold set, the
-// upstream answers only once hold is closed or the caller gives up.
+// upstream answers only once hold is closed or the caller gives up; arrived,
+// when set, is signalled (without blocking) as each request comes in.
 type probeUpstreamReply struct {
-	status int
-	body   string
-	hold   <-chan struct{}
+	status  int
+	body    string
+	hold    <-chan struct{}
+	arrived chan<- struct{}
 }
 
 // newDecisionProbeHandler serves status and body from a fake upstream behind
@@ -83,6 +85,12 @@ func newDecisionProbeHandlerWithConfig(t *testing.T, configure func(map[schemas.
 			upstream.auth = append(upstream.auth, r.Header.Get("Authorization"))
 		}
 		upstream.mu.Unlock()
+		if reply.arrived != nil {
+			select {
+			case reply.arrived <- struct{}{}:
+			default:
+			}
+		}
 		if reply.hold != nil {
 			select {
 			case <-reply.hold:
@@ -370,28 +378,52 @@ func TestProbeDecision_ChecksThePinnedKeysAlias(t *testing.T) {
 // the probe reads the 1 second timeout configured after them.
 func TestProbeDecision_DeadlineCoversQueueWait(t *testing.T) {
 	release := make(chan struct{})
+	arrived := make(chan struct{}, 1)
 	h, _ := newDecisionProbeHandlerWithConfig(t, func(providers map[schemas.ModelProvider]configstore.ProviderConfig) {
 		probe := providers[probeTestProvider]
 		probe.ConcurrencyAndBufferSize = &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1}
 		providers[probeTestProvider] = probe
-	}, probeUpstreamReply{status: http.StatusOK, body: `{"model":"decider","answers":[{"type":"predicate","name":"probe","probability":0.9}]}`, hold: release})
+	}, probeUpstreamReply{status: http.StatusOK, body: `{"model":"decider","answers":[{"type":"predicate","name":"probe","probability":0.9}]}`, hold: release, arrived: arrived})
 	t.Cleanup(func() { close(release) })
 
 	// Each held request is its own value: the request path writes the model it
 	// resolves back into the request.
-	for range 4 {
-		go func() {
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			defer ctx.Cancel()
-			_, _ = h.client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
-				Provider:  probeTestProvider,
-				Model:     "decider",
-				Input:     schemas.DecisionInput{Text: schemas.Ptr("held")},
-				Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("held")}},
-			})
-		}()
+	hold := func() *schemas.BifrostError {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		_, err := h.client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
+			Provider:  probeTestProvider,
+			Model:     "decider",
+			Input:     schemas.DecisionInput{Text: schemas.Ptr("held")},
+			Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("held")}},
+		})
+		return err
 	}
-	time.Sleep(200 * time.Millisecond)
+	// The worker is busy once the first held request reaches the upstream.
+	go hold()
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first held request never reached the upstream")
+	}
+	// The one queue slot is taken once a request is dropped for a full queue:
+	// of two senders with dropping on, one takes the slot and the other is
+	// dropped, and nothing dequeues while the worker is held.
+	h.client.UpdateDropExcessRequests(true)
+	queued := make(chan *schemas.BifrostError, 2)
+	for range 2 {
+		go func() { queued <- hold() }()
+	}
+	select {
+	case err := <-queued:
+		if err == nil || err.Error == nil || err.Error.Type == nil || *err.Error.Type != schemas.RequestDropped {
+			t.Fatalf("expected one sender dropped for a full queue, got %+v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no sender was dropped; the queue slot never filled")
+	}
+	h.client.UpdateDropExcessRequests(false)
+
 	h.inMemoryStore.Mu.Lock()
 	probe := h.inMemoryStore.Providers[probeTestProvider]
 	network := *probe.NetworkConfig
@@ -532,6 +564,31 @@ func TestDecisionProbeErrorFrom_RedactsUnparseableURLs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestDecisionProbeErrorFrom_MasksURLsBeforeShortCredentials pins that a
+// short credential found inside a URL's scheme (a header value "http" inside
+// "https") does not stop that URL from being masked: its userinfo and query
+// values are removed, and the credential is removed too.
+func TestDecisionProbeErrorFrom_MasksURLsBeforeShortCredentials(t *testing.T) {
+	text := "upstream fetch of https://alice:url-password@example.invalid/path?token=query-secret failed"
+	got := decisionProbeErrorFrom(&schemas.BifrostError{
+		StatusCode: schemas.Ptr(fasthttp.StatusUnauthorized),
+		Error:      &schemas.ErrorField{Message: text, Type: schemas.Ptr(text), Code: schemas.Ptr(text)},
+	}, []string{"http"})
+	if got.Type == nil || got.Code == nil {
+		t.Fatalf("type %v, code %v; want both set", got.Type, got.Code)
+	}
+	for field, value := range map[string]string{"message": got.Message, "type": *got.Type, "code": *got.Code} {
+		for _, leaked := range []string{"alice", "url-password", "query-secret", "http"} {
+			if strings.Contains(value, leaked) {
+				t.Fatalf("%s leaks %q: %q", field, leaked, value)
+			}
+		}
+		if !strings.Contains(value, "example.invalid/path") {
+			t.Fatalf("%s lost the host and path: %q", field, value)
+		}
 	}
 }
 

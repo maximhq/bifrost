@@ -123,9 +123,8 @@ func (h *ProviderHandler) probeDecision(ctx *fasthttp.RequestCtx) {
 	// timeout and covers the wait for queue space as well as the upstream call.
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), time.Now().Add(decisionProbeTimeout(config)))
 	defer bifrostCtx.Cancel()
-	bifrost.PrepareContextForInternalRequest(bifrostCtx)
 	// One upstream call: a retry would bill again and replace the error being probed.
-	bifrostCtx.SetValue(schemas.BifrostContextKeyDisableRetries, true)
+	bifrost.PrepareContextForSingleAttemptInternalRequest(bifrostCtx)
 	if keyID != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
 	}
@@ -258,14 +257,18 @@ func probedRoute(provider schemas.ModelProvider, model string, routing schemas.R
 // client sanitizer every error response gets, then, in every returned string
 // (type, code, and message), removes the provider's credentials by value and
 // masks userinfo and query values in any URL, since an upstream error can echo
-// the key or the URL it was sent to. Credentials are removed longest first: a
-// shorter one that overlaps a longer one would otherwise cut it apart and leave
-// the rest of the longer one in the text.
+// the key or the URL it was sent to. URLs are masked first: a short credential
+// replaced inside a URL's scheme (a header value "http" inside "https") would
+// otherwise stop the URL from matching and leave its userinfo and query in the
+// text. Credentials are removed longest first: a shorter one that overlaps a
+// longer one would otherwise cut it apart and leave the rest of the longer one
+// in the text.
 func decisionProbeErrorFrom(bifrostErr *schemas.BifrostError, secrets []string) *DecisionProbeError {
 	sanitized := lib.SanitizeBifrostErrorForClient(bifrostErr)
 	secrets = slices.Clone(secrets)
 	slices.SortStableFunc(secrets, func(a, b string) int { return len(b) - len(a) })
 	scrub := func(text string) string {
+		text = decisionProbeURLPattern.ReplaceAllStringFunc(text, redactDecisionProbeURL)
 		for _, secret := range secrets {
 			if len(secret) >= decisionProbeMinSecretLength {
 				text = strings.ReplaceAll(text, secret, "[redacted]")
@@ -273,7 +276,7 @@ func decisionProbeErrorFrom(bifrostErr *schemas.BifrostError, secrets []string) 
 				text = redactContainingToken(text, secret)
 			}
 		}
-		return decisionProbeURLPattern.ReplaceAllStringFunc(text, redactDecisionProbeURL)
+		return text
 	}
 	scrubPtr := func(text *string) *string {
 		if text == nil {
