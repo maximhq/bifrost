@@ -616,6 +616,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
 	{IDs: []string{"add_vertex_batch_gcs_config_column"}, run: migrationAddVertexBatchGCSConfigColumn},
 	{IDs: []string{"add_mcp_oauth_flow_browser_binding_column"}, run: migrationAddMCPOauthFlowBrowserBindingColumn},
+	{IDs: []string{"add_framework_config_url_public_only_columns"}, run: migrationAddFrameworkConfigURLPublicOnlyColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -18008,4 +18009,53 @@ func migrationAddMCPOauthFlowBrowserBindingColumn(ctx context.Context, db *gorm.
 // operator-settings columns use.
 func rollbackVertexBatchGCSConfigColumn(context.Context, *gorm.DB, schemas.Logger) error {
 	return fmt.Errorf("add_vertex_batch_gcs_config_column is non-rollbackable: dropping vertex_batch_gcs_config_json would permanently delete the bucket list of every Vertex key that has one; the column is additive and older binaries safely ignore it")
+}
+
+// frameworkConfigURLPublicOnlyColumns are the framework_configs columns that
+// record, per catalog URL, whether it was saved through the API.
+var frameworkConfigURLPublicOnlyColumns = []string{"PricingURLPublicOnly", "ModelParametersURLPublicOnly", "MCPLibraryURLPublicOnly"}
+
+// migrationAddFrameworkConfigURLPublicOnlyColumns adds pricing_url_public_only,
+// model_parameters_url_public_only and mcp_library_url_public_only to
+// framework_configs. Each is NOT NULL DEFAULT false, so an existing row keeps
+// the config.json rule for its URLs (private-network hosts and file:// allowed)
+// and an upgrade changes no fetch. A rolled-back binary ignores the columns and
+// its inserts take the default.
+func migrationAddFrameworkConfigURLPublicOnlyColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_framework_config_url_public_only_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, field := range frameworkConfigURLPublicOnlyColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableFrameworkConfig{}, field); err != nil {
+					return fmt.Errorf("add %s column: %w", field, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackFrameworkConfigURLPublicOnlyColumns(ctx, tx, logger)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rollbackFrameworkConfigURLPublicOnlyColumns is the down path of
+// add_framework_config_url_public_only_columns. It refuses: the marks are the only record of
+// which catalog URLs were saved through the API. Dropping the columns and adding them back
+// would bring every mark back as false while the URLs stayed, so an API-saved URL would then be
+// fetched as if config.json had set it, private addresses included. The columns are additive
+// and older binaries safely ignore them, the same contract the other non-rollbackable settings
+// columns use.
+func rollbackFrameworkConfigURLPublicOnlyColumns(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_framework_config_url_public_only_columns is non-rollbackable: dropping the public-only marks would let every catalog URL saved through the API be fetched without the public-address rule; the columns are additive and older binaries safely ignore them")
 }

@@ -1201,6 +1201,75 @@ func TestUpdateConfig_EmptyDatasheetURLsResetToDefaults(t *testing.T) {
 	assert.Equal(t, modelcatalog.DefaultMCPLibraryURL, *cfg.FrameworkConfig.Pricing.MCPLibraryURL)
 }
 
+// TestUpdateConfig_MarksAPISavedURLsPublicOnly: a catalog URL changed through
+// PUT /api/config is stored as public-only, so later syncs fetch it under the
+// public-address rule it was accepted under. A URL the save sends back
+// unchanged keeps the rule it already had, and a reset to the built-in default
+// clears the mark.
+func TestUpdateConfig_MarksAPISavedURLsPublicOnly(t *testing.T) {
+	prevDial := checkURLAccessibilityDialContext
+	checkURLAccessibilityDialContext = (&net.Dialer{}).DialContext
+	t.Cleanup(func() { checkURLAccessibilityDialContext = prevDial })
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	// What startup stores for a config.json mirror on the operator's network.
+	mirror := "http://10.0.0.5/pricing.json"
+	require.NoError(t, store.UpdateFrameworkConfig(bgCtx(), &configtables.TableFrameworkConfig{
+		PricingURL:         &mirror,
+		ModelParametersURL: bifrost.Ptr(modelcatalog.DefaultModelParametersURL),
+		MCPLibraryURL:      bifrost.Ptr(modelcatalog.DefaultMCPLibraryURL),
+	}))
+	customURL := newDatasheetServer(t).URL
+
+	save := func(t *testing.T, framework string) *configtables.TableFrameworkConfig {
+		t.Helper()
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":` + framework + `}`)
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		persisted, err := store.GetFrameworkConfig(bgCtx())
+		require.NoError(t, err)
+		require.NotNil(t, persisted)
+		return persisted
+	}
+
+	// The stored mirror is sent back unchanged; the other two URLs are new.
+	persisted := save(t, `{"pricing_url":"`+mirror+`","model_parameters_url":"`+customURL+`","mcp_library_url":"`+customURL+`"}`)
+	assert.Equal(t, mirror, *persisted.PricingURL)
+	assert.False(t, persisted.PricingURLPublicOnly, "an unchanged config.json URL keeps the config.json rule")
+	assert.True(t, persisted.ModelParametersURLPublicOnly)
+	assert.True(t, persisted.MCPLibraryURLPublicOnly)
+	runtime := cfg.FrameworkConfig.Pricing
+	assert.False(t, runtime.PricingURLPublicOnly)
+	assert.True(t, runtime.ModelParametersURLPublicOnly)
+	assert.True(t, runtime.MCPLibraryURLPublicOnly)
+
+	// A save that resends the API-saved URLs and changes something else keeps their mark,
+	// and the request body cannot clear it.
+	persisted = save(t, `{"pricing_url":"`+mirror+`","model_parameters_url":"`+customURL+`","mcp_library_url":"`+customURL+`","pricing_sync_interval":7200,"model_parameters_url_public_only":false,"mcp_library_url_public_only":false}`)
+	assert.False(t, persisted.PricingURLPublicOnly)
+	assert.True(t, persisted.ModelParametersURLPublicOnly)
+	assert.True(t, persisted.MCPLibraryURLPublicOnly)
+	assert.True(t, cfg.FrameworkConfig.Pricing.ModelParametersURLPublicOnly)
+
+	// Replacing the config.json mirror through the API marks it too.
+	persisted = save(t, `{"pricing_url":"`+customURL+`"}`)
+	assert.True(t, persisted.PricingURLPublicOnly)
+	assert.True(t, cfg.FrameworkConfig.Pricing.PricingURLPublicOnly)
+
+	// Back to the built-in defaults: no mark.
+	persisted = save(t, `{"pricing_url":"","model_parameters_url":"","mcp_library_url":""}`)
+	assert.False(t, persisted.PricingURLPublicOnly)
+	assert.False(t, persisted.ModelParametersURLPublicOnly)
+	assert.False(t, persisted.MCPLibraryURLPublicOnly)
+	runtime = cfg.FrameworkConfig.Pricing
+	assert.False(t, runtime.PricingURLPublicOnly)
+	assert.False(t, runtime.ModelParametersURLPublicOnly)
+	assert.False(t, runtime.MCPLibraryURLPublicOnly)
+}
+
 // TestUpdateConfig_MCPLibrarySyncInterval pins /api/config to the config.json
 // contract for mcp_library_sync_interval: 0 (sync disabled) or at least 3600
 // seconds. Anything else is refused rather than stored.

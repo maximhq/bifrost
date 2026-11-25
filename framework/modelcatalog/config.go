@@ -45,6 +45,16 @@ type Config struct {
 	PricingSyncInterval *int64  `json:"pricing_sync_interval,omitempty"` // seconds
 	ModelParametersURL  *string `json:"model_parameters_url,omitempty"`
 
+	// PricingURLPublicOnly, ModelParametersURLPublicOnly and
+	// MCPLibraryURLPublicOnly are true when that URL was saved through the API.
+	// The API accepts only a public http(s) address, so a sync fetches such a
+	// URL under the same public-address rule. False is the config.json rule:
+	// private-network hosts and file:// are allowed. This is stored state the
+	// transport fills in, not configuration: config.json cannot set it.
+	PricingURLPublicOnly         bool `json:"-"`
+	ModelParametersURLPublicOnly bool `json:"-"`
+	MCPLibraryURLPublicOnly      bool `json:"-"`
+
 	// MCPLibraryURL overrides the endpoint the MCP server library catalog is
 	// synced from. Empty/nil uses DefaultMCPLibraryURL. Mirrors PricingURL: the
 	// default ships out of the box and the user can point it at a custom source.

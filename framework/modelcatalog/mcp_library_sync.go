@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -123,7 +122,22 @@ type MCPLibraryPayload struct {
 // The function is intentionally stateless and operates directly on the
 // ConfigStore so it can be called from both the force-sync handler and the
 // background worker without needing a dedicated manager struct.
+//
+// The URL is fetched under the config.json rule: a host on the operator's own
+// network and a file:// URL are allowed. Use SyncMCPLibraryPublicOnly for a URL
+// that was saved through the API.
 func SyncMCPLibrary(ctx context.Context, url string, store configstore.ConfigStore) (int, error) {
+	return syncMCPLibraryFrom(ctx, url, false, store)
+}
+
+// SyncMCPLibraryPublicOnly is SyncMCPLibrary for a URL that was saved through
+// the API. The API accepts only a public http(s) address, so the sync holds
+// every connection and redirect hop to a public address and refuses file://.
+func SyncMCPLibraryPublicOnly(ctx context.Context, url string, store configstore.ConfigStore) (int, error) {
+	return syncMCPLibraryFrom(ctx, url, true, store)
+}
+
+func syncMCPLibraryFrom(ctx context.Context, url string, publicOnly bool, store configstore.ConfigStore) (int, error) {
 	if url == "" {
 		url = DefaultMCPLibraryURL
 	}
@@ -137,7 +151,7 @@ func SyncMCPLibrary(ctx context.Context, url string, store configstore.ConfigSto
 	}
 
 	entries, err := withRetries(ctx, maxRetries, urlFetchMaxBackoff, func() ([]MCPLibraryEntry, error) {
-		return fetchMCPLibrary(ctx, url)
+		return fetchMCPLibrary(ctx, url, publicOnly)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch MCP library from %s: %w", url, err)
@@ -254,8 +268,8 @@ func (mc *ModelCatalog) syncMCPLibraryNow(ctx context.Context) (int, error) {
 	if mc.configStore == nil {
 		return 0, nil
 	}
-	url := mc.getMCPLibraryURL()
-	count, err := SyncMCPLibrary(ctx, url, mc.configStore)
+	url, publicOnly := mc.getMCPLibraryURL()
+	count, err := syncMCPLibraryFrom(ctx, url, publicOnly, mc.configStore)
 	if err != nil {
 		return 0, err
 	}
@@ -263,15 +277,18 @@ func (mc *ModelCatalog) syncMCPLibraryNow(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// getMCPLibraryURL returns a copy of the MCP library URL under mutex protection.
-func (mc *ModelCatalog) getMCPLibraryURL() string {
+// getMCPLibraryURL returns the MCP library URL and whether it is fetched under
+// the public-address rule, read together under the mutex.
+func (mc *ModelCatalog) getMCPLibraryURL() (string, bool) {
 	mc.syncMu.RLock()
 	defer mc.syncMu.RUnlock()
-	return mc.mcpLibraryURL
+	return mc.mcpLibraryURL, mc.mcpLibraryURLPublicOnly
 }
 
 // fetchMCPLibrary downloads and parses the MCP library JSON from the given URL.
-func fetchMCPLibrary(ctx context.Context, rawURL string) ([]MCPLibraryEntry, error) {
+// publicOnly is true for a URL that was saved through the API (see
+// datasheet.FeedHTTPClient).
+func fetchMCPLibrary(ctx context.Context, rawURL string, publicOnly bool) ([]MCPLibraryEntry, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, &permanentFetchError{fmt.Errorf("failed to parse MCP library URL: %w", err)}
@@ -279,6 +296,9 @@ func fetchMCPLibrary(ctx context.Context, rawURL string) ([]MCPLibraryEntry, err
 
 	var data []byte
 	if parsed.Scheme == "file" {
+		if publicOnly {
+			return nil, &permanentFetchError{fmt.Errorf("MCP library URL: %w", datasheet.ErrFileURLNeedsConfigFile)}
+		}
 		// Resolve through the shared datasheet helper so relative
 		// (file://./servers.json) and localhost-host (file://localhost/abs/...)
 		// forms work here exactly as they do for the pricing datasheets.
@@ -295,10 +315,10 @@ func fetchMCPLibrary(ctx context.Context, rawURL string) ([]MCPLibraryEntry, err
 			return nil, fmt.Errorf("MCP library file exceeds %d bytes", maxMCPLibraryBodyBytes)
 		}
 	} else {
-		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		if err := datasheet.CheckFeedURL(rawURL, publicOnly); err != nil {
 			return nil, fmt.Errorf("MCP library URL validation failed: %w", err)
 		}
-		client := datasheet.NewHTTPClient(DefaultMCPLibraryTimeout)
+		client := datasheet.FeedHTTPClient(DefaultMCPLibraryTimeout, publicOnly)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)

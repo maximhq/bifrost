@@ -1183,9 +1183,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
-	// URLs were already normalized and checked for accessibility above.
+	// URLs were already normalized and checked for accessibility above. A URL
+	// this save changes was accepted as a public address, so it is stored as
+	// public-only and every later sync fetches it under that rule. The built-in
+	// default carries no mark, and a URL sent back unchanged keeps the mark it
+	// has: that is how a config.json mirror stays reachable.
 	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {
 		frameworkConfig.PricingURL = payload.FrameworkConfig.PricingURL
+		frameworkConfig.PricingURLPublicOnly = *frameworkConfig.PricingURL != modelcatalog.DefaultPricingURL
 		shouldReloadFrameworkConfig = true
 	}
 	if payload.FrameworkConfig.PricingSyncInterval != nil {
@@ -1197,6 +1202,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != *frameworkConfig.ModelParametersURL {
 		frameworkConfig.ModelParametersURL = payload.FrameworkConfig.ModelParametersURL
+		frameworkConfig.ModelParametersURLPublicOnly = *frameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL
 		shouldReloadFrameworkConfig = true
 	}
 	if payload.FrameworkConfig.MCPLibraryURL != nil {
@@ -1206,6 +1212,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 		if frameworkConfig.MCPLibraryURL == nil || effectiveMCPLibraryURL != *frameworkConfig.MCPLibraryURL {
 			frameworkConfig.MCPLibraryURL = &effectiveMCPLibraryURL
+			frameworkConfig.MCPLibraryURLPublicOnly = effectiveMCPLibraryURL != modelcatalog.DefaultMCPLibraryURL
 			shouldReloadFrameworkConfig = true
 		}
 	}
@@ -1256,6 +1263,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				MCPLibrarySyncInterval: frameworkConfig.MCPLibrarySyncInterval,
 				LiveModelsSyncInterval: frameworkConfig.LiveModelsSyncInterval,
 				OpenAPIURL:             frameworkConfig.OpenAPIURL,
+
+				PricingURLPublicOnly:         frameworkConfig.PricingURLPublicOnly,
+				ModelParametersURLPublicOnly: frameworkConfig.ModelParametersURLPublicOnly,
+				MCPLibraryURLPublicOnly:      frameworkConfig.MCPLibraryURLPublicOnly,
 			},
 		}
 		// Persist first so a failed store write leaves the runtime config
@@ -1722,7 +1733,9 @@ var errURLNotReachable = errors.New("url is not reachable")
 // sameAsStoredURL reports whether a framework URL in a config save equals the
 // stored one. Such a URL needs no accessibility check: it was set in
 // config.json, where file:// and private hosts are allowed, or it passed the
-// check when it was first saved over the API.
+// check when it was first saved over the API. It also keeps its stored
+// public-only mark, so the sync goes on fetching it under the rule it was
+// accepted under.
 func sameAsStoredURL(submitted string, stored *string) bool {
 	return stored != nil && *stored == submitted
 }

@@ -1656,7 +1656,10 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 		count, err = h.store.ModelCatalog.ForceReloadMCPLibrary(ctx)
 	} else {
 		// Resolve the effective MCP library URL from framework config (DB → file → default).
+		// A URL saved through the API is fetched under the public-address rule it
+		// was accepted under; one from config.json may be on the operator's network.
 		mcpLibraryURL := modelcatalog.DefaultMCPLibraryURL
+		publicOnly := false
 		// Snapshot under the read lock; updateConfig swaps this pointer from
 		// another request goroutine.
 		h.store.Mu.RLock()
@@ -1665,9 +1668,14 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 		if storedFrameworkConfig != nil && storedFrameworkConfig.Pricing != nil && storedFrameworkConfig.Pricing.MCPLibraryURL != nil {
 			if u := *storedFrameworkConfig.Pricing.MCPLibraryURL; u != "" {
 				mcpLibraryURL = u
+				publicOnly = storedFrameworkConfig.Pricing.MCPLibraryURLPublicOnly && u != modelcatalog.DefaultMCPLibraryURL
 			}
 		}
-		count, err = modelcatalog.SyncMCPLibrary(ctx, mcpLibraryURL, h.store.ConfigStore)
+		if publicOnly {
+			count, err = modelcatalog.SyncMCPLibraryPublicOnly(ctx, mcpLibraryURL, h.store.ConfigStore)
+		} else {
+			count, err = modelcatalog.SyncMCPLibrary(ctx, mcpLibraryURL, h.store.ConfigStore)
+		}
 	}
 	if err != nil {
 		logger.Error("failed to sync MCP library: %v", err)

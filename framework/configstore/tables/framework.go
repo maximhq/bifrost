@@ -19,6 +19,16 @@ type TableFrameworkConfig struct {
 	// or a path under the app dir. Empty/nil falls back to the build's default spec.
 	OpenAPIURL *string `gorm:"column:openapi_url;type:text" json:"openapi_url"`
 	ConfigHash string  `gorm:"type:text" json:"config_hash"`
+	// PricingURLPublicOnly, ModelParametersURLPublicOnly and
+	// MCPLibraryURLPublicOnly record how the matching URL was set. True: it was
+	// saved through the API, which accepts only a public http(s) address, so
+	// every sync fetches it under that same public-address rule. False: it came
+	// from config.json (or is the built-in default), where a private-network
+	// host and file:// are allowed. This is stored state, not configuration, so
+	// it is left out of JSON: a client can neither read nor send it.
+	PricingURLPublicOnly         bool `gorm:"column:pricing_url_public_only;not null;default:false" json:"-"`
+	ModelParametersURLPublicOnly bool `gorm:"column:model_parameters_url_public_only;not null;default:false" json:"-"`
+	MCPLibraryURLPublicOnly      bool `gorm:"column:mcp_library_url_public_only;not null;default:false" json:"-"`
 }
 
 // TableName sets the table name for each model

@@ -2,10 +2,13 @@ package datasheet
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,5 +97,119 @@ func TestLoadFromURLRefusesRedirectToLinkLocal(t *testing.T) {
 	_, err = store.loadModelParametersFromURL(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "link-local") {
 		t.Fatalf("model parameters: expected link-local refusal, got %v", err)
+	}
+}
+
+// TestLoadFromURLHoldsAPISavedURLToPublicAddresses: a URL saved through the API
+// was accepted under the public-address rule, so it is fetched under the same
+// rule. A host on the loopback interface is refused before any request is sent,
+// by literal address and by a name that resolves to it, and so is a file://
+// URL. A URL from config.json keeps reaching the same server.
+func TestLoadFromURLHoldsAPISavedURLToPublicAddresses(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	byName := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)
+
+	for _, rawURL := range []string{srv.URL, byName} {
+		store := newForTest(t, nil, logger, Config{URL: rawURL, ModelParametersURL: rawURL, URLPublicOnly: true, ModelParametersURLPublicOnly: true})
+		_, err := store.loadPricingFromURL(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "non-public address") {
+			t.Fatalf("pricing %s: expected a non-public address refusal, got %v", rawURL, err)
+		}
+		_, err = store.loadModelParametersFromURL(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "non-public address") {
+			t.Fatalf("model parameters %s: expected a non-public address refusal, got %v", rawURL, err)
+		}
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("an API-saved loopback URL was requested %d times", got)
+	}
+
+	fileURL := "file://" + filepath.Join(t.TempDir(), "sheet.json")
+	store := newForTest(t, nil, logger, Config{URL: fileURL, ModelParametersURL: fileURL, URLPublicOnly: true, ModelParametersURLPublicOnly: true})
+	if _, err := store.loadPricingFromURL(context.Background()); !errors.Is(err, ErrFileURLNeedsConfigFile) {
+		t.Fatalf("pricing: expected ErrFileURLNeedsConfigFile, got %v", err)
+	}
+	if _, err := store.loadModelParametersFromURL(context.Background()); !errors.Is(err, ErrFileURLNeedsConfigFile) {
+		t.Fatalf("model parameters: expected ErrFileURLNeedsConfigFile, got %v", err)
+	}
+
+	// The same server set in config.json still syncs.
+	store = newForTest(t, nil, logger, Config{URL: srv.URL, ModelParametersURL: srv.URL})
+	if _, err := store.loadPricingFromURL(context.Background()); err != nil {
+		t.Fatalf("pricing from a config.json URL: %v", err)
+	}
+	if _, err := store.loadModelParametersFromURL(context.Background()); err != nil {
+		t.Fatalf("model parameters from a config.json URL: %v", err)
+	}
+	if got := hits.Load(); got != 2 {
+		t.Fatalf("config.json URL requests = %d, want 2", got)
+	}
+
+	// UpdateSyncConfig carries the rule with the URL, in both directions.
+	store.UpdateSyncConfig(Config{URL: srv.URL, ModelParametersURL: srv.URL, URLPublicOnly: true})
+	if _, err := store.loadPricingFromURL(context.Background()); err == nil || !strings.Contains(err.Error(), "non-public address") {
+		t.Fatalf("pricing after an API save: expected a non-public address refusal, got %v", err)
+	}
+	if _, err := store.loadModelParametersFromURL(context.Background()); err != nil {
+		t.Fatalf("model parameters URL was not saved through the API: %v", err)
+	}
+	store.UpdateSyncConfig(Config{URL: srv.URL, ModelParametersURL: srv.URL})
+	if _, err := store.loadPricingFromURL(context.Background()); err != nil {
+		t.Fatalf("pricing after config.json took the URL back: %v", err)
+	}
+}
+
+// TestFeedHTTPClientDoesNotLeaveAnAPISavedNameToTheProxy: behind an egress proxy the dialer
+// only ever sees the proxy, so the public-address rule runs on the name before it is sent.
+// A name the local resolver cannot answer cannot be checked. For a URL saved through the API
+// it is refused rather than handed to the proxy, which could resolve it to a host on the
+// operator's network. The client for a config.json URL keeps the private-network rule and
+// leaves the name to the proxy; this test is about the client alone, and the sync paths still
+// resolve every feed host locally in CheckFeedURL before they use either client.
+func TestFeedHTTPClientDoesNotLeaveAnAPISavedNameToTheProxy(t *testing.T) {
+	var proxied atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxied.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		t.Fatalf("http.DefaultTransport is %T", http.DefaultTransport)
+	}
+	original := transport.Proxy
+	transport.Proxy = func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+	t.Cleanup(func() { transport.Proxy = original })
+
+	const feed = "http://only-the-proxy-knows.invalid/feed.json"
+	resp, err := FeedHTTPClient(5*time.Second, true).Get(feed)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("an API-saved feed name the local resolver cannot answer was fetched")
+	}
+	if !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Fatalf("expected the unresolved name to be refused, got %v", err)
+	}
+	if got := proxied.Load(); got != 0 {
+		t.Fatalf("the unchecked name reached the proxy %d times", got)
+	}
+
+	resp, err = FeedHTTPClient(5*time.Second, false).Get(feed)
+	if err != nil {
+		t.Fatalf("a config.json feed name is left to the proxy: %v", err)
+	}
+	resp.Body.Close()
+	if got := proxied.Load(); got != 1 {
+		t.Fatalf("proxy saw %d requests for the config.json feed, want 1", got)
 	}
 }

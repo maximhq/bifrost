@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,8 +31,9 @@ var (
 	paramsFetchTimeout  = DefaultModelParametersTimeout
 )
 
-// NewHTTPClient builds the client for every catalog feed download (pricing,
-// model parameters, MCP library). It is a var, not a direct call to
+// NewHTTPClient builds the client for a catalog feed download (pricing, model
+// parameters, MCP library) whose URL came from config.json or is the built-in
+// default; see FeedHTTPClient. It is a var, not a direct call to
 // network.NewPrivateNetworkHTTPClient, only so tests can wrap the transport:
 // the guarded client builds its own *http.Transport, so swapping
 // http.DefaultTransport no longer intercepts these fetches. Without this hook
@@ -39,6 +41,51 @@ var (
 // public datasheets (~29MB), which took that package from minutes to ~35 min
 // under -race in CI. Production code must not reassign it.
 var NewHTTPClient = network.NewPrivateNetworkHTTPClient
+
+// NewPublicHTTPClient builds the client for a feed URL that was saved through
+// the API: every connection is checked against the resolved address at dial
+// time and every redirect hop is vetted, so the fetch only ever reaches a public
+// address. Behind an egress proxy the dialer only sees the proxy, so the check
+// runs on the name before it is sent, and a name the local resolver cannot
+// answer is refused rather than left to the proxy to resolve.
+//
+// On that proxied path the name is checked against the gateway's resolver and
+// then sent to the proxy, which resolves it again on its own side. The fetch is
+// not pinned to the address that was checked. A feed host whose DNS answers
+// differ between the two resolvers can therefore still be reached at an
+// address the gateway did not check. That is an accepted limit of the proxied
+// path: the egress proxy is the operator's enforcement point there and should
+// refuse private destinations itself. Without a proxy the connection is dialed
+// to the checked address itself.
+//
+// A var for the same reason as NewHTTPClient; production code must not reassign it.
+var NewPublicHTTPClient = network.NewStrictSSRFSafeHTTPClient
+
+// ErrFileURLNeedsConfigFile is returned when a feed URL that was saved through
+// the API turns out to be a file:// URL. Only config.json may name a local file.
+var ErrFileURLNeedsConfigFile = errors.New("file:// URLs can only be configured in config.json")
+
+// CheckFeedURL validates an http(s) feed URL before it is fetched. publicOnly is
+// true for a URL that was saved through the API: it was accepted as a public
+// address, so it is held to that on every sync. A URL from config.json may name
+// a host on the operator's own network.
+func CheckFeedURL(rawURL string, publicOnly bool) error {
+	return bifrost.ValidateExternalURL(rawURL, !publicOnly)
+}
+
+// FeedHTTPClient returns the client that downloads a catalog feed. For a URL
+// saved through the API (publicOnly) every connection and redirect hop must
+// land on a public address, the rule the URL was accepted under, and behind a
+// proxy a name that cannot be checked locally is refused. Otherwise it is
+// NewHTTPClient, which also reaches private-network hosts. Every feed URL,
+// whatever its source, is first resolved locally by CheckFeedURL, so a feed
+// host must resolve on the gateway itself.
+func FeedHTTPClient(timeout time.Duration, publicOnly bool) *http.Client {
+	if publicOnly {
+		return NewPublicHTTPClient(timeout)
+	}
+	return NewHTTPClient(timeout)
+}
 
 // SyncFromURL fetches the upstream pricing datasheet, persists it to the DB
 // (when configStore != nil), and refreshes the in-memory cache + derived
@@ -280,7 +327,7 @@ func FilePathFromURL(parsed *url.URL) string {
 // configured URL. Honors ctx for cancellation.
 func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error) {
 	s.syncCfgMu.RLock()
-	rawURL := s.url
+	rawURL, publicOnly := s.url, s.urlPublicOnly
 	s.syncCfgMu.RUnlock()
 
 	parsed, err := url.Parse(rawURL)
@@ -291,18 +338,21 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 	var data []byte
 
 	if parsed.Scheme == "file" {
+		if publicOnly {
+			return nil, fmt.Errorf("pricing URL: %w", ErrFileURLNeedsConfigFile)
+		}
 		data, err = os.ReadFile(FilePathFromURL(parsed))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read pricing file: %w", err)
 		}
 	} else {
-		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		if err := CheckFeedURL(rawURL, publicOnly); err != nil {
 			return nil, fmt.Errorf("pricing URL validation failed: %w", err)
 		}
-		// ValidateExternalURL screens the configured host once; the guarded
+		// CheckFeedURL screens the configured host once; the guarded
 		// client holds every connection and redirect hop to the same policy.
-		client := NewHTTPClient(DefaultPricingTimeout)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL(), nil)
+		client := FeedHTTPClient(DefaultPricingTimeout, publicOnly)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 		}
