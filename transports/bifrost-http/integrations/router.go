@@ -3809,7 +3809,11 @@ func PassthroughSafeHeaders(ctx *fasthttp.RequestCtx) (map[string]string, string
 			if strings.HasPrefix(keyStr, "x-bf-") {
 				return true // drop internal gateway headers
 			}
-			safeHeaders[keyStr] = string(value)
+			if previousValue, ok := safeHeaders[keyStr]; ok {
+				safeHeaders[keyStr] = previousValue + ", " + string(value)
+			} else {
+				safeHeaders[keyStr] = string(value)
+			}
 		}
 		return true
 	})

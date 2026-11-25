@@ -1455,7 +1455,12 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 
 	// Copy headers
 	for key, value := range ctx.Request.Header.All() {
-		req.Headers[string(key)] = string(value)
+		keyStr := string(key)
+		if previousValue, ok := req.Headers[keyStr]; ok {
+			req.Headers[keyStr] = previousValue + ", " + string(value)
+		} else {
+			req.Headers[keyStr] = string(value)
+		}
 	}
 
 	// Copy query params

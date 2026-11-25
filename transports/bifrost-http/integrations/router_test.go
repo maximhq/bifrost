@@ -36,6 +36,101 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+func TestPassthroughSafeHeaders(t *testing.T) {
+	tests := []struct {
+		name           string
+		headers        [][2]string
+		wantHeaders    map[string]string
+		wantCallerAuth string
+	}{
+		{
+			name:        "empty",
+			wantHeaders: map[string]string{},
+		},
+		{
+			name:        "single value",
+			headers:     [][2]string{{"X-Custom-Header", "value"}},
+			wantHeaders: map[string]string{"x-custom-header": "value"},
+		},
+		{
+			name:        "empty value",
+			headers:     [][2]string{{"X-Empty", ""}},
+			wantHeaders: map[string]string{"x-empty": ""},
+		},
+		{
+			name: "repeated values with mixed-case names",
+			headers: [][2]string{
+				{"Anthropic-Beta", "beta-one"},
+				{"anthropic-beta", "beta-two"},
+			},
+			wantHeaders: map[string]string{"anthropic-beta": "beta-one, beta-two"},
+		},
+		{
+			name: "restricted headers",
+			headers: [][2]string{
+				{"Authorization", "Bearer caller-token"},
+				{"X-API-Key", "provider-key"},
+				{"Cookie", "session=secret"},
+				{"Set-Cookie", "session=secret"},
+				{"X-BF-VK", "virtual-key"},
+				{"X-Safe", "forwarded"},
+			},
+			wantHeaders:    map[string]string{"x-safe": "forwarded"},
+			wantCallerAuth: "Bearer caller-token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			for _, header := range tt.headers {
+				ctx.Request.Header.Add(header[0], header[1])
+			}
+
+			gotHeaders, gotCallerAuth := PassthroughSafeHeaders(&ctx)
+
+			require.Equal(t, tt.wantHeaders, gotHeaders)
+			require.Equal(t, tt.wantCallerAuth, gotCallerAuth)
+		})
+	}
+}
+
+func BenchmarkPassthroughSafeHeaders(b *testing.B) {
+	for _, tc := range []struct {
+		name    string
+		headers [][2]string
+	}{
+		{
+			name: "single values",
+			headers: [][2]string{
+				{"Content-Type", "application/json"},
+				{"Anthropic-Version", "2023-06-01"},
+				{"User-Agent", "bifrost-test"},
+			},
+		},
+		{
+			name: "repeated values",
+			headers: [][2]string{
+				{"Content-Type", "application/json"},
+				{"Anthropic-Beta", "beta-one"},
+				{"anthropic-beta", "beta-two"},
+				{"User-Agent", "bifrost-test"},
+			},
+		},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			var ctx fasthttp.RequestCtx
+			for _, header := range tc.headers {
+				ctx.Request.Header.Add(header[0], header[1])
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				PassthroughSafeHeaders(&ctx)
+			}
+		})
+	}
+}
+
 func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -1707,6 +1802,39 @@ func TestHandlePassthrough_ProviderPolicy(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, []string{"POST /v1/messages"}, hits, "only the allowed route may reach the upstream")
+}
+
+func TestHandlePassthrough_ForwardsRepeatedHeaderValues(t *testing.T) {
+	seen := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get("Anthropic-Beta")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	NewAnthropicPassthroughRouter(client, passthroughTestStore(), nil, &testLogger{}).RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next })
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/anthropic_passthrough/v1/messages")
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.Header.Add("Anthropic-Beta", "beta-one")
+	ctx.Request.Header.Add("anthropic-beta", "beta-two")
+	ctx.Request.SetBodyString(`{"model":"claude-test","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)
+
+	r.Handler(&ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Equal(t, "beta-one, beta-two", <-seen)
 }
 
 // TestRegisterPassthroughTextRewriters verifies each passthrough route gets the same text rewriters as the native route
