@@ -98449,6 +98449,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -99928,6 +99960,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -100335,6 +100399,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -100775,6 +100871,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -101205,6 +101333,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -101659,6 +101819,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -102105,6 +102297,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -102565,6 +102789,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -102999,6 +103255,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -103450,6 +103738,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -103930,6 +104250,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -104398,6 +104750,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -104882,6 +105266,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -105530,6 +105946,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -105957,6 +106405,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -106405,6 +106885,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -106915,6 +107427,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -107701,6 +108245,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -161469,6 +162045,41 @@
                       "enum": [
                         "blocked",
                         "detected"
+                      ]
+                    }
+                  },
+                  "guardrail_actions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "blocked",
+                        "redacted",
+                        "detected",
+                        "monitored"
+                      ]
+                    },
+                    "description": "What a guardrail did on one recorded match; the guardrail rule, profile and phase filters must hold on that same match"
+                  },
+                  "guardrail_rule_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "guardrail_profile_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "guardrail_phases": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "input",
+                        "output"
                       ]
                     }
                   },
