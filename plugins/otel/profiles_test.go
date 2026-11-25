@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -799,4 +800,20 @@ func TestHTTPMetricsExporterHonoursEndpointScheme(t *testing.T) {
 			t.Errorf("plaintext receiver saw %d requests, want 1", got)
 		}
 	})
+}
+
+func TestMetricsExportRefusesRedirects(t *testing.T) {
+	for _, code := range redirectCodes {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			collectorURL, collectorHits, targetHits := redirectPair(t, code)
+
+			exp, err := createHTTPExporter(context.Background(), &MetricsConfig{Endpoint: collectorURL + "/v1/metrics", Insecure: true})
+			if err != nil {
+				t.Fatalf("createHTTPExporter: %v", err)
+			}
+			defer func() { _ = exp.Shutdown(context.Background()) }()
+
+			assertRedirectRefused(t, exp.Export(context.Background(), oneMetric()), collectorHits, targetHits)
+		})
+	}
 }
