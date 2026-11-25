@@ -83,12 +83,8 @@ func (route *compiledRoute) matchHeaders(headers, operator map[string]string) bo
 	return true
 }
 
-// headerValue is the value a header will carry upstream, in the order a passthrough call applies
-// them: the caller's header (headers already holds the caller's x-bf-eh-* values beneath it, see
-// routeHeaders), else the operator's extra header. The transport lower-cases caller names; a Go SDK
-// caller may not, so a miss falls back to a case-insensitive scan.
 // matchedHeaders returns, by name, the value that selected the route for each header the route
-// matches on: the caller's when the caller sent that header, else the operator's. nil for a route
+// matches on: the relay's own extra header when it sets one, else the caller's. nil for a route
 // without header matchers.
 func (route *compiledRoute) matchedHeaders(headers, operator map[string]string) map[string]string {
 	if len(route.headers) == 0 {
@@ -104,7 +100,9 @@ func (route *compiledRoute) matchedHeaders(headers, operator map[string]string) 
 }
 
 // headerValue returns the value the upstream receives for a header: the relay's own extra header
-// when it sets one, since a caller cannot replace it, else the caller's.
+// when it sets one, since a caller cannot replace it, else the caller's (headers already holds its
+// x-bf-eh-* values beneath it, see routeHeaders). The transport lower-cases caller names; a Go SDK
+// caller may not, so a miss falls back to a case-insensitive scan.
 func headerValue(name string, headers, operator map[string]string) (string, bool) {
 	if v, ok := operator[name]; ok {
 		return v, true
@@ -411,7 +409,6 @@ func (e *endpoint) matchRoute(method, requestPath string, headers map[string]str
 	return nil
 }
 
-// isUpper reports whether s has no lower-case ASCII letter, the common case for an HTTP method.
 // ambiguousHeader returns a header name that headers holds under two spellings (X-Amz-Target and
 // x-amz-target). Route matching reads one spelling and forwarding could send the other, so such a
 // request is refused. Only a Go SDK caller can build one: the HTTP transport lower-cases names, so
@@ -447,6 +444,7 @@ func hasUpper(s string) bool {
 	return false
 }
 
+// isUpper reports whether s has no lower-case ASCII letter, the common case for an HTTP method.
 func isUpper(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 'a' && s[i] <= 'z' {

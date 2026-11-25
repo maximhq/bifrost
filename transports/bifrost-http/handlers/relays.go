@@ -137,8 +137,8 @@ func endpointView(cfg *schemas.RelayConfig) relayView {
 	return relayView{RelayConfig: cfg.Redacted(), URL: "/relay/" + cfg.Name}
 }
 
-// view is endpointView with the order the gateway tries the relay's routes in, read from the live
-// endpoint, which ordered them once when it was built.
+// view is endpointView with the order the gateway tries the relay's routes in, ranked from this
+// config the way the gateway ranks it when it builds the relay.
 func (h *RelaysHandler) view(cfg *schemas.RelayConfig) relayView {
 	v := endpointView(cfg)
 	// Ranked from the config being returned, the same way the gateway ranks it when it builds the

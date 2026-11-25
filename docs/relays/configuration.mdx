@@ -98,7 +98,7 @@ The chart checks each relay against the same schema and refuses to render if two
 
 ## Authentication
 
-Callers never see or send the API's secret. They send their Bifrost virtual key, and Bifrost adds the relay's credential to each call before it goes out. Any credential header the caller sends (`Authorization`, `x-api-key`, `api-key`, cookies and similar) is removed first.
+Callers never see or send the API's secret. They send their Bifrost virtual key, and Bifrost adds the relay's credential to each call before it goes out. Any credential header the caller sends (`Authorization`, `x-api-key`, `api-key`, cookies and similar) is removed first. Under query parameter auth, a caller's copy of the parameter is removed too, in any letter case (`key`, `KEY`, `Key`).
 
 Pick the method the API expects under **Authentication**, either when you add the relay or on the **Authentication** tab of **Edit Relay Config**.
 
@@ -295,7 +295,7 @@ In `config.json`, this adds a team name and a second account key (read from an e
 }
 ```
 
-- If a caller sends a header with the same name, the caller's copy is removed and yours is used.
+- If a caller sends a header with the same name, directly or as an `x-bf-eh-*` header, the caller's copy is removed and yours is used. Routes, status checks and Relay Logs all see your value, since that is what reaches the API.
 - Each header name may appear once. `X-Team` and `x-team` together are refused.
 - Values of headers that carry credentials are masked in the dashboard and API.
 
@@ -333,7 +333,9 @@ In `config.json`, this gives a slow API 30 seconds per call, lets its streams st
 }
 ```
 
-A normal (not streamed) reply can be up to 64 MB. For larger replies, make the route [stream](./routes#streaming).
+A normal (not streamed) reply has no size limit of its own, as an LLM provider's reply has none, but Bifrost holds it whole while it reads it. For large replies such as files or audio, make the route [stream](./routes#streaming).
+
+A timeout error names the setting that fired and its value, for example *the upstream did not answer within 30 seconds; raise timeout_seconds in relay "web-search"'s network settings*.
 
 ---
 

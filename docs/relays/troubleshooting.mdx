@@ -105,15 +105,11 @@ When the call reached the API, its status and body are passed back to you unchan
 
 **Fix:** if the API needs a fixed value, add it under [Extra headers](./configuration#extra-headers). If it needs a per-caller value, use a header name Bifrost does not remove.
 
-### 502 `relay response is too large to buffer`
-
-**Why:** a normal call's reply was over 64 MB.
-
-**Fix:** make the route stream: set **Streaming** to **Always stream**, or add the path under **Always-Stream Paths**. Streamed replies have no size limit. If the route's **Streaming** is set to **Never stream**, that setting wins over **Always-Stream Paths**; change it to **Always stream** or **Auto** first. See [Streaming](./routes#streaming).
-
 ### The call times out
 
 **Why:** a normal call took longer than **Timeout (seconds)** (60 by default). A stream is bound by the same **Timeout (seconds)** while it waits for the API to start replying, and by **Stream Idle Timeout (seconds)** (60 by default) once it has started, if it then goes quiet.
+
+The error names the setting that fired and its value.
 
 **Fix:** raise the relevant value on the relay's [Network](./configuration#network) tab — **Timeout (seconds)** for a slow-to-start reply, **Stream Idle Timeout (seconds)** for a stream that stalls partway through.
 
