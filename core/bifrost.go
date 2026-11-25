@@ -9201,6 +9201,7 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 			if r, bifrostErr = providerUtils.FlattenLoadedNamespaceTools(ctx, r); bifrostErr != nil {
 				return nil, bifrostErr
 			}
+			r = declareChosenLoadedTools(r)
 		}
 	}
 	// Last, so tools hoisted out of additional_tools items and namespaces are normalized too.

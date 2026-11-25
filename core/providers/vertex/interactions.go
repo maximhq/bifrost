@@ -352,13 +352,45 @@ func (provider *VertexProvider) setInteractionsServiceTier(ctx *schemas.BifrostC
 	}
 }
 
+// searchResultsAsText returns request with the tools the caller's own tool searches loaded given as text. Vertex refuses a
+// list of functions as a function_result, which Google's own Interactions API takes; core declares the loaded functions,
+// so the model can call them. Copy-on-write; a request without such a result comes back as it is.
+func searchResultsAsText(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	var input []schemas.ResponsesMessage
+	for i := range request.Input {
+		msg := &request.Input[i]
+		// A failed search, and one that answers in words, already go as text.
+		if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeToolSearchOutput || !msg.IsClientToolSearchItem() ||
+			msg.Error.IsError() || msg.Output != nil || (msg.Status != nil && *msg.Status == "incomplete") {
+			continue
+		}
+		if input == nil {
+			input = slices.Clone(request.Input)
+		}
+		text := "[]"
+		if len(msg.ToolSearchOutputTools) > 0 {
+			text = string(msg.ToolSearchOutputTools)
+		}
+		tool := *msg.ResponsesToolMessage
+		tool.Output = &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &text}
+		input[i] = msg.WithoutPreservedBytes()
+		input[i].ResponsesToolMessage = &tool
+	}
+	if input == nil {
+		return request
+	}
+	converted := *request
+	converted.Input = input
+	return &converted
+}
+
 func (provider *VertexProvider) interactionsResponses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	target, bifrostErr := provider.interactionsTarget(ctx, key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	provider.setInteractionsServiceTier(ctx, key, target, request)
-	resp, bifrostErr := gemini.InteractionsResponses(ctx, target, request)
+	resp, bifrostErr := gemini.InteractionsResponses(ctx, target, searchResultsAsText(request))
 	return resp, provider.evictOnInteractionsAuthError(key, bifrostErr)
 }
 
@@ -368,7 +400,7 @@ func (provider *VertexProvider) interactionsResponsesStream(ctx *schemas.Bifrost
 		return nil, bifrostErr
 	}
 	provider.setInteractionsServiceTier(ctx, key, target, request)
-	stream, bifrostErr := gemini.InteractionsResponsesStream(ctx, target, postHookRunner, postHookSpanFinalizer, request)
+	stream, bifrostErr := gemini.InteractionsResponsesStream(ctx, target, postHookRunner, postHookSpanFinalizer, searchResultsAsText(request))
 	return stream, provider.evictOnInteractionsAuthError(key, bifrostErr)
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/oauth2"
 )
@@ -590,4 +591,66 @@ func TestVertexInteractionsServiceTierHeader(t *testing.T) {
 	assert.Equal(t, "", got[1], "a regional endpoint does not")
 	assert.Equal(t, "priority", got[2], "an extra header set by the operator wins")
 	assert.Equal(t, "flex", got[3], "a key with no region uses the global endpoint")
+}
+
+// TestVertexInteractionsSendsSearchResultsAsText pins the result of the caller's own tool search on Vertex, which refuses
+// a list of functions as a function_result ("Unsupported list item type in tool result step"): the list goes as text, on
+// the unary and the streamed create. A failed search keeps its error, and the shared request is not modified.
+func TestVertexInteractionsSendsSearchResultsAsText(t *testing.T) {
+	var mu sync.Mutex
+	var body []byte
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		body = got
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"v1_t","object":"interaction","model":"gemini-3.6-flash","status":"completed","steps":[]}`))
+	}))
+	defer server.Close()
+	client := &fasthttp.Client{
+		Dial:      func(string) (net.Conn, error) { return net.Dial("tcp", server.Listener.Addr().String()) },
+		TLSConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("proj-1"), AuthCredentials: *schemas.NewSecretVar(`{"type":"service_account","client_email":"a@b"}`)}}
+	provider := &VertexProvider{client: client, streamingClient: client}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok", TokenType: "Bearer"}))
+	const tools = `[{"type":"function","name":"convert_currency","parameters":{"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}}}}]`
+	for name, tc := range map[string]struct{ item, want, isError string }{
+		"loaded":        {`{"type":"tool_search_output","call_id":"c","execution":"client","status":"completed","tools":` + tools + `}`, tools, ""},
+		"found nothing": {`{"type":"tool_search_output","call_id":"c","execution":"client","status":"completed","tools":[]}`, "[]", ""},
+		"failed":        {`{"type":"tool_search_output","call_id":"c","execution":"client","status":"incomplete","tools":[]}`, "tool search failed", "true"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var req schemas.BifrostResponsesRequest
+			require.NoError(t, schemas.Unmarshal([]byte(`{"input":[`+tc.item+`]}`), &req))
+			req.Model = "gemini-3.6-flash"
+			req.Params = &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr("v1_p"), Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch, Name: schemas.Ptr("find"), ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: schemas.Ptr(schemas.ToolSearchExecutionClient)}}}}
+			before, err := schemas.Marshal(&req)
+			require.NoError(t, err)
+			check := func() {
+				mu.Lock()
+				defer mu.Unlock()
+				step := gjson.GetBytes(body, `input.#(type=="function_result")`)
+				assert.Equal(t, gjson.String, step.Get("result").Type, string(body))
+				assert.Equal(t, tc.want, step.Get("result").String(), string(body))
+				assert.Equal(t, tc.isError, step.Get("is_error").Raw, string(body))
+				assert.Equal(t, "find", step.Get("name").String())
+			}
+			_, bifrostErr := provider.interactionsResponses(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, &req)
+			require.Nil(t, bifrostErr)
+			check()
+			stream, _ := provider.interactionsResponsesStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return result, err
+			}, nil, key, &req)
+			if stream != nil {
+				for range stream {
+				}
+			}
+			check()
+			after, err := schemas.Marshal(&req)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(before), string(after), "the shared request is not modified")
+		})
+	}
 }

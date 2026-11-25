@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -369,6 +370,85 @@ func TestPrepareResponsesRequest_FlattensNamespacesASearchLoaded(t *testing.T) {
 		require.NotNil(t, bifrostErr, name)
 		assert.Equal(t, 400, *bifrostErr.StatusCode, name)
 		assert.Contains(t, bifrostErr.Error.Message, "not unique", name)
+	}
+}
+
+// TestPrepareResponsesRequest_DeclaresLoadedToolsOnInteractions pins which functions a client search loaded are also
+// declared in tools. Google refuses a tool_choice that names a function tools does not list, so on Gemini the ones it
+// names are declared, and no others, as Google loads those from the result. Vertex loads none, so every one is.
+func TestPrepareResponsesRequest_DeclaresLoadedToolsOnInteractions(t *testing.T) {
+	const fn = `{"type":"function","name":"%s","description":"D.","parameters":{"type":"object","properties":{"a":{"type":"string"}}}}`
+	convert, log := fmt.Sprintf(fn, "convert_currency"), fmt.Sprintf(fn, "log_request")
+	fx := `{"type":"namespace","name":"fx","description":"Money.","tools":[` + convert + `,` + log + `]}`
+	forced := `{"type":"function","name":"log_request"}`
+	for name, tc := range map[string]struct {
+		provider                 schemas.ModelProvider
+		status                   string
+		loaded, choice, declared string
+		want                     []string
+	}{
+		"gemini, no choice":            {schemas.Gemini, "completed", fx, "", "", nil},
+		"gemini, a choice of mode":     {schemas.Gemini, "completed", fx, `"required"`, "", nil},
+		"gemini, forced":               {schemas.Gemini, "completed", fx, forced, "", []string{"fx__log_request"}},
+		"gemini, forced by flat name":  {schemas.Gemini, "completed", fx, `{"type":"function","name":"fx__log_request"}`, "", []string{"fx__log_request"}},
+		"gemini, allowed":              {schemas.Gemini, "completed", fx, `{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"log_request"},{"type":"function","name":"convert_currency"}]}`, "", []string{"fx__convert_currency", "fx__log_request"}},
+		"gemini, forced top-level":     {schemas.Gemini, "completed", convert + `,` + log, forced, "", []string{"log_request"}},
+		"gemini, loaded twice":         {schemas.Gemini, "completed", log + `,` + log, forced, "", []string{"log_request"}},
+		"gemini, already declared":     {schemas.Gemini, "completed", log, forced, log, []string{"log_request"}},
+		"gemini, not loaded":           {schemas.Gemini, "completed", convert, forced, "", nil},
+		"gemini, a search that failed": {schemas.Gemini, "incomplete", log, forced, "", nil},
+		"vertex, no choice":            {schemas.Vertex, "completed", fx, "", "", []string{"fx__convert_currency", "fx__log_request"}},
+		"vertex, forced":               {schemas.Vertex, "completed", fx, forced, "", []string{"fx__convert_currency", "fx__log_request"}},
+		"vertex, top-level":            {schemas.Vertex, "completed", convert + `,` + log, "", "", []string{"convert_currency", "log_request"}},
+		"vertex, already declared":     {schemas.Vertex, "completed", log, "", log, []string{"log_request"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			choice := ""
+			if tc.choice != "" {
+				choice = `"tool_choice":` + tc.choice + `,`
+			}
+			declared := ""
+			if tc.declared != "" {
+				declared = "," + tc.declared
+			}
+			var incoming openai.OpenAIResponsesRequest
+			require.NoError(t, schemas.Unmarshal([]byte(`{"model":"gemini-3.8-flash","previous_response_id":"v1_p",`+choice+`"tools":[{"type":"tool_search","execution":"client","name":"find","description":"Find.","parameters":{"type":"object","properties":{}}}`+declared+`],"input":[
+				{"type":"tool_search_output","call_id":"c","execution":"client","status":"`+tc.status+`","tools":[`+tc.loaded+`]}]}`), &incoming))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := incoming.ToBifrostResponsesRequest(ctx)
+			req.Provider, req.Model = tc.provider, "gemini-3.8-flash"
+			before, err := schemas.Marshal(req)
+			require.NoError(t, err)
+
+			out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			require.Nil(t, bifrostErr)
+			native, err := gemini.ToGeminiInteractionsRequest(out)
+			require.NoError(t, err)
+			body, err := schemas.Marshal(native)
+			require.NoError(t, err)
+			var got []string
+			for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+				if tool.Get("type").String() != "function" {
+					continue
+				}
+				got = append(got, tool.Get("name").String())
+				assert.False(t, tool.Get("defer_loading").Exists(), "Google refuses a deferred tool beside a client search: %s", body)
+				assert.Equal(t, "object", tool.Get("parameters.type").String(), "the declaration is whole: %s", body)
+			}
+			slices.Sort(got)
+			assert.Equal(t, tc.want, got, string(body))
+			if strings.Contains(tc.choice, "log_request") && len(tc.want) > 0 {
+				chosen := providerUtils.GetJSONField(body, "generation_config.tool_choice.allowed_tools.tools").Array()
+				require.NotEmpty(t, chosen, string(body))
+				for _, name := range chosen {
+					assert.Contains(t, got, name.String(), "a chosen tool is declared")
+				}
+			}
+
+			after, err := schemas.Marshal(req)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(before), string(after), "the shared request was mutated")
+		})
 	}
 }
 

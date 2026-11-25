@@ -141,7 +141,7 @@ func mergeResponsesToolDeclarations(top, declared []schemas.ResponsesTool) []sch
 // so the loaded tools get the same flat names and response-side restore as the rest.
 // The output items stay in input: the converter turns them into tool_result blocks.
 //
-// Only those requests that declare a client tool_search are touched (a Gemini turn on the
+// Only those requests that declare a client tool_search are touched (a Gemini turn on Google's own
 // Interactions API is not: Google loads the tools from the search's result itself); everything else,
 // and a request whose history holds no client search output, comes back as the same
 // pointer without allocating. Copy-on-write, so fallbacks see the caller's request.
@@ -252,12 +252,70 @@ func hoistClientToolSearchOutputTools(ctx *schemas.BifrostContext, request *sche
 }
 
 // clientToolSearchNeedsDeclaredTools reports whether request's model can call a tool a client
-// search loaded only once it is declared: Claude, and Gemini on generateContent.
+// search loaded only once it is declared: Claude, Gemini on generateContent, and Gemini on Vertex's
+// Interactions, which refuses the list of functions Google's own loads them from.
 func clientToolSearchNeedsDeclaredTools(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) bool {
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return true
 	}
-	return schemas.IsGeminiModelFamily(ctx, request.Model) && !gemini.ShouldUseGeminiInteractions(ctx, request)
+	return schemas.IsGeminiModelFamily(ctx, request.Model) &&
+		(!gemini.ShouldUseGeminiInteractions(ctx, request) || schemas.ResolveBaseProvider(ctx, request.Provider) == schemas.Vertex)
+}
+
+// declareChosenLoadedTools declares the functions a client search loaded that tool_choice names. Google loads a search's
+// functions from its result, but refuses a choice of a function tools does not list. It runs once namespaces are flat,
+// so the choice and the loaded functions share names. Copy-on-write; a request whose choice names no loaded function
+// comes back as it is.
+func declareChosenLoadedTools(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if request.Params == nil || request.Params.ToolChoice == nil || request.Params.ToolChoice.ResponsesToolChoiceStruct == nil {
+		return request
+	}
+	choice := request.Params.ToolChoice.ResponsesToolChoiceStruct
+	missing := make(map[string]bool, len(choice.Tools)+1)
+	if choice.Name != nil {
+		missing[*choice.Name] = true
+	}
+	for i := range choice.Tools {
+		if name := choice.Tools[i].Name; name != nil {
+			missing[*name] = true
+		}
+	}
+	for i := range request.Params.Tools {
+		if name := request.Params.Tools[i].Name; name != nil {
+			delete(missing, *name)
+		}
+	}
+	var chosen []schemas.ResponsesTool
+	for i := range request.Input {
+		message := &request.Input[i]
+		if len(missing) == 0 {
+			break
+		}
+		// An incomplete output is a search that failed, so it loaded nothing.
+		if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeToolSearchOutput || !message.IsClientToolSearchItem() ||
+			(message.Status != nil && *message.Status == "incomplete") {
+			continue
+		}
+		var loaded []schemas.ResponsesTool
+		if err := schemas.Unmarshal(message.ToolSearchOutputTools, &loaded); err != nil {
+			continue // the converter sends the result as the caller wrote it
+		}
+		for _, tool := range loaded {
+			if tool.Type == schemas.ResponsesToolTypeFunction && tool.Name != nil && missing[*tool.Name] {
+				delete(missing, *tool.Name)
+				tool.DeferLoading = nil
+				chosen = append(chosen, tool)
+			}
+		}
+	}
+	if len(chosen) == 0 {
+		return request
+	}
+	prepared := *request
+	params := *request.Params
+	params.Tools = slices.Concat(request.Params.Tools, chosen)
+	prepared.Params = &params
+	return &prepared
 }
 
 // declaresClientToolSearch reports whether request declares a client-run tool_search,
