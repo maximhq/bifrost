@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
 	hasUnsafeInteger,
+	relayAsyncJobFormSchema,
 	relayBodyOverridesSchema,
 	exactJSONNumbers,
 	relayFormSchema,
+	relayJobSchema,
 	relayOpenAPISpecUrlSchema,
 	relayRouteFormSchema,
 	relayUsageBaseSchema,
@@ -165,6 +167,40 @@ describe("relay form validation", () => {
 		expect(relayUsageBaseSchema.safeParse({ cost_per_unit: -1 }).success).toBe(false);
 	});
 
+	it("refuses an async job the gateway would refuse", () => {
+		const job = { id_path: "id", poll: { method: "GET", path: "/jobs/{{job.id}}" }, status_path: "status", succeeded: ["done"] };
+		const messages = (patch: object) => (relayJobSchema.safeParse({ ...job, ...patch }).error?.issues ?? []).map((i) => i.message);
+		expect(messages({})).toEqual([]);
+		expect(messages({ poll: { method: "POST", path: "/", body: '{"JobId":"{{job.id}}"}' } })).toEqual([]);
+		expect(messages({ poll: { method: "POST", path: "/", headers: { "X-Job": "{{job.id}}" } } })).toEqual([]);
+		expect(messages({ poll: { method: "GET", path: "/jobs/latest" } })[0]).toContain("{{job.id}}");
+		// With a body the gateway sends its own Content-Type, so the id in that header row is never sent.
+		const typed = { "Content-Type": "application/x-job-{{job.id}}" };
+		expect(messages({ poll: { method: "POST", path: "/status", body: "{}", headers: typed } })[0]).toContain("{{job.id}}");
+		expect(messages({ poll: { method: "POST", path: "/status", headers: typed } })).toEqual([]);
+		expect(messages({ timeout_seconds: 604801 })[0]).toContain("7 days");
+		expect(messages({ interval_seconds: 7200 })[0]).toContain("3600");
+		expect(messages({ interval_seconds: 7200, timeout_seconds: 7200 })).toEqual([]);
+		expect(messages({ succeeded: ["DONE"], failed: ["done"] })[0]).toContain("DONE");
+		expect(messages({ succeeded: ["", "DONE"], failed: ["", "done"] })).toHaveLength(1);
+		expect(messages({ succeeded: ["S"], failed: ["ſ"] })).toHaveLength(1);
+		expect(messages({ succeeded: ["ß"], failed: ["SS"] })).toEqual([]);
+		expect(messages({ succeeded: ["DONE"], failed: ["FAILED"] })).toEqual([]);
+	});
+
+	it("accepts the cleared values the job editor keeps", () => {
+		const job = { id_path: "id", poll: { method: "GET", path: "/jobs/{{job.id}}", body: "", content_type: "" }, status_path: "s" };
+		const parsed = relayJobSchema.safeParse({
+			...job,
+			succeeded: ["done"],
+			failed: [],
+			interval_seconds: null,
+			timeout_seconds: null,
+			reused_id_is_new_job: false,
+		});
+		expect(parsed.error?.issues ?? []).toEqual([]);
+	});
+
 	it("accepts only an absolute http(s) URL as the OpenAPI import's URL source", () => {
 		for (const bad of ["", "   ", "/openapi.json", "openapi.json", "ftp://example.com/spec.json", "http://[::1", "https://"]) {
 			expect(relayOpenAPISpecUrlSchema.safeParse(bad).success, bad).toBe(false);
@@ -207,5 +243,20 @@ describe("body override numbers", () => {
 		// A 400-digit token that a duplicate key overwrites is reported, not thrown on.
 		expect(hasUnsafeInteger(`{"n":${"9".repeat(400)},"n":0}`)).toBe(true);
 		expect(() => relayBodyOverridesSchema.safeParse([{ name: "n", value: `{"n":${"9".repeat(400)},"n":0}` }])).not.toThrow();
+	});
+});
+
+describe("relayAsyncJobFormSchema poll headers", () => {
+	const job = (headers: Record<string, string>) => ({
+		method: "POST" as const,
+		path: "/jobs",
+		headers: [],
+		job: { id_path: "id", poll: { method: "GET", path: "/jobs/{{job.id}}", headers }, status_path: "status", succeeded: ["done"] },
+	});
+	it("refuses a poll header with no value, which would make its status route match every call", () => {
+		const result = relayAsyncJobFormSchema.safeParse(job({ "X-Op": " " }));
+		expect(result.success).toBe(false);
+		expect(result.error?.issues.some((i) => i.path.join(".") === "job.poll.headers")).toBe(true);
+		expect(relayAsyncJobFormSchema.safeParse(job({ "X-Op": "Get" })).success).toBe(true);
 	});
 });

@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import { toRelayConfig, toRelayForm } from "@/lib/utils/relayForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { AlertTriangle, Info, Waypoints } from "lucide-react";
+import { AlertTriangle, Info } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useForm, type Control, type FieldValues } from "react-hook-form";
 import { secondsToHumanReadable } from "@/lib/utils/strings";
@@ -153,10 +153,7 @@ export function EndpointConfigSheet({ show, onCancel, endpoint }: { show: boolea
 			<SheetContent className="p-0 pt-4 sm:max-w-[50%]" data-testid="relay-config-sheet">
 				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>
-						<div className="font-lg flex items-center gap-2">
-							<Waypoints className="h-5 w-5" />
-							{t("relays.endpointConfig.title")}
-						</div>
+						<div className="font-lg flex items-center gap-2">{t("relays.endpointConfig.title")}</div>
 					</SheetTitle>
 				</SheetHeader>
 				<div className="px-4 py-4 md:px-8">
