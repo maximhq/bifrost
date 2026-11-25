@@ -736,13 +736,19 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		}
 	}
 
+	// Anthropic rejects the fine-grained-tool-streaming beta beside a tunneled computer or browser toolset.
 	var eagerFlags []*bool
+	besideToolset := false
 	for _, tool := range filteredTools {
 		if tool.Function != nil {
 			eagerFlags = append(eagerFlags, tool.EagerInputStreaming)
 		}
+		besideToolset = besideToolset || string(tool.Type) == string(anthropic.AnthropicToolTypeComputerToolset20260801) ||
+			string(tool.Type) == string(anthropic.AnthropicToolTypeBrowserToolset20260801)
 	}
-	applyBedrockFineGrainedToolStreaming(ctx, bedrockReq, bifrostReq.Model, caps, eagerFlags)
+	if !besideToolset {
+		applyBedrockFineGrainedToolStreaming(ctx, bedrockReq, bifrostReq.Model, caps, eagerFlags)
+	}
 
 	// Convert reasoning config
 	if bifrostReq.Params.Reasoning != nil {

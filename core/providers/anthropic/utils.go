@@ -1356,6 +1356,12 @@ func IsHaiku5Plus(model string) bool {
 	return strings.Contains(strings.ToLower(model), "haiku-5")
 }
 
+// isHaiku55 returns true for Claude Haiku 5.5, dashed or dotted.
+func isHaiku55(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "haiku") && (strings.Contains(m, "5-5") || strings.Contains(m, "5.5"))
+}
+
 // IsFableFamily returns true for Claude Fable / Mythos models (Fable 5,
 // Mythos 5, Mythos Preview). These share Opus 4.7+'s request surface
 // (adaptive-only thinking, temperature/top_p/top_k removed) AND additionally
@@ -2073,7 +2079,7 @@ const (
 )
 
 // Computer-use tool generations.
-//   - "20260801" — the client toolset, the only form Opus 5.5 accepts
+//   - "20260801" — the client toolset, the only form Opus 5.5 and Haiku 5.5 accept on the Claude API
 //   - "20251124" — Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 5, Sonnet 4.6, Opus 4.5
 //   - "20250124" — everything else (Sonnet 4.5, Haiku 4.5, Opus 4.1, Sonnet 4, Opus 4, Sonnet 3.7)
 //
@@ -2095,10 +2101,11 @@ const (
 // tool type, falling back to substring detection.
 //
 // The fallback only moves a model to the toolset when the dated tools are
-// actually rejected, which today is Opus 5.5 and only on the surfaces that
-// dropped them (the Claude API and Google Cloud; AWS and Foundry still serve
-// computer_20251124). Opus 4.8 through Fable 5.1 accept both forms, so they stay
-// on computer_20251124 and a row moves them when their surface is ready.
+// actually rejected, which today is Opus 5.5 and Haiku 5.5 and only on the
+// surfaces that dropped them (the Claude API and Google Cloud; AWS and Foundry
+// still serve computer_20251124). Haiku 5.5 takes computer_20250124 on no
+// surface. Opus 4.8 through Fable 5.1 accept both forms, so they stay on
+// computer_20251124 and a row moves them when their surface is ready.
 func ComputerUseGeneration(caps schemas.ModelCaps) string {
 	if computerUse, ok := caps.ServerTool(ServerToolComputerUse); ok {
 		switch computerUse {
@@ -2111,11 +2118,11 @@ func ComputerUseGeneration(caps schemas.ModelCaps) string {
 		}
 	}
 	m := strings.ToLower(caps.Model())
-	if schemas.IsOpus55Plus(m) && toolsetOnlyComputerUseProvider(caps.Provider()) {
+	if (schemas.IsOpus55Plus(m) || isHaiku55(m)) && toolsetOnlyComputerUseProvider(caps.Provider()) {
 		return ComputerUseGenToolset20260801
 	}
-	// Opus 4.7+, Sonnet 5+, and the Fable/Mythos family use the new generation.
-	if IsOpus47Plus(m) || IsSonnet5Plus(m) || IsFableFamily(m) {
+	// Opus 4.7+, Sonnet 5+, Haiku 5.5 and the Fable/Mythos family use the new generation.
+	if IsOpus47Plus(m) || IsSonnet5Plus(m) || IsFableFamily(m) || isHaiku55(m) {
 		return ComputerUseGen20251124
 	}
 	// Opus 4.6 / Sonnet 4.6 / Opus 4.5 also use the new generation.
@@ -2145,8 +2152,8 @@ func toolsetOnlyComputerUseProvider(provider schemas.ModelProvider) bool {
 
 // AcceptsComputerToolset reports whether the (provider, model) pair takes a
 // computer_toolset_20260801 entry on the wire. Wider than ComputerUseGeneration,
-// which answers what to *convert* to: every model here except Opus 5.5 also
-// accepts the dated computer_* tools, so a caller that already sent the toolset
+// which answers what to *convert* to: every model here except Opus 5.5 and Haiku 5.5
+// also accepts the dated computer_* tools, so a caller that already sent the toolset
 // must have it forwarded rather than converted into a form it never asked for.
 //
 // Override-aware: the datasheet's supports_computer_toolset decides when set, so
@@ -2161,17 +2168,27 @@ func AcceptsComputerToolset(caps schemas.ModelCaps) bool {
 
 // DefaultSupportsComputerToolset is the name-based fallback for
 // ModelCaps.SupportsComputerToolset, listing the models the computer-use docs
-// publish for the toolset: the Fable/Mythos family, Opus 5.5, Opus 5, Sonnet 5
-// and Opus 4.8. Opus 4.7 and older take the dated tool only.
+// publish for the toolset: the Fable/Mythos family, Opus 5.5, Haiku 5.5, Opus 5,
+// Sonnet 5 and Opus 4.8. Opus 4.7 and older take the dated tool only. A model
+// released later gets the toolset from its datasheet row.
 //
 // Source: https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool
 func DefaultSupportsComputerToolset(model string) bool {
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || schemas.IsOpus55Plus(m) || IsOpus5Plus(m) || IsSonnet5Plus(m) {
+	if IsFableFamily(m) || schemas.IsOpus55Plus(m) || IsOpus5Plus(m) || IsSonnet5Plus(m) || isHaiku55(m) {
 		return true
 	}
 	return strings.Contains(m, "opus") &&
 		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+}
+
+// isClientToolset reports whether a tool is a computer_toolset_20260801 or
+// browser_toolset_20260801 entry.
+func isClientToolset(tool *AnthropicTool) bool {
+	if tool == nil || tool.Type == nil {
+		return false
+	}
+	return *tool.Type == AnthropicToolTypeComputerToolset20260801 || *tool.Type == AnthropicToolTypeBrowserToolset20260801
 }
 
 // TextEditorGeneration returns the text_editor tool-version generation for a model.
@@ -2639,13 +2656,25 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 		headers = appendUniqueHeader(headers, AnthropicDangerousToolUseBetaHeader)
 	}
 	hasCachingScope := false
+	besideToolset := false
 	for i := range req.Tools {
 		headers = appendAnthropicToolBetaHeaders(headers, &req.Tools[i], caps, features, hasProvider, &hasCachingScope)
+		besideToolset = besideToolset || isClientToolset(&req.Tools[i])
 	}
 	// Tools defined by value inside messages (tool_addition blocks, compaction tool_changes)
 	// arrive through the signals, never through req.Messages, which the raw path drops.
 	for _, tool := range signals.inlineDefinitions {
 		headers = appendAnthropicToolBetaHeaders(headers, tool, caps, features, hasProvider, &hasCachingScope)
+		besideToolset = besideToolset || isClientToolset(tool)
+	}
+	// "The header cannot be combined with a computer use or browser use toolset
+	// entry: the API rejects a request that sends both, so remove the header and set
+	// eager_input_streaming on the user-defined tools that need it." So the flag
+	// stays on the tools and no beta is derived from it.
+	//
+	// Source: https://platform.claude.com/docs/en/agents-and-tools/tool-use/fine-grained-tool-streaming
+	if besideToolset {
+		headers = slices.DeleteFunc(headers, func(h string) bool { return h == AnthropicEagerInputStreamingBetaHeader })
 	}
 	// Check for cache control with scope at the top level of the request
 	// (mirrors the tool/system/message checks below).
