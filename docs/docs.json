@@ -182,6 +182,7 @@
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/soniox",
+                  "providers/supported-providers/subq",
                   "providers/supported-providers/typesafe",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",

@@ -1192,6 +1192,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.Reasoning.Effort = clampBasetenResponsesEffort(req.ResponsesParameters.Reasoning.Effort)
 			}
 
+			// Subq always reasons and rejects effort "none" with 400 unsupported_value.
+			// Drop the effort so the request uses Subq's default (high) rather than failing.
+			if bifrostReq.Provider == schemas.Subq {
+				if e := req.ResponsesParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone {
+					req.ResponsesParameters.Reasoning.Effort = nil
+				}
+			}
+
 			// Handle OpenAI-specific parameter filtering
 			// Only o1/o3 series models support reasoning.effort
 			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
@@ -1199,6 +1207,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				// Clear reasoning for non-reasoning OpenAI models to avoid API errors
 				req.ResponsesParameters.Reasoning = nil
 			}
+		}
+
+		// Subq tool_choice accepts only "auto" or "none". Downgrade required/forced
+		// choices to "auto" (lossy, same as Chat Completions) rather than 400.
+		if bifrostReq.Provider == schemas.Subq {
+			applySubqResponsesToolChoice(req)
 		}
 
 		effort := ""
@@ -1324,6 +1338,36 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 // Gated on the OpenAI-family name rather than caps.SupportsReasoning:
 // this asks whether the API rejects the field, which is not the same question for
 // xAI/Groq.
+// applySubqResponsesToolChoice rewrites tool_choice for Subq's Responses
+// contract: only "auto" and "none" are accepted. Forced/required choices become
+// "auto", matching Chat Completions' applySubqCompatibility.
+func applySubqResponsesToolChoice(req *OpenAIResponsesRequest) {
+	if req == nil || req.ToolChoice == nil {
+		return
+	}
+	tc := req.ToolChoice
+	if tc.ResponsesToolChoiceStr != nil {
+		switch schemas.ResponsesToolChoiceType(*tc.ResponsesToolChoiceStr) {
+		case schemas.ResponsesToolChoiceTypeNone, schemas.ResponsesToolChoiceTypeAuto:
+			return
+		default:
+			req.ToolChoice = &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStr: schemas.Ptr(string(schemas.ResponsesToolChoiceTypeAuto)),
+			}
+			return
+		}
+	}
+	if s := tc.ResponsesToolChoiceStruct; s != nil {
+		choice := schemas.ResponsesToolChoiceTypeAuto
+		switch {
+		case s.Type == schemas.ResponsesToolChoiceTypeNone,
+			s.Mode != nil && *s.Mode == string(schemas.ResponsesToolChoiceTypeNone):
+			choice = schemas.ResponsesToolChoiceTypeNone
+		}
+		req.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr(string(choice))}
+	}
+}
+
 func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort string) bool {
 	effortIsNone := effort == schemas.ReasoningEffortNone || (effort == "" && !omittedEffortReasons(caps, model))
 	// An outright unsupported_fields entry outranks the conditional label: the

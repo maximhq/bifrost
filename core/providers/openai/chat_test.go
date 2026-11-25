@@ -3861,3 +3861,86 @@ func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 3, strings.Count(string(body), `"cache_control"`), "all three breakpoints must reach OpenRouter: %s", body)
 }
+
+func TestToOpenAIChatRequest_SubqCompatibility(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	temp := 0.2
+	maxCompletion := 128
+	none := schemas.ReasoningEffortNone
+	enabledFalse := false
+	forced := "get_weather"
+	stop := []string{"a", "b", "c", "d", "e"}
+	content := "hello"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Subq,
+		Model:    "subq-savant-1.4",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}},
+		},
+		Params: &schemas.ChatParameters{
+			Temperature:         &temp,
+			MaxCompletionTokens: &maxCompletion,
+			Reasoning:           &schemas.ChatReasoning{Effort: &none, Enabled: &enabledFalse},
+			Stop:                stop,
+			ToolChoice: &schemas.ChatToolChoice{
+				ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+					Type:     schemas.ChatToolChoiceTypeFunction,
+					Function: &schemas.ChatToolChoiceFunction{Name: forced},
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Temperature != nil {
+		t.Fatalf("expected temperature dropped, got %v", *result.Temperature)
+	}
+	if result.MaxCompletionTokens != nil {
+		t.Fatalf("expected max_completion_tokens cleared, got %v", *result.MaxCompletionTokens)
+	}
+	if result.MaxTokens == nil || *result.MaxTokens != maxCompletion {
+		t.Fatalf("expected max_tokens %d, got %v", maxCompletion, result.MaxTokens)
+	}
+	if result.Reasoning != nil {
+		t.Fatalf("expected reasoning dropped for none/disabled, got %#v", result.Reasoning)
+	}
+	if len(result.Stop) != 4 {
+		t.Fatalf("expected stop truncated to 4, got %d", len(result.Stop))
+	}
+	if result.ToolChoice == nil || result.ToolChoice.ChatToolChoiceStr == nil || *result.ToolChoice.ChatToolChoiceStr != string(schemas.ChatToolChoiceTypeAuto) {
+		t.Fatalf("expected forced tool_choice downgraded to auto, got %#v", result.ToolChoice)
+	}
+
+	// temperature 1 is kept
+	one := 1.0
+	bifrostReq.Params.Temperature = &one
+	bifrostReq.Params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr(schemas.ReasoningEffortLow)}
+	bifrostReq.Params.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeNone))}
+	kept := ToOpenAIChatRequest(ctx, bifrostReq)
+	if kept.Temperature == nil || *kept.Temperature != 1 {
+		t.Fatalf("expected temperature 1 kept, got %v", kept.Temperature)
+	}
+	if kept.Reasoning == nil || kept.Reasoning.Effort == nil || *kept.Reasoning.Effort != schemas.ReasoningEffortLow {
+		t.Fatalf("expected low reasoning kept, got %#v", kept.Reasoning)
+	}
+	if kept.ToolChoice == nil || kept.ToolChoice.ChatToolChoiceStr == nil || *kept.ToolChoice.ChatToolChoiceStr != string(schemas.ChatToolChoiceTypeNone) {
+		t.Fatalf("expected tool_choice none kept, got %#v", kept.ToolChoice)
+	}
+
+	for _, choice := range []schemas.ChatToolChoiceType{schemas.ChatToolChoiceTypeNone, schemas.ChatToolChoiceTypeAuto} {
+		bifrostReq.Params.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{Type: choice}}
+		wire, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq).ToolChoice)
+		if err != nil {
+			t.Fatalf("marshal tool_choice: %v", err)
+		}
+		if string(wire) != `"`+string(choice)+`"` {
+			t.Fatalf("expected structured %s serialized as a string, got %s", choice, wire)
+		}
+	}
+}

@@ -41,7 +41,7 @@ func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 // the placeholder.
 func chatToolImagesSupported(ctx *schemas.BifrostContext, caps schemas.ModelCaps, provider schemas.ModelProvider) bool {
 	base := schemas.ResolveBaseProvider(ctx, provider)
-	return caps.SupportsVision(base == schemas.OpenAI || base == schemas.Azure)
+	return caps.SupportsVision(base == schemas.OpenAI || base == schemas.Azure || base == schemas.Subq)
 }
 
 // ToOpenAIChatRequest converts a Bifrost chat completion request to OpenAI format
@@ -214,6 +214,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	case schemas.Baseten:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyBasetenCompatibility()
+		return openaiReq
+	case schemas.Subq:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applySubqCompatibility()
 		return openaiReq
 	case schemas.OpencodeGo, schemas.OpencodeZen:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -504,6 +508,49 @@ func (req *OpenAIChatRequest) applyBasetenCompatibility() {
 		if req.Messages[i].Role == schemas.ChatMessageRoleDeveloper {
 			req.Messages[i].Role = schemas.ChatMessageRoleSystem
 		}
+	}
+}
+
+// applySubqCompatibility rewrites a chat request for Subq's Chat Completions
+// contract: temperature must be 1 or omitted, max_completion_tokens becomes
+// max_tokens, reasoning cannot be turned off, tool_choice is only auto/none, and
+// stop is capped at 4 sequences. Forced tool choices downgrade to auto.
+func (req *OpenAIChatRequest) applySubqCompatibility() {
+	if req.MaxCompletionTokens != nil {
+		req.MaxTokens = req.MaxCompletionTokens
+		req.MaxCompletionTokens = nil
+	}
+	if req.Temperature != nil && *req.Temperature != 1 {
+		req.Temperature = nil
+	}
+	if req.Reasoning != nil {
+		if req.Reasoning.Enabled != nil && !*req.Reasoning.Enabled {
+			req.Reasoning = nil
+		} else if req.Reasoning.Effort != nil && *req.Reasoning.Effort == schemas.ReasoningEffortNone {
+			req.Reasoning = nil
+		}
+	}
+	if len(req.Stop) > 4 {
+		req.Stop = req.Stop[:4]
+	}
+	if req.ToolChoice == nil {
+		return
+	}
+	if req.ToolChoice.ChatToolChoiceStr != nil {
+		switch schemas.ChatToolChoiceType(*req.ToolChoice.ChatToolChoiceStr) {
+		case schemas.ChatToolChoiceTypeNone, schemas.ChatToolChoiceTypeAuto:
+			return
+		default:
+			req.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeAuto))}
+			return
+		}
+	}
+	if req.ToolChoice.ChatToolChoiceStruct != nil {
+		choice := schemas.ChatToolChoiceTypeAuto
+		if req.ToolChoice.ChatToolChoiceStruct.Type == schemas.ChatToolChoiceTypeNone {
+			choice = schemas.ChatToolChoiceTypeNone
+		}
+		req.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(string(choice))}
 	}
 }
 
