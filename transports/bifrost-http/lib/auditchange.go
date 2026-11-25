@@ -2,6 +2,7 @@ package lib
 
 import (
 	"encoding/json"
+	"slices"
 	"sync"
 
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -83,9 +84,9 @@ func auditSnapshot(v any, dropFields ...string) (json.RawMessage, bool) {
 	}
 	var data []byte
 	if raw, ok := v.(json.RawMessage); ok {
-		data = raw
+		data = slices.Clone(raw) // the caller may reuse its bytes after recording
 		if len(dropFields) == 0 {
-			return raw, true
+			return data, true
 		}
 	} else {
 		var err error

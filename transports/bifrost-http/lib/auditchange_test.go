@@ -41,6 +41,24 @@ func TestAuditRecordSetAfterAndDiscard(t *testing.T) {
 	}
 }
 
+func TestAuditChangeSurvivesRawMessageMutation(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	before, after := json.RawMessage(`{"name":"a"}`), json.RawMessage(`{"name":"b"}`)
+	rec := RecordAuditChange(ctx, "team.updated", "team", "t1", "Team", before, after)
+	before[2], after[2] = 'X', 'X'
+	changes := ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+	if string(changes[0].Before) != `{"name":"a"}` || string(changes[0].After) != `{"name":"b"}` {
+		t.Fatalf("recorded change was altered: before=%s after=%s", changes[0].Before, changes[0].After)
+	}
+	refined := json.RawMessage(`{"name":"c"}`)
+	rec.SetAfter(refined)
+	refined[2] = 'X'
+	changes = ctx.UserValue(configstore.AuditChangesUserValueKey).([]configstore.AuditChange)
+	if string(changes[0].After) != `{"name":"c"}` {
+		t.Fatalf("refined after was altered: %s", changes[0].After)
+	}
+}
+
 func TestAuditRecordNilIsNoop(t *testing.T) {
 	rec := RecordAuditChange(nil, "team.created", "team", "t1", "Team", nil, nil)
 	encoded := false
