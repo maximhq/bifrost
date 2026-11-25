@@ -44,11 +44,14 @@ const rowNames = (collection) => {
 const scratch = mkdtempSync(join(tmpdir(), "filter-collection-"));
 const partitions = {};
 let machgenRows;
+let anthropicPassthroughRows;
 try {
   const augmented = join(scratch, "augmented.json");
   execFileSync("node", [AUGMENT, "--source", SOURCE, "--out", augmented], { stdio: "pipe" });
-  machgenRows = rowNames(JSON.parse(readFileSync(augmented, "utf8"))).filter((n) => n.includes("MachGen Provider Coverage"));
-  for (const provider of ["machgen", "minimax", "replicate", "runware"]) {
+  const augmentedRows = rowNames(JSON.parse(readFileSync(augmented, "utf8")));
+  machgenRows = augmentedRows.filter((n) => n.includes("MachGen Provider Coverage"));
+  anthropicPassthroughRows = augmentedRows.filter((n) => n.includes("/anthropic_passthrough"));
+  for (const provider of ["machgen", "minimax", "replicate", "runware", "anthropic", "azure"]) {
     const out = join(scratch, `${provider}.json`);
     execFileSync("node", [FILTER, "--source", augmented, "--out", out, "--provider", provider], { stdio: "pipe" });
     partitions[provider] = rowNames(JSON.parse(readFileSync(out, "utf8")));
@@ -75,6 +78,20 @@ test("MachGen rows stay out of the partitions their model ids name", () => {
 
 // A Files API call on the OpenAI-compatible route names its real provider in a "provider" form
 // field (upload) or query parameter (delete). The URL still contains "/openai", so without reading
+// Anthropic Managed Agents deployments live at /anthropic_passthrough/v1/deployments, so their rows
+// contain "deployments", an azure keyword. They call Anthropic: an azure run would need an Anthropic
+// key with Managed Agents access, so they stay in the anthropic partition only.
+test("the harness has /anthropic_passthrough rows to route", () => {
+  assert.ok(anthropicPassthroughRows.length > 0, "no rows found under an /anthropic_passthrough folder");
+});
+
+test("/anthropic_passthrough rows stay in the anthropic partition and out of azure", () => {
+  const missing = anthropicPassthroughRows.filter((n) => !partitions.anthropic.includes(n));
+  assert.deepEqual(missing, [], "/anthropic_passthrough rows dropped from the anthropic partition");
+  const leaked = anthropicPassthroughRows.filter((n) => partitions.azure.includes(n));
+  assert.deepEqual(leaked, [], "/anthropic_passthrough rows claimed by the azure partition");
+});
+
 // the declared provider an openai run would claim the Azure pair too: it runs twice, and the openai
 // fork needs Azure credentials. The delete consumes the upload's id, so if it stayed in the openai
 // partition, chain expansion would pull the upload back in with it.
