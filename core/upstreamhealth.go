@@ -249,14 +249,20 @@ func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, mo
 	}
 	defer st.mu.Unlock()
 	st.consecutiveFailures++
-	st.failureClass = class
-	if statusCode != nil {
-		code := *statusCode
-		st.statusCode = &code
-	} else {
-		st.statusCode = nil
+	// Chains take now before locking the pair, so two finishing together can arrive out of order.
+	// An older answer still counts as a failure, but the newer one already set the pair's state and
+	// cooldown, so the older one must not replace them.
+	stale := now.Before(st.lastFailureAt)
+	if !stale {
+		st.failureClass = class
+		if statusCode != nil {
+			code := *statusCode
+			st.statusCode = &code
+		} else {
+			st.statusCode = nil
+		}
+		st.lastFailureAt = now
 	}
-	st.lastFailureAt = now
 	sec := now.Unix()
 	bucket := &st.recent[sec%upstreamFailureBuckets]
 	if bucket.second != sec {
@@ -265,6 +271,9 @@ func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, mo
 	bucket.failures++
 	if class == schemas.FailureClassRateLimit || class == schemas.FailureClassQuota {
 		bucket.rateLimits++
+	}
+	if stale {
+		return
 	}
 	switch effect {
 	case cooldownEnd:

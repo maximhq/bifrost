@@ -383,6 +383,27 @@ func TestUpstreamHealthRefusedWalkReplacesRunningCooldown(t *testing.T) {
 	}
 }
 
+// Chains take their time before locking the pair, so an older walk can be recorded after a newer
+// one. It still counts as a failure, but it must not replace the newer walk's cooldown, class,
+// status code or failure time.
+func TestUpstreamHealthOlderWalkDoesNotReplaceNewerCooldown(t *testing.T) {
+	var tracker upstreamHealthTracker
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	tracker.recordFailure(schemas.OpenAI, "gpt-x", schemas.FailureClassRateLimit, schemas.Ptr(429), 60_000, cooldownStart, t0.Add(time.Second))
+	tracker.recordFailure(schemas.OpenAI, "gpt-x", schemas.FailureClassQuota, schemas.Ptr(403), 1_000, cooldownStart, t0)
+	h := findUpstreamHealth(t, tracker.snapshot(t0.Add(2*time.Second)), schemas.OpenAI, "gpt-x")
+	if h.CooldownUntil == nil || !h.CooldownUntil.Equal(t0.Add(61*time.Second)) {
+		t.Fatalf("expected the newer walk's t0+61s cooldown to stand, got %+v", h)
+	}
+	if h.FailureClass != schemas.FailureClassRateLimit || h.StatusCode == nil || *h.StatusCode != 429 ||
+		h.LastFailureAt == nil || !h.LastFailureAt.Equal(t0.Add(time.Second)) {
+		t.Fatalf("expected the newer walk's class, status and failure time to stand, got %+v", h)
+	}
+	if h.ConsecutiveFailures != 2 || h.RecentFailures != 2 {
+		t.Fatalf("expected the older walk still counted as a failure, got %+v", h)
+	}
+}
+
 // A key retried after a short hint that then asks for longer is free only once the longer wait
 // ends: with one key and MaxRetries 1, a 429 asking for 1s followed by one asking for 60s cools
 // the pair down for the 60s, not the 1s.
