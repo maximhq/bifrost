@@ -346911,6 +346911,226 @@
           }
         }
       ]
+    },
+    {
+      "name": "375. Code mode listToolFiles(query=...) returns a ranked shortlist (code-mode-discovery) [SERIAL]",
+      "description": "listToolFiles takes an optional query and returns a ranked shortlist of the caller visible tool files instead of the complete listing. Before the change the query was ignored and the complete listing came back. Uses the SSE fixture as a code mode client; no upstream provider requests.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-discovery provision a code-mode client on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run name, so two runs against one gateway never contend, and the sweep below can",
+                  "// reap anything an interrupted run left behind by its prefix.",
+                  "pm.collectionVariables.set('codeModeDiscoveryClient', 'harness_codemode_discovery_' + Date.now());",
+                  "pm.collectionVariables.set('codeModeDiscoveryQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeDiscoverySweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeDiscoveryClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\",\n    \"add\",\n    \"greet\",\n    \"web_search\"\n  ],\n  \"tools_to_auto_execute\": []\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-discovery a query returns a ranked shortlist naming the matching tool",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a query returns a ranked shortlist naming the matching tool', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'listToolFiles errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var client = pm.collectionVariables.get('codeModeDiscoveryClient');",
+                  "  pm.expect(content, 'no ranked shortlist header: ' + content).to.include('# Ranked shortlist for this query');",
+                  "  var files = content.split('\\n').filter(function (line) { return line.indexOf('servers/' + client + '/') === 0; }).map(function (line) { return line.split('  #')[0]; });",
+                  "  pm.expect(files[0], 'the matching tool is not ranked first: ' + content).to.equal('servers/' + client + '/echo.pyi');",
+                  "  pm.expect(files.length, 'the shortlist exceeds limit=2: ' + content).to.be.at.most(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-discovery\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"listToolFiles\",\n    \"arguments\": \"{\\\"query\\\": \\\"echo back the input message\\\", \\\"limit\\\": 2}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-discovery queue this run's client, plus any stale leftovers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeDiscoveryClient');",
+                  "var PREFIX = 'harness_codemode_discovery_';",
+                  "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be executing: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = null, stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf(PREFIX) !== 0) { continue; }",
+                  "    if (cfg.name === client) { mine = cfg.client_id; continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(PREFIX.length), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
+                  "  }",
+                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
+                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeDiscoveryQueue', JSON.stringify([mine].concat(stale)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-discovery remove every queued code-mode client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeDiscoveryQueue') || '[]');",
+                  "// An empty queue means the listing above already failed: skip, rather than add a second failure.",
+                  "if (!queue.length) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('codeModeDiscoveryClientId', queue[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeDiscoveryQueue') || '[]');",
+                  "// Only a removed client leaves the queue: a failed delete stays queued for the next pass.",
+                  "if (pm.response.code === 200) {",
+                  "  queue.shift();",
+                  "  pm.collectionVariables.set('codeModeDiscoveryQueue', JSON.stringify(queue));",
+                  "}",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeDiscoverySweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeDiscoverySweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeDiscoveryClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeDiscoveryClientId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

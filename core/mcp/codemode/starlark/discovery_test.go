@@ -1001,3 +1001,35 @@ func TestDiscoveryRankerConfigUpdates(t *testing.T) {
 		t.Fatal("an empty URL must remove the ranker")
 	}
 }
+
+// BenchmarkListToolFiles measures listToolFiles on a large catalogue (40 code
+// mode servers of 25 tools each): the complete listing, and a ranked lexical
+// shortlist, which walks and scores every visible tool.
+func BenchmarkListToolFiles(b *testing.B) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	for s := range 40 {
+		server := fmt.Sprintf("server%02d", s)
+		manager.clients[server] = &schemas.MCPClientState{Name: server, ExecutionConfig: &schemas.MCPClientConfig{ID: server + "-id", Name: server, IsCodeModeClient: true}}
+		for i := range 25 {
+			manager.tools[server] = append(manager.tools[server], discoveryTestTool(fmt.Sprintf("tool_%02d", i), fmt.Sprintf("Read and update record kind %d of %s", i, server), "id", "filter", "limit"))
+		}
+	}
+	for _, bc := range []struct{ name, args string }{
+		{"complete", `{}`},
+		{"ranked", `{"query":"update record kind 7 of server12"}`},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			call := schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("call-bench"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr(codemcp.ToolTypeListToolFiles), Arguments: bc.args},
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := mode.handleListToolFiles(context.Background(), call); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
