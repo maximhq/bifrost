@@ -8367,11 +8367,16 @@
     },
     "openai_config": {
       "type": "object",
-      "description": "OpenAI Responses API settings, honoured by the openai and fireworks providers",
+      "description": "Settings for OpenAI-compatible requests",
       "properties": {
         "disable_store": {
           "type": "boolean",
           "description": "Force store=false on outgoing Responses API requests (openai and fireworks)."
+        },
+        "video_generation_json": {
+          "type": "boolean",
+          "default": false,
+          "description": "Send typed video generation requests as JSON to an OpenAI-compatible backend. This preserves its own dimensions and enables opt-in forwarding of extra JSON parameters."
         }
       },
       "additionalProperties": false

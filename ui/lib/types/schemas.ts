@@ -1182,6 +1182,7 @@ export const proxyFormConfigSchema = z
 // OpenAI Config tab
 export const openaiConfigFormSchema = z.object({
 	disable_store: z.boolean(),
+	video_generation_json: z.boolean().optional(),
 });
 
 export type OpenAIConfigFormSchema = z.infer<typeof openaiConfigFormSchema>;

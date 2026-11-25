@@ -1871,6 +1871,12 @@ func (req *OpenAIVideoGenerationRequest) GetExtraParams() map[string]interface{}
 	return req.ExtraParams
 }
 
+// SetExtraParams accepts explicit extensions from the OpenAI HTTP integration.
+func (req *OpenAIVideoGenerationRequest) SetExtraParams(params map[string]interface{}) {
+	req.ExtraParams = params
+	req.VideoGenerationParameters.ExtraParams = params
+}
+
 // OpenAIVideoEditRequest is the request body for OpenAI video edits. The source video is either an
 // uploaded file, sent as multipart, or a reference to a completed video, sent as JSON.
 type OpenAIVideoEditRequest struct {

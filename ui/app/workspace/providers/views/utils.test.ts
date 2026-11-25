@@ -5,9 +5,17 @@ import { buildProviderUpdatePayload } from "./utils";
 const provider = {
 	name: "openai",
 	provider_status: "active",
+	openai_config: { disable_store: false, video_generation_json: true },
 	injected_tools: [{ name: "web_search", mcp_client_name: "tavily", tool_name: "search" }],
 	passthrough: { allowed_routes: [{ methods: ["POST"], path: "/v1/chat/completions" }] },
 } as ModelProvider;
+
+describe("buildProviderUpdatePayload openai_config", () => {
+	it("preserves JSON video mode when the OpenAI tab saves Disable Store", () => {
+		const payload = buildProviderUpdatePayload(provider, { openai_config: { disable_store: true } });
+		expect(payload.openai_config).toEqual({ disable_store: true, video_generation_json: true });
+	});
+});
 
 describe("buildProviderUpdatePayload injected_tools", () => {
 	it("echoes the saved list when another tab saves", () => {
