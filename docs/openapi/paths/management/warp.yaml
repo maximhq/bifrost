@@ -410,6 +410,15 @@ warp-session:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '403':
         description: Caller lacks `WarpSession` View (enterprise)
+      '409':
+        description: |
+          Warp's settings name a virtual key (`virtual_key_id`) that no longer
+          exists, and the caller has no identity of their own to use instead.
+          An administrator chooses another key in Warp's settings.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '413':
         description: Conversation exceeds the server's history limit
         content:
@@ -417,9 +426,9 @@ warp-session:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
-        # Two reachable paths, both SendError: reading the Warp configuration
-        # fails, and snapshotWarpContext cannot establish the request's data
-        # scope. Undocumented, a client sees a shape it was never told about.
+        # Three reachable paths, all SendError: reading the Warp configuration
+        # or its virtual key fails, and snapshotWarpContext cannot establish the
+        # request's data scope. Undocumented, a client sees a shape it was never told about.
         $ref: '../../openapi.yaml#/components/responses/InternalError'
       '503':
         description: |

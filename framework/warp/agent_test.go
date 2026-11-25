@@ -263,6 +263,19 @@ func TestWarpAgentNamesAGovernanceRefusal(t *testing.T) {
 		require.Contains(t, last.Message, "virtual key is inactive")
 	})
 
+	// Inference auth enforced and the call carrying no credential: governance's
+	// own refusal, which used to read as "Warp's model could not be reached".
+	// Its reason names an x-bf-vk header nobody using the dashboard can send, so
+	// the message says what is actually missing.
+	t.Run("no credential where inference auth requires one", func(t *testing.T) {
+		last := run(refused("virtual_key_required", schemas.ErrorTypePolicyAccessDenied, "virtual key is required. Provide a virtual key via the x-bf-vk header."))
+		require.Equal(t, ErrAccessDenied, last.Code)
+		require.Contains(t, last.Message, "inference authentication")
+		require.Contains(t, last.Message, "Settings > Warp", "names the setting that fixes it")
+		require.Contains(t, last.Message, "virtual key is required", "the deployment's own reason is kept")
+		require.NotContains(t, last.Message, "access profile")
+	})
+
 	t.Run("a provider failure is still an upstream error", func(t *testing.T) {
 		last := run(&schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider exploded"}})
 		require.Equal(t, ErrUpstream, last.Code)

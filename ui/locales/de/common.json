@@ -191,8 +191,7 @@
 		"toggle": "Seitenleiste umschalten"
 	},
 	"sheet": {
-		"collapse": "Einklappen",
-		"expand": "Ausklappen"
+		"resizeHandle": "Panelgröße ändern"
 	},
 	"tabs": {
 		"showMore_one": "{{count}} weiteren Tab anzeigen",

@@ -55,7 +55,7 @@ func (m *MCPManager) UpdateMaxProtocolVersion(version string) {
 	var reconnect []string
 	m.mu.RLock()
 	for id, state := range m.clientMap {
-		config := state.ExecutionConfig
+		config := m.config(id)
 		if id == BifrostMCPClientKey || config == nil || config.MaxProtocolVersion != "" {
 			continue
 		}

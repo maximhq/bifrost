@@ -90,14 +90,14 @@ type GovernanceStore interface {
 }
 
 type Engine struct {
-	rules         Store
+	rules         *Store
 	governance    GovernanceStore
 	logger        schemas.Logger
 	chainMaxDepth *int // pointer to live config value; changes are reflected immediately
 }
 
 // NewEngine creates a new Engine
-func NewEngine(rules Store, governanceStore GovernanceStore, logger schemas.Logger, chainMaxDepth *int) (*Engine, error) {
+func NewEngine(rules *Store, governanceStore GovernanceStore, logger schemas.Logger, chainMaxDepth *int) (*Engine, error) {
 	if rules == nil {
 		return nil, fmt.Errorf("rule store cannot be nil")
 	}
@@ -235,9 +235,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 				}
 				re.logger.Debug("[Engine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
-				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
-
-				program, err := re.rules.GetProgram(ctx, rule)
+				compiled, err := re.rules.compile(rule)
 				if err != nil {
 					re.logger.Warn("[Engine] Failed to compile rule %s: %v", rule.Name, err)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))
@@ -245,6 +243,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 				}
 
 				// Lazy complexity: compute only when the rule's outcome depends on complexity and it hasn't been computed yet
+				program, referencesComplexity := compiled.program, compiled.referencesComplexity
 				if complexityResult == nil && ComputeComplexity != nil && referencesComplexity && celOutcomeDependsOn(program, variables, "complexity_tier") {
 					complexityResult = ComputeComplexity()
 					ComputeComplexity = nil // compute at most once

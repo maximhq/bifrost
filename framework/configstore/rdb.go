@@ -66,13 +66,6 @@ func sortedProviderNames(providers map[schemas.ModelProvider]ProviderConfig) []s
 	return names
 }
 
-// sortedUintCopy returns a sorted copy of ids without mutating the caller's slice.
-func sortedUintCopy(ids []uint) []uint {
-	sorted := append([]uint(nil), ids...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	return sorted
-}
-
 // sortTableKeysByID sorts table keys by stable database identity for deterministic writes.
 func sortTableKeysByID(keys []tables.TableKey) {
 	sort.Slice(keys, func(i, j int) bool {
@@ -170,8 +163,8 @@ func toolSyncIntervalDurationToStoredSeconds(interval time.Duration) (int, error
 	return int(interval / time.Second), nil
 }
 
-// schemaKeyFromTableKey converts a database key to a schema key.
-func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
+// SchemaKeyFromTableKey converts a database key to a schema key.
+func SchemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 	return schemas.Key{
 		ID:                     dbKey.KeyID,
 		Name:                   dbKey.Name,
@@ -183,6 +176,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		UseForBatchAPI:         dbKey.UseForBatchAPI,
 		UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
 		UseOpenAIEndpoints:     dbKey.UseOpenAIEndpoints,
+		DisableContentLogging:  dbKey.DisableContentLogging,
 		AzureKeyConfig:         dbKey.AzureKeyConfig,
 		VertexKeyConfig:        dbKey.VertexKeyConfig,
 		BedrockKeyConfig:       dbKey.BedrockKeyConfig,
@@ -218,6 +212,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		UseForBatchAPI:         key.UseForBatchAPI,
 		UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 		UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+		DisableContentLogging:  key.DisableContentLogging,
 		AzureKeyConfig:         key.AzureKeyConfig,
 		VertexKeyConfig:        key.VertexKeyConfig,
 		BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -779,8 +774,9 @@ func (s *RDBConfigStore) UpdateClientMetadata(ctx context.Context, patch map[str
 	})
 }
 
-// UpdateProvidersConfig updates the client configuration in the database.
-func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, tx ...*gorm.DB) error {
+// UpdateProvidersConfig upserts providers and their keys, keys[provider] for each, as the
+// config.json sync writes them. A provider without an entry in keys has its key rows left as stored.
+func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
 		txDB = tx[0]
@@ -848,8 +844,9 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 		}
 
 		// Create keys for this provider
-		dbKeys := make([]tables.TableKey, 0, len(providerConfig.Keys))
-		for _, key := range providerConfig.Keys {
+		providerKeys := keys[providerName]
+		dbKeys := make([]tables.TableKey, 0, len(providerKeys))
+		for _, key := range providerKeys {
 			// Use existing ConfigHash if set (came from reconciliation with DB),
 			// otherwise generate new hash (new key from config.json)
 			keyHash := key.ConfigHash
@@ -873,6 +870,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				UseForBatchAPI:         key.UseForBatchAPI,
 				UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 				UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+				DisableContentLogging:  key.DisableContentLogging,
 				AzureKeyConfig:         key.AzureKeyConfig,
 				VertexKeyConfig:        key.VertexKeyConfig,
 				BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1005,26 +1003,6 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 	return nil
 }
 
-// deleteJoinRowsForRemovedProviderKeys removes join-table entries that reference keys
-// that are being deleted by UpdateProvider, for every VK provider config of
-// provider. The caller MUST have already locked those VKPC rows (FOR UPDATE)
-// before calling, so this helper performs no locking of its own. This keeps the
-// resource order config_providers -> VKPC -> config_keys consistent with
-// DeleteProvider and UpdateVirtualKeyProviderConfig.
-//
-// One statement covers every config: the provider's configs are selected by a
-// subquery (idx_vk_provider_configs_provider) and the removed keys by
-// idx_vkpc_keys_table_key_id, instead of one DELETE per config.
-func (s *RDBConfigStore) deleteJoinRowsForRemovedProviderKeys(ctx context.Context, txDB *gorm.DB, provider string, lockedVKPCCount int, removedKeyIDs []uint) error {
-	if len(removedKeyIDs) == 0 || lockedVKPCCount == 0 {
-		return nil
-	}
-	providerConfigIDs := txDB.WithContext(ctx).Model(&tables.TableVirtualKeyProviderConfig{}).Select("id").Where("provider = ?", provider)
-	return txDB.WithContext(ctx).
-		Where("table_key_id IN ? AND table_virtual_key_provider_config_id IN (?)", removedKeyIDs, providerConfigIDs).
-		Delete(&tables.TableVirtualKeyProviderConfigKey{}).Error
-}
-
 // cleanupVirtualKeyProviderConfigsForDeletedProvider removes every VK provider
 // config of provider together with what each one owns, with the same effect as
 // calling DeleteVirtualKeyProviderConfig on each: the config-key join rows, the
@@ -1080,17 +1058,19 @@ func (s *RDBConfigStore) cleanupVirtualKeyProviderConfigsForDeletedProvider(ctx 
 	return nil
 }
 
-// UpdateProvider updates a single provider configuration in the database without deleting/recreating.
+// UpdateProvider writes a provider's settings and nothing else. It never creates, updates or
+// deletes a key row: keys are written by their own calls (CreateProviderKey, UpdateProviderKey,
+// DeleteProviderKey), so a settings save cannot bring back a key deleted meanwhile, here or on
+// another node, or delete one added meanwhile. The config hash, the status and description, and
+// the provider's limits also stay as stored: the hash belongs to the config.json sync
+// (UpdateProvidersConfig), which compares against it on restart.
 func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
 		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
 			return s.UpdateProvider(ctx, provider, config, transaction)
 		})
 	}
-
-	var txDB *gorm.DB
-	txDB = tx[0]
-	// Find the existing provider
+	txDB := tx[0]
 	var dbProvider tables.TableProvider
 	if err := dbForUpdate(txDB.WithContext(ctx)).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1098,15 +1078,11 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		}
 		return err
 	}
-
-	// Create a deep copy of the config to avoid modifying the original
+	// The row's hooks may change what they save, so they get a copy, never the caller's config.
 	configCopy, err := deepCopy(config)
 	if err != nil {
 		return err
 	}
-	// Preserve ConfigHash (it has json:"-" tag so deepCopy via JSON doesn't copy it)
-	configCopy.ConfigHash = config.ConfigHash
-	// Update provider fields
 	dbProvider.NetworkConfig = configCopy.NetworkConfig
 	dbProvider.ConcurrencyAndBufferSize = configCopy.ConcurrencyAndBufferSize
 	dbProvider.ProxyConfig = configCopy.ProxyConfig
@@ -1119,181 +1095,14 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.PromptCache = configCopy.PromptCache
 	dbProvider.InjectedTools = configCopy.InjectedTools
 	dbProvider.Passthrough = configCopy.Passthrough
-	dbProvider.ConfigHash = configCopy.ConfigHash
-
-	// Save the updated provider
 	if err := txDB.WithContext(ctx).Save(&dbProvider).Error; err != nil {
 		return s.parseGormError(err)
 	}
-
-	// Lock VKPC rows for this provider BEFORE locking config_keys so that the
-	// resource order matches DeleteProvider and concurrent UpdateVirtualKeyProviderConfig
-	// (which holds a VKPC row and then needs FK locks on config_keys via the join table).
-	// Without this pre-lock the two paths invert on config_keys vs. VKPC and deadlock (40P01).
-	// Only the ids are read: the lock is the point, and loading full rows cost
-	// one row per VK holding this provider.
-	var providerVKPCIDs []uint
-	if err := dbForUpdate(txDB.WithContext(ctx)).
-		Model(&tables.TableVirtualKeyProviderConfig{}).
-		Where("provider = ?", dbProvider.Name).
-		Order("id ASC").
-		Pluck("id", &providerVKPCIDs).Error; err != nil {
-		return err
-	}
-
-	// Get existing keys for this provider
-	var existingKeys []tables.TableKey
-	if err := dbForUpdate(txDB.WithContext(ctx)).Where("provider_id = ?", dbProvider.ID).Order("id ASC").Find(&existingKeys).Error; err != nil {
-		return err
-	}
-
-	// Create a map of existing keys by KeyID for quick lookup
-	existingKeysMap := make(map[string]tables.TableKey)
-	for _, key := range existingKeys {
-		existingKeysMap[key.KeyID] = key
-	}
-
-	// Process each key in the new config
-	for _, key := range configCopy.Keys {
-		// Generate key hash
-		keyHash, err := GenerateKeyHash(key)
-		if err != nil {
-			return fmt.Errorf("failed to generate key hash: %w", err)
-		}
-		dbKey := tables.TableKey{
-			Provider:               dbProvider.Name,
-			ProviderID:             dbProvider.ID,
-			KeyID:                  key.ID,
-			Name:                   key.Name,
-			Value:                  key.Value,
-			Models:                 key.Models,
-			BlacklistedModels:      key.BlacklistedModels,
-			Weight:                 &key.Weight,
-			Enabled:                key.Enabled,
-			UseForBatchAPI:         key.UseForBatchAPI,
-			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
-			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
-			AzureKeyConfig:         key.AzureKeyConfig,
-			VertexKeyConfig:        key.VertexKeyConfig,
-			BedrockKeyConfig:       key.BedrockKeyConfig,
-			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
-			SageMakerKeyConfig:     key.SageMakerKeyConfig,
-			Aliases:                key.Aliases,
-			VLLMKeyConfig:          key.VLLMKeyConfig,
-			ReplicateKeyConfig:     key.ReplicateKeyConfig,
-			OllamaKeyConfig:        key.OllamaKeyConfig,
-			SGLKeyConfig:           key.SGLKeyConfig,
-			DatabricksKeyConfig:    key.DatabricksKeyConfig,
-			CloudflareKeyConfig:    key.CloudflareKeyConfig,
-			AnthropicKeyConfig:     key.AnthropicKeyConfig,
-			OAuthKeyConfig:         key.OAuthKeyConfig,
-			ConfigHash:             keyHash,
-			Status:                 string(key.Status),
-			Description:            key.Description,
-		}
-
-		// Handle Azure config
-		if key.AzureKeyConfig != nil {
-			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-			dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
-			dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
-		}
-
-		// Handle Vertex config
-		if key.VertexKeyConfig != nil {
-			dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
-			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
-			dbKey.VertexRegion = &key.VertexKeyConfig.Region
-			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
-			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
-			dbKey.VertexUseSessionRouting = &key.VertexKeyConfig.UseSessionRouting
-			wif, err := tables.MarshalVertexAWSWorkloadIdentityJSON(key.VertexKeyConfig.AWSWorkloadIdentity)
-			if err != nil {
-				return err
-			}
-			dbKey.VertexAWSWorkloadIdentityJSON = wif
-		}
-
-		// Handle Bedrock config
-		if key.BedrockKeyConfig != nil {
-			dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
-			dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
-			dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
-			dbKey.BedrockRegion = key.BedrockKeyConfig.Region
-			dbKey.BedrockARN = key.BedrockKeyConfig.ARN
-			dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
-			dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
-			dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
-			dbKey.BedrockBatchRoleARN = key.BedrockKeyConfig.BatchRoleARN
-			if key.BedrockKeyConfig.BatchS3Config != nil {
-				data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
-				if err != nil {
-					return err
-				}
-				s := string(data)
-				dbKey.BedrockBatchS3ConfigJSON = &s
-			} else {
-				dbKey.BedrockBatchS3ConfigJSON = nil
-			}
-			if key.BedrockKeyConfig.Endpoints != nil {
-				data, err := sonic.Marshal(key.BedrockKeyConfig.Endpoints)
-				if err != nil {
-					return err
-				}
-				s := string(data)
-				dbKey.BedrockEndpointsJSON = &s
-			} else {
-				dbKey.BedrockEndpointsJSON = nil
-			}
-		}
-
-		// Check if this key already exists
-		if existingKey, exists := existingKeysMap[key.ID]; exists {
-			dbKey.ID = existingKey.ID                             // Keep the same database ID
-			dbKey.ConfigHash = existingKey.ConfigHash             // Preserve config hash
-			dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
-			dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
-			dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
-			dbKey.CreatedAt = existingKey.CreatedAt               // Preserve original creation timestamp
-			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
-				return s.parseGormError(err)
-			}
-			delete(existingKeysMap, key.ID)
-		} else {
-			if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
-				return s.parseGormError(err)
-			}
-		}
-	}
-
-	removedProviderKeyIDs := make([]uint, 0, len(existingKeysMap))
-	for _, keyToDelete := range existingKeysMap {
-		removedProviderKeyIDs = append(removedProviderKeyIDs, keyToDelete.ID)
-	}
-	removedProviderKeyIDs = sortedUintCopy(removedProviderKeyIDs)
-	if err := s.deleteJoinRowsForRemovedProviderKeys(ctx, txDB, dbProvider.Name, len(providerVKPCIDs), removedProviderKeyIDs); err != nil {
-		return err
-	}
-
-	// Delete keys that are no longer in the new config
-	removedKeys := make([]tables.TableKey, 0, len(existingKeysMap))
-	for _, keyToDelete := range existingKeysMap {
-		removedKeys = append(removedKeys, keyToDelete)
-	}
-	sortTableKeysByID(removedKeys)
-	for _, keyToDelete := range removedKeys {
-		if err := txDB.WithContext(ctx).Delete(&keyToDelete).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-	}
-
 	return nil
 }
 
-// AddProvider creates a new provider configuration in the database.
+// AddProvider creates a new provider configuration in the database. It writes no key rows: a
+// provider's keys are created by CreateProviderKey.
 func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
@@ -1329,98 +1138,6 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	if err := txDB.WithContext(ctx).Create(&dbProvider).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	// Create keys for this provider
-	for _, key := range configCopy.Keys {
-		dbKey := tables.TableKey{
-			Provider:               dbProvider.Name,
-			ProviderID:             dbProvider.ID,
-			KeyID:                  key.ID,
-			Name:                   key.Name,
-			Value:                  key.Value,
-			Models:                 key.Models,
-			BlacklistedModels:      key.BlacklistedModels,
-			Weight:                 &key.Weight,
-			Enabled:                key.Enabled,
-			UseForBatchAPI:         key.UseForBatchAPI,
-			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
-			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
-			AzureKeyConfig:         key.AzureKeyConfig,
-			VertexKeyConfig:        key.VertexKeyConfig,
-			BedrockKeyConfig:       key.BedrockKeyConfig,
-			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
-			SageMakerKeyConfig:     key.SageMakerKeyConfig,
-			Aliases:                key.Aliases,
-			VLLMKeyConfig:          key.VLLMKeyConfig,
-			ReplicateKeyConfig:     key.ReplicateKeyConfig,
-			OllamaKeyConfig:        key.OllamaKeyConfig,
-			SGLKeyConfig:           key.SGLKeyConfig,
-			DatabricksKeyConfig:    key.DatabricksKeyConfig,
-			CloudflareKeyConfig:    key.CloudflareKeyConfig,
-			AnthropicKeyConfig:     key.AnthropicKeyConfig,
-			OAuthKeyConfig:         key.OAuthKeyConfig,
-			ConfigHash:             key.ConfigHash,
-			Status:                 string(key.Status),
-			Description:            key.Description,
-		}
-		// Handle Azure config
-		if key.AzureKeyConfig != nil {
-			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-			dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
-			dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
-		}
-		// Handle Vertex config
-		if key.VertexKeyConfig != nil {
-			dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
-			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
-			dbKey.VertexRegion = &key.VertexKeyConfig.Region
-			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
-			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
-			dbKey.VertexUseSessionRouting = &key.VertexKeyConfig.UseSessionRouting
-			wif, err := tables.MarshalVertexAWSWorkloadIdentityJSON(key.VertexKeyConfig.AWSWorkloadIdentity)
-			if err != nil {
-				return err
-			}
-			dbKey.VertexAWSWorkloadIdentityJSON = wif
-		}
-		// Handle Bedrock config
-		if key.BedrockKeyConfig != nil {
-			dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
-			dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
-			dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
-			dbKey.BedrockRegion = key.BedrockKeyConfig.Region
-			dbKey.BedrockARN = key.BedrockKeyConfig.ARN
-			dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
-			dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
-			dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
-			dbKey.BedrockBatchRoleARN = key.BedrockKeyConfig.BatchRoleARN
-			if key.BedrockKeyConfig.BatchS3Config != nil {
-				data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
-				if err != nil {
-					return err
-				}
-				s := string(data)
-				dbKey.BedrockBatchS3ConfigJSON = &s
-			} else {
-				dbKey.BedrockBatchS3ConfigJSON = nil
-			}
-			if key.BedrockKeyConfig.Endpoints != nil {
-				data, err := sonic.Marshal(key.BedrockKeyConfig.Endpoints)
-				if err != nil {
-					return err
-				}
-				s := string(data)
-				dbKey.BedrockEndpointsJSON = &s
-			} else {
-				dbKey.BedrockEndpointsJSON = nil
-			}
-		}
-
-		// Create the key
-		if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
-			return s.parseGormError(err)
-		}
-	}
-
 	return nil
 }
 
@@ -1480,10 +1197,11 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 	return nil
 }
 
-// GetProvidersConfig retrieves the provider configuration from the database.
+// GetProvidersConfig retrieves every provider's configuration from the database, without keys:
+// GetProviderKeys reads a provider's keys.
 func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error) {
 	var dbProviders []tables.TableProvider
-	if err := s.DB().WithContext(ctx).Preload("Keys").Find(&dbProviders).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Find(&dbProviders).Error; err != nil {
 		return nil, err
 	}
 	if len(dbProviders) == 0 {
@@ -1491,52 +1209,31 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 		return nil, nil
 	}
 	processedProviders := make(map[schemas.ModelProvider]ProviderConfig)
-	for _, dbProvider := range dbProviders {
-		provider := schemas.ModelProvider(dbProvider.Name)
-		// Convert database keys to schemas.Key
-		keys := make([]schemas.Key, len(dbProvider.Keys))
-		for i, dbKey := range dbProvider.Keys {
-			keys[i] = schemaKeyFromTableKey(dbKey)
-		}
-		providerConfig := ProviderConfig{
-			Keys:                     keys,
-			NetworkConfig:            dbProvider.NetworkConfig,
-			ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
-			ProxyConfig:              dbProvider.ProxyConfig,
-			SendBackRawRequest:       dbProvider.SendBackRawRequest,
-			SendBackRawResponse:      dbProvider.SendBackRawResponse,
-			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
-			IgnoreProviderCost:       dbProvider.IgnoreProviderCost,
-			CustomProviderConfig:     dbProvider.CustomProviderConfig,
-			OpenAIConfig:             dbProvider.OpenAIConfig,
-			PromptCache:              dbProvider.PromptCache,
-			InjectedTools:            dbProvider.InjectedTools,
-			Passthrough:              dbProvider.Passthrough,
-			ConfigHash:               dbProvider.ConfigHash,
-			Status:                   dbProvider.Status,
-			Description:              dbProvider.Description,
-		}
-		processedProviders[provider] = providerConfig
+	for i := range dbProviders {
+		processedProviders[schemas.ModelProvider(dbProviders[i].Name)] = ProviderConfigFromTable(&dbProviders[i])
 	}
 	return processedProviders, nil
 }
 
-// GetProviderConfig retrieves the provider configuration from the database.
+// GetProviderConfig retrieves a provider's configuration from the database, without its keys:
+// GetProviderKeys reads them.
 func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*ProviderConfig, error) {
 	var dbProvider tables.TableProvider
-	if err := s.DB().WithContext(ctx).Preload("Keys").Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 
-	keys := make([]schemas.Key, len(dbProvider.Keys))
-	for i, dbKey := range dbProvider.Keys {
-		keys[i] = schemaKeyFromTableKey(dbKey)
-	}
-	return &ProviderConfig{
-		Keys:                     keys,
+	config := ProviderConfigFromTable(&dbProvider)
+	return &config, nil
+}
+
+// ProviderConfigFromTable builds a provider's configuration from its row. Keys are not part of
+// it: SchemaKeyFromTableKey converts a key row.
+func ProviderConfigFromTable(dbProvider *tables.TableProvider) ProviderConfig {
+	return ProviderConfig{
 		NetworkConfig:            dbProvider.NetworkConfig,
 		ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
 		ProxyConfig:              dbProvider.ProxyConfig,
@@ -1552,10 +1249,10 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
-	}, nil
+	}
 }
 
-// GetProviderKeys retrieves all keys for a provider ordered by creation time.
+// GetProviderKeys retrieves all keys for a provider in creation order (by row ID).
 func (s *RDBConfigStore) GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
 	var dbKeys []tables.TableKey
 	result := s.DB().WithContext(ctx).
@@ -1563,7 +1260,7 @@ func (s *RDBConfigStore) GetProviderKeys(ctx context.Context, provider schemas.M
 		Select("config_keys.*").
 		Joins("LEFT JOIN config_keys ON config_keys.provider_id = config_providers.id").
 		Where("config_providers.name = ?", string(provider)).
-		Order("config_keys.created_at ASC").
+		Order("config_keys.id ASC").
 		Scan(&dbKeys)
 	if result.Error != nil {
 		return nil, result.Error
@@ -1583,7 +1280,7 @@ func (s *RDBConfigStore) GetProviderKeys(ctx context.Context, provider schemas.M
 		if err := dbKey.AfterFind(nil); err != nil {
 			return nil, err
 		}
-		keys = append(keys, schemaKeyFromTableKey(dbKey))
+		keys = append(keys, SchemaKeyFromTableKey(dbKey))
 	}
 
 	return keys, nil
@@ -1605,15 +1302,17 @@ func (s *RDBConfigStore) getProviderKeyByName(ctx context.Context, txDB *gorm.DB
 	return &dbKey, nil
 }
 
-// GetProviderKey retrieves a single key for a provider.
-func (s *RDBConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
-	dbKey, err := s.getProviderKeyByName(ctx, s.DB(), provider, keyID)
-	if err != nil {
+// GetProviderKey reads one key row of a provider, ErrNotFound when the provider has no key with
+// keyID. SchemaKeyFromTableKey converts it for a caller that works with schema keys.
+func (s *RDBConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*tables.TableKey, error) {
+	var dbKey tables.TableKey
+	if err := s.DB().WithContext(ctx).Where("key_id = ? AND provider = ?", keyID, string(provider)).First(&dbKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
-
-	key := schemaKeyFromTableKey(*dbKey)
-	return &key, nil
+	return &dbKey, nil
 }
 
 // CreateProviderKey creates a new key for an existing provider.
@@ -1802,69 +1501,15 @@ func (s *RDBConfigStore) UpdateStatus(ctx context.Context, provider schemas.Mode
 	return fmt.Errorf("either keyID or provider must be non-empty")
 }
 
-// GetMCPConfig retrieves the MCP configuration from the database.
+// GetMCPConfig retrieves the global MCP settings from the database. The clients themselves are
+// read with GetMCPClientConfigs.
 func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
-	var dbMCPClients []tables.TableMCPClient
-	// Get all MCP clients
-	if err := s.DB().WithContext(ctx).Find(&dbMCPClients).Error; err != nil {
-		return nil, err
-	}
 	var clientConfig tables.TableClientConfig
 	if err := s.DB().WithContext(ctx).First(&clientConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Return MCP config with default ToolManagerConfig if no client config exists
 			// This will never happen, but just in case.
-			clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
-			for i, dbClient := range dbMCPClients {
-				clientConfigs[i] = &schemas.MCPClientConfig{
-					ID:                     dbClient.ClientID,
-					Name:                   dbClient.Name,
-					EndpointSlug:           dbClient.EndpointSlug,
-					IsCodeModeClient:       dbClient.IsCodeModeClient,
-					ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
-					ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
-					ConnectionString:       dbClient.ConnectionString,
-					StdioConfig:            dbClient.StdioConfig,
-					TLSConfig:              dbClient.TLSConfig,
-					AuthType:               schemas.MCPAuthType(dbClient.AuthType),
-					OauthConfigID:          dbClient.OauthConfigID,
-					ToolsToExecute:         dbClient.ToolsToExecute,
-					ToolsToAutoExecute:     dbClient.ToolsToAutoExecute,
-					PromptsToExpose:        dbClient.PromptsToExpose,
-					ResourcesToExpose:      dbClient.ResourcesToExpose,
-					Headers:                dbClient.Headers,
-					AllowedExtraHeaders:    dbClient.AllowedExtraHeaders,
-					IsPingAvailable:        dbClient.IsPingAvailable,
-					NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
-					RequirePublicTarget:    dbClient.RequirePublicTarget,
-					PerUserDiscovery:       dbClient.PerUserDiscovery,
-					PendingVerification:    dbClient.AwaitsAdminVerification(),
-					ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
-					MaxProtocolVersion:     dbClient.MaxProtocolVersion,
-					ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
-					MaxInstructionsLength:  dbClient.MaxInstructionsLength,
-					ToolPricing:            dbClient.ToolPricing,
-					AllowByDefault:         dbClient.AllowByDefault,
-					Disabled:               dbClient.Disabled,
-					DiscoveredTools:        dbClient.DiscoveredTools,
-					DiscoveredInstructions: dbClient.DiscoveredInstructions,
-					PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
-					TokenExchange:          dbClient.TokenExchange,
-					PendingOAuthConfig:     dbClient.PendingOAuthConfig,
-					OpenAPIConfig:          dbClient.OpenAPIConfig,
-					// ConfigHash must round-trip so config-file reconciliation
-					// can compare the stored hash against the file hash; an
-					// empty hash reads as "changed" and re-syncs every client
-					// on every boot, clobbering server-side auth state.
-					ConfigHash: dbClient.ConfigHash,
-
-					DiscoveredResources:         dbClient.DiscoveredResources,
-					DiscoveredResourceTemplates: dbClient.DiscoveredResourceTemplates,
-					DiscoveredPrompts:           dbClient.DiscoveredPrompts,
-				}
-			}
 			return &schemas.MCPConfig{
-				ClientConfigs: clientConfigs,
 				ToolManagerConfig: &schemas.MCPToolManagerConfig{
 					ToolExecutionTimeout: schemas.Duration(30 * time.Second), // default from TableClientConfig
 					MaxAgentDepth:        10,                                 // default from TableClientConfig
@@ -1883,57 +1528,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		CodeModeBindingLevel:     schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
 		DisableAutoToolInject:    clientConfig.MCPDisableAutoToolInject,
 	}
-	clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
-	for i, dbClient := range dbMCPClients {
-		clientConfigs[i] = &schemas.MCPClientConfig{
-			ID:                     dbClient.ClientID,
-			Name:                   dbClient.Name,
-			EndpointSlug:           dbClient.EndpointSlug,
-			IsCodeModeClient:       dbClient.IsCodeModeClient,
-			ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
-			ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
-			ConnectionString:       dbClient.ConnectionString,
-			StdioConfig:            dbClient.StdioConfig,
-			TLSConfig:              dbClient.TLSConfig,
-			AuthType:               schemas.MCPAuthType(dbClient.AuthType),
-			OauthConfigID:          dbClient.OauthConfigID,
-			ToolsToExecute:         dbClient.ToolsToExecute,
-			ToolsToAutoExecute:     dbClient.ToolsToAutoExecute,
-			PromptsToExpose:        dbClient.PromptsToExpose,
-			ResourcesToExpose:      dbClient.ResourcesToExpose,
-			Headers:                dbClient.Headers,
-			AllowedExtraHeaders:    dbClient.AllowedExtraHeaders,
-			IsPingAvailable:        dbClient.IsPingAvailable,
-			NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
-			RequirePublicTarget:    dbClient.RequirePublicTarget,
-			PerUserDiscovery:       dbClient.PerUserDiscovery,
-			PendingVerification:    dbClient.AwaitsAdminVerification(),
-			ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
-			MaxProtocolVersion:     dbClient.MaxProtocolVersion,
-			ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
-			MaxInstructionsLength:  dbClient.MaxInstructionsLength,
-			AllowByDefault:         dbClient.AllowByDefault,
-			Disabled:               dbClient.Disabled,
-			ToolPricing:            dbClient.ToolPricing,
-			DiscoveredTools:        dbClient.DiscoveredTools,
-			DiscoveredInstructions: dbClient.DiscoveredInstructions,
-			PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
-			TokenExchange:          dbClient.TokenExchange,
-			PendingOAuthConfig:     dbClient.PendingOAuthConfig,
-			OpenAPIConfig:          dbClient.OpenAPIConfig,
-			// ConfigHash must round-trip so config-file reconciliation can
-			// compare the stored hash against the file hash; an empty hash
-			// reads as "changed" and re-syncs every client on every boot,
-			// clobbering server-side auth state.
-			ConfigHash: dbClient.ConfigHash,
-
-			DiscoveredResources:         dbClient.DiscoveredResources,
-			DiscoveredResourceTemplates: dbClient.DiscoveredResourceTemplates,
-			DiscoveredPrompts:           dbClient.DiscoveredPrompts,
-		}
-	}
 	return &schemas.MCPConfig{
-		ClientConfigs:     clientConfigs,
 		ToolManagerConfig: &toolManagerConfig,
 		// The global tool sync interval is stored in minutes on the client
 		// config row. Without carrying it here, a boot with no mcp section in
@@ -1943,6 +1538,71 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		MaxProtocolVersion:       clientConfig.MCPMaxProtocolVersion,
 		ServerMaxProtocolVersion: clientConfig.MCPServerMaxProtocolVersion,
 	}, nil
+}
+
+// GetMCPClientConfigs retrieves every stored MCP client's configuration, in the order the
+// clients were created.
+func (s *RDBConfigStore) GetMCPClientConfigs(ctx context.Context) ([]*schemas.MCPClientConfig, error) {
+	var rows []tables.TableMCPClient
+	if err := s.DB().WithContext(ctx).Order("id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]*schemas.MCPClientConfig, 0, len(rows))
+	for i := range rows {
+		config := MCPClientConfigFromTable(&rows[i])
+		out = append(out, &config)
+	}
+	return out, nil
+}
+
+// MCPClientConfigFromTable builds an MCP client's runtime configuration from its stored row.
+func MCPClientConfigFromTable(dbClient *tables.TableMCPClient) schemas.MCPClientConfig {
+	return schemas.MCPClientConfig{
+		ID:                     dbClient.ClientID,
+		Name:                   dbClient.Name,
+		EndpointSlug:           dbClient.EndpointSlug,
+		IsCodeModeClient:       dbClient.IsCodeModeClient,
+		ServerTypeOnSlug:       dbClient.ServerTypeOnSlug,
+		ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
+		ConnectionString:       dbClient.ConnectionString,
+		StdioConfig:            dbClient.StdioConfig,
+		TLSConfig:              dbClient.TLSConfig,
+		AuthType:               schemas.MCPAuthType(dbClient.AuthType),
+		OauthConfigID:          dbClient.OauthConfigID,
+		ToolsToExecute:         dbClient.ToolsToExecute,
+		ToolsToAutoExecute:     dbClient.ToolsToAutoExecute,
+		PromptsToExpose:        dbClient.PromptsToExpose,
+		ResourcesToExpose:      dbClient.ResourcesToExpose,
+		Headers:                dbClient.Headers,
+		AllowedExtraHeaders:    dbClient.AllowedExtraHeaders,
+		IsPingAvailable:        dbClient.IsPingAvailable,
+		NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
+		RequirePublicTarget:    dbClient.RequirePublicTarget,
+		PerUserDiscovery:       dbClient.PerUserDiscovery,
+		PendingVerification:    dbClient.AwaitsAdminVerification(),
+		ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
+		MaxProtocolVersion:     dbClient.MaxProtocolVersion,
+		ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+		MaxInstructionsLength:  dbClient.MaxInstructionsLength,
+		AllowByDefault:         dbClient.AllowByDefault,
+		Disabled:               dbClient.Disabled,
+		ToolPricing:            dbClient.ToolPricing,
+		DiscoveredTools:        dbClient.DiscoveredTools,
+		DiscoveredInstructions: dbClient.DiscoveredInstructions,
+		PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
+		TokenExchange:          dbClient.TokenExchange,
+		PendingOAuthConfig:     dbClient.PendingOAuthConfig,
+		OpenAPIConfig:          dbClient.OpenAPIConfig,
+		// ConfigHash must round-trip so config-file reconciliation can
+		// compare the stored hash against the file hash; an empty hash
+		// reads as "changed" and re-syncs every client on every boot,
+		// clobbering server-side auth state.
+		ConfigHash: dbClient.ConfigHash,
+
+		DiscoveredResources:         dbClient.DiscoveredResources,
+		DiscoveredResourceTemplates: dbClient.DiscoveredResourceTemplates,
+		DiscoveredPrompts:           dbClient.DiscoveredPrompts,
+	}
 }
 
 // GetMCPClientsPaginated retrieves MCP clients with pagination and optional search.
@@ -2591,6 +2251,9 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			PendingOAuthConfig: clientConfigCopy.PendingOAuthConfig,
 			OpenAPIConfig:      clientConfigCopy.OpenAPIConfig,
 			Disabled:           clientConfigCopy.Disabled,
+			// Stored like every other field, so a client created from config.json is
+			// priced from its first boot.
+			ToolPricing: clientConfigCopy.ToolPricing,
 			// ConfigHash has json:"-" so deepCopy loses it; use original
 			// clientConfig. Empty for dashboard-created clients; set for
 			// config-file clients so the next boot's reconciliation sees
@@ -4800,6 +4463,15 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyRelayGrant{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
 		}
+		// Warp's own virtual key setting must not outlive the key either: left behind, every Warp turn
+		// from a caller with no identity was refused until an administrator chose another key. Cleared,
+		// such a caller gets the ordinary "no credential" refusal, which names the setting. Guarded by
+		// HasTable for a store that never created Warp's table.
+		if txDB.Migrator().HasTable(&tables.TableWarpConfig{}) {
+			if err := txDB.WithContext(ctx).Model(&tables.TableWarpConfig{}).Where("virtual_key_id = ?", id).Update("virtual_key_id", "").Error; err != nil {
+				return err
+			}
+		}
 		// Delete upstream OAuth flow rows tied to this VK. No flow_mode
 		// filter needed: an admin-mode flow row never populates
 		// virtual_key_id (see InitiateOAuthFlow), so this can't match one by
@@ -5343,19 +5015,6 @@ func (s *RDBConfigStore) GetVirtualMCPs(ctx context.Context) ([]tables.TableVirt
 		return nil, err
 	}
 	return defs, nil
-}
-
-// GetVirtualMCPAssignments returns each VK's assigned Virtual MCP IDs, keyed by VK row ID.
-func (s *RDBConfigStore) GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error) {
-	var assignments []tables.TableVirtualKeyVirtualMCP
-	if err := s.DB().WithContext(ctx).Find(&assignments).Error; err != nil {
-		return nil, err
-	}
-	out := make(map[string][]uint, len(assignments))
-	for _, a := range assignments {
-		out[a.VirtualKeyID] = append(out[a.VirtualKeyID], a.VirtualMCPID)
-	}
-	return out, nil
 }
 
 // CreateVirtualMCP inserts a Virtual MCP. The endpoint_slug is taken from the caller's slug when set,
@@ -6076,14 +5735,16 @@ func (s *RDBConfigStore) UpdateRateLimit(ctx context.Context, rateLimit *tables.
 			return err
 		}
 		// Same ownership boundary as UpdateBudget: the four counters are advanced
-		// by the governance dump path and UpdateRateLimitUsage, never by a
-		// configuration write, which is why GenerateRateLimitHash excludes them.
+		// by the governance dump path, never by a configuration write, which is
+		// why GenerateRateLimitHash excludes them.
 		// The existing row is already read under the same lock that guards the
 		// Save below, so this adds no new race window.
 		rateLimit.TokenCurrentUsage = existing.TokenCurrentUsage
 		rateLimit.TokenLastReset = existing.TokenLastReset
 		rateLimit.RequestCurrentUsage = existing.RequestCurrentUsage
 		rateLimit.RequestLastReset = existing.RequestLastReset
+		rateLimit.TokenUsageResetEpoch = existing.TokenUsageResetEpoch
+		rateLimit.RequestUsageResetEpoch = existing.RequestUsageResetEpoch
 		// created_at is immutable: Save writes every column, so a caller passing a row
 		// it didn't read from the DB (e.g. a config.json reload) would zero it out.
 		rateLimit.CreatedAt = existing.CreatedAt
@@ -6278,6 +5939,7 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		// applied by CreateBudget on first import, and inert thereafter.
 		budget.CurrentUsage = existing.CurrentUsage
 		budget.LastReset = existing.LastReset
+		budget.UsageResetEpoch = existing.UsageResetEpoch
 		// A write that names no owner at all keeps the business unit the row already has: a budget a
 		// unit links by budget_id is written here naming no owner, and saving the row as given would
 		// detach it from its unit with nothing on the unit's side to notice. A write that names any
@@ -6408,30 +6070,6 @@ func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, curre
 	return nil
 }
 
-// UpdateRateLimitUsage updates only the usage fields of a rate limit.
-// Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
-func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
-	db := s.DB()
-	if len(tx) > 0 && tx[0] != nil {
-		db = tx[0]
-	}
-	result := db.WithContext(ctx).
-		Session(&gorm.Session{SkipHooks: true}).
-		Model(&tables.TableRateLimit{}).
-		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"token_current_usage":   tokenCurrentUsage,
-			"request_current_usage": requestCurrentUsage,
-		})
-	if result.Error != nil {
-		return s.parseGormError(result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
 // loadRoutingRulesOrdered loads routing rules with Targets preloaded, using consistent ordering:
 // rules by priority ASC, created_at DESC, id ASC; targets by weight DESC for deterministic ordering.
 func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {
@@ -6439,14 +6077,19 @@ func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]ta
 	// QueryScope stashed on ctx (the enterprise DAC wrapper attaches one for
 	// request-driven reads). Background callers (engine bootstrap, cache
 	// reloads on context.Background) carry no scope and stay unfiltered.
-	q := s.ScopedDB(ctx).
+	return ReadRoutingRules(s.ScopedDB(ctx).Order("priority ASC, created_at DESC, id ASC"), dest, scopes...)
+}
+
+// ReadRoutingRules reads the routing rules scopes select from db into dest, each with its targets in
+// weight order, the rules in the order db and scopes give.
+func ReadRoutingRules(db *gorm.DB, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {
+	q := db.
 		Preload("Targets", func(db *gorm.DB) *gorm.DB {
 			return db.Order("weight DESC").
 				Order("COALESCE(provider, '') ASC").
 				Order("COALESCE(model, '') ASC").
 				Order("COALESCE(key_id, '') ASC")
-		}).
-		Order("priority ASC, created_at DESC, id ASC")
+		})
 	for _, scope := range scopes {
 		q = scope(q)
 	}
