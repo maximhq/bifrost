@@ -170,7 +170,7 @@ func (provider *VertexProvider) ContinuationKeys(ctx *schemas.BifrostContext, re
 		resolved := *request
 		if alias := key.Aliases.ResolveConfig(request.Model); alias != nil {
 			resolved.Model = alias.ModelID
-			readCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: alias})
+			readCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: request.Model, Config: alias})
 		}
 		if !useVertexInteractions(readCtx, &resolved) {
 			continue

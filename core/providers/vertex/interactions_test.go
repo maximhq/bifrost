@@ -185,6 +185,23 @@ func TestVertexInteractionsContinuationKeys(t *testing.T) {
 	plain.Aliases = schemas.KeyAliases{"fast": {ModelID: flash}}
 	ids, _ = run("/projects/p9/locations/eu/", "fast", "v1_x", plain, aliased)
 	assert.Equal(t, []string{"aliased"}, ids, "a key is where its alias sends the model")
+
+	// A custom agent an alias renames is matched by the name the caller gave it.
+	agentKey := func(id, project string) schemas.Key {
+		k := key(id, project, "global")
+		k.Aliases = schemas.KeyAliases{"analyst": {ModelID: "data-analyst-v2"}}
+		return k
+	}
+	provider, seen := vertexInteractionsServer(t, "/projects/p2/")
+	keys := []schemas.Key{agentKey("a1", "p1"), agentKey("a2", "p2")}
+	for _, k := range keys {
+		provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(k)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok", TokenType: "Bearer"}))
+	}
+	kept, bifrostErr := provider.ContinuationKeys(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostResponsesRequest{Model: "analyst",
+		Params: &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr("v1_x"), ExtraParams: map[string]interface{}{"agent": "analyst"}}}, keys)
+	require.Nil(t, bifrostErr)
+	require.Len(t, kept, 1, "%v", seen())
+	assert.Equal(t, "a2", kept[0].ID)
 }
 
 // TestVertexInteractionsContinuationUndecided pins a lookup that a place did not answer: the turn goes to the one
