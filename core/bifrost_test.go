@@ -11533,3 +11533,114 @@ func BenchmarkNewRequestContext(b *testing.B) {
 		}
 	})
 }
+
+func TestNilContextLiveSessionContentDownloadCompletesAndCloses(t *testing.T) {
+	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer initCtx.Cancel()
+
+	releaseTail := make(chan struct{})
+	stallRelease := make(chan struct{})
+	defer close(stallRelease)
+
+	var reqCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := reqCount.Add(1)
+		w.Header().Set("Content-Type", "audio/wav")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("RIFF"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if n == 1 {
+			select {
+			case <-releaseTail:
+				_, _ = w.Write([]byte("....WAVEfmt "))
+			case <-r.Context().Done():
+			}
+			return
+		}
+		select {
+		case <-r.Context().Done():
+		case <-stallRelease:
+		}
+	}))
+	defer srv.Close()
+
+	plugin := &identityRecordingPlugin{shortCircuit: false}
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID:     "key-openai",
+		Value:  *schemas.NewSecretVar("dummy-test-key"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 1,
+	}})
+
+	client, err := Init(initCtx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	// 1. Full streamed download keeps owned nil-ctx alive after LiveSessionContentRequest returns
+	// and cancels it once Body.Close finishes.
+	content, bifrostErr := client.LiveSessionContentRequest(nil, &schemas.BifrostLiveContentRequest{
+		Provider:  schemas.OpenAI,
+		SessionID: "live_123",
+	})
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, content)
+	require.NotNil(t, content.Body)
+
+	plugin.mu.Lock()
+	firstRootCtx := plugin.capturedCtx
+	plugin.mu.Unlock()
+	require.NotNil(t, firstRootCtx)
+	require.NoError(t, firstRootCtx.Err(), "nil-ctx must remain active while LiveContentResponse.Body is still open")
+
+	close(releaseTail)
+	body, readErr := io.ReadAll(content.Body)
+	require.NoError(t, readErr)
+	assert.Equal(t, "RIFF....WAVEfmt ", string(body))
+	require.NoError(t, firstRootCtx.Err(), "nil-ctx must stay active until Body.Close is called")
+
+	require.NoError(t, content.Body.Close())
+	assert.Error(t, firstRootCtx.Err(), "Body.Close must cancel owned nil-ctx watcher")
+
+	// 2. Early Close before EOF cancels the owned context first so an unconsumed recording does
+	// not block waiting for the upstream stream to finish.
+	partial, partialErr := client.LiveSessionContentRequest(nil, &schemas.BifrostLiveContentRequest{
+		Provider:  schemas.OpenAI,
+		SessionID: "live_123",
+	})
+	require.Nil(t, partialErr)
+	require.NotNil(t, partial)
+	require.NotNil(t, partial.Body)
+
+	plugin.mu.Lock()
+	secondRootCtx := plugin.capturedCtx
+	plugin.mu.Unlock()
+	require.NotNil(t, secondRootCtx)
+	require.NoError(t, secondRootCtx.Err())
+
+	buf := make([]byte, 4)
+	n, err := io.ReadFull(partial.Body, buf)
+	require.NoError(t, err)
+	assert.Equal(t, "RIFF", string(buf[:n]))
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- partial.Body.Close()
+	}()
+	select {
+	case closeErr := <-closed:
+		require.NoError(t, closeErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("early Body.Close blocked waiting on stalled upstream stream")
+	}
+	assert.Error(t, secondRootCtx.Err(), "early Body.Close must cancel owned nil-ctx watcher")
+}

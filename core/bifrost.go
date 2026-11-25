@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"runtime/debug"
 	"slices"
 	"sort"
@@ -6029,6 +6030,41 @@ func (bifrost *Bifrost) newRequestContext(ctx *schemas.BifrostContext) (*schemas
 	return reqCtx, func() { reqCtx.Cancel() }
 }
 
+// liveContentCancelBody transfers ownership of a nil-context call's cancellation
+// function onto LiveContentResponse.Body so the request context stays live while the
+// caller reads the recording, and is canceled once Body.Close finishes. If closed
+// before EOF, ending the context first lets LargeResponseReader abandon the stream
+// instead of draining an unconsumed recording.
+type liveContentCancelBody struct {
+	io.ReadCloser
+	cancelOnce sync.Once
+	cancel     func()
+	eof        atomic.Bool
+}
+
+func (b *liveContentCancelBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF {
+		b.eof.Store(true)
+	}
+	return n, err
+}
+
+func (b *liveContentCancelBody) Close() error {
+	if !b.eof.Load() {
+		b.endContext()
+	}
+	err := b.ReadCloser.Close()
+	b.endContext()
+	return err
+}
+
+func (b *liveContentCancelBody) endContext() {
+	if b.cancel != nil {
+		b.cancelOnce.Do(b.cancel)
+	}
+}
+
 // handleRequest handles the request to the provider based on the request type
 // It handles plugin hooks, request validation, response processing, and fallback providers.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
@@ -6040,7 +6076,16 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// Derive an isolated request context anchored to instance shutdown when omitted.
 	ctx, cancelCtx := bifrost.newRequestContext(ctx)
 	if cancelCtx != nil {
-		defer cancelCtx()
+		defer func() {
+			if resp != nil && resp.LiveContentResponse != nil && resp.LiveContentResponse.Body != nil {
+				resp.LiveContentResponse.Body = &liveContentCancelBody{
+					ReadCloser: resp.LiveContentResponse.Body,
+					cancel:     cancelCtx,
+				}
+				return
+			}
+			cancelCtx()
+		}()
 	}
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
