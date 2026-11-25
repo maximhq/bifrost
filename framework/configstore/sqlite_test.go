@@ -2,7 +2,9 @@ package configstore
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -96,4 +98,61 @@ func TestSQLiteTransactionsTakeTheWriteLockOnBegin(t *testing.T) {
 	var n int
 	require.NoError(t, db.Raw("SELECT n FROM lock_probe WHERE id = 1").Scan(&n).Error)
 	require.Equal(t, 11, n, "both writes must land, in order")
+}
+
+// The config database holds provider keys and other credentials, so a database file the store
+// creates is readable and writable by the process owner only. A file that already exists keeps
+// the mode its operator gave it.
+func TestSQLiteConfigStoreCreatesOwnerOnlyDatabaseFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits")
+	}
+	ctx := context.Background()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	created := filepath.Join(t.TempDir(), "config.db")
+	store, err := newSqliteConfigStore(ctx, &SQLiteConfig{Path: created}, logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.(*RDBConfigStore).Close(ctx) })
+	info, err := os.Stat(created)
+	require.NoError(t, err)
+	require.Zero(t, info.Mode().Perm()&0o077, "no group or other access, whatever the umask: mode %o", info.Mode().Perm())
+
+	existing := filepath.Join(t.TempDir(), "config.db")
+	require.NoError(t, os.WriteFile(existing, nil, 0o640))
+	require.NoError(t, os.Chmod(existing, 0o640))
+	kept, err := newSqliteConfigStore(ctx, &SQLiteConfig{Path: existing}, logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = kept.(*RDBConfigStore).Close(ctx) })
+	info, err = os.Stat(existing)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+}
+
+// The driver treats everything after a "?" in the path as options, so such a path would open a
+// different file from the one created here. It is refused instead of silently using another file.
+func TestSQLiteConfigStoreRefusesAPathWithAQueryMarker(t *testing.T) {
+	dir := t.TempDir()
+	_, err := newSqliteConfigStore(context.Background(), &SQLiteConfig{Path: filepath.Join(dir, "config.db?x")}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "?")
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "no file is created for a refused path")
+}
+
+// A path written as a SQLite URI ("file:config.db") names two different files: the one created
+// here would be literally "file:config.db", while the driver opens "config.db" and creates it
+// with its own default mode. It is refused, so the database is always the file made owner-only.
+func TestSQLiteConfigStoreRefusesAFileURIPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	for _, path := range []string{"file:config.db", "FILE:config.db", "file:" + filepath.Join(dir, "config.db")} {
+		_, err := newSqliteConfigStore(context.Background(), &SQLiteConfig{Path: path}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+		require.Error(t, err, "path %q", path)
+		require.Contains(t, err.Error(), "file:", "path %q", path)
+	}
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "no file is created for a refused path")
 }
