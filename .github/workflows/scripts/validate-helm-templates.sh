@@ -975,6 +975,128 @@ test_template "mcp tokenExchange: id_jag needs resourceClientId, not clientId" \
   --set 'bifrost.mcp.clientConfigs[0].tokenExchange.profile=id_jag' \
   --set 'bifrost.mcp.clientConfigs[0].tokenExchange.resourceClientId=bifrost-client'
 
+# client_credentials and aws_sigv4 render under their config.schema.json keys, and the values schema
+# plus the template guards refuse what config.schema.json refuses.
+CC_CLIENT=(
+  --set bifrost.mcp.enabled=true
+  --set 'bifrost.mcp.clientConfigs[0].name=cc'
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http'
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://mcp.example.com/mcp'
+  --set 'bifrost.mcp.clientConfigs[0].authType=client_credentials'
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientId=bifrost-app'
+)
+check_config "mcp clientCredentials: the block renders under client_credentials" \
+  'c = cfg["mcp"]["client_configs"][0]["client_credentials"]
+assert c == {"client_id": "bifrost-app", "client_secret": "env.CC_SECRET", "token_url": "https://auth.example.com/token", "scopes": ["read"]}, c' \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.tokenUrl=https://auth.example.com/token' \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.scopes[0]=read'
+check_config "mcp clientCredentials: a blank secret beside a key is not rendered" \
+  'c = cfg["mcp"]["client_configs"][0]["client_credentials"]
+assert "client_secret" not in c and c["private_key"] == "env.CC_KEY", c' \
+  "${CC_CLIENT[@]}" \
+  --set-string 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret= ' \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.privateKey=env.CC_KEY'
+check_config "mcp clientCredentials: an explicitly empty resource renders as empty" \
+  'c = cfg["mcp"]["client_configs"][0]["client_credentials"]
+assert c.get("resource") == "", c' \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set-string 'bifrost.mcp.clientConfigs[0].clientCredentials.resource='
+check_config "mcp clientCredentials: an omitted resource is left out" \
+  'c = cfg["mcp"]["client_configs"][0]["client_credentials"]
+assert "resource" not in c, c' \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET'
+expect_render_failure "mcp clientCredentials: schema requires the block for its auth type" "clientCredentials" \
+  --set bifrost.mcp.enabled=true \
+  --set 'bifrost.mcp.clientConfigs[0].name=cc' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http' \
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://mcp.example.com/mcp' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=client_credentials'
+expect_render_failure "mcp clientCredentials: schema refuses a secret and a key together" "clientCredentials': 'not' failed" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.privateKey=env.CC_KEY'
+expect_render_failure "mcp clientCredentials: schema requires a secret or a key" "anyOf" \
+  "${CC_CLIENT[@]}"
+expect_render_failure "mcp clientCredentials: schema refuses the block on another auth type" "clientConfigs/0': 'not' failed" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=headers'
+expect_render_failure "mcp clientCredentials: schema refuses authMethod with a private key" "missing property 'clientSecret'" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.privateKey=env.CC_KEY' \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.authMethod=client_secret_post'
+for opt in keyId=k1 signingAlgorithm=RS256 assertionAudience=https://auth.example.com; do
+  expect_render_failure "mcp clientCredentials: schema refuses ${opt%%=*} with a client secret" "missing property 'privateKey'" \
+    "${CC_CLIENT[@]}" \
+    --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+    --set "bifrost.mcp.clientConfigs[0].clientCredentials.${opt}"
+done
+test_template "mcp clientCredentials: an empty authMethod and signingAlgorithm leave a private key valid" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.privateKey=env.CC_KEY' \
+  --set-string 'bifrost.mcp.clientConfigs[0].clientCredentials.authMethod=' \
+  --set-string 'bifrost.mcp.clientConfigs[0].clientCredentials.signingAlgorithm='
+expect_render_failure "mcp clientCredentials: refused on stdio" "value must be one of 'none', 'headers', 'oauth'" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=stdio' \
+  --set 'bifrost.mcp.clientConfigs[0].stdioConfig.command=npx'
+expect_render_failure "mcp clientCredentials: refused on openapi" "value must be one of 'none', 'headers', 'per_user_headers', 'aws_sigv4'" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=openapi' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json'
+
+SIGV4_CLIENT=(
+  --set bifrost.mcp.enabled=true
+  --set 'bifrost.mcp.clientConfigs[0].name=sigv4'
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http'
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp'
+  --set 'bifrost.mcp.clientConfigs[0].authType=aws_sigv4'
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.region=us-east-1'
+)
+check_config "mcp awsSigV4: the block renders under aws_sigv4" \
+  'c = cfg["mcp"]["client_configs"][0]["aws_sigv4"]
+assert c == {"region": "us-east-1", "service": "aws-mcp", "role_arn": "arn:aws:iam::123456789012:role/gateway", "external_id": "env.EXT_ID", "session_name": "bifrost-mcp"}, c' \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.service=aws-mcp' \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.roleArn=arn:aws:iam::123456789012:role/gateway' \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.externalId=env.EXT_ID' \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.sessionName=bifrost-mcp'
+check_config "mcp awsSigV4: an empty sessionName is the documented default and is not rendered" \
+  'c = cfg["mcp"]["client_configs"][0]["aws_sigv4"]
+assert c == {"region": "us-east-1", "role_arn": "arn:aws:iam::123456789012:role/gateway"}, c' \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.roleArn=arn:aws:iam::123456789012:role/gateway' \
+  --set-string 'bifrost.mcp.clientConfigs[0].awsSigV4.sessionName='
+test_template "mcp awsSigV4: allowed on openapi" \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=openapi' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json'
+expect_render_failure "mcp awsSigV4: schema requires the block for its auth type" "awsSigV4" \
+  --set bifrost.mcp.enabled=true \
+  --set 'bifrost.mcp.clientConfigs[0].name=sigv4' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http' \
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=aws_sigv4'
+expect_render_failure "mcp awsSigV4: schema refuses the block on another auth type" "clientConfigs/0': 'not' failed" \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].authType=headers'
+expect_render_failure "mcp awsSigV4: schema refuses externalId without roleArn" "properties 'roleArn' required" \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.externalId=ext'
+expect_render_failure "mcp awsSigV4: schema refuses a roleArn that is not a role" "awsSigV4/roleArn'" \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.roleArn=arn:aws:iam::123456789012:user/alice'
+expect_render_failure "mcp awsSigV4: refused on stdio" "value must be one of 'none', 'headers', 'oauth'" \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=stdio' \
+  --set 'bifrost.mcp.clientConfigs[0].stdioConfig.command=npx'
+
 # connection_type "openapi" builds an MCP server from an OpenAPI/Swagger document. Every
 # openapiConfig field must render under its config.schema.json key, and the values schema plus
 # the template guards must refuse what config.schema.json refuses.

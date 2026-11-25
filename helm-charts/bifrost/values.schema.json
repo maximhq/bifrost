@@ -9963,9 +9963,11 @@
             "oauth",
             "per_user_oauth",
             "per_user_headers",
-            "token_exchange"
+            "token_exchange",
+            "client_credentials",
+            "aws_sigv4"
           ],
-          "description": "Authentication type for MCP connection. 'token_exchange' is only honored on Enterprise builds."
+          "description": "Authentication type for MCP connection. 'token_exchange' is only honored on Enterprise builds. 'client_credentials' needs clientCredentials; 'aws_sigv4' needs awsSigV4."
         },
         "oauthConfig": {
           "type": "object",
@@ -10153,6 +10155,129 @@
               }
             }
           ],
+          "additionalProperties": false
+        },
+        "clientCredentials": {
+          "type": "object",
+          "description": "OAuth client_credentials grant for authType 'client_credentials': Bifrost obtains one access token for this server with credentials registered at its authorization server, shared by every caller. No user signs in. Renders into client_credentials.",
+          "properties": {
+            "tokenUrl": {
+              "type": "string",
+              "description": "Token endpoint (https). Empty: discovered from the MCP server's OAuth metadata at load; the authorization server must then advertise the client_credentials grant. Renders into token_url."
+            },
+            "clientId": {
+              "type": "string",
+              "description": "Client ID registered for Bifrost. Required. Can use env./vault. prefix. Renders into client_id."
+            },
+            "clientSecret": {
+              "type": "string",
+              "description": "Client secret. Cannot be combined with privateKey. Can use env./vault. prefix. Renders into client_secret."
+            },
+            "authMethod": {
+              "type": "string",
+              "enum": ["", "client_secret_basic", "client_secret_post"],
+              "description": "How clientSecret is sent. Empty (default): HTTP Basic unless the discovered metadata admits only client_secret_post. Requires clientSecret. Renders into auth_method."
+            },
+            "privateKey": {
+              "type": "string",
+              "description": "PEM RSA or EC private key for private_key_jwt instead of a client secret. Cannot be combined with clientSecret. Can use env./vault. prefix. Renders into private_key."
+            },
+            "keyId": {
+              "type": "string",
+              "description": "kid header of the client assertion. Requires privateKey. Renders into key_id."
+            },
+            "signingAlgorithm": {
+              "type": "string",
+              "enum": ["", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"],
+              "description": "Client assertion signing algorithm. Empty (default): chosen from the key. Requires privateKey. Renders into signing_algorithm."
+            },
+            "assertionAudience": {
+              "type": "string",
+              "description": "aud of the client assertion. Empty (default): the token endpoint. Requires privateKey. Renders into assertion_audience."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Scopes to request. Renders into scopes."
+            },
+            "resource": {
+              "type": "string",
+              "description": "Resource indicator (RFC 8707) sent on the token request. Omitted: the MCP server URL. Empty string: not sent, for authorization servers that reject it. Renders into resource."
+            }
+          },
+          "required": ["clientId"],
+          "allOf": [
+            {
+              "$comment": "A client secret or a private key, not both, mirroring client_credentials in config.schema.json. A blank value is not rendered, so it counts as unset.",
+              "not": {
+                "properties": {
+                  "clientSecret": { "pattern": "\\S" },
+                  "privateKey": { "pattern": "\\S" }
+                },
+                "required": ["clientSecret", "privateKey"]
+              }
+            },
+            {
+              "anyOf": [
+                { "properties": { "clientSecret": { "pattern": "\\S" } }, "required": ["clientSecret"] },
+                { "properties": { "privateKey": { "pattern": "\\S" } }, "required": ["privateKey"] }
+              ]
+            },
+            {
+              "$comment": "keyId, signingAlgorithm and assertionAudience apply to privateKey, mirroring client_credentials in config.schema.json.",
+              "if": {
+                "anyOf": [
+                  { "required": ["keyId"], "properties": { "keyId": { "minLength": 1 } } },
+                  { "required": ["signingAlgorithm"], "properties": { "signingAlgorithm": { "minLength": 1 } } },
+                  { "required": ["assertionAudience"], "properties": { "assertionAudience": { "minLength": 1 } } }
+                ]
+              },
+              "then": { "required": ["privateKey"], "properties": { "privateKey": { "pattern": "\\S" } } }
+            },
+            {
+              "$comment": "authMethod applies to clientSecret, mirroring client_credentials in config.schema.json.",
+              "if": { "required": ["authMethod"], "properties": { "authMethod": { "minLength": 1 } } },
+              "then": { "required": ["clientSecret"], "properties": { "clientSecret": { "pattern": "\\S" } } }
+            }
+          ],
+          "additionalProperties": false
+        },
+        "awsSigV4": {
+          "type": "object",
+          "description": "AWS SigV4 signing for authType 'aws_sigv4': Bifrost signs every request to the MCP server (or, for connectionType 'openapi', to the upstream API) with its own AWS identity from the default credential chain (environment, EKS Pod Identity, IRSA, instance profile), optionally assuming roleArn first. Renders into aws_sigv4.",
+          "properties": {
+            "region": {
+              "type": "string",
+              "pattern": "^([a-z]{2}(-[a-z]+)+-[0-9]+|env\\..+|vault\\..+)$",
+              "description": "AWS region requests are signed for, such as us-east-1 or us-gov-west-1. Required. Can use env./vault. prefix. Renders into region."
+            },
+            "service": {
+              "type": "string",
+              "enum": ["", "bedrock-agentcore", "aws-mcp", "lambda", "execute-api"],
+              "description": "SigV4 signing name. Empty (default): bedrock-agentcore (AgentCore Gateway). aws-mcp for the AWS MCP Server, lambda for Lambda function URLs, execute-api for API Gateway. Renders into service."
+            },
+            "roleArn": {
+              "type": "string",
+              "pattern": "^(arn:aws[a-z-]*:iam::[0-9]{12}:role/[\\w+=,.@/-]+|env\\..+|vault\\..+)$",
+              "description": "IAM role to assume before signing, for example in another account. Omitted: sign with Bifrost's own identity. Can use env./vault. prefix. Renders into role_arn."
+            },
+            "externalId": {
+              "type": "string",
+              "description": "External ID for the AssumeRole call, when the role's trust policy requires one. Requires roleArn. Can use env./vault. prefix. Renders into external_id."
+            },
+            "sessionName": {
+              "type": "string",
+              "pattern": "^(|[\\w+=,.@-]{2,64}|env\\..+|vault\\..+)$",
+              "description": "Role session name. Empty (default): bifrost-session. Requires roleArn. Can use env./vault. prefix. Renders into session_name."
+            }
+          },
+          "required": ["region"],
+          "dependentRequired": {
+            "externalId": ["roleArn"],
+            "sessionName": ["roleArn"]
+          },
           "additionalProperties": false
         },
         "oauthConfigId": {
@@ -10388,7 +10513,7 @@
             "required": ["openapiConfig"],
             "properties": {
               "authType": {
-                "enum": ["none", "headers", "per_user_headers"]
+                "enum": ["none", "headers", "per_user_headers", "aws_sigv4"]
               }
             }
           },
@@ -10417,11 +10542,29 @@
           }
         },
         {
-          "$comment": "Per-user auth types open a connection per call, which SSE and STDIO cannot serve. websocket renders as sse.",
+          "$comment": "Per-user auth types open a connection per call, which SSE cannot serve. websocket renders as sse.",
           "if": {
             "properties": {
               "connectionType": {
-                "enum": ["sse", "stdio", "websocket"]
+                "enum": ["sse", "websocket"]
+              }
+            },
+            "required": ["connectionType"]
+          },
+          "then": {
+            "properties": {
+              "authType": {
+                "enum": ["none", "headers", "oauth", "client_credentials", "aws_sigv4"]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A STDIO subprocess is one connection for every caller with no HTTP request to authenticate.",
+          "if": {
+            "properties": {
+              "connectionType": {
+                "const": "stdio"
               }
             },
             "required": ["connectionType"]
@@ -10431,6 +10574,44 @@
               "authType": {
                 "enum": ["none", "headers", "oauth"]
               }
+            }
+          }
+        },
+        {
+          "$comment": "client_credentials requires its credentials block, and the block only applies to that auth type, mirroring config.schema.json.",
+          "if": {
+            "properties": {
+              "authType": {
+                "const": "client_credentials"
+              }
+            },
+            "required": ["authType"]
+          },
+          "then": {
+            "required": ["clientCredentials"]
+          },
+          "else": {
+            "not": {
+              "required": ["clientCredentials"]
+            }
+          }
+        },
+        {
+          "$comment": "aws_sigv4 requires its signing block, and the block only applies to that auth type, mirroring config.schema.json.",
+          "if": {
+            "properties": {
+              "authType": {
+                "const": "aws_sigv4"
+              }
+            },
+            "required": ["authType"]
+          },
+          "then": {
+            "required": ["awsSigV4"]
+          },
+          "else": {
+            "not": {
+              "required": ["awsSigV4"]
             }
           }
         },
