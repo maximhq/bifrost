@@ -1579,33 +1579,37 @@ func (s *BifrostHTTPServer) ReloadComplexityAnalyzerConfig(ctx context.Context, 
 	return routingPlugin.ReloadComplexityAnalyzerConfig(config)
 }
 
-// ReloadRoutingRule reloads a routing rule from the database into the routing plugin's rule cache
+// ReloadRoutingRule brings a written routing rule into memory, where the routing plugin reads it.
+// A rule whose row cannot be read keeps its record and returns the read error; a rule whose row is
+// gone was deleted meanwhile, so its record is dropped and configstore.ErrNotFound returned, as a
+// reload of a missing rule always has. Without the routing plugin it returns that plugin's error
+// after refreshing, so memory follows the database either way.
 func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) error {
-	routingPlugin, err := s.getRoutingPlugin()
-	if err != nil {
-		return fmt.Errorf("routing plugin not found: %w", err)
+	_, pluginErr := s.getRoutingPlugin()
+	err := s.refreshRows(ctx, []livestore.Ref{{Kind: livestore.KindRoutingRule, ID: id}})
+	if err == nil {
+		if _, held := s.Config.LiveStore.Collections.RoutingRules.Get(id); !held {
+			err = configstore.ErrNotFound
+		}
 	}
-	rule, err := s.Config.ConfigStore.GetRoutingRule(ctx, id)
+	if pluginErr != nil {
+		return fmt.Errorf("routing plugin not found: %w", pluginErr)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to get routing rule from config store: %w", err)
-	}
-	// Update the rule in the rule cache
-	if err := routingPlugin.GetRuleStore().UpsertRule(ctx, rule); err != nil {
-		return fmt.Errorf("failed to update routing rule in rule store: %w", err)
 	}
 	return nil
 }
 
-// RemoveRoutingRule removes a routing rule from the routing plugin's rule cache
+// RemoveRoutingRule drops a deleted routing rule from memory, compiled program included. Without
+// the routing plugin it returns that plugin's error after dropping it.
 func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) error {
-	routingPlugin, err := s.getRoutingPlugin()
-	if err != nil {
-		return fmt.Errorf("routing plugin not found: %w", err)
+	_, pluginErr := s.getRoutingPlugin()
+	err := s.removeRecord(ctx, livestore.KindRoutingRule, id)
+	if pluginErr != nil {
+		return fmt.Errorf("routing plugin not found: %w", pluginErr)
 	}
-	if err := routingPlugin.GetRuleStore().DeleteRule(ctx, id); err != nil {
-		return fmt.Errorf("failed to delete routing rule from rule store: %w", err)
-	}
-	return nil
+	return err
 }
 
 // ReloadWebhookEndpoint refreshes a single webhook endpoint in the in-memory

@@ -109,9 +109,10 @@ func decisionTestPlugin(t *testing.T, config *routing.Config, analyzerConfig *co
 	provider := "openai"
 	routeModel := "gpt-4o-mini"
 	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
-	require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(ruleStore.Close)
+	require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "decision-complex-rule",
 		Name:          "Decision model complex route",
 		CelExpression: `complexity_tier == "COMPLEX"`,
@@ -122,7 +123,7 @@ func decisionTestPlugin(t *testing.T, config *routing.Config, analyzerConfig *co
 		Scope:    "global",
 		Priority: 0,
 	}))
-	plugin, err := routing.InitFromStore(context.Background(), config, logger, nil, ruleStore, routing.NewMockGovernance())
+	plugin, err := routing.InitFromStore(context.Background(), config, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	plugin.SetDecisionRequestExecutor(decision.execute)
@@ -530,9 +531,10 @@ func TestValidateComplexityAnalyzerConfig_Decision(t *testing.T) {
 	newPlugin := func(t *testing.T) *routing.RoutingPlugin {
 		t.Helper()
 		logger := rules.NewMockLogger()
-		ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+		ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 		require.NoError(t, err)
-		plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore, routing.NewMockGovernance())
+		t.Cleanup(ruleStore.Close)
+		plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 		return plugin
@@ -563,9 +565,10 @@ func TestValidateComplexityAnalyzerConfig_Decision(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, store.Close()) })
 		logger := rules.NewMockLogger()
-		ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+		ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 		require.NoError(t, err)
-		plugin, err := routing.InitFromStore(context.Background(), &routing.Config{KVStore: store}, logger, nil, ruleStore, routing.NewMockGovernance())
+		t.Cleanup(ruleStore.Close)
+		plugin, err := routing.InitFromStore(context.Background(), &routing.Config{KVStore: store}, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 		plugin.SetDecisionRequestExecutor((&decisionRecorder{}).execute)

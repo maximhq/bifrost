@@ -1330,7 +1330,7 @@ func newProviderRegistrationFixture(t *testing.T) *providerRegistrationFixture {
 	require.NoError(t, cfg.LiveStore.Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindVirtualKey, ID: "registration-vk"}}))
 	gov, err := governance.Init(context.Background(), nil, noopTestLogger{}, nil, cfg.LiveStore, nil, nil)
 	require.NoError(t, err)
-	routingPlugin, err := routing.Init(context.Background(), nil, noopTestLogger{}, nil, gov)
+	routingPlugin, err := routing.Init(context.Background(), nil, noopTestLogger{}, nil, cfg.LiveStore, gov)
 	require.NoError(t, err)
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: lib.NewBaseAccount(cfg), Logger: noopTestLogger{}, LLMPlugins: []schemas.LLMPlugin{gov, routingPlugin}})
 	require.NoError(t, err)
@@ -2835,9 +2835,10 @@ func TestCapturedVectorsFollowLogDeletesAndTheRoutingPlugin(t *testing.T) {
 	}
 	newRouting := func() *routing.RoutingPlugin {
 		t.Helper()
-		ruleStore, err := rules.NewLocalStore(ctx, quiet, nil)
+		ruleStore, err := rules.NewTestRules(ctx, t.TempDir(), quiet)
 		require.NoError(t, err)
-		p, err := routing.InitFromStore(ctx, &routing.Config{}, quiet, nil, ruleStore, unusedGovernance{})
+		t.Cleanup(ruleStore.Close)
+		p, err := routing.InitFromStore(ctx, &routing.Config{}, quiet, nil, ruleStore.Store, unusedGovernance{})
 		require.NoError(t, err)
 		p.SetComplexityWarmupDependencies(vs, nil)
 		return p

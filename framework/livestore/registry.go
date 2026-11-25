@@ -39,6 +39,9 @@ const (
 // KindAgent names the agent-gateway registration collection.
 const KindAgent Kind = "agent"
 
+// KindRoutingRule names the routing rule collection.
+const KindRoutingRule Kind = "routing_rule"
+
 // KindGrantSet names the interned grant sets: what keys may use, stored once per content.
 const KindGrantSet Kind = "grant_set"
 
@@ -57,6 +60,7 @@ type Collections struct {
 	ModelConfigs *Collection[registry.ModelConfig]
 	VirtualMCPs  *Collection[registry.VirtualMCP]
 	Agents       *Collection[registry.Agent]
+	RoutingRules *Collection[registry.RoutingRule]
 	// GrantSets holds the grant set of every key, once per content. A key names its own by
 	// VirtualKey.Grants; GrantSet looks one up.
 	GrantSets *Interned[registry.GrantSet]
@@ -213,6 +217,16 @@ func registerCollections(s *Store, o *storeOptions) (*Collections, error) {
 		Page: registry.AgentsPage,
 		ByID: registry.AgentsByName,
 	}, MultiIndex(registry.AgentsAllowedByDefault, registry.AgentAllowedByDefault)); err != nil {
+		return nil, err
+	}
+	if c.RoutingRules, err = s.Register(KindRoutingRule, nil, Loader[registry.RoutingRule]{
+		ID:   registry.RoutingRuleID,
+		Page: registry.RoutingRulesPage,
+		ByID: registry.RoutingRulesByID,
+	},
+		MultiIndex(registry.RoutingRuleByScope, registry.RoutingRuleScopes),
+		ReadInBatches[registry.RoutingRule](DefaultReadBatch),
+	); err != nil {
 		return nil, err
 	}
 	return c, nil

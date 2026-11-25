@@ -172,7 +172,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("routing plugin requires the governance plugin: %w", err)
 		}
-		return routing.Init(ctx, routingConfig, logger, bifrostConfig.ConfigStore, governancePlugin)
+		return routing.Init(ctx, routingConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.LiveStore, governancePlugin)
 
 	case maxim.PluginName:
 		maximConfig, err := MarshalPluginConfig[maxim.Config](pluginConfig)

@@ -186,3 +186,18 @@ func TestLimitReadsReadMoreIDsThanTheParameterLimit(t *testing.T) {
 		require.ElementsMatch(t, c.want, rateLimitIDsOf(rows), "rate limits %s", c.name)
 	}
 }
+
+// TestRoutingRulesByIDReadsMoreIDsThanTheParameterLimit checks that a refresh of more routing rule
+// IDs than one statement may bind still reads the rules that exist, with their targets.
+func TestRoutingRulesByIDReadsMoreIDsThanTheParameterLimit(t *testing.T) {
+	db := newProviderDB(t, nil).DB()
+	require.NoError(t, db.Create(&tables.TableRoutingRule{
+		ID: "r-1", Name: "one", Scope: "global", CelExpression: "true",
+		Targets: []tables.TableRoutingTarget{{Provider: schemas.Ptr("openai"), Weight: 1}},
+	}).Error)
+	rows, err := RoutingRulesByID(context.Background(), db, withMissingIDs("r-1"))
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "r-1", RoutingRuleID(rows[0]))
+	require.Len(t, rows[0].Targets, 1)
+}

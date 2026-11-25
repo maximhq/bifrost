@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 )
@@ -67,9 +68,7 @@ func TestRoutingPluginServesStoredModelRouters(t *testing.T) {
 		{Tier: complexity.TierSimple, Model: bifrost.Ptr("gpt-4o-mini"), Weight: 1},
 	}))
 
-	ruleStore, err := rules.NewLocalStore(ctx, logger, store)
-	require.NoError(t, err)
-	plugin, err := InitFromStore(ctx, nil, logger, store, ruleStore, NewMockGovernance())
+	plugin, err := Init(ctx, nil, logger, store, liveFrom(t, store), NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -151,9 +150,7 @@ func bootRoutingPlugin(t *testing.T, store configstore.ConfigStore) *RoutingPlug
 	t.Helper()
 	ctx := context.Background()
 	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewLocalStore(ctx, logger, store)
-	require.NoError(t, err)
-	plugin, err := InitFromStore(ctx, nil, logger, store, ruleStore, NewMockGovernance())
+	plugin, err := Init(ctx, nil, logger, store, liveFrom(t, store), NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	plugin.SetDecisionRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
@@ -361,4 +358,14 @@ func TestRoutingPluginBootSkipsOnlyTheRouterItCannotServe(t *testing.T) {
 	model, router := routeChatRequest(t, plugin, "gpt-4o")
 	assert.Equal(t, "healthy-model", model)
 	assert.Equal(t, "healthy", router, "the routers that cannot take requests are passed over")
+}
+
+// liveFrom returns a live store loaded from store's database, closed when the test ends.
+func liveFrom(t *testing.T, store configstore.ConfigStore) *livestore.Store {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	require.NoError(t, live.LoadAll(context.Background(), store.DB()))
+	return live
 }

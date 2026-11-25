@@ -29,15 +29,16 @@ func testEnabledSessionAnalyzerConfig() *complexity.AnalyzerConfig {
 
 func TestRoutingPluginRequiresKVStoreForSessionMode(t *testing.T) {
 	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(ruleStore.Close)
 
 	plugin, err := InitFromStore(
 		context.Background(),
 		&Config{ComplexityAnalyzerConfig: testEnabledSessionAnalyzerConfig()},
 		logger,
 		nil,
-		ruleStore,
+		ruleStore.Store,
 		NewMockGovernance(),
 	)
 	require.ErrorContains(t, err, "requires a KV store")

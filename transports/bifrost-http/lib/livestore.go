@@ -119,9 +119,11 @@ func (c *Config) moveGovernanceContentToBoot() {
 	c.boot.governance = &configstore.GovernanceConfig{
 		VirtualKeys: g.VirtualKeys, Teams: g.Teams, Customers: g.Customers,
 		Budgets: g.Budgets, RateLimits: g.RateLimits, ModelConfigs: g.ModelConfigs, Providers: g.Providers,
+		RoutingRules: g.RoutingRules,
 	}
 	g.VirtualKeys, g.Teams, g.Customers = nil, nil, nil
 	g.Budgets, g.RateLimits, g.ModelConfigs, g.Providers = nil, nil, nil, nil
+	g.RoutingRules = nil
 }
 
 // AttachLiveStore makes live the config's live store and keeps the views derived from it current: a
