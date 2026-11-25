@@ -620,8 +620,8 @@ func (h *MCPSessionsHandler) refresh(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid session id")
 		return
 	}
-	if h.store.ConfigStore == nil || h.mcpManager == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP session refresh is unavailable: config store is disabled")
+	if h.mcpManager == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP session refresh is unavailable")
 		return
 	}
 	session, err := h.loadRefreshSession(ctx, rowID)

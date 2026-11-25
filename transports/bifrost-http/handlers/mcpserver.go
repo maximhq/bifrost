@@ -22,6 +22,7 @@ import (
 	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -65,14 +66,6 @@ type MCPGatewayAdmitter interface {
 	MCPClientToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, ok bool)
 }
 
-// VirtualKeyCache resolves a virtual key by its row ID from an in-memory cache,
-// letting the JWT auth path avoid a per-request database read. Satisfied by the
-// governance plugin's in-memory store. Optional: when nil (or a cache miss), the
-// handler falls back to the config store.
-type VirtualKeyCache interface {
-	GetVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, bool)
-}
-
 // MCPServerHandler manages HTTP requests for MCP server operations
 // It implements the MCP protocol over HTTP streaming (SSE) for MCP clients
 type MCPServerHandler struct {
@@ -85,10 +78,6 @@ type MCPServerHandler struct {
 	// governance's: whether a user-mode caller still exists, and whether user mode is offered at
 	// all. Optional.
 	identityResolver OAuth2IdentityResolver
-	// vkCache serves by-ID virtual key lookups on the JWT auth path from the
-	// governance in-memory store, avoiding a per-request DB read. Optional: a nil
-	// cache or a miss falls back to the config store. See getVirtualKeyByID.
-	vkCache VirtualKeyCache
 	// mcpServer is the one server every caller is served from, for the life of the handler. What
 	// each caller sees of it is decided per request, from the tool list stamped on the request
 	// context, so nothing about it is per caller. Its tools are replaced in place on a registry change.
@@ -143,17 +132,8 @@ func (h *MCPServerHandler) GatewayAudience(ctx *fasthttp.RequestCtx) string {
 	return oauth2GatewayAudience(ctx, h.config)
 }
 
-// getVirtualKeyByID resolves a virtual key by its row ID for the JWT auth path,
-// preferring the governance in-memory cache and falling back to the config store
-// on a miss (e.g. a key created since the cache last refreshed) or when no cache
-// is wired. Whether the key may be used is not decided here: governance refuses a
-// key that is inactive or expired, from the grant it resolves for it.
-func (h *MCPServerHandler) getVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, error) {
-	return virtualKeyByID(ctx, h.vkCache, h.config.ConfigStore, vkID)
-}
-
 // NewMCPServerHandler creates a new MCP server handler instance
-func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MCPToolManager, admitter MCPGatewayAdmitter, identityResolver OAuth2IdentityResolver, vkCache VirtualKeyCache) (*MCPServerHandler, error) {
+func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MCPToolManager, admitter MCPGatewayAdmitter, identityResolver OAuth2IdentityResolver) (*MCPServerHandler, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -166,7 +146,6 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 		admitter:         admitter,
 		config:           config,
 		identityResolver: identityResolver,
-		vkCache:          vkCache,
 	}
 
 	handler.served, _ = toolManager.(MCPResourcesAndPromptsServer)
@@ -703,7 +682,7 @@ func (h *MCPServerHandler) indexServerTypesOnSlug(ctx context.Context, index *ga
 	if h.config == nil {
 		return index
 	}
-	modes := h.config.GetMCPServerTypesOnSlug()
+	modes := h.serverTypesOnSlug()
 	if len(modes) == 0 {
 		return index
 	}
@@ -713,6 +692,50 @@ func (h *MCPServerHandler) indexServerTypesOnSlug(ctx context.Context, index *ga
 	index.serverTypesOnSlug = modes
 	index.codeModeOnlyOnSlug = listsCodeModeTools(installed) && !listsCodeModeTools(h.toolManager.GetAvailableMCPTools(coremcp.WithAllTools(ctx)))
 	return index
+}
+
+// mcpClientCodeModes is the code mode of an MCP client whose server_type_on_slug overrides
+// is_code_mode_client.
+type mcpClientCodeModes struct {
+	Global bool // on /mcp, Virtual MCPs and LLM requests
+	OnSlug bool // on its own /mcp/<slug>
+}
+
+// serverTypesOnSlug returns every enabled MCP client with a server_type_on_slug override, keyed by
+// client name; nil when none has one.
+func (h *MCPServerHandler) serverTypesOnSlug() map[string]mcpClientCodeModes {
+	if h.config == nil {
+		return nil
+	}
+	var result map[string]mcpClientCodeModes
+	h.config.LiveStore.Collections.MCPClients.Range(func(client *registry.MCPClient) bool {
+		if client.Config.Disabled {
+			return true
+		}
+		onSlug, overrides := client.Config.ServerTypeOnSlug.CodeModeOverride()
+		if !overrides {
+			return true
+		}
+		if result == nil {
+			result = make(map[string]mcpClientCodeModes)
+		}
+		result[client.Config.Name] = mcpClientCodeModes{Global: client.Config.IsCodeModeClient, OnSlug: onSlug}
+		return true
+	})
+	return result
+}
+
+// enabledMCPClientBySlug returns the MCP client served at /mcp/<slug>. A disabled client is not
+// found, so its endpoint is not served (admit 403).
+func (h *MCPServerHandler) enabledMCPClientBySlug(slug string) (*registry.MCPClient, bool) {
+	if h.config == nil || slug == "" {
+		return nil, false
+	}
+	client, ok := h.config.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientBySlug, slug)
+	if !ok || client.Config.Disabled {
+		return nil, false
+	}
+	return client, true
 }
 
 // listsCodeModeTools reports whether tools include the code-mode tools.
@@ -868,9 +891,9 @@ func mcpAuthRequiredToolResult(authReq *schemas.MCPAuthRequiredError) string {
 // governed, so a client slug is served whole, as /mcp serves it.
 func (h *MCPServerHandler) admitBySlug(bifrostCtx *schemas.BifrostContext, slug string, access schemas.Access) *mcpRefusal {
 	if h.admitter == nil {
-		if _, clientName, found := h.config.GetMCPClientBySlug(slug); found {
-			bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, []string{clientName + "-*"})
-			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, clientName)
+		if client, found := h.enabledMCPClientBySlug(slug); found {
+			bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, []string{client.Config.Name + "-*"})
+			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, client.Config.Name)
 			return nil
 		}
 		return &mcpRefusal{status: fasthttp.StatusForbidden, message: "access_denied"}
@@ -882,13 +905,13 @@ func (h *MCPServerHandler) admitBySlug(bifrostCtx *schemas.BifrostContext, slug 
 	}
 	if served, ok := h.admitter.MCPClientToolAccess(bifrostCtx, slug, access); ok {
 		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, served)
-		if _, clientName, found := h.config.GetMCPClientBySlug(slug); found {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, clientName)
+		if client, found := h.enabledMCPClientBySlug(slug); found {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, client.Config.Name)
 		}
 		return nil
 	}
 	// The wire answer stays 403 either way so slugs can't be probed; the log says which it was.
-	if _, _, found := h.config.GetMCPClientBySlug(slug); found {
+	if _, found := h.enabledMCPClientBySlug(slug); found {
 		logger.Debug("mcp: refused /mcp/%s: MCP client exists but the caller's access does not grant it", slug)
 	} else {
 		logger.Debug("mcp: refused /mcp/%s: no enabled MCP client and no Virtual MCP granted to the caller has this slug", slug)
@@ -1048,7 +1071,7 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					return fmt.Errorf("user is no longer active")
 				}
 			}
-			return injectJWTContext(bifrostCtx, claims, nil)
+			return injectJWTContext(bifrostCtx, claims, "")
 
 		case schemas.MCPAuthModeSession:
 			// Session-mode tokens carry no verified identity. When the operator
@@ -1060,7 +1083,7 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
 				return fmt.Errorf("authentication required; session-mode tokens are not accepted when authentication is enforced - re-authenticate with a virtual key or user identity")
 			}
-			return injectJWTContext(bifrostCtx, claims, nil)
+			return injectJWTContext(bifrostCtx, claims, "")
 
 		case schemas.MCPAuthModeVK:
 			// Live virtual-key identity cutoff: when virtual-key identity has been
@@ -1078,14 +1101,14 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			}
 			// The token names the key by row ID; governance resolves keys by value, so the
 			// row is read to stamp the value. Nothing else about the key is decided here.
-			vk, err := h.getVirtualKeyByID(ctx, claims.Subject)
+			vkValue, err := virtualKeyValueByID(h.config.LiveStore, claims.Subject)
 			if err != nil {
 				return err
 			}
-			return injectJWTContext(bifrostCtx, claims, vk)
+			return injectJWTContext(bifrostCtx, claims, vkValue)
 
 		default:
-			return injectJWTContext(bifrostCtx, claims, nil)
+			return injectJWTContext(bifrostCtx, claims, "")
 		}
 	}
 

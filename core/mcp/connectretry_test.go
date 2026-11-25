@@ -54,11 +54,11 @@ func TestAddClient_UntrustedServerCertificateFailsAtOnce(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	start := time.Now()
-	err := m.AddClient(context.Background(), &schemas.MCPClientConfig{
+	err := addClient(context.Background(), m, &schemas.MCPClientConfig{
 		ID:                     "untrusted-cert",
 		Name:                   "untrusted_cert",
 		ConnectionType:         schemas.MCPConnectionTypeHTTP,
@@ -90,10 +90,10 @@ func TestAddClient_InvalidCACertificateIsRefused(t *testing.T) {
 	}
 	for name, sticky := range map[string]*bool{"sticky": schemas.Ptr(true), "per call": nil} {
 		t.Run(name, func(t *testing.T) {
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
 			start := time.Now()
-			err := m.AddClient(context.Background(), newConfig(sticky, false))
+			err := addClient(context.Background(), m, newConfig(sticky, false))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "tls_config.ca_cert_pem is not a valid PEM certificate")
 			assert.Less(t, time.Since(start), time.Second, "refused before any dial")
@@ -102,16 +102,16 @@ func TestAddClient_InvalidCACertificateIsRefused(t *testing.T) {
 		})
 	}
 	t.Run("ignored with insecure_skip_verify", func(t *testing.T) {
-		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 		t.Cleanup(func() { _ = m.Cleanup() })
-		require.NoError(t, m.AddClient(context.Background(), newConfig(nil, true)))
+		require.NoError(t, addClient(context.Background(), m, newConfig(nil, true)))
 	})
 }
 
 // TestUpdateClient_InvalidCACertificateIsRefused: an edit that sets a
 // ca_cert_pem that does not parse is refused and leaves the client as it was.
 func TestUpdateClient_InvalidCACertificateIsRefused(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID:               "edit-bad-ca",
@@ -120,15 +120,19 @@ func TestUpdateClient_InvalidCACertificateIsRefused(t *testing.T) {
 		ConnectionString: schemas.NewSecretVar("https://127.0.0.1:1/mcp"),
 		AuthType:         schemas.MCPAuthTypeNone,
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 
-	edited := *config
-	edited.TLSConfig = &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar("not-a-pem")}
-	err := m.UpdateClient(config.ID, &edited)
+	err := editClient(m, config.ID, func(c *schemas.MCPClientConfig) {
+		c.TLSConfig = &schemas.MCPTLSConfig{CACertPEM: schemas.NewSecretVar("not-a-pem")}
+	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tls_config.ca_cert_pem is not a valid PEM certificate")
 
-	state, ok := snapshotAddClientState(m, config.ID)
+	_, ok := snapshotAddClientState(m, config.ID)
 	require.True(t, ok)
-	assert.Nil(t, state.ExecutionConfig.TLSConfig, "the refused edit changed nothing")
+	m.mu.RLock()
+	dialed := m.clientMap[config.ID].dialed
+	m.mu.RUnlock()
+	assert.Same(t, config, dialed, "the refused edit changed nothing: the entry is still built from the original record")
+	assert.Nil(t, dialed.TLSConfig, "the refused edit changed nothing")
 }

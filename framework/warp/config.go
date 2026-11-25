@@ -2,12 +2,14 @@ package warp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
@@ -20,6 +22,7 @@ type ConfigView struct {
 	Provider                schemas.ModelProvider `json:"provider"`
 	Model                   string                `json:"model"`
 	APIKeyID                string                `json:"api_key_id,omitempty"`
+	VirtualKeyID            string                `json:"virtual_key_id,omitempty"` // see schemas.WarpConfig.VirtualKeyID
 	AdditionalModels        []schemas.WarpModel   `json:"additional_models,omitempty"`
 	MaxIterations           int                   `json:"max_iterations"`
 	RequestTimeoutSeconds   int                   `json:"request_timeout_seconds"`
@@ -59,6 +62,10 @@ type ConfigInput struct {
 	// provider that needs none. It round-trips like any other field - no
 	// omitted-means-unchanged special case, because there is no secret to lose.
 	APIKeyID string `json:"api_key_id,omitempty"`
+	// VirtualKeyID names the virtual key Warp's calls present for a caller with no
+	// user identity (see schemas.WarpConfig.VirtualKeyID). Omitted keeps the
+	// stored value; "" clears it.
+	VirtualKeyID string `json:"virtual_key_id,omitempty"`
 	// AdditionalModels are the other models the panel may switch to. Replaced
 	// whole on every write, like the default above: omitted means none.
 	AdditionalModels      []schemas.WarpModel `json:"additional_models,omitempty"`
@@ -146,6 +153,8 @@ func (c *ConfigInput) supplied(field string) bool {
 		return c.TopicDiscoveryMinRequests != 0
 	case "management_writes":
 		return c.ManagementWrites != nil
+	case "virtual_key_id":
+		return c.VirtualKeyID != ""
 	}
 	return false
 }
@@ -193,6 +202,9 @@ func applyStoredEmbeddingSettings(input *ConfigInput, previous *tables.TableWarp
 	}
 	if !input.supplied("management_writes") {
 		input.ManagementWrites = managementWrites(previous)
+	}
+	if !input.supplied("virtual_key_id") {
+		input.VirtualKeyID = previous.VirtualKeyID
 	}
 }
 
@@ -248,6 +260,13 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	applyStoredEmbeddingSettings(input, previous)
 	if err := ValidateConfigInput(input); err != nil {
 		return ConfigView{}, err
+	}
+	// Only when it changes: a key switched off after it was chosen must not block
+	// saving an unrelated setting, and a chat run under it reports the refusal.
+	if input.VirtualKeyID != "" && (previous == nil || previous.VirtualKeyID != input.VirtualKeyID) {
+		if err := s.checkWarpVirtualKey(ctx, input.VirtualKeyID); err != nil {
+			return ConfigView{}, err
+		}
 	}
 	if input.Enabled && s.vectorStore == nil {
 		return ConfigView{}, ErrNoVectorStore
@@ -314,6 +333,7 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		Provider:                  string(input.Provider),
 		Model:                     input.Model,
 		APIKeyID:                  strings.TrimSpace(input.APIKeyID),
+		VirtualKeyID:              input.VirtualKeyID,
 		AdditionalModels:          additionalModels,
 		MaxIterations:             input.MaxIterations,
 		RequestTimeoutSeconds:     input.RequestTimeoutSeconds,
@@ -361,6 +381,26 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		return ConfigView{}, err
 	}
 	return s.configViewFromRow(row), nil
+}
+
+// checkWarpVirtualKey refuses a Warp virtual key that names no key, or one
+// switched off. Without a governance reader there is nothing to check against,
+// and the key is accepted as given.
+func (s *Service) checkWarpVirtualKey(ctx context.Context, id string) error {
+	if s.governance == nil {
+		return nil
+	}
+	vk, err := s.governance.GetVirtualKey(ctx, id)
+	if errors.Is(err, configstore.ErrNotFound) || (err == nil && vk == nil) {
+		return fmt.Errorf("%w: virtual_key_id %q names no virtual key", ErrInvalidConfig, id)
+	}
+	if err != nil {
+		return err
+	}
+	if !vk.IsActiveValue() {
+		return fmt.Errorf("%w: virtual key %q is inactive", ErrInvalidConfig, vk.Name)
+	}
+	return nil
 }
 
 // mergeOmittedEmbeddingSettings fills embedding fields the write left empty
@@ -417,6 +457,7 @@ func ValidateConfigInput(input *ConfigInput) error {
 	input.EmbeddingProvider = schemas.ModelProvider(strings.TrimSpace(string(input.EmbeddingProvider)))
 	input.EmbeddingModel = strings.TrimSpace(input.EmbeddingModel)
 	input.EmbeddingAPIKeyID = strings.TrimSpace(input.EmbeddingAPIKeyID)
+	input.VirtualKeyID = strings.TrimSpace(input.VirtualKeyID)
 	input.LogVectorStoreNamespace = strings.TrimSpace(input.LogVectorStoreNamespace)
 	if input.LogVectorStoreNamespace == "" {
 		input.LogVectorStoreNamespace = schemas.WarpDefaultLogVectorStoreNamespace
@@ -610,6 +651,7 @@ func (s *Service) configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 		Provider:                  schemas.ModelProvider(row.Provider),
 		Model:                     row.Model,
 		APIKeyID:                  row.APIKeyID,
+		VirtualKeyID:              row.VirtualKeyID,
 		AdditionalModels:          config.AdditionalModels,
 		MaxIterations:             config.EffectiveMaxIterations(),
 		RequestTimeoutSeconds:     config.EffectiveRequestTimeoutSeconds(),
@@ -652,6 +694,7 @@ func configFromRow(row *tables.TableWarpConfig) *schemas.WarpConfig {
 	return &schemas.WarpConfig{
 		Enabled:                         row.Enabled,
 		APIKeyID:                        row.APIKeyID,
+		VirtualKeyID:                    row.VirtualKeyID,
 		Provider:                        schemas.ModelProvider(row.Provider),
 		Model:                           row.Model,
 		AdditionalModels:                additionalModels(row),

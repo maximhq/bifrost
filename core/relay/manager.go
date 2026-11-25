@@ -441,6 +441,7 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 	// (DoHTTPRequest adds to it), so the row and the trace can split the two. A call the pre-hooks
 	// answer (an access denial) never reaches the upstream and still records the time it took.
 	start := time.Now()
+	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, start)
 	ctx.ResetUpstreamLatency()
 	entrySpanID := ctx.Value(schemas.BifrostContextKeySpanID)
 	var span *relaySpan

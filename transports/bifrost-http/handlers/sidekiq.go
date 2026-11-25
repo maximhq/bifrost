@@ -38,7 +38,8 @@ type SidekiqHandler struct {
 	runner SidekiqJobsRunner
 }
 
-// NewSidekiqHandler returns a handler; a nil store or runner makes its routes answer 503.
+// NewSidekiqHandler returns a handler; a nil runner makes its routes answer 503. A nil store
+// (config store disabled) is refused earlier, by RequireConfigStoreMiddleware.
 func NewSidekiqHandler(store SidekiqJobsStore, runner SidekiqJobsRunner) *SidekiqHandler {
 	return &SidekiqHandler{store: store, runner: runner}
 }
@@ -81,7 +82,7 @@ func sidekiqAdmin(ctx *fasthttp.RequestCtx) bool {
 // listJobs handles GET /api/sidekiq/jobs: every active job plus those finished within
 // the window (?since=<RFC3339>, default the last 24h), newest first.
 func (h *SidekiqHandler) listJobs(ctx *fasthttp.RequestCtx) {
-	if h.store == nil || h.runner == nil {
+	if h.runner == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "Background job runner is not available")
 		return
 	}
@@ -135,7 +136,7 @@ func (h *SidekiqHandler) jobView(job *tables.TableSidekiqJob) sidekiqJobView {
 // stands; cancelling stops further work. An unknown or already-finished job is a no-op
 // ({"cancelled": false}) rather than an error, so a click racing the last batch is harmless.
 func (h *SidekiqHandler) cancelJob(ctx *fasthttp.RequestCtx) {
-	if h.store == nil || h.runner == nil {
+	if h.runner == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "Background job runner is not available")
 		return
 	}

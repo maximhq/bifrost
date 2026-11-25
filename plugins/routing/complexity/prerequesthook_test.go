@@ -12,7 +12,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -34,9 +33,10 @@ func newComplexityRuleFixtureWithConfig(t *testing.T, config *routing.Config) *r
 	provider := "openai"
 	model := "gpt-4o-mini"
 
-	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
-	require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(ruleStore.Close)
+	require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "rule-1",
 		Name:          "Complexity Available",
 		CelExpression: `complexity_tier != ""`,
@@ -48,7 +48,7 @@ func newComplexityRuleFixtureWithConfig(t *testing.T, config *routing.Config) *r
 		Priority: 0,
 	}))
 
-	plugin, err := routing.InitFromStore(context.Background(), config, logger, nil, ruleStore, routing.NewMockGovernance())
+	plugin, err := routing.InitFromStore(context.Background(), config, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin
@@ -56,10 +56,8 @@ func newComplexityRuleFixtureWithConfig(t *testing.T, config *routing.Config) *r
 
 func newSessionComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
 	t.Helper()
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	return newComplexityRuleFixtureWithConfig(t, &routing.Config{KVStore: store})
+	routingConfig := newTestKVStore(t)
+	return newComplexityRuleFixtureWithConfig(t, routingConfig)
 }
 
 func chatRequest(text string) *schemas.BifrostRequest {
@@ -327,13 +325,14 @@ func TestPreRequestHook_SessionModeWithoutIdentityRemainsPerRequest(t *testing.T
 }
 
 func TestPreRequestHook_SessionStoreFailureFallsBackToCurrentClassification(t *testing.T) {
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-	require.NoError(t, err)
-	plugin := newComplexityRuleFixtureWithConfig(t, &routing.Config{KVStore: store})
+	routingConfig, sessions := sessionConfigForTest(t)
+	plugin := newComplexityRuleFixtureWithConfig(t, routingConfig)
 	plugin.SetEmbeddingRequestExecutor(testEmbeddingExecutor)
 	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(sessionAnalyzerConfig()))
 	waitForSemanticClassifier(t, plugin)
-	require.NoError(t, store.Close())
+	require.NoError(t, plugin.PreRequestHook(complexitySessionContext("store-failure"), chatRequest("a simple request")))
+	require.Positive(t, sessions.Len(), "the first request stored session state")
+	corruptSessions(sessions)
 
 	ctx := complexitySessionContext("store-failure")
 	require.NoError(t, plugin.PreRequestHook(ctx, chatRequest("a medium request")))
@@ -382,13 +381,12 @@ func TestPreRequestHook_SessionContinuationReusesOrClassifiesRecoveredTask(t *te
 // model which tier's rule selected the request.
 func newTieredComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
 	t.Helper()
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	routingConfig := newTestKVStore(t)
 
 	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(ruleStore.Close)
 	tierTargets := []struct {
 		tier  string
 		model string
@@ -399,7 +397,7 @@ func newTieredComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
 	}
 	for priority, target := range tierTargets {
 		provider, model := "openai", target.model
-		require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
 			ID:            "rule-" + strings.ToLower(target.tier),
 			Name:          "Complexity " + target.tier,
 			CelExpression: `complexity_tier == "` + target.tier + `"`,
@@ -412,7 +410,7 @@ func newTieredComplexityRuleFixture(t *testing.T) *routing.RoutingPlugin {
 		}))
 	}
 
-	plugin, err := routing.InitFromStore(context.Background(), &routing.Config{KVStore: store}, logger, nil, ruleStore, routing.NewMockGovernance())
+	plugin, err := routing.InitFromStore(context.Background(), routingConfig, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin
@@ -593,9 +591,10 @@ func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
 	provider := "openai"
 	model := "gpt-4o-mini"
 
-	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
-	require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(ruleStore.Close)
+	require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "rule-1",
 		Name:          "Always match",
 		CelExpression: "true",
@@ -607,7 +606,7 @@ func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
 		Priority: 0,
 	}))
 
-	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore, routing.NewMockGovernance())
+	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 	require.NoError(t, err)
 	defer func() {
 		require.NoError(t, plugin.Cleanup())
