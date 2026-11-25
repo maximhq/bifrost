@@ -645,6 +645,33 @@ func TestListToolFilesExactReferencePrefersExactCase(t *testing.T) {
 	}
 }
 
+// A raw name that is itself a valid identifier names its own tool both in the
+// sandbox and in getToolDocs: Get_User is crm-Get_User's raw name, so the
+// hyphen alias of crm-Get-User must not take it.
+func TestExactRawIdentifierBindsItsOwnTool(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["crm"] = &schemas.MCPClientState{Name: "crm", ExecutionConfig: &schemas.MCPClientConfig{ID: "crm-id", Name: "crm", IsCodeModeClient: true}}
+	byEmail := discoveryTestTool("crm-Get-User", "Fetch a user by email", "email")
+	byID := discoveryTestTool("crm-Get_User", "Look up a user record", "id")
+	for _, tools := range [][]schemas.ChatTool{{byEmail, byID}, {byID, byEmail}} {
+		manager.tools["crm"] = tools
+		if doc := getToolDocsContent(t, mode, "crm", "Get_User"); !strings.Contains(doc, "Look up a user record") {
+			t.Fatalf("getToolDocs(Get_User) documents another tool:\n%s", doc)
+		}
+		var called string
+		result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = crm.Get_User()",
+			map[string][]string{"crm": {tools[0].Function.Name, tools[1].Function.Name}},
+			func(_ context.Context, _, tool string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+				called = tool
+				return "ok", nil
+			})
+		if result.Errors != nil || called != "crm-Get_User" {
+			t.Fatalf("crm.Get_User() called %q (errors %+v), want crm-Get_User", called, result.Errors)
+		}
+	}
+}
+
 func readFileContent(t *testing.T, mode *StarlarkCodeMode, fileName string) string {
 	t.Helper()
 	msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{

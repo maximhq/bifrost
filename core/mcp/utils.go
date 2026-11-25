@@ -2100,9 +2100,11 @@ func CodeModeCallableNames(clientName string, rawNames []string) map[string]stri
 
 // CodeModeBindings maps every identifier executeToolCode binds on one server
 // to the raw name of the tool it calls: each tool's callable name (see
-// CodeModeCallableNames), plus the compatibility alias of its raw name (the
-// raw name with '-' as '_', case kept) when that is a valid identifier that no
-// callable name takes. Raw-name order picks between tools sharing an alias.
+// CodeModeCallableNames), then each raw name that is itself a valid
+// identifier, then the compatibility alias of a raw name (the raw name with
+// '-' as '_', case kept), each only when no earlier step took it. The same
+// order resolves a name in getToolDocs and readToolFile, so a name documents
+// the tool it calls. Raw-name order picks between tools sharing an alias.
 func CodeModeBindings(clientName string, rawNames []string) map[string]string {
 	names := CodeModeCallableNames(clientName, rawNames)
 	bindings := make(map[string]string, 2*len(names))
@@ -2110,6 +2112,13 @@ func CodeModeBindings(clientName string, rawNames []string) map[string]string {
 		bindings[name] = raw
 	}
 	sorted := slices.Sorted(maps.Keys(names))
+	for _, raw := range sorted {
+		if exact := StripClientPrefix(raw, clientName); isCodeModeIdentifier(exact) {
+			if _, bound := bindings[exact]; !bound {
+				bindings[exact] = raw
+			}
+		}
+	}
 	for _, raw := range sorted {
 		alias := strings.ReplaceAll(StripClientPrefix(raw, clientName), "-", "_")
 		if _, bound := bindings[alias]; !bound && isCodeModeIdentifier(alias) {
