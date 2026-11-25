@@ -14307,23 +14307,8 @@ func migrationWidenProviderJobColumns(ctx context.Context, db *gorm.DB, logger s
 			}
 			return nil
 		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if tx.Dialector.Name() != "postgres" {
-				return nil
-			}
-			if err := setMigrationLockTimeout(tx); err != nil {
-				return err
-			}
-			for column, size := range map[string]string{"provider_status": "50", "endpoint": "255"} {
-				if !tx.Migrator().HasColumn(&tables.TableProviderJob{}, column) {
-					continue
-				}
-				if err := tx.Exec(`ALTER TABLE batch_jobs ALTER COLUMN ` + column + ` TYPE VARCHAR(` + size + `) USING LEFT(` + column + `, ` + size + `)`).Error; err != nil {
-					return err
-				}
-			}
-			return nil
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: narrowing the columns would cut stored relay job statuses and routes", migrationName)
 		},
 	})
 }

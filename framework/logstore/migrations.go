@@ -358,8 +358,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_model_routing_suggestion_tables"}, run: migrationAddComplexitySuggestionTables},
 	{IDs: []string{"logs_add_model_routing_columns"}, run: migrationAddModelRoutingColumns},
 	{IDs: []string{"logs_tune_retention_autovacuum"}, run: migrationTuneRetentionAutovacuum},
-	{IDs: []string{"relay_logs_add_job_debug"}, run: migrationAddRelayLogJobDebug},
-	{IDs: []string{"relay_logs_widen_job_status"}, run: migrationWidenRelayLogJobStatus},
+	{IDs: []string{"relay_logs_add_job_debug_widen_job_status"}, run: migrationRelayLogJobColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -6232,48 +6231,31 @@ func migrationAddRelayLogSessionID(ctx context.Context, db *gorm.DB, logger sche
 	return m.Migrate()
 }
 
-// migrationAddRelayLogJobDebug adds job_debug, how a job row's job was polled. A nullable text
-// column with no index or backfill, so it is a metadata-only change on both dialects.
-func migrationAddRelayLogJobDebug(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+// migrationRelayLogJobColumns adds job_debug (how a job row's job was polled) and widens job_status
+// to text (a job's status is any string the upstream reports; one past 64 characters failed the job
+// row's insert, so the job was polled again forever). Both are metadata-only on Postgres: a nullable
+// column with no default or index, and varchar to text with no rewrite. One migration, so
+// relay_logs is locked once. SQLite does not enforce the length, so only the column is added there.
+func migrationRelayLogJobColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
 	m := migrator.New(db, &opts, []*migrator.Migration{{
-		ID: "relay_logs_add_job_debug",
+		ID: "relay_logs_add_job_debug_widen_job_status",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			if err := boundDDLLockWait(tx); err != nil {
 				return err
 			}
-			return addColumnIfNotExists(tx, logger, &RelayLog{}, "JobDebug")
-		},
-		Rollback: func(*gorm.DB) error {
-			return fmt.Errorf("relay_logs_add_job_debug is non-rollbackable: dropping the column would lose recorded job polling details")
-		},
-	}})
-	return m.Migrate()
-}
-
-// migrationWidenRelayLogJobStatus widens relay_logs.job_status to text: a job's status is any string
-// the upstream reports, and one past 64 characters failed the job row's insert, so the job was polled
-// again forever. varchar to text needs no table rewrite on Postgres; SQLite does not enforce the
-// length, so it has nothing to change.
-func migrationWidenRelayLogJobStatus(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	opts := *migrator.DefaultOptions
-	opts.UseTransaction = true
-	m := migrator.New(db, &opts, []*migrator.Migration{{
-		ID: "relay_logs_widen_job_status",
-		Migrate: func(tx *gorm.DB) error {
+			if err := addColumnIfNotExists(tx, logger, &RelayLog{}, "JobDebug"); err != nil {
+				return err
+			}
 			if tx.Dialector.Name() != "postgres" {
 				return nil
-			}
-			tx = tx.WithContext(ctx)
-			if err := boundDDLLockWait(tx); err != nil {
-				return err
 			}
 			return tx.Exec("ALTER TABLE relay_logs ALTER COLUMN job_status TYPE TEXT").Error
 		},
 		Rollback: func(*gorm.DB) error {
-			return fmt.Errorf("relay_logs_widen_job_status is non-rollbackable: narrowing the column would cut stored job statuses")
+			return fmt.Errorf("relay_logs_add_job_debug_widen_job_status is non-rollbackable: dropping job_debug or narrowing job_status would lose recorded job details")
 		},
 	}})
 	return m.Migrate()
