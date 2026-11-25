@@ -1922,6 +1922,12 @@ func (g *GenericRouter) handleAsyncCreate(
 				newBifrostErrorWithCode(err, "failed to create async job", fasthttp.StatusBadRequest))
 			return
 		}
+		// The deployment requires a credential and the submit carried none.
+		if errors.Is(err, logstore.ErrAsyncJobNotAdmitted) {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter,
+				newBifrostErrorWithCode(err, "authentication is required to create an async job", fasthttp.StatusUnauthorized))
+			return
+		}
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
 			newBifrostError(err, "failed to create async job"))
 		return

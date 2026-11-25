@@ -3847,6 +3847,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 				jobDispatcher = s.WebhookDispatcher
 			}
 			s.Config.AsyncJobExecutor = logstore.NewAsyncJobExecutor(s.Config.LogsStore, s, jobDispatcher, s.Config, logger)
+			s.Config.AsyncJobExecutor.SetAdmission(handlers.AsyncJobAdmission(s.Config))
 			logger.Info("async job executor initialized")
 		}
 	}

@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
-	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -435,15 +435,7 @@ func getVirtualKeyFromBifrostContext(ctx *schemas.BifrostContext) *string {
 // getResultTTLFromHeaderWithDefault extracts the result TTL from the x-bf-async-job-result-ttl header.
 // Returns the default TTL if the header is not present or invalid.
 func getResultTTLFromHeaderWithDefault(ctx *fasthttp.RequestCtx, defaultTTL int) int {
-	resultTTL := string(ctx.Request.Header.Peek(schemas.AsyncHeaderResultTTL))
-	if resultTTL == "" {
-		return defaultTTL
-	}
-	resultTTLInt, err := strconv.Atoi(resultTTL)
-	if err != nil || resultTTLInt < 0 {
-		return defaultTTL
-	}
-	return resultTTLInt
+	return logstore.ResolveAsyncJobResultTTL(string(ctx.Request.Header.Peek(schemas.AsyncHeaderResultTTL)), defaultTTL)
 }
 
 // isAnthropicAPIKeyAuth checks if the request uses standard API key authentication.

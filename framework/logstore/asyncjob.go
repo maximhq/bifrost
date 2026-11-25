@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -18,6 +20,10 @@ import (
 const (
 	// DefaultAsyncJobResultTTL is the default TTL for async job results in seconds (1 hour).
 	DefaultAsyncJobResultTTL = 3600
+	// MaxAsyncJobResultTTL is the longest result TTL, in seconds, a request can
+	// ask for through the result TTL header (30 days). A deployment whose
+	// configured default is longer keeps that default as its ceiling.
+	MaxAsyncJobResultTTL = 30 * 24 * 60 * 60
 )
 
 const (
@@ -56,6 +62,42 @@ type AsyncJobExecutor struct {
 	webhookDispatcher WebhookDispatcher
 	webhookManager    WebhookManager
 	logger            schemas.Logger
+	// admission, when set, decides whether a submit may create a job at all.
+	admission atomic.Pointer[AsyncJobAdmission]
+}
+
+// AsyncJobAdmission decides whether a submit may create a job. It runs before
+// anything is written or resolved for the request, and a non-nil error refuses
+// the submit. The executor cannot answer this itself: whether a deployment
+// requires a credential on inference is transport configuration.
+type AsyncJobAdmission func(ctx *schemas.BifrostContext) error
+
+// SetAdmission installs the admission check SubmitJob runs first. A job
+// executes in the background after the submit call has returned 202, so the
+// request pipeline's own refusal (a missing credential, for one) would
+// otherwise arrive only after the job row exists and its webhook endpoint has
+// been resolved. Passing nil removes the check.
+func (e *AsyncJobExecutor) SetAdmission(admission AsyncJobAdmission) {
+	if admission == nil {
+		e.admission.Store(nil)
+		return
+	}
+	e.admission.Store(&admission)
+}
+
+// ResolveAsyncJobResultTTL turns the result TTL header value into the TTL, in
+// seconds, a job is stored with. An absent, malformed or negative value yields
+// defaultTTL. A value above the ceiling is clamped to it; the ceiling is
+// MaxAsyncJobResultTTL, or defaultTTL when the deployment configured a longer one.
+func ResolveAsyncJobResultTTL(requested string, defaultTTL int) int {
+	if requested == "" {
+		return defaultTTL
+	}
+	ttl, err := strconv.Atoi(requested)
+	if err != nil || ttl < 0 {
+		return defaultTTL
+	}
+	return min(ttl, max(MaxAsyncJobResultTTL, defaultTTL))
 }
 
 // NewAsyncJobExecutor creates a new AsyncJobExecutor. A nil webhookDispatcher
@@ -100,6 +142,11 @@ func (e *AsyncJobExecutor) RetrieveJob(ctx context.Context, jobID string, vkValu
 
 // SubmitJob creates a pending job, starts background execution, and returns the job record.
 func (e *AsyncJobExecutor) SubmitJob(bifrostCtx *schemas.BifrostContext, resultTTL int, operation AsyncOperation, operationType schemas.RequestType) (*AsyncJob, error) {
+	if admission := e.admission.Load(); admission != nil {
+		if err := (*admission)(bifrostCtx); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrAsyncJobNotAdmitted, err)
+		}
+	}
 	if resultTTL <= 0 {
 		resultTTL = DefaultAsyncJobResultTTL
 	}

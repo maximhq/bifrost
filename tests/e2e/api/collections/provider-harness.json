@@ -191676,6 +191676,518 @@
       ]
     },
     {
+      "name": "Async job submit: credential required when inference auth is enforced, result TTL bounded (async-submit-admission) [SERIAL]",
+      "description": "Wire-level pins for async job submits. [SERIAL]: the first rows change client config every other row depends on, so the harness runs this folder in its own pass, alone against the gateway. It reads the stored client config, sends the full config back with enforce_auth_on_inference on, and restores and verifies the original afterwards. Rows: (1) with inference auth on, a native async chat submit (POST /v1/async/chat/completions) that carries no credential answers 401 with an error body and no job id, where it used to answer 202 and fail the job later in the background; (2) the same submit through an SDK route (POST /openai/v1/responses with x-bf-async: true) answers 401 the same way; (3) with the original config back, a native async chat submit asking for a 100-year result TTL (x-bf-async-job-result-ttl: 3153600000) is accepted, and once the job completes its expires_at is at most 30 days (2592000 seconds) after completed_at. expires_at is only written when a job finishes, so the retrieve row waits for the job before it reads. Run with FEATURE=\"async-submit-admission\". The two result-TTL cases run with enforce_auth_on_inference turned off, so they submit and read the job without a credential whatever the profile's own setting is; the saved config is restored after them.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai async-submit-admission read current config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('async-submit-admission: read the stored client config', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  // The folder sends this config back unchanged, and PUT /api/config refuses log_retention_days below 1.",
+                  "  // A row an older build left at 0 is reported here; the folder never writes a retention the profile did not have.",
+                  "  pm.expect(cc.log_retention_days >= 1, 'the saved log_retention_days is ' + cc.log_retention_days + ', which PUT /api/config refuses, so this folder cannot send the config back. Set log_retention_days to 1 or more on this profile and run again').to.equal(true);",
+                  "  pm.collectionVariables.set('asyncAdmissionClientConfig', JSON.stringify(cc));",
+                  "  pm.collectionVariables.set('asyncAdmissionOriginal', JSON.stringify({ enforce_auth_on_inference: cc.enforce_auth_on_inference === true }));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai async-submit-admission turn inference auth on",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('asyncAdmissionClientConfig') || '{}');",
+                  "cc.enforce_auth_on_inference = true;",
+                  "pm.variables.set('asyncAdmissionBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('async-submit-admission: inference auth turned on', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{asyncAdmissionBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openai/gpt-4o-mini native async chat submit without a credential is refused and returns no job (POST /v1/async/chat/completions) - async-submit-admission",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Inference auth is on and the submit carries no virtual key, direct key or identity.",
+                  "// The submit itself must answer 401; a 202 here means a job was stored and left to fail in the background.",
+                  "var text = pm.response.text();",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "pm.test('native async submit without a credential answers 401', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(401);",
+                  "});",
+                  "pm.test('the reply is an error, not a job', function () {",
+                  "  pm.expect(json.error, 'no error object: ' + text).to.be.an('object');",
+                  "  pm.expect(json.error.message, 'no error message: ' + text).to.be.a('string').that.is.not.empty;",
+                  "  // The 401 must be the submit's own refusal. Another layer answering 401 first (dashboard auth says only \"Unauthorized\")",
+                  "  // would not show that the submit was checked before a job was stored.",
+                  "  pm.expect(json.error.message, 'the 401 is not the async submit refusal: ' + text).to.include('virtual key is required');",
+                  "  pm.expect(json.id, 'a job id was returned: ' + text).to.equal(undefined);",
+                  "  pm.expect(json.created_at, 'a job record was returned: ' + text).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/async/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openai/gpt-4o-mini SDK-route async responses submit without a credential is refused and returns no job (POST /openai/v1/responses with x-bf-async) - async-submit-admission",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Same submit through the OpenAI SDK route: x-bf-async: true turns POST /openai/v1/responses into a job submit.",
+                  "// An accepted submit on this route answers 200 with the job id as the response id.",
+                  "var text = pm.response.text();",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "pm.test('SDK-route async submit without a credential answers 401', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(401);",
+                  "});",
+                  "pm.test('the reply is an error, not a job', function () {",
+                  "  pm.expect(json.error, 'no error object: ' + text).to.be.an('object');",
+                  "  // The 401 must be the submit's own refusal, not another layer's (dashboard auth says only \"Unauthorized\").",
+                  "  pm.expect(String(json.error.message || ''), 'the 401 is not the async submit refusal: ' + text).to.match(/authentication is required to create an async job|virtual key is required/);",
+                  "  pm.expect(json.id, 'a job id was returned: ' + text).to.equal(undefined);",
+                  "  pm.expect(json.status, 'a job status was returned: ' + text).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-async",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai async-submit-admission turn inference auth off for the result TTL cases",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('asyncAdmissionClientConfig') || '{}');",
+                  "cc.enforce_auth_on_inference = false;",
+                  "pm.variables.set('asyncAdmissionBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('async-submit-admission: inference auth turned off for the result TTL cases', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{asyncAdmissionBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-202] openai/gpt-4o-mini native async chat submit asking for a 100-year result TTL is accepted (x-bf-async-job-result-ttl: 3153600000) - async-submit-admission",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "pm.collectionVariables.set('asyncAdmissionTtlJobId', '');",
+                  "pm.test('async submit with an over-long result TTL is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(202);",
+                  "});",
+                  "pm.test('returns an async job id', function () {",
+                  "  pm.expect(json.id, 'no job id: ' + text).to.be.a('string').that.is.not.empty;",
+                  "  pm.collectionVariables.set('asyncAdmissionTtlJobId', json.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-async-job-result-ttl",
+                "value": "3153600000"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/async/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai/gpt-4o-mini async chat retrieve: result expiry is at most 30 days after completion (GET /v1/async/chat/completions/{job_id}) - async-submit-admission",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// expires_at is written when the job finishes, and a retrieve answers 202 until then.",
+                  "// Wait for the job to leave pending/processing (up to 30 reads, one second apart) before the row's own read.",
+                  "// Only 202 (still pending) is retried. A transport error or any other status is recorded and fails the row.",
+                  "var jobId = pm.collectionVariables.get('asyncAdmissionTtlJobId');",
+                  "pm.collectionVariables.set('asyncAdmissionPollFailure', '');",
+                  "function waitForJob(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/v1/async/chat/completions/' + jobId, method: 'GET' }, function (err, res) {",
+                  "    if (err) { pm.collectionVariables.set('asyncAdmissionPollFailure', 'poll ' + (attempt + 1) + ' failed: ' + err); return; }",
+                  "    if (res.code === 200) { return; }",
+                  "    if (res.code !== 202) { pm.collectionVariables.set('asyncAdmissionPollFailure', 'poll ' + (attempt + 1) + ' answered ' + res.code + ': ' + res.text().slice(0, 300)); return; }",
+                  "    if (attempt < 30) { setTimeout(function () { waitForJob(attempt + 1); }, 1000); }",
+                  "  });",
+                  "}",
+                  "if (jobId) { waitForJob(0); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "pm.test('the submit row produced a job id', function () {",
+                  "  pm.expect(pm.collectionVariables.get('asyncAdmissionTtlJobId'), 'no job id from the submit row').to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('every poll before this read answered 202 or 200', function () {",
+                  "  pm.expect(pm.collectionVariables.get('asyncAdmissionPollFailure') || '', 'failed: ' + pm.collectionVariables.get('asyncAdmissionPollFailure')).to.equal('');",
+                  "});",
+                  "pm.test('the job completed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(json.status, 'job not completed: ' + text).to.equal('completed');",
+                  "});",
+                  "// 3153600000 seconds was asked for; the stored TTL is capped at 30 days (2592000 seconds), or at the",
+                  "// deployment's own async_job_result_ttl when that is set longer than 30 days.",
+                  "var storedDefault = 0; try { storedDefault = Number(JSON.parse(pm.collectionVariables.get('asyncAdmissionClientConfig') || '{}').async_job_result_ttl) || 0; } catch (e) { storedDefault = 0; }",
+                  "var ttlCeiling = Math.max(2592000, storedDefault);",
+                  "pm.test('expires_at is 30 days after completed_at, or the configured default when that is longer', function () {",
+                  "  pm.expect(json.completed_at, 'no completed_at: ' + text).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(json.expires_at, 'no expires_at: ' + text).to.be.a('string').that.is.not.empty;",
+                  "  var ttlSeconds = (Date.parse(json.expires_at) - Date.parse(json.completed_at)) / 1000;",
+                  "  pm.expect(ttlSeconds, 'expiry is not a readable time: ' + text).to.be.a('number');",
+                  "  pm.expect(ttlSeconds === ttlSeconds, 'expiry is not a readable time: ' + text).to.equal(true);",
+                  "  pm.expect(ttlSeconds, 'result expires before it completed: ' + text).to.be.above(0);",
+                  "  pm.expect(ttlSeconds, 'result TTL of ' + ttlSeconds + 's is above ' + ttlCeiling + 's: ' + text).to.be.at.most(ttlCeiling + 5);",
+                  "  pm.expect(ttlSeconds, 'result TTL of ' + ttlSeconds + 's is below the clamped ' + ttlCeiling + 's, so the requested TTL was not applied: ' + text).to.be.at.least(ttlCeiling - 5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/async/chat/completions/{{asyncAdmissionTtlJobId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "chat",
+                "completions",
+                "{{asyncAdmissionTtlJobId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai async-submit-admission restore original config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('asyncAdmissionClientConfig') || '{}');",
+                  "pm.variables.set('asyncAdmissionBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('async-submit-admission: original client config restored', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{asyncAdmissionBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai async-submit-admission original config restored",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('async-submit-admission: enforce_auth_on_inference is back to what it was', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config || {};",
+                  "  pm.expect({ enforce_auth_on_inference: cc.enforce_auth_on_inference === true }, pm.response.text()).to.eql(JSON.parse(pm.collectionVariables.get('asyncAdmissionOriginal') || '{}'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "141. Gemini image + transcription ExtraParams survive fallback and retry attempts (#7826) (extra-params-fallback)",
       "description": "Issue #7826. The Gemini image and transcription converters (ToGeminiImageGenerationRequest, ToGeminiImageEditRequest, ToImagenImageGenerationRequest, ToImagenImageEditRequest, ToGeminiTranscriptionRequest in core/providers/gemini) assigned the Bifrost request's ExtraParams map to the outbound request and then deleted the keys they mapped into typed fields (safetySettings, cachedContent, labels; the Imagen parameter set). The map was shared, so the deletes also removed those keys from the Bifrost request. Converters run once per retry and once per fallback attempt on the same request (prepareFallbackRequest copies the struct shallowly, so the Params pointer and its map are shared), so from the second attempt on the request was sent without them. Both the gemini and vertex providers use these converters. #7138 fixed the same aliasing for chat and Responses.\n\nProduction path pinned here: POST /v1/images/generations and /v1/audio/transcriptions with a primary model that does not exist and a single valid fallback. Gemini 404s the primary after conversion already ran, Bifrost re-converts the same request for the fallback, and x-bf-send-back-raw-request echoes the fallback attempt's provider body in extra_fields.raw_request.\n\nCases: (1) gemini/gemini-2.5-flash-image: raw_request of the fallback attempt still carries safetySettings. (2) vertex/gemini-2.5-flash-image: same, plus labels. (3) [EXPECT-4XX] gemini/gemini-2.5-flash transcription with a bogus cached_content: multipart values are strings so cached_content is the only typed key reachable on this route; the fallback attempt must still carry it, which Gemini rejects. Red before the fix (200, the clip is transcribed without the cache ref), green after.\n\nThe two Imagen converters (ToImagenImageGenerationRequest / ToImagenImageEditRequest) are pinned by Go unit tests in core/providers/gemini/images_test.go only: the shared harness profile has no Imagen model.",
       "item": [
