@@ -8,6 +8,11 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- Added `bifrost.relays[].body_overrides` and `bifrost.relays[].routes[].body_overrides` (`relays[].body_overrides`, `relays[].routes[].body_overrides`): JSON fields forced into every request body, whatever the caller sent. A route's value replaces the relay's for the same path.
+- Added `bifrost.relays[].routes[].inherit_body_overrides` (`relays[].routes[].inherit_body_overrides`): `false` leaves the relay's `body_overrides` out of that route.
+
 ### 2.1.49
 
 - Added `serviceMonitor` to create a Prometheus Operator ServiceMonitor that scrapes Bifrost's `/metrics`. Off by default.
