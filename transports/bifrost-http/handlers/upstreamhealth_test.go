@@ -27,7 +27,7 @@ func TestVKUpstreamHealthFiltersReachablePairsAndFoldsStaticLimits(t *testing.T)
 		}},
 	}}
 
-	got := vkUpstreamHealth(snapshot, configs, false, nil, canonicalModelConfigMatch)
+	got := vkUpstreamHealth(snapshot, configs, false, nil, canonicalModelConfigMatch, nil)
 	if len(got) != 2 || got[0].Model != "claude-a" || got[1].Model != "claude-b" {
 		t.Fatalf("expected only the reachable anthropic pairs, got %+v", got)
 	}
@@ -37,7 +37,7 @@ func TestVKUpstreamHealthFiltersReachablePairsAndFoldsStaticLimits(t *testing.T)
 	if got[1].EffectiveRemainingFraction != 0.25 {
 		t.Fatalf("expected the per-model request limit (25%% left) to bound the pair, got %v", got[1].EffectiveRemainingFraction)
 	}
-	if len(vkUpstreamHealth(snapshot, nil, false, nil, canonicalModelConfigMatch)) != 0 {
+	if len(vkUpstreamHealth(snapshot, nil, false, nil, canonicalModelConfigMatch, nil)) != 0 {
 		t.Fatal("a key with no provider configs reaches nothing")
 	}
 }
@@ -56,11 +56,11 @@ func TestVKUpstreamHealthAllowAllProvidersReachesUnnamedProviders(t *testing.T) 
 		AllowAllKeys:      true,
 		BlacklistedModels: schemas.BlackList{"claude-blocked"},
 	}}
-	got := vkUpstreamHealth(snapshot, configs, true, nil, canonicalModelConfigMatch)
+	got := vkUpstreamHealth(snapshot, configs, true, nil, canonicalModelConfigMatch, nil)
 	if len(got) != 2 || got[0].Model != "gpt-x" || got[1].Model != "claude-a" {
 		t.Fatalf("expected the unnamed provider and the named provider's allowed model, got %+v", got)
 	}
-	if got := vkUpstreamHealth(snapshot, nil, true, nil, canonicalModelConfigMatch); len(got) != 3 {
+	if got := vkUpstreamHealth(snapshot, nil, true, nil, canonicalModelConfigMatch, nil); len(got) != 3 {
 		t.Fatalf("a key allowing all providers with no configs reaches every pair, got %+v", got)
 	}
 }
@@ -85,7 +85,7 @@ func TestVKUpstreamHealthFoldsLimitsTheMatcherGoverns(t *testing.T) {
 	match := func(configModel string, _ *string, _ schemas.ModelProvider, model string, _ schemas.WhiteList) bool {
 		return configModel == "gpt-4o" && model == "gpt-4o-2024-08-06"
 	}
-	got := vkUpstreamHealth(snapshot, configs, false, models, match)
+	got := vkUpstreamHealth(snapshot, configs, false, models, match, nil)
 	if len(got) != 2 || got[0].EffectiveRemainingFraction != 0 || got[1].EffectiveRemainingFraction != 1 {
 		t.Fatalf("expected the exhausted gpt-4o budget to bound only its dated model, got %+v", got)
 	}
@@ -110,7 +110,7 @@ func TestVKUpstreamHealthMatchesThroughTheConfigsKeys(t *testing.T) {
 		// key-opus maps claude-sonnet to opus; key-sonnet does not.
 		return configModel == "opus" && provider == schemas.Bedrock && keyIDs.IsAllowed("key-opus")
 	}
-	got := vkUpstreamHealth(snapshot, configs, true, models, match)
+	got := vkUpstreamHealth(snapshot, configs, true, models, match, nil)
 	if len(got) != 2 || got[0].EffectiveRemainingFraction != 1 {
 		t.Fatalf("expected the key-sonnet route to keep its capacity, got %+v", got)
 	}
@@ -128,7 +128,7 @@ func TestVKUpstreamHealthFoldsProviderScopedLimitWithoutProviderConfig(t *testin
 		{Provider: schemas.Azure, Model: "gpt-4o", Status: schemas.UpstreamHealthDegraded, Available: true, EffectiveRemainingFraction: 1},
 	}
 	models := []quotaModelUsage{{ModelName: "gpt-4o", Provider: schemas.Ptr("openai"), Budgets: []configstoreTables.TableBudget{{MaxLimit: 10, CurrentUsage: 10}}}}
-	got := vkUpstreamHealth(snapshot, nil, true, models, canonicalModelConfigMatch)
+	got := vkUpstreamHealth(snapshot, nil, true, models, canonicalModelConfigMatch, nil)
 	if len(got) != 2 || got[0].EffectiveRemainingFraction != 0 || got[1].EffectiveRemainingFraction != 1 {
 		t.Fatalf("expected the exhausted openai/gpt-4o limit to bound only the openai pair, got %+v", got)
 	}
@@ -146,8 +146,27 @@ func TestVKUpstreamHealthSkipsDenyAllProviderConfig(t *testing.T) {
 		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
 		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"*"}, Keys: []configstoreTables.TableKey{{KeyID: "key-1"}}},
 	}
-	got := vkUpstreamHealth(snapshot, configs, true, nil, canonicalModelConfigMatch)
+	got := vkUpstreamHealth(snapshot, configs, true, nil, canonicalModelConfigMatch, nil)
 	if len(got) != 1 || got[0].Provider != schemas.Anthropic {
 		t.Fatalf("expected only the provider whose config allows a key, got %+v", got)
+	}
+}
+
+// A keyless provider skips key selection, so a config that allows no keys still reaches its pairs;
+// the same config on a provider that needs keys reaches none.
+func TestVKUpstreamHealthKeylessProviderIgnoresKeyRestriction(t *testing.T) {
+	const keylessProvider = schemas.ModelProvider("my-local")
+	snapshot := []schemas.UpstreamHealth{
+		{Provider: keylessProvider, Model: "local-a", Status: schemas.UpstreamHealthCoolingDown},
+		{Provider: schemas.OpenAI, Model: "gpt-a", Status: schemas.UpstreamHealthCoolingDown},
+	}
+	configs := []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: string(keylessProvider), AllowedModels: schemas.WhiteList{"*"}},
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
+	}
+	keyless := func(provider schemas.ModelProvider) bool { return provider == keylessProvider }
+	got := vkUpstreamHealth(snapshot, configs, false, nil, canonicalModelConfigMatch, keyless)
+	if len(got) != 1 || got[0].Provider != keylessProvider {
+		t.Fatalf("expected only the keyless provider's pair, got %+v", got)
 	}
 }

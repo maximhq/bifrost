@@ -3163,6 +3163,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 			return s.Client.UpstreamHealthSnapshot(now)
 		})
 		governanceHandler.SetModelConfigMatcher(s.modelConfigGoverns)
+		governanceHandler.SetKeylessProviderCheck(func(provider schemas.ModelProvider) bool {
+			return isKeylessProvider(provider, s.Config)
+		})
 		s.GovernanceHandler = governanceHandler
 	}
 	// Routing rules and the complexity analyzer config live in the config store, so these

@@ -24,6 +24,16 @@ func (h *GovernanceHandler) SetUpstreamHealthSource(source UpstreamHealthSource)
 	h.upstreamHealth = source
 }
 
+// KeylessProviderCheck reports whether a provider serves requests without provider keys (a
+// keyless custom provider), so a provider config's key restriction does not apply to it.
+type KeylessProviderCheck func(provider schemas.ModelProvider) bool
+
+// SetKeylessProviderCheck wires how upstream_health tells keyless providers apart. Without it
+// every provider is treated as requiring keys.
+func (h *GovernanceHandler) SetKeylessProviderCheck(keyless KeylessProviderCheck) {
+	h.keylessProvider = keyless
+}
+
 // SetModelConfigMatcher wires how upstream_health matches the key's per-model limits to a pair.
 // Without it a limit applies only to the model's catalog-independent canonical spelling.
 func (h *GovernanceHandler) SetModelConfigMatcher(match ModelConfigMatcher) {
@@ -43,12 +53,12 @@ var allProviderKeys = schemas.WhiteList{"*"}
 // can reach, with each pair's EffectiveRemainingFraction narrowed by the static budgets and rate
 // limits the key has on that provider, on that model under it (with or without a provider
 // config), and on that model across all providers (a model config with no provider, which
-// governance enforces on every provider). A pair is reachable through a provider config that allows the model and at least one key, or, when the key allows all
+// governance enforces on every provider). A pair is reachable through a provider config that allows the model and at least one key (any config on a provider keyless says needs none), or, when the key allows all
 // providers, through any provider it names no config for: inference grants those with every
 // model. Every pair in the snapshot was dispatched to, so its provider is configured. match
 // decides which per-model limits govern a pair, through the keys the key's provider config allows
 // (every key on a provider granted by allow_all_providers).
-func vkUpstreamHealth(snapshot []schemas.UpstreamHealth, providerConfigs []configstoreTables.TableVirtualKeyProviderConfig, allowAllProviders bool, models []quotaModelUsage, match ModelConfigMatcher) []schemas.UpstreamHealth {
+func vkUpstreamHealth(snapshot []schemas.UpstreamHealth, providerConfigs []configstoreTables.TableVirtualKeyProviderConfig, allowAllProviders bool, models []quotaModelUsage, match ModelConfigMatcher, keyless KeylessProviderCheck) []schemas.UpstreamHealth {
 	out := make([]schemas.UpstreamHealth, 0, len(snapshot))
 	for _, entry := range snapshot {
 		var pc *configstoreTables.TableVirtualKeyProviderConfig
@@ -59,8 +69,12 @@ func vkUpstreamHealth(snapshot []schemas.UpstreamHealth, providerConfigs []confi
 				break
 			}
 		}
-		// A config that allows no keys (deny-by-default) serves nothing, whatever its models allow.
-		if pc != nil && (!pc.AllowedModels.IsAllowed(entry.Model) || pc.BlacklistedModels.IsBlocked(entry.Model) || len(pc.KeyIDs()) == 0) {
+		if pc != nil && (!pc.AllowedModels.IsAllowed(entry.Model) || pc.BlacklistedModels.IsBlocked(entry.Model)) {
+			continue
+		}
+		// A config that allows no keys (deny-by-default) serves nothing on a provider that needs
+		// keys; a keyless provider skips key selection, so the restriction does not apply.
+		if pc != nil && len(pc.KeyIDs()) == 0 && (keyless == nil || !keyless(entry.Provider)) {
 			continue
 		}
 		if !named && !allowAllProviders {

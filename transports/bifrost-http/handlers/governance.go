@@ -297,6 +297,9 @@ type GovernanceHandler struct {
 	// modelConfigMatcher matches the key's per-model limits to an upstream_health pair. Set by
 	// SetModelConfigMatcher; nil matches canonical spellings only.
 	modelConfigMatcher ModelConfigMatcher
+	// keylessProvider tells keyless providers apart for upstream_health. Set by
+	// SetKeylessProviderCheck; nil treats every provider as requiring keys.
+	keylessProvider KeylessProviderCheck
 	// now is the clock, overridden in tests.
 	now func() time.Time
 }
@@ -6003,7 +6006,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		if match == nil {
 			match = canonicalModelConfigMatch
 		}
-		upstreamHealth = vkUpstreamHealth(source(time.Now()), vk.ProviderConfigs, vk.AllowAllProviders, models, match)
+		upstreamHealth = vkUpstreamHealth(source(time.Now()), vk.ProviderConfigs, vk.AllowAllProviders, models, match, h.keylessProvider)
 	}
 	// The provider configs' keys are loaded only to resolve key aliases above; the response has
 	// never carried them, and a self-service caller has no use for provider key IDs.
