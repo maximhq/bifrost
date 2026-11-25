@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -503,6 +504,10 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to link OAuth config to MCP client: %v", err))
 		return
 	}
+	if err := h.refreshMCPClientRow(ctx, clientConfig.ID); err != nil {
+		sendMCPClientReloadError(ctx, "linking its OAuth config", err)
+		return
+	}
 
 	completeURL := lib.WithBasePath(fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID))
 	statusURL := lib.WithBasePath(fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID))
@@ -630,17 +635,29 @@ func (h *MCPHandler) activateVerifiedClient(ctx context.Context, config *schemas
 	h.mcpManager.SetClientDiscovery(config.ID, discovery)
 }
 
+// errVerificationNotReloaded marks a recordAdminVerification failure that came
+// after the store recorded the verification: only reading the row back into
+// memory failed. A retry would find the client verified and could not run the
+// step again, so the caller still activates the client before reporting it.
+var errVerificationNotReloaded = errors.New("verification recorded but not reloaded into memory")
+
 // recordAdminVerification records in the store that config, still waiting for
 // its admin step, passed it. Only a client with per_user_discovery on is read
 // from that record (see TableMCPClient.AwaitsAdminVerification), so only its
 // failure is returned, for the caller to report: the client works now but would
 // read as unverified again after a restart. For any other client the tools
-// already stored record the step, so a failure is only logged.
+// already stored record the step, so a failure is only logged. Once the record
+// is written, a failure to reload the row wraps errVerificationNotReloaded.
 func (h *MCPHandler) recordAdminVerification(ctx context.Context, config *schemas.MCPClientConfig) error {
 	if !config.PendingVerification {
 		return nil
 	}
 	err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, config.ID)
+	if err == nil {
+		if refreshErr := h.refreshMCPClientRow(ctx, config.ID); refreshErr != nil {
+			return fmt.Errorf("%w: MCP client %s: %w", errVerificationNotReloaded, config.ID, refreshErr)
+		}
+	}
 	if err != nil && !perUserDiscoveryOn(config) {
 		logger.Warn(fmt.Sprintf("failed to record the verification of MCP client %s: %v", config.ID, err))
 		return nil
@@ -868,17 +885,27 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted. Retry this endpoint to re-run verification and persist: %v", err))
 		return
 	}
+	// A row written but not read back into memory cannot be redone by a retry:
+	// the tools stored above, or the verification recorded below, make the
+	// client read as verified, so a retry stops at the replay guard. The
+	// remaining steps run anyway, and the failed reload is reported once they
+	// have.
+	reloadErr := h.refreshMCPClientRow(ctx, clientConfig.ID)
 	// Record the verification, then set the discovery on the client, after
 	// persistence succeeds — not before. SetClientDiscovery may propagate this
 	// update to other observers of the DB row (deployment-specific), so it must
 	// run strictly after the writes above land — otherwise a propagated update
 	// could be read back before the row it depends on was actually written. A
 	// failed record leaves runtime and DB unverified alike, so a retry re-runs
-	// verification.
+	// verification. A record written but not reloaded is a failed reload like
+	// the one above.
 	if err := h.recordAdminVerification(ctx, clientConfig); err != nil {
-		logger.Error(fmt.Sprintf("[PARTIAL SUCCESS] MCP client %s was verified but recording the verification failed: %v. Retry this endpoint to re-run verification.", clientConfig.ID, err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verified successfully but recording the verification failed. Retry this endpoint to re-run verification: %v", err))
-		return
+		if !errors.Is(err, errVerificationNotReloaded) {
+			logger.Error(fmt.Sprintf("[PARTIAL SUCCESS] MCP client %s was verified but recording the verification failed: %v. Retry this endpoint to re-run verification.", clientConfig.ID, err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verified successfully but recording the verification failed. Retry this endpoint to re-run verification: %v", err))
+			return
+		}
+		reloadErr = errors.Join(reloadErr, err)
 	}
 	h.activateVerifiedClient(ctx, clientConfig, discovery)
 
@@ -902,6 +929,10 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		}); err != nil {
 			logger.Warn(fmt.Sprintf("failed to retain admin header credential for MCP client %s: %v", clientConfig.ID, err))
 		}
+	}
+	if reloadErr != nil {
+		sendMCPClientReloadError(ctx, "verifying it", reloadErr)
+		return
 	}
 
 	h.recordMCPClientAction(ctx, "mcp_client.headers_verified", clientConfig.ID, clientConfig.Name, map[string]any{
@@ -1074,17 +1105,25 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted. Retry this endpoint to re-run verification and persist: %v", err))
 		return
 	}
+	// A failed reload is handled as in verify-headers: the remaining steps
+	// run, since a retry would stop at the replay guard, and the reload is
+	// reported once they have.
+	reloadErr := h.refreshMCPClientRow(ctx, clientConfig.ID)
 	// Record the verification, then set the discovery on the client, after
 	// persistence succeeds — not before. SetClientDiscovery may propagate this
 	// update to other observers of the DB row (deployment-specific), so it must
 	// run strictly after the writes above land — otherwise a propagated update
 	// could be read back before the row it depends on was actually written. A
 	// failed record leaves runtime and DB unverified alike, so a retry re-runs
-	// verification.
+	// verification. A record written but not reloaded is a failed reload like
+	// the one above.
 	if err := h.recordAdminVerification(ctx, clientConfig); err != nil {
-		logger.Error(fmt.Sprintf("[PARTIAL SUCCESS] MCP client %s was verified but recording the verification failed: %v. Retry this endpoint to re-run verification.", clientConfig.ID, err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verified successfully but recording the verification failed. Retry this endpoint to re-run verification: %v", err))
-		return
+		if !errors.Is(err, errVerificationNotReloaded) {
+			logger.Error(fmt.Sprintf("[PARTIAL SUCCESS] MCP client %s was verified but recording the verification failed: %v. Retry this endpoint to re-run verification.", clientConfig.ID, err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verified successfully but recording the verification failed. Retry this endpoint to re-run verification: %v", err))
+			return
+		}
+		reloadErr = errors.Join(reloadErr, err)
 	}
 	h.activateVerifiedClient(ctx, clientConfig, discovery)
 
@@ -1100,6 +1139,10 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		if retainErr := h.store.OAuthProvider.RetainExchangeAdminCredential(ctx, clientConfig, adminResponse); retainErr != nil {
 			logger.Warn(fmt.Sprintf("failed to retain admin exchange credential for MCP client %s: %v", clientConfig.ID, retainErr))
 		}
+	}
+	if reloadErr != nil {
+		sendMCPClientReloadError(ctx, "verifying it", reloadErr)
+		return
 	}
 
 	h.recordMCPClientAction(ctx, "mcp_client.exchange_verified", clientConfig.ID, clientConfig.Name, map[string]any{
@@ -2036,21 +2079,13 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	// Reject reconnect requests for unknown clients (404, as refresh-tools answers)
 	// and for disabled ones, which must be enabled first.
-	known := false
-	if h.store.MCPConfig != nil {
-		for _, client := range h.store.MCPConfig.ClientConfigs {
-			if client.ID == id {
-				if client.Disabled {
-					SendError(ctx, fasthttp.StatusBadRequest, "cannot reconnect a disabled MCP client: enable the client first")
-					return
-				}
-				known = true
-				break
-			}
-		}
-	}
-	if !known {
+	client := findMCPClientConfig(h.store, id)
+	if client == nil {
 		SendError(ctx, fasthttp.StatusNotFound, schemas.ErrMCPClientNotFound.Error())
+		return
+	}
+	if client.Disabled {
+		SendError(ctx, fasthttp.StatusBadRequest, "cannot reconnect a disabled MCP client: enable the client first")
 		return
 	}
 	if err := h.mcpManager.ReconnectMCPClient(ctx, id); err != nil {
@@ -2093,16 +2128,9 @@ func (h *MCPHandler) refreshMCPClientTools(ctx *fasthttp.RequestCtx) {
 	// Reject a disabled client the same way reconnect does: it holds no
 	// connection and runs no workers, so discovered tools would have nothing
 	// to execute them.
-	if h.store.MCPConfig != nil {
-		for _, client := range h.store.MCPConfig.ClientConfigs {
-			if client.ID == id {
-				if client.Disabled {
-					SendError(ctx, fasthttp.StatusBadRequest, "cannot refresh tools for a disabled MCP client: enable the client first")
-					return
-				}
-				break
-			}
-		}
+	if client := findMCPClientConfig(h.store, id); client != nil && client.Disabled {
+		SendError(ctx, fasthttp.StatusBadRequest, "cannot refresh tools for a disabled MCP client: enable the client first")
+		return
 	}
 	count, err := h.mcpManager.RefreshMCPClientTools(ctx, id)
 	if err != nil {
@@ -3317,15 +3345,9 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Fetch existing config first — needed to resolve optional fields before validation.
-	var existingConfig *schemas.MCPClientConfig
-	if h.store.MCPConfig != nil {
-		for i, client := range h.store.MCPConfig.ClientConfigs {
-			if client.ID == id {
-				existingConfig = h.store.MCPConfig.ClientConfigs[i]
-				break
-			}
-		}
-	}
+	// It keeps its pre-update values throughout: UpdateMCPClient below replaces the live
+	// store's record rather than changing this one.
+	existingConfig := findMCPClientConfig(h.store, id)
 	if existingConfig == nil {
 		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
@@ -3342,17 +3364,6 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "openapi_config can only be updated for MCP clients with connection_type 'openapi'")
 		return
 	}
-	// Snapshot fields we need to diff against the resolved values AFTER UpdateMCPClient
-	// runs further below — UpdateMCPClient mutates the *MCPClientConfig in place (it's
-	// the same pointer the manager holds in MCPConfig.ClientConfigs), so post-update
-	// reads would already reflect the new value and the diff would always be false.
-	//
-	// PerUserHeaderKeys is snapshotted via append (independent backing array) rather
-	// than a bare slice-header copy, so we're safe if a future change mutates the
-	// slice contents in-place instead of reassigning the header.
-	existingAllowByDefault := existingConfig.AllowByDefault
-	existingPerUserHeaderKeys := append([]string(nil), existingConfig.PerUserHeaderKeys...)
-
 	// Resolve all mutable fields with PATCH semantics: use the provided value if
 	// present, otherwise fall back to the existing value.
 	name := existingConfig.Name
@@ -4199,7 +4210,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// Users would see a spurious "resubmit" prompt with no actual schema
 	// change to reconcile.
 	if existingConfig.AuthType == schemas.MCPAuthTypePerUserHeaders &&
-		perUserHeaderKeysAdded(existingPerUserHeaderKeys, schemasConfig.PerUserHeaderKeys) &&
+		perUserHeaderKeysAdded(existingConfig.PerUserHeaderKeys, schemasConfig.PerUserHeaderKeys) &&
 		h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx, existingConfig.ID); err != nil {
 			logger.Error(fmt.Sprintf("failed to flip per-user header credentials to needs_update for client %s: %v", existingConfig.ID, err))
@@ -4303,7 +4314,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// ones whose MCP regained the grant. Both surfaces (OAuth + headers)
 	// are reconciled — they share the same VK→MCP allowlist model.
 	if h.store.ConfigStore != nil {
-		shouldReconcile := req.VKConfigs != nil || allowByDefault != existingAllowByDefault
+		shouldReconcile := req.VKConfigs != nil || allowByDefault != existingConfig.AllowByDefault
 		if shouldReconcile {
 			if err := h.store.ConfigStore.ReconcileOauthAfterMCPChange(ctx, id); err != nil {
 				logger.Error(fmt.Sprintf("reconcile OAuth credentials after MCP %s update failed: %v", id, err))
@@ -4518,6 +4529,21 @@ func (h *MCPHandler) persistMCPDiscovery(ctx context.Context, clientID string, d
 	}
 }
 
+// refreshMCPClientRow re-reads an MCP client's row into the live store after the handler wrote
+// the row itself rather than through the MCP manager, retrying a failed read with lib.AdminRetry.
+// When the retries run out it keeps the previous record and returns the error: the write stands,
+// and the caller reports that memory did not follow it.
+func (h *MCPHandler) refreshMCPClientRow(ctx context.Context, id string) error {
+	return h.store.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindMCPClient, ID: id}}, lib.AdminRetry()...)
+}
+
+// sendMCPClientReloadError logs and answers a failed post-write refresh of an MCP client: the row
+// was written, but memory still holds the previous client.
+func sendMCPClientReloadError(ctx *fasthttp.RequestCtx, action string, err error) {
+	logger.Error(fmt.Sprintf("failed to reload MCP client after %s: %v", action, err))
+	SendError(ctx, fasthttp.StatusInternalServerError, "MCP client updated in database but failed to reload in-memory state")
+}
+
 // updateMCPClientWithRetry calls mcpManager.UpdateMCPClient with a short retry loop
 func (h *MCPHandler) updateMCPClientWithRetry(ctx context.Context, id string, config *schemas.MCPClientConfig) error {
 	const maxAttempts = 3
@@ -4603,7 +4629,9 @@ func (h *MCPHandler) updateMCPClientCredentialsWithRetry(ctx context.Context, id
 // against the upstream server (which also re-discovers tools), then promote
 // it to the admin row and persist the refreshed tool set. On verification
 // failure the fresh token is revoked and the old admin row and tool set are
-// left untouched, so the repair can simply be retried.
+// left untouched, so the repair can simply be retried. Once the credential is
+// promoted a retry can no longer run, so a failed in-memory reload still hands
+// the runtime the discovery before the request answers 500.
 func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, oauthConfigID, clientID string) {
 	clientConfig, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, clientID)
 	if err != nil {
@@ -4736,6 +4764,10 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 			clientConfig.ID, err,
 		))
 	}
+	// A failed reload is reported only after the runtime gets the discovery:
+	// the credential is already promoted, so a retried complete-oauth answers
+	// 409 and could not hand it over again.
+	reloadErr := h.refreshMCPClientRow(ctx, clientConfig.ID)
 
 	// Refresh the manager's config with the discovered tools, then set them
 	// on the client. Per-user auth clients hold no shared upstream
@@ -4748,6 +4780,10 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 	}
 	h.persistMCPDiscovery(ctx, clientConfig.ID, discovery)
 	h.mcpManager.SetClientDiscovery(clientConfig.ID, discovery)
+	if reloadErr != nil {
+		sendMCPClientReloadError(ctx, "repairing its discovery credential", reloadErr)
+		return
+	}
 
 	h.recordMCPClientAction(ctx, "mcp_client.oauth_completed", clientConfig.ID, clientConfig.Name, map[string]any{
 		"auth_type":       clientConfig.AuthType,
@@ -5113,6 +5149,10 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client verified and activated but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
 				return
 			}
+			if err := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); err != nil {
+				sendMCPClientReloadError(ctx, "clearing its pending bootstrap config", err)
+				return
+			}
 		}
 
 		logger.Debug(fmt.Sprintf("[OAuth Complete] Per-user OAuth MCP client verified and created: %s (%d tools)", mcpClientConfig.ID, len(tools)))
@@ -5238,6 +5278,10 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				mcpClientConfig.ID, err,
 			))
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client connected but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
+			return
+		}
+		if err := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); err != nil {
+			sendMCPClientReloadError(ctx, "clearing its pending bootstrap config", err)
 			return
 		}
 	}

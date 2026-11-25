@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -678,12 +679,18 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// of this handler, so a rejection here must happen before any of that
 	// runs — otherwise a 400 would leave runtime state changed with nothing
 	// persisted.
-	if payload.ClientConfig.DualCredentialConflictBehavior == configstoreTables.DualCredentialConflictBehaviorError && h.store.MCPConfig != nil {
-		for _, mcpClient := range h.store.MCPConfig.ClientConfigs {
-			if mcpClient.AuthType == schemas.MCPAuthTypeTokenExchange {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("dual_credential_conflict_behavior cannot be set to 'error' while MCP client %q uses auth_type 'token_exchange'; delete that client first or choose 'prefer_idp'/'prefer_vk'", mcpClient.Name))
-				return
+	if payload.ClientConfig.DualCredentialConflictBehavior == configstoreTables.DualCredentialConflictBehaviorError {
+		var exchanging *registry.MCPClient
+		h.store.LiveStore.Collections.MCPClients.Range(func(mcpClient *registry.MCPClient) bool {
+			if mcpClient.Config.AuthType == schemas.MCPAuthTypeTokenExchange {
+				exchanging = mcpClient
+				return false
 			}
+			return true
+		})
+		if exchanging != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("dual_credential_conflict_behavior cannot be set to 'error' while MCP client %q uses auth_type 'token_exchange'; delete that client first or choose 'prefer_idp'/'prefer_vk'", exchanging.Config.Name))
+			return
 		}
 	}
 

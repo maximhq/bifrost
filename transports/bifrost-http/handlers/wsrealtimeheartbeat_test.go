@@ -1278,6 +1278,16 @@ func (a geminiLiveAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas
 	return &schemas.ProviderConfig{NetworkConfig: network, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a geminiLiveAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a geminiLiveAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // liveTurnRecorder records the turns the pipeline logs and bills.
 type liveTurnRecorder struct {
 	mu        sync.Mutex

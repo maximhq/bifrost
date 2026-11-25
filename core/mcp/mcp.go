@@ -49,8 +49,7 @@ type MCPManager struct {
 	serverRunning          bool                               // Track whether local MCP server is running
 	checkerManager         *ConnectionCheckerManager          // Manager for per-client periodic connection checkers (liveness + discovery refresh, drives Healthy/Unstable/NeedsReauth)
 	reconnectingClients    sync.Map                           // Tracks in-flight exclusive client operations per client ID (map[string]*inflightClientOp); waiters join via AwaitReconnect
-	bootClientConfigs      []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
-	connectOnce            sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
+	connectOnce            sync.Once                          // Ensures ConnectConfiguredClients dials the configured clients exactly once
 	inProcessServerFactory schemas.InProcessServerFactory     // Builds synthesized servers (openapi clients); nil = unsupported
 	perCallConns           sync.Map                           // Client ID → *perCallConn, shared by that client's per-call connections
 	perCallConnsMu         sync.Mutex                         // Serializes building a perCallConn on a miss
@@ -244,12 +243,10 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 		manager.toolsManager.SetCodeMode(codeMode)
 	}
 
-	// Retain client configs for an explicit dial via ConnectConfiguredClients.
-	// Construction no longer connects: callers dial after every plugin is
-	// registered so PreMCPConnectionHook sees the full plugin set (otherwise a
-	// connect issued during Init would run against the point-in-time plugin
-	// snapshot and silently skip plugins registered afterwards).
-	manager.bootClientConfigs = config.ClientConfigs
+	// Construction never connects: callers dial with ConnectConfiguredClients after
+	// every plugin is registered so PreMCPConnectionHook sees the full plugin set
+	// (otherwise a connect issued during Init would run against the point-in-time
+	// plugin snapshot and silently skip plugins registered afterwards).
 	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
 	return manager
 }
@@ -270,25 +267,25 @@ func (m *MCPManager) getInProcessServerFactory() schemas.InProcessServerFactory 
 	return m.inProcessServerFactory
 }
 
-// ConnectConfiguredClients dials the MCP clients supplied at construction time
-// (MCPConfig.ClientConfigs). It is separated from NewMCPManager so the caller can
+// ConnectConfiguredClients dials the configured MCP clients, configs, which the
+// manager keeps from then on. It is separated from NewMCPManager so the caller can
 // run it only after all plugins are registered, ensuring every PreMCPConnectionHook
-// participates in the connection. Safe to call once after construction; clients are
-// dialed in parallel and a failed client is retained in the Unstable state with a
-// connection checker that recovers it automatically. It returns once every client
-// has been attempted; onClientDone, when not nil, is called as each attempt
-// finishes, never two calls at once.
-func (m *MCPManager) ConnectConfiguredClients(ctx context.Context, onClientDone func(clientID string)) {
+// participates in the connection. Only the first call dials; clients are dialed in
+// parallel and a failed client is retained in the Unstable state with a connection
+// checker that recovers it automatically. It returns once every client has been
+// attempted; onClientDone, when not nil, is called as each attempt finishes, never
+// two calls at once.
+func (m *MCPManager) ConnectConfiguredClients(ctx context.Context, configs []*schemas.MCPClientConfig, onClientDone func(clientID string)) {
 	m.connectOnce.Do(func() {
-		m.connectConfiguredClients(ctx, onClientDone)
+		m.connectConfiguredClients(ctx, configs, onClientDone)
 	})
 }
 
 // connectConfiguredClients performs the actual dial. It is invoked exactly once via
 // m.connectOnce, guarding against accidental repeat invocations (e.g. a double-Bootstrap
-// or a future code path) that would otherwise re-dial every boot config.
-func (m *MCPManager) connectConfiguredClients(ctx context.Context, onClientDone func(clientID string)) {
-	if len(m.bootClientConfigs) == 0 {
+// or a future code path) that would otherwise re-dial every configured client.
+func (m *MCPManager) connectConfiguredClients(ctx context.Context, configs []*schemas.MCPClientConfig, onClientDone func(clientID string)) {
+	if len(configs) == 0 {
 		return
 	}
 	if ctx == nil {
@@ -299,8 +296,8 @@ func (m *MCPManager) connectConfiguredClients(ctx context.Context, onClientDone 
 	var doneMu sync.Mutex
 	// Add clients in parallel
 	wg := sync.WaitGroup{}
-	wg.Add(len(m.bootClientConfigs))
-	for _, clientConfig := range m.bootClientConfigs {
+	wg.Add(len(configs))
+	for _, clientConfig := range configs {
 		go func(clientConfig *schemas.MCPClientConfig) {
 			defer wg.Done()
 			if onClientDone != nil {

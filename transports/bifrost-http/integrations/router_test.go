@@ -1385,6 +1385,16 @@ func (a passthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*
 	return config, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a passthroughTestAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a passthroughTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // passthroughTestStore reports the test account's custom providers the way lib.Config does.
 func passthroughTestStore() *mockHandlerStore {
 	return &mockHandlerStore{customProviders: map[schemas.ModelProvider]mockCustomProvider{
@@ -1785,6 +1795,16 @@ func (a passthroughRewriteAccount) GetConfigForProvider(p schemas.ModelProvider)
 	return config, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a passthroughRewriteAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a passthroughRewriteAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // passthroughRewritingPlugin stands in for a plugin that redacts a passthrough request: it records what the router
 // handed over and rewrites the body through the registered rewriter, as it would after finding a value.
 type passthroughRewritingPlugin struct {
@@ -2148,6 +2168,16 @@ func (a directKeyTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*sc
 	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a directKeyTestAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a directKeyTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // A direct key is the caller's credential for the provider whose SDK called the route. A drop-in
 // model listing that names no provider used to ask every configured provider and send the key to
 // each of them; it now asks only the route's own provider, refuses when that provider is not
@@ -2349,6 +2379,16 @@ func (codexPassthroughAccount) GetConfigForProvider(schemas.ModelProvider) (*sch
 	return &schemas.ProviderConfig{}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (codexPassthroughAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (codexPassthroughAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // codexPassthroughReceipt witnesses the real router-to-core request before an explicit synthetic policy denial.
 type codexPassthroughReceipt struct {
 	request          *schemas.BifrostRequest
@@ -2471,6 +2511,16 @@ func (geminiPassthroughAccount) GetKeysForProvider(context.Context, schemas.Mode
 // GetConfigForProvider uses defaults.
 func (geminiPassthroughAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
 	return &schemas.ProviderConfig{}, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (geminiPassthroughAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (geminiPassthroughAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
 }
 
 // TestGenAIPassthroughInteractionsAgentIsTheModel covers Deep Research runs on /genai_passthrough: the
@@ -3258,6 +3308,16 @@ func (a heldDeadlineAccount) GetConfigForProvider(p schemas.ModelProvider) (*sch
 		return nil, fmt.Errorf("unsupported provider %s", p)
 	}
 	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a heldDeadlineAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a heldDeadlineAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
 }
 
 // A first-token deadline still governs a held stream. The startup check only learns that a held

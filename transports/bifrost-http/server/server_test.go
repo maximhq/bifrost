@@ -171,6 +171,7 @@ func TestReloadVirtualKeyAvoidsGovernanceSnapshot(t *testing.T) {
 	plugin := &reloadVirtualKeyPlugin{store: store}
 	persistedVK := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "new", Value: *schemas.NewSecretVar("sk-bf-new")}
 	config := &lib.Config{
+		LiveStore:    liveStoreForTest(t),
 		ConfigStore:  &reloadVirtualKeyConfigStore{vk: persistedVK},
 		ClientConfig: &configstore.ClientConfig{},
 	}
@@ -212,13 +213,11 @@ func TestEvictMCPPerUserDiscoveryCache_ResyncsTheMCPGateway(t *testing.T) {
 	handlers.SetLogger(noopTestLogger{})
 	ctx := context.Background()
 	store := &perCallerNamesConfigStore{}
-	config := &lib.Config{
+	config := libtest.MCPClients(t, &lib.Config{
 		ConfigStore:  store,
 		ClientConfig: &configstore.ClientConfig{},
-		MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
-			{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)},
-		}},
-	}
+		MCPConfig:    &schemas.MCPConfig{},
+	}, &schemas.MCPClientConfig{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)})
 	config.MCPPerUserDiscoveryStore = mcpdiscovery.NewPerUserStore(store, noopTestLogger{})
 	mcpHandler, err := handlers.NewMCPServerHandler(ctx, config, reloadVirtualKeyToolManager{}, nil, nil, nil)
 	require.NoError(t, err)
@@ -3652,6 +3651,24 @@ func TestOverlappingKeyReloadsKeepTheRotatedValue(t *testing.T) {
 			require.True(t, live, "the committed value must authenticate")
 		})
 	}
+}
+
+// TestGovernanceInMemoryStore_GetMCPClientBySlugSkipsDisabled pins that a disabled MCP client's
+// endpoint slug does not resolve for governance, so /mcp/<slug> is not served (admit returns 403)
+// for a disabled direct client.
+func TestGovernanceInMemoryStore_GetMCPClientBySlugSkipsDisabled(t *testing.T) {
+	store := &GovernanceInMemoryStore{Config: libtest.MCPClients(t, &lib.Config{},
+		&schemas.MCPClientConfig{ID: "enabled-id", Name: "Enabled", EndpointSlug: "live-slug"},
+		&schemas.MCPClientConfig{ID: "disabled-id", Name: "Disabled", EndpointSlug: "dead-slug", Disabled: true},
+	)}
+
+	id, name, ok := store.GetMCPClientBySlug("live-slug")
+	require.True(t, ok)
+	require.Equal(t, "enabled-id", id)
+	require.Equal(t, "Enabled", name)
+
+	_, _, ok = store.GetMCPClientBySlug("dead-slug")
+	require.False(t, ok, "a disabled client's slug must not resolve")
 }
 
 // liveStoreForTest returns a new, empty live store closed when the test ends.

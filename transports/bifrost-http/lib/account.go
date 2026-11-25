@@ -79,6 +79,33 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, provider
 	return keys, nil
 }
 
+// GetConfiguredMCPClients returns the IDs of the MCP clients in the live store.
+// Implements the Account interface.
+func (baseAccount *BaseAccount) GetConfiguredMCPClients() ([]string, error) {
+	if baseAccount.config == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	ids := []string{}
+	baseAccount.config.LiveStore.Collections.MCPClients.Range(func(client *registry.MCPClient) bool {
+		ids = append(ids, client.Config.ID)
+		return true
+	})
+	return ids, nil
+}
+
+// GetConfigForMCPClient returns an MCP client's configuration as the live store holds it, so the
+// caller must not change it. Implements the Account interface.
+func (baseAccount *BaseAccount) GetConfigForMCPClient(clientID string) (*schemas.MCPClientConfig, error) {
+	if baseAccount.config == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	client, ok := baseAccount.config.liveMCPClient(clientID)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return &client.Config, nil
+}
+
 // GetConfigForProvider returns the complete configuration for a specific provider.
 // Configuration is already fully processed (environment variables, key configs) by the store.
 // Implements the Account interface.

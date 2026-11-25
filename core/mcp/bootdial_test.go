@@ -39,14 +39,13 @@ func TestConnectConfiguredClients_ReportsEachClientAsItFinishes(t *testing.T) {
 		upstream.ServeHTTP(w, r)
 	}))
 	t.Cleanup(slow.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
-		bootClient("slow", slow.URL), bootClient("fast", fast.URL),
-	}}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	var mu sync.Mutex
 	var done []string
-	m.ConnectConfiguredClients(context.Background(), func(clientID string) {
+	configs := []*schemas.MCPClientConfig{bootClient("slow", slow.URL), bootClient("fast", fast.URL)}
+	m.ConnectConfiguredClients(context.Background(), configs, func(clientID string) {
 		mu.Lock()
 		defer mu.Unlock()
 		done = append(done, clientID)
@@ -62,10 +61,10 @@ func TestConnectConfiguredClients_FailedDialIsKeptAndRecovered(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{bootClient("down", ts.URL)}}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
-	m.ConnectConfiguredClients(context.Background(), nil)
+	m.ConnectConfiguredClients(context.Background(), []*schemas.MCPClientConfig{bootClient("down", ts.URL)}, nil)
 	state, ok := snapshotAddClientState(m, "down")
 	require.True(t, ok, "the client is kept")
 	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
@@ -101,12 +100,12 @@ func TestConnectConfiguredClients_ClientRemovedDuringTheDialStaysRemoved(t *test
 			close(release)
 		}
 	})
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{bootClient("removed", ts.URL)}}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	dialDone := make(chan struct{})
 	go func() {
-		m.ConnectConfiguredClients(context.Background(), nil)
+		m.ConnectConfiguredClients(context.Background(), []*schemas.MCPClientConfig{bootClient("removed", ts.URL)}, nil)
 		close(dialDone)
 	}()
 	select {

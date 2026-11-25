@@ -22,6 +22,7 @@ import (
 	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -703,7 +704,7 @@ func (h *MCPServerHandler) indexServerTypesOnSlug(ctx context.Context, index *ga
 	if h.config == nil {
 		return index
 	}
-	modes := h.config.GetMCPServerTypesOnSlug()
+	modes := h.serverTypesOnSlug()
 	if len(modes) == 0 {
 		return index
 	}
@@ -713,6 +714,50 @@ func (h *MCPServerHandler) indexServerTypesOnSlug(ctx context.Context, index *ga
 	index.serverTypesOnSlug = modes
 	index.codeModeOnlyOnSlug = listsCodeModeTools(installed) && !listsCodeModeTools(h.toolManager.GetAvailableMCPTools(coremcp.WithAllTools(ctx)))
 	return index
+}
+
+// mcpClientCodeModes is the code mode of an MCP client whose server_type_on_slug overrides
+// is_code_mode_client.
+type mcpClientCodeModes struct {
+	Global bool // on /mcp, Virtual MCPs and LLM requests
+	OnSlug bool // on its own /mcp/<slug>
+}
+
+// serverTypesOnSlug returns every enabled MCP client with a server_type_on_slug override, keyed by
+// client name; nil when none has one.
+func (h *MCPServerHandler) serverTypesOnSlug() map[string]mcpClientCodeModes {
+	if h.config == nil {
+		return nil
+	}
+	var result map[string]mcpClientCodeModes
+	h.config.LiveStore.Collections.MCPClients.Range(func(client *registry.MCPClient) bool {
+		if client.Config.Disabled {
+			return true
+		}
+		onSlug, overrides := client.Config.ServerTypeOnSlug.CodeModeOverride()
+		if !overrides {
+			return true
+		}
+		if result == nil {
+			result = make(map[string]mcpClientCodeModes)
+		}
+		result[client.Config.Name] = mcpClientCodeModes{Global: client.Config.IsCodeModeClient, OnSlug: onSlug}
+		return true
+	})
+	return result
+}
+
+// enabledMCPClientBySlug returns the MCP client served at /mcp/<slug>. A disabled client is not
+// found, so its endpoint is not served (admit 403).
+func (h *MCPServerHandler) enabledMCPClientBySlug(slug string) (*registry.MCPClient, bool) {
+	if h.config == nil || slug == "" {
+		return nil, false
+	}
+	client, ok := h.config.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientBySlug, slug)
+	if !ok || client.Config.Disabled {
+		return nil, false
+	}
+	return client, true
 }
 
 // listsCodeModeTools reports whether tools include the code-mode tools.
@@ -868,9 +913,9 @@ func mcpAuthRequiredToolResult(authReq *schemas.MCPAuthRequiredError) string {
 // governed, so a client slug is served whole, as /mcp serves it.
 func (h *MCPServerHandler) admitBySlug(bifrostCtx *schemas.BifrostContext, slug string, access schemas.Access) *mcpRefusal {
 	if h.admitter == nil {
-		if _, clientName, found := h.config.GetMCPClientBySlug(slug); found {
-			bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, []string{clientName + "-*"})
-			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, clientName)
+		if client, found := h.enabledMCPClientBySlug(slug); found {
+			bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, []string{client.Config.Name + "-*"})
+			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, client.Config.Name)
 			return nil
 		}
 		return &mcpRefusal{status: fasthttp.StatusForbidden, message: "access_denied"}
@@ -882,13 +927,13 @@ func (h *MCPServerHandler) admitBySlug(bifrostCtx *schemas.BifrostContext, slug 
 	}
 	if served, ok := h.admitter.MCPClientToolAccess(bifrostCtx, slug, access); ok {
 		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, served)
-		if _, clientName, found := h.config.GetMCPClientBySlug(slug); found {
-			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, clientName)
+		if client, found := h.enabledMCPClientBySlug(slug); found {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, client.Config.Name)
 		}
 		return nil
 	}
 	// The wire answer stays 403 either way so slugs can't be probed; the log says which it was.
-	if _, _, found := h.config.GetMCPClientBySlug(slug); found {
+	if _, found := h.enabledMCPClientBySlug(slug); found {
 		logger.Debug("mcp: refused /mcp/%s: MCP client exists but the caller's access does not grant it", slug)
 	} else {
 		logger.Debug("mcp: refused /mcp/%s: no enabled MCP client and no Virtual MCP granted to the caller has this slug", slug)

@@ -19,20 +19,13 @@ import (
 // =============================================================================
 
 // setupMCPManagerWithRequestIDFunc creates an MCP manager with a custom request ID generator
-func setupMCPManagerWithRequestIDFunc(t *testing.T, fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string, clientConfigs ...schemas.MCPClientConfig) *mcp.MCPManager {
+func setupMCPManagerWithRequestIDFunc(t *testing.T, fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string) *mcp.MCPManager {
 	t.Helper()
 
 	logger := newTestLogger(t)
 
-	// Convert to pointer slice for MCPConfig
-	clientConfigPtrs := make([]*schemas.MCPClientConfig, len(clientConfigs))
-	for i := range clientConfigs {
-		clientConfigPtrs[i] = &clientConfigs[i]
-	}
-
 	// Create MCP config with request ID function
 	mcpConfig := &schemas.MCPConfig{
-		ClientConfigs:         clientConfigPtrs,
 		FetchNewRequestIDFunc: fetchNewRequestIDFunc,
 	}
 

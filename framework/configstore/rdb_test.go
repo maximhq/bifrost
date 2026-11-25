@@ -7261,10 +7261,10 @@ func TestMCPClientPendingVerification_OnlyItsSetterClearsIt(t *testing.T) {
 		if withClientConfig {
 			require.NoError(t, store.UpdateClientConfig(ctx, &ClientConfig{}))
 		}
-		mcpConfig, err := store.GetMCPConfig(ctx)
+		clients, err := store.GetMCPClientConfigs(ctx)
 		require.NoError(t, err)
-		require.Len(t, mcpConfig.ClientConfigs, 1)
-		assert.True(t, mcpConfig.ClientConfigs[0].PendingVerification, "read back on load (client config row: %v)", withClientConfig)
+		require.Len(t, clients, 1)
+		assert.True(t, clients[0].PendingVerification, "read back on load (client config row: %v)", withClientConfig)
 	}
 
 	row, err := store.GetMCPClientByID(ctx, "pending-client")
@@ -7573,11 +7573,11 @@ func TestMCPClientServerTypeOnSlugRoundTrip(t *testing.T) {
 	}
 	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, stored(), "created with the override")
 
-	config, err := store.GetMCPConfig(ctx)
+	clients, err := store.GetMCPClientConfigs(ctx)
 	require.NoError(t, err)
-	require.NotNil(t, config)
+	require.NotNil(t, clients)
 	var loaded *schemas.MCPClientConfig
-	for _, client := range config.ClientConfigs {
+	for _, client := range clients {
 		if client.ID == "scm-client" {
 			loaded = client
 		}

@@ -522,7 +522,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
-	if err := lib.ValidateInjectedTools(config.InjectedTools, h.config.GetMCPClientNames()); err != nil {
+	if err := lib.ValidateInjectedTools(config.InjectedTools, h.mcpClientExists); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
@@ -696,7 +696,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
-	if err := lib.ValidateInjectedTools(payload.InjectedTools, h.config.GetMCPClientNames()); err != nil {
+	if err := lib.ValidateInjectedTools(payload.InjectedTools, h.mcpClientExists); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
@@ -900,6 +900,12 @@ func (h *ProviderHandler) listKeys(ctx *fasthttp.RequestCtx) {
 		})
 	}
 	SendJSON(ctx, redactedKeys(providers))
+}
+
+// mcpClientExists reports whether an MCP client with this name is configured.
+func (h *ProviderHandler) mcpClientExists(name string) bool {
+	_, ok := h.config.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientByName, name)
+	return ok
 }
 
 // redactedKeys lists every key of every provider as /api/keys reports it, providers by name and

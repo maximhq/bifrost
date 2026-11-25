@@ -28,7 +28,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/livestore/livestoretest"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -334,9 +336,10 @@ func TestAdmitBySlug(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &lib.Config{LiveStore: liveStoreForTest(t), MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			cfg := &lib.Config{LiveStore: liveStoreForTest(t), MCPConfig: &schemas.MCPConfig{}}
+			libtest.MCPClients(t, cfg, []*schemas.MCPClientConfig{
 				{ID: "c7", Name: "context7", EndpointSlug: "context7"},
-			}}}
+			}...)
 			h := &MCPServerHandler{admitter: tc.admitter, config: cfg}
 			bctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			refusal := h.admitBySlug(bctx, tc.slug, nil)
@@ -1641,6 +1644,22 @@ func (s *perCallerNamesStore) setErr(err error) {
 	s.err = err
 }
 
+// editLoadedMCPClient changes the MCP client with this ID in cfg's live store. The store was loaded
+// without a database, so it is loaded again with the edited copy.
+func editLoadedMCPClient(t testing.TB, cfg *lib.Config, id string, edit func(*schemas.MCPClientConfig)) {
+	t.Helper()
+	var clients []*schemas.MCPClientConfig
+	cfg.LiveStore.Collections.MCPClients.Range(func(record *registry.MCPClient) bool {
+		client := record.Config
+		if client.ID == id {
+			edit(&client)
+		}
+		clients = append(clients, &client)
+		return true
+	})
+	libtest.MCPClients(t, cfg, clients...)
+}
+
 func newPerCallerGatewayHandler(t testing.TB) (*MCPServerHandler, *perCallerToolManager, *perCallerNamesStore) {
 	t.Helper()
 	store := &perCallerNamesStore{names: map[string]configstore.MCPPerUserDiscoveryNames{
@@ -1650,11 +1669,12 @@ func newPerCallerGatewayHandler(t testing.TB) (*MCPServerHandler, *perCallerTool
 		LiveStore:    liveStoreForTest(t),
 		ClientConfig: &configstore.ClientConfig{},
 		ConfigStore:  store,
-		MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
-			{ID: "gw-id", Name: "gw"},
-			{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)},
-		}},
+		MCPConfig:    &schemas.MCPConfig{},
 	}
+	libtest.MCPClients(t, config, []*schemas.MCPClientConfig{
+		{ID: "gw-id", Name: "gw"},
+		{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)},
+	}...)
 	tm := &perCallerToolManager{}
 	h, err := NewMCPServerHandler(context.Background(), config, tm, nil, nil, nil)
 	require.NoError(t, err)
@@ -1948,7 +1968,7 @@ func TestMCPGateway_AFailedNamesReadKeepsTheInstalledPlaceholders(t *testing.T) 
 // connected caller lists and calls them, and a caller who has not connected is offered connect only.
 func TestMCPGateway_ServesTheCodeModeToolsOfAPerCallerClient(t *testing.T) {
 	h, tm, _ := newPerCallerGatewayHandler(t)
-	h.config.MCPConfig.ClientConfigs[1].IsCodeModeClient = true
+	editLoadedMCPClient(t, h.config, "notes-id", func(c *schemas.MCPClientConfig) { c.IsCodeModeClient = true })
 	require.NoError(t, h.SyncMCPServer(context.Background()))
 
 	assert.Contains(t, toolNamesOf(listedTools(t, h, callerContext("dave"))), "executeToolCode")
@@ -1959,7 +1979,7 @@ func TestMCPGateway_ServesTheCodeModeToolsOfAPerCallerClient(t *testing.T) {
 
 	// gw's server_type_on_slug installs the shared code-mode tools, which take the placeholders' names: on
 	// /mcp they still answer only a caller who holds them.
-	h.config.MCPConfig.ClientConfigs[0].ServerTypeOnSlug = schemas.MCPServerTypeOnSlugEnabled
+	editLoadedMCPClient(t, h.config, "gw-id", func(c *schemas.MCPClientConfig) { c.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugEnabled })
 	tm.gwSlugOnlyCodeMode = true
 	require.NoError(t, h.SyncMCPServer(context.Background()))
 	assert.Contains(t, toolNamesOf(listedTools(t, h, callerContext("dave"))), "executeToolCode")
@@ -2089,9 +2109,8 @@ func newAppsGateway(tb testing.TB) *MCPServerHandler {
 		ID: "apps", Name: "apps", EndpointSlug: "apps", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"},
 	}))
-	cfg := &lib.Config{LiveStore: liveStoreForTest(tb), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
-		{ID: "apps", Name: "apps", EndpointSlug: "apps"},
-	}}}
+	cfg := &lib.Config{LiveStore: liveStoreForTest(tb), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}}
+	libtest.MCPClients(tb, cfg, &schemas.MCPClientConfig{ID: "apps", Name: "apps", EndpointSlug: "apps"})
 	admitter := slugAdmitter{vmcps: map[string][]string{"bundle": {"apps-view", "apps-refresh", "apps-item"}}, clients: map[string][]string{"apps": {"apps-*"}}}
 	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, admitter, nil, nil)
 	require.NoError(tb, err)
@@ -2128,7 +2147,8 @@ func newCodeModeGateway(tb testing.TB, codeMode bool, slug schemas.MCPServerType
 	tb.Cleanup(func() { _ = m.Cleanup() })
 	require.NoError(tb, m.AddClient(ctx, github))
 	require.NoError(tb, m.AddClient(ctx, slack))
-	cfg := &lib.Config{LiveStore: liveStoreForTest(tb), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{github, slack}}}
+	cfg := &lib.Config{LiveStore: liveStoreForTest(tb), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}}
+	libtest.MCPClients(tb, cfg, github, slack)
 	admitter := slugAdmitter{
 		vmcps:   map[string][]string{"bundle": {"github-create_issue", "slack-post"}},
 		clients: map[string][]string{"github": {"github-*"}, "slack": {"slack-*"}},
@@ -2469,9 +2489,10 @@ func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
 			ConnectionString: schemas.NewSecretVar(url), ToolsToExecute: []string{"*"},
 		}))
 	}
-	cfg := &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+	cfg := &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}}
+	libtest.MCPClients(t, cfg, []*schemas.MCPClientConfig{
 		{ID: "apps", Name: "apps", EndpointSlug: "apps"}, {ID: "other", Name: "other", EndpointSlug: "other"},
-	}}}
+	}...)
 	admitter := slugAdmitter{
 		vmcps:   map[string][]string{"bundle": {"apps-status", "apps-view"}, "withrefresh": {"apps-view", "apps-refresh"}},
 		clients: map[string][]string{"apps": {"apps-*"}, "other": {"other-*"}},
@@ -2657,6 +2678,59 @@ func TestMCPGateway_ServerGivenNamesForPerCallerClients(t *testing.T) {
 	for name := range listedTools(t, h, as("alice", "")) {
 		assert.NotEqual(t, "", coremcp.ToolClientName(name), "tools/list carries no server-given name: %q", name)
 	}
+}
+
+// TestMCPGateway_DisabledClientSlugIsNotServed pins that a disabled MCP client's endpoint slug does
+// not resolve, so /mcp/<slug> is not served (admit returns 403) for a disabled direct client.
+func TestMCPGateway_DisabledClientSlugIsNotServed(t *testing.T) {
+	h := &MCPServerHandler{config: libtest.MCPClients(t, &lib.Config{},
+		&schemas.MCPClientConfig{ID: "enabled-id", Name: "Enabled", EndpointSlug: "live-slug"},
+		&schemas.MCPClientConfig{ID: "disabled-id", Name: "Disabled", EndpointSlug: "dead-slug", Disabled: true},
+	)}
+
+	client, ok := h.enabledMCPClientBySlug("live-slug")
+	require.True(t, ok)
+	require.Equal(t, "enabled-id", client.Config.ID)
+	require.Equal(t, "Enabled", client.Config.Name)
+
+	_, ok = h.enabledMCPClientBySlug("dead-slug")
+	require.False(t, ok, "a disabled client's slug must not resolve")
+}
+
+// TestMCPGateway_ServerTypesOnSlug: the gateway learns every enabled client with an override, and
+// nothing else; a per-user discovery client counts as code mode when either /mcp or its slug runs it
+// in code mode.
+func TestMCPGateway_ServerTypesOnSlug(t *testing.T) {
+	perUser := func(name string, codeMode bool, slug schemas.MCPServerTypeOnSlug) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID: name + "-id", Name: name, AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserDiscovery: schemas.Ptr(true),
+			IsCodeModeClient: codeMode, ServerTypeOnSlug: slug,
+		}
+	}
+	h := &MCPServerHandler{config: libtest.MCPClients(t, &lib.Config{},
+		&schemas.MCPClientConfig{ID: "plain-id", Name: "plain", IsCodeModeClient: true},
+		&schemas.MCPClientConfig{ID: "slug_direct-id", Name: "slug_direct", IsCodeModeClient: true, ServerTypeOnSlug: schemas.MCPServerTypeOnSlugDisabled},
+		&schemas.MCPClientConfig{ID: "slug_code-id", Name: "slug_code", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled},
+		&schemas.MCPClientConfig{ID: "off-id", Name: "off", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled, Disabled: true},
+		perUser("per_user_direct", false, schemas.MCPServerTypeOnSlugInherit),
+		perUser("per_user_slug_code", false, schemas.MCPServerTypeOnSlugEnabled),
+		perUser("per_user_code", true, schemas.MCPServerTypeOnSlugDisabled),
+	)}
+
+	assert.Equal(t, map[string]mcpClientCodeModes{
+		"slug_direct":        {Global: true, OnSlug: false},
+		"slug_code":          {Global: false, OnSlug: true},
+		"per_user_slug_code": {Global: false, OnSlug: true},
+		"per_user_code":      {Global: true, OnSlug: false},
+	}, h.serverTypesOnSlug(), "only enabled clients with an override are listed")
+
+	perUserClients := h.perUserDiscoveryClients()
+	assert.False(t, perUserClients["per_user_direct-id"].CodeMode)
+	assert.True(t, perUserClients["per_user_slug_code-id"].CodeMode, "code mode on its slug only still needs the code-mode placeholders")
+	assert.True(t, perUserClients["per_user_code-id"].CodeMode)
+
+	plainOnly := &MCPServerHandler{config: libtest.MCPClients(t, &lib.Config{}, &schemas.MCPClientConfig{ID: "plain-id", Name: "plain"})}
+	assert.Nil(t, plainOnly.serverTypesOnSlug(), "no override anywhere leaves the gateway nothing to check")
 }
 
 // liveStoreForTest returns a new, empty live store closed when the test ends.

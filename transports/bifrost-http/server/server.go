@@ -481,19 +481,50 @@ func (s *GovernanceInMemoryStore) GetConfiguredProviderNames() []string {
 	return names
 }
 
-// GetMCPClientsAllowedByDefault returns the default MCP client allowlist.
+// GetMCPClientsAllowedByDefault returns the name of every MCP client with allow_by_default on,
+// keyed by client ID, read from the live store.
 func (s *GovernanceInMemoryStore) GetMCPClientsAllowedByDefault() map[string]string {
-	return s.Config.GetMCPClientsAllowedByDefault()
+	result := make(map[string]string)
+	if s.Config.LiveStore == nil {
+		return result
+	}
+	s.Config.LiveStore.Collections.MCPClients.Range(func(client *registry.MCPClient) bool {
+		if client.Config.AllowByDefault {
+			result[client.Config.ID] = client.Config.Name
+		}
+		return true
+	})
+	return result
 }
 
-// GetMCPClientNames returns configured MCP client names indexed by slug.
+// GetMCPClientNames returns every configured MCP client's name, keyed by client ID, read from the
+// live store. Tool patterns are matched by client name while grants are held by client ID, so
+// anything building a grant from stored client IDs needs the mapping between them.
 func (s *GovernanceInMemoryStore) GetMCPClientNames() map[string]string {
-	return s.Config.GetMCPClientNames()
+	result := make(map[string]string)
+	if s.Config.LiveStore == nil {
+		return result
+	}
+	s.Config.LiveStore.Collections.MCPClients.Range(func(client *registry.MCPClient) bool {
+		if client.Config.ID != "" && client.Config.Name != "" {
+			result[client.Config.ID] = client.Config.Name
+		}
+		return true
+	})
+	return result
 }
 
-// GetMCPClientBySlug resolves an MCP client configuration by slug.
+// GetMCPClientBySlug resolves the MCP client served at /mcp/<slug> to its ID and name. A disabled
+// client is not found, so its endpoint is not served.
 func (s *GovernanceInMemoryStore) GetMCPClientBySlug(slug string) (string, string, bool) {
-	return s.Config.GetMCPClientBySlug(slug)
+	if s.Config.LiveStore == nil {
+		return "", "", false
+	}
+	client, ok := s.Config.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientBySlug, slug)
+	if !ok || client.Config.Disabled {
+		return "", "", false
+	}
+	return client.Config.ID, client.Config.Name, true
 }
 
 func (s *GovernanceInMemoryStore) GetEnabledAgents() map[string]bool {
@@ -524,12 +555,14 @@ func (s *BifrostHTTPServer) ReconnectMCPClient(ctx context.Context, id string) e
 			}
 		}
 	}
-	// Config exists in store, but not in Bifrost (can happen if client initialization failed)
-	clientConfig, err := s.Config.GetMCPClient(id)
-	if err != nil {
-		return err
+	// Config exists in store, but not in Bifrost (can happen if client initialization failed).
+	// The runtime keeps and changes the config it is given, so it gets a copy of the record.
+	stored, ok := s.Config.LiveStore.Collections.MCPClients.Get(id)
+	if !ok {
+		return fmt.Errorf("MCP client '%s' not found", id)
 	}
-	if err := s.Client.AddMCPClient(ctx, clientConfig); err != nil {
+	clientConfig := stored.Config
+	if err := s.Client.AddMCPClient(ctx, &clientConfig); err != nil {
 		return err
 	}
 	if err := s.MCPServerHandler.SyncMCPServer(ctx); err != nil {

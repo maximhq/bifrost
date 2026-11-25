@@ -40,6 +40,17 @@ func (s scribeInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]
 	return libtest.Providers(s.Config)
 }
 
+// GetMCPClientsAllowedByDefault lists no MCP clients: the fixture configures none.
+func (s scribeInMemoryStore) GetMCPClientsAllowedByDefault() map[string]string { return nil }
+
+// GetMCPClientNames lists no MCP clients: the fixture configures none.
+func (s scribeInMemoryStore) GetMCPClientNames() map[string]string { return nil }
+
+// GetMCPClientBySlug finds no MCP client: the fixture configures none.
+func (s scribeInMemoryStore) GetMCPClientBySlug(string) (string, string, bool) {
+	return "", "", false
+}
+
 // GetConfiguredProviderNames lists the fixture provider names.
 func (s scribeInMemoryStore) GetConfiguredProviderNames() []string {
 	names := make([]string, 0)

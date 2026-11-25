@@ -27,9 +27,11 @@ import (
 	"github.com/maximhq/bifrost/framework/mcp_headers"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 // TestMain points the OAuth discovery/registration client at an unguarded
@@ -997,7 +999,8 @@ func TestUpdateMCPClient_MaxProtocolVersion(t *testing.T) {
 				ID: "client-1", Name: "capped", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone,
 				MaxProtocolVersion: schemas.MCPProtocolVersion20251125,
 			}
-			cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}, ClientConfig: &configstore.ClientConfig{}}
+			cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{}, ClientConfig: &configstore.ClientConfig{}}
+			libtest.MCPClients(t, cfg, existing)
 			store := &capturingUpdateConfigStore{}
 			cfg.ConfigStore = store
 			manager := &capturingUpdateMCPManager{}
@@ -1038,7 +1041,8 @@ func TestUpdateMCPClient_SettingsEditKeepsSavedSnapshot(t *testing.T) {
 		Resources:    []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
 		Prompts:      []mcpgo.Prompt{mcpgo.NewPrompt("docs-review")},
 	}))
-	cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}, ClientConfig: &configstore.ClientConfig{}, ConfigStore: store}
+	cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{}, ClientConfig: &configstore.ClientConfig{}, ConfigStore: store}
+	libtest.MCPClients(t, cfg, existing)
 	h := &MCPHandler{store: cfg, mcpManager: &capturingUpdateMCPManager{}}
 	// Init attaches a server, so the store's queries can use the request as their context.
 	var req fasthttp.Request
@@ -1113,7 +1117,8 @@ func TestUpdateMCPClient_ExposeLists(t *testing.T) {
 				ID: "client-1", Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone,
 				PromptsToExpose: schemas.WhiteList{"review"},
 			}
-			cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}, ClientConfig: &configstore.ClientConfig{}}
+			cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{}, ClientConfig: &configstore.ClientConfig{}}
+			libtest.MCPClients(t, cfg, existing)
 			store := &capturingUpdateConfigStore{}
 			cfg.ConfigStore = store
 			manager := &capturingUpdateMCPManager{}
@@ -1193,11 +1198,12 @@ func TestUpdateMCPClient_TokenExchangeSettingsRefused(t *testing.T) {
 	require.NoError(t, store.CreateMCPClientConfig(context.Background(), existing))
 	manager := &capturingUpdateMCPManager{}
 	cfg := &lib.Config{
-		MCPConfig:     &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}},
+		MCPConfig:     &schemas.MCPConfig{},
 		ClientConfig:  &configstore.ClientConfig{},
 		ConfigStore:   store,
 		OAuthProvider: newRefusingExchangeProvider(store),
 	}
+	libtest.MCPClients(t, cfg, existing)
 	h := &MCPHandler{store: cfg, mcpManager: manager, mcpCredentialCacheManager: &recordingCredentialCache{}}
 	// Init attaches a server, so the store's queries can use the request as their context.
 	var req fasthttp.Request
@@ -1256,11 +1262,12 @@ func TestUpdateMCPClient_EndpointChangeNeedsStoredSecretResent(t *testing.T) {
 			}
 			require.NoError(t, store.CreateMCPClientConfig(bg, existing))
 			cfg := &lib.Config{
-				MCPConfig:     &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}},
+				MCPConfig:     &schemas.MCPConfig{},
 				ClientConfig:  &configstore.ClientConfig{},
 				ConfigStore:   store,
 				OAuthProvider: oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError)),
 			}
+			libtest.MCPClients(t, cfg, existing)
 			h := &MCPHandler{store: cfg, mcpManager: &capturingUpdateMCPManager{}, mcpCredentialCacheManager: &recordingCredentialCache{}}
 
 			secret := ""
@@ -1598,7 +1605,8 @@ func TestSyncIntervalHTTPValidationErrors(t *testing.T) {
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
 	existing := &schemas.MCPClientConfig{ID: "interval-client", Name: "interval-client", ToolSyncInterval: 7 * time.Minute}
-	cfg.MCPConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+	cfg.MCPConfig = &schemas.MCPConfig{}
+	libtest.MCPClients(t, cfg, existing)
 	h := &MCPHandler{store: cfg}
 	for _, tc := range []struct{ raw, want string }{
 		{`""`, "tool_sync_interval must not be blank"},
@@ -1825,7 +1833,6 @@ func TestUpdateMCPClient_RenameToATakenNameIs409(t *testing.T) {
 		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
 		require.Equal(t, fasthttp.StatusOK, status, respBody)
 	}
-	h.store.MCPConfig.ClientConfigs = mgr.added
 	second := mgr.added[1]
 
 	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"petstore"}`, second.ID, false)
@@ -1905,7 +1912,6 @@ func TestUpdateMCPClient_PartialSuccessMessageIsTwoSentences(t *testing.T) {
 	})
 	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
-	h.store.MCPConfig.ClientConfigs = mgr.added
 	h.mcpManager = &dialFailingUpdateManager{openAPIRecordingManager: mgr}
 
 	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"petstore_renamed"}`, mgr.added[0].ID, false)
@@ -2152,7 +2158,6 @@ func newConnectionEditHandler(t *testing.T, connectionType string, verifyErr err
 	})
 	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
-	h.store.MCPConfig.ClientConfigs = mgr.added
 	rec := &connectionEditRecorder{openAPIRecordingManager: mgr, verifyErr: verifyErr}
 	h.mcpManager = rec
 	return h, rec, mgr.added[0].ID
@@ -2245,7 +2250,7 @@ func TestUpdateMCPClient_DropsCallersCachedDiscoveriesOfAPerUserDiscoveryClient(
 			h.mcpCredentialCacheManager = log
 			client := headersNotesClient()
 			createSignInClient(t, h.store.ConfigStore, client, perUser)
-			h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{client}
+			loadMCPClient(t, h, client.ID)
 			if perUser {
 				seedDiscovery(t, h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID)
 			}
@@ -2274,7 +2279,7 @@ func TestUpdateMCPClient_TurningPerUserDiscoveryOnOrOff(t *testing.T) {
 		log := &evictionLog{}
 		h.mcpCredentialCacheManager = log
 		createSignInClient(t, h.store.ConfigStore, client, perUser)
-		h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{client}
+		loadMCPClient(t, h, client.ID)
 		return h, mgr, log
 	}
 
@@ -2420,9 +2425,14 @@ func TestUpdateMCPClient_AnUpdateWithoutTheFlagLeavesAStoredFlipAlone(t *testing
 	client := headersNotesClient()
 	createSignInClient(t, h.store.ConfigStore, client, true)
 	seedDiscovery(t, h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID)
-	missed := *client
-	missed.PerUserDiscovery = schemas.Ptr(false)
-	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{&missed}
+	// The live store missed the flip: it still reads the flag off while the row has it on.
+	// The column is written directly, so the store's own flip handling runs neither time.
+	setPerUserDiscoveryColumn := func(on bool) {
+		require.NoError(t, h.store.ConfigStore.DB().Model(&configtables.TableMCPClient{}).Where("client_id = ?", client.ID).UpdateColumn("per_user_discovery", on).Error)
+	}
+	setPerUserDiscoveryColumn(false)
+	loadMCPClient(t, h, client.ID)
+	setPerUserDiscoveryColumn(true)
 
 	status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tools_to_execute":["*"]}`, client.ID, false)
 	require.Equal(t, fasthttp.StatusOK, status, body)
@@ -2594,7 +2604,9 @@ func (recordFailingStore) ClearMCPClientPendingVerification(context.Context, str
 }
 
 // newVerificationHandler returns an MCP handler over a real store, with the
-// providers the verification routes use and runtime as its engine.
+// providers the verification routes use and runtime as its engine. Its live
+// store is loaded from that store's database, as at boot, so the handler's
+// refreshes after a write read the row back.
 func newVerificationHandler(t *testing.T, runtime *bifrost.Bifrost) (*MCPHandler, *verificationRecorder) {
 	t.Helper()
 	SetLogger(&mockLogger{})
@@ -2607,27 +2619,52 @@ func newVerificationHandler(t *testing.T, runtime *bifrost.Bifrost) (*MCPHandler
 	}))
 	t.Cleanup(tokens.Close)
 	provider.SetTokenExchangeIdPResolver(exchangeIdP{tokenEndpoint: tokens.URL})
-	cfg := &lib.Config{
-		LiveStore:          liveStoreForTest(t),
+	cfg := libtest.FromStore(t, &lib.Config{
 		ConfigStore:        store,
 		ClientConfig:       &configstore.ClientConfig{},
 		MCPConfig:          &schemas.MCPConfig{},
 		OAuthProvider:      provider,
 		MCPHeadersProvider: mcp_headers.NewProvider(store, logger),
-	}
+	})
 	recorder := &verificationRecorder{}
 	h := &MCPHandler{store: cfg, mcpManager: recorder, client: runtime, mcpCredentialCacheManager: &evictionLog{}}
 	h.oauthHandler = NewOAuthHandler(provider, runtime, cfg, recorder)
 	return h, recorder
 }
 
+// mcpClientsAccount is an Account whose MCP clients are clients, with everything else from the
+// embedded Account.
+type mcpClientsAccount struct {
+	schemas.Account
+	clients []*schemas.MCPClientConfig
+}
+
+// GetConfiguredMCPClients lists the IDs of the account's clients.
+func (a mcpClientsAccount) GetConfiguredMCPClients() ([]string, error) {
+	ids := make([]string, 0, len(a.clients))
+	for _, client := range a.clients {
+		ids = append(ids, client.ID)
+	}
+	return ids, nil
+}
+
+// GetConfigForMCPClient returns the account's client with this ID.
+func (a mcpClientsAccount) GetConfigForMCPClient(id string) (*schemas.MCPClientConfig, error) {
+	for _, client := range a.clients {
+		if client.ID == id {
+			return client, nil
+		}
+	}
+	return nil, fmt.Errorf("MCP client %s is not configured", id)
+}
+
 // newVerificationRuntime returns an engine holding clients.
 func newVerificationRuntime(t *testing.T, clients ...*schemas.MCPClientConfig) *bifrost.Bifrost {
 	t.Helper()
 	runtime, err := bifrost.Init(t.Context(), schemas.BifrostConfig{
-		Account:   wsSpanTestAccount{},
+		Account:   mcpClientsAccount{Account: wsSpanTestAccount{}, clients: clients},
 		Logger:    bifrost.NewDefaultLogger(schemas.LogLevelError),
-		MCPConfig: &schemas.MCPConfig{ClientConfigs: clients},
+		MCPConfig: &schemas.MCPConfig{},
 	})
 	require.NoError(t, err)
 	t.Cleanup(runtime.Shutdown)
@@ -3020,6 +3057,197 @@ func TestVerifyMCPClientHeaders_AFailedRecordFailsOnlyAClientReadFromIt(t *testi
 	}
 }
 
+// reloadFailingRecordStore is the real store with every read of its database failing once a
+// verification is recorded, as a database that drops out right after that commit.
+type reloadFailingRecordStore struct {
+	configstore.ConfigStore
+	readsFail *atomic.Bool
+}
+
+// ClearMCPClientPendingVerification records the verification, then fails the reads after it.
+func (s reloadFailingRecordStore) ClearMCPClientPendingVerification(ctx context.Context, id string) error {
+	if err := s.ConfigStore.ClearMCPClientPendingVerification(ctx, id); err != nil {
+		return err
+	}
+	s.readsFail.Store(true)
+	return nil
+}
+
+// failReadsWhile has every query on db fail while readsFail is set.
+func failReadsWhile(t *testing.T, db *gorm.DB, readsFail *atomic.Bool) {
+	t.Helper()
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register("test:fail_reads", func(tx *gorm.DB) {
+		if readsFail.Load() {
+			_ = tx.AddError(errors.New("sql: database is closed"))
+		}
+	}))
+}
+
+// TestAdminVerification_ARecordNotReloadedStillActivatesTheClient: once the store records a
+// client's admin verification, a retry finds the client verified and cannot run the step again.
+// So when only reading that record back into memory fails, each admin verification route still
+// hands the runtime the verification's result, then answers the failed reload.
+func TestAdminVerification_ARecordNotReloadedStillActivatesTheClient(t *testing.T) {
+	ctx := context.Background()
+	for _, route := range []string{"verify-headers", "verify-exchange"} {
+		for _, perUser := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/per_user_discovery=%v", route, perUser), func(t *testing.T) {
+				var (
+					h        *MCPHandler
+					recorder *verificationRecorder
+					client   *schemas.MCPClientConfig
+				)
+				if route == "verify-headers" {
+					client = &schemas.MCPClientConfig{
+						ID: "client-notes", Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP,
+						ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders,
+						PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: []string{"*"}, PendingVerification: true, PerUserDiscovery: schemas.Ptr(perUser),
+					}
+					h, recorder = newVerificationHandler(t, newVerificationRuntime(t, client))
+				} else {
+					client = &schemas.MCPClientConfig{
+						ID: "client-jira", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+						ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypeTokenExchange,
+						TokenExchange:  &schemas.MCPTokenExchangeConfig{Audience: "api://jira", ClientID: schemas.NewSecretVar("exchange-app")},
+						ToolsToExecute: []string{"*"}, PendingVerification: true, PerUserDiscovery: schemas.Ptr(perUser),
+					}
+					h, recorder = newVerificationHandler(t, newVerificationRuntime(t))
+				}
+				require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
+				readsFail := &atomic.Bool{}
+				failReadsWhile(t, h.store.ConfigStore.DB(), readsFail)
+				h.store.ConfigStore = reloadFailingRecordStore{ConfigStore: h.store.ConfigStore, readsFail: readsFail}
+
+				var req fasthttp.Request
+				req.Header.SetMethod(fasthttp.MethodPost)
+				req.Header.SetContentType("application/json")
+				if route == "verify-headers" {
+					req.SetBodyString(`{"user_headers":{"x-api-key":"sample"}}`)
+				}
+				rctx := initCtx(&req)
+				rctx.SetUserValue("id", client.ID)
+				if route == "verify-headers" {
+					h.verifyMCPClientHeaders(rctx)
+				} else {
+					withInboundBearer(t, rctx, "admin-idp-token")
+					h.verifyMCPClientExchange(rctx)
+				}
+				readsFail.Store(false)
+				status, body := rctx.Response.StatusCode(), string(rctx.Response.Body())
+
+				assert.Equal(t, fasthttp.StatusInternalServerError, status, body)
+				assert.Contains(t, body, "failed to reload in-memory state", "the failed reload is reported, not a retry that can no longer run")
+				stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+				require.NoError(t, err)
+				assert.False(t, stored.PendingVerification, "the step is recorded")
+				if perUser {
+					assert.Equal(t, []string{client.ID}, recorder.verified, "the runtime is handed the config recording the step")
+				} else {
+					assert.Equal(t, []string{client.ID}, recorder.toolsSet, "the runtime is handed the tools found")
+				}
+			})
+		}
+	}
+}
+
+// toolsReloadFailingStore is the real store with every read of the MCP client rows failing once a
+// verification's tools are persisted, as a database that drops those reads right after that commit.
+type toolsReloadFailingStore struct {
+	configstore.ConfigStore
+	readsFail *atomic.Bool
+}
+
+// UpdateMCPClientConfig persists the client, then fails the client row reads after it.
+func (s toolsReloadFailingStore) UpdateMCPClientConfig(ctx context.Context, id string, client *configtables.TableMCPClient) error {
+	if err := s.ConfigStore.UpdateMCPClientConfig(ctx, id, client); err != nil {
+		return err
+	}
+	s.readsFail.Store(true)
+	return nil
+}
+
+// failMCPClientReadsWhile has every query of the MCP client rows on db fail while readsFail is
+// set, leaving the credential tables readable.
+func failMCPClientReadsWhile(t *testing.T, db *gorm.DB, readsFail *atomic.Bool) {
+	t.Helper()
+	require.NoError(t, db.Callback().Query().Before("gorm:query").Register("test:fail_mcp_client_reads", func(tx *gorm.DB) {
+		if readsFail.Load() && tx.Statement.Table == (configtables.TableMCPClient{}).TableName() {
+			_ = tx.AddError(errors.New("sql: database is closed"))
+		}
+	}))
+}
+
+// TestAdminVerification_ToolsNotReloadedStillActivatesTheClient: once a client without
+// per_user_discovery has its discovered tools stored, it reads as verified, so a retry stops at the
+// replay guard and cannot finish the step. So when only reading the row back into memory fails,
+// each admin verification route still records the step, hands the runtime the tools found and
+// keeps the admin's credential, then answers the failed reload.
+func TestAdminVerification_ToolsNotReloadedStillActivatesTheClient(t *testing.T) {
+	ctx := context.Background()
+	for _, route := range []string{"verify-headers", "verify-exchange"} {
+		t.Run(route, func(t *testing.T) {
+			var (
+				h        *MCPHandler
+				recorder *verificationRecorder
+				client   *schemas.MCPClientConfig
+			)
+			if route == "verify-headers" {
+				client = &schemas.MCPClientConfig{
+					ID: "client-notes", Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP,
+					ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders,
+					PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: []string{"*"}, PendingVerification: true, PerUserDiscovery: schemas.Ptr(false),
+				}
+				h, recorder = newVerificationHandler(t, newVerificationRuntime(t, client))
+			} else {
+				client = &schemas.MCPClientConfig{
+					ID: "client-jira", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+					ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypeTokenExchange,
+					TokenExchange:  &schemas.MCPTokenExchangeConfig{Audience: "api://jira", ClientID: schemas.NewSecretVar("exchange-app")},
+					ToolsToExecute: []string{"*"}, PendingVerification: true, PerUserDiscovery: schemas.Ptr(false),
+				}
+				h, recorder = newVerificationHandler(t, newVerificationRuntime(t))
+			}
+			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
+			readsFail := &atomic.Bool{}
+			failMCPClientReadsWhile(t, h.store.ConfigStore.DB(), readsFail)
+			h.store.ConfigStore = toolsReloadFailingStore{ConfigStore: h.store.ConfigStore, readsFail: readsFail}
+
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			if route == "verify-headers" {
+				req.SetBodyString(`{"user_headers":{"x-api-key":"sample"}}`)
+			}
+			rctx := initCtx(&req)
+			rctx.SetUserValue("id", client.ID)
+			if route == "verify-headers" {
+				h.verifyMCPClientHeaders(rctx)
+			} else {
+				withInboundBearer(t, rctx, "admin-idp-token")
+				h.verifyMCPClientExchange(rctx)
+			}
+			readsFail.Store(false)
+			status, body := rctx.Response.StatusCode(), string(rctx.Response.Body())
+
+			assert.Equal(t, fasthttp.StatusInternalServerError, status, body)
+			assert.Contains(t, body, "failed to reload in-memory state", "the failed reload is reported, not a retry that can no longer run")
+			stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+			require.NoError(t, err)
+			assert.False(t, stored.PendingVerification, "the stored tools record the step")
+			assert.Equal(t, []string{client.ID}, recorder.toolsSet, "the runtime is handed the tools found, so it leaves pending_verification")
+			if route == "verify-headers" {
+				admin, err := h.store.ConfigStore.GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx, []string{client.ID})
+				require.NoError(t, err)
+				assert.Len(t, admin, 1, "the admin's sample headers are kept")
+			} else {
+				admin, err := h.store.ConfigStore.GetAdminOauthTokenByMCPClientID(ctx, client.ID)
+				require.NoError(t, err)
+				assert.NotNil(t, admin, "the admin's exchanged token is kept")
+			}
+		})
+	}
+}
+
 // TestAdminCredentialRoutes_RefuseAVerifiedPerUserDiscoveryClient: a verified
 // client with per_user_discovery on keeps no admin credential, so the routes that
 // refresh one refuse it: reauthorize, and verify-headers or verify-exchange once
@@ -3107,6 +3335,89 @@ func TestCompleteMCPClientOAuth_ARepairSignInOfAPerUserDiscoveryClientKeepsNothi
 	require.NoError(t, err)
 	assert.Nil(t, stored.DiscoveredTools)
 	assert.Empty(t, recorder.toolsSet)
+}
+
+// reloadFailingToolListStore is the real store whose reads start failing once an MCP client's
+// tool list is written, as a database that drops out right after that commit.
+type reloadFailingToolListStore struct {
+	configstore.ConfigStore
+	readsFail *atomic.Bool
+}
+
+// UpdateMCPClientConfig writes the client, then turns the read failures on.
+func (s reloadFailingToolListStore) UpdateMCPClientConfig(ctx context.Context, id string, client *configtables.TableMCPClient) error {
+	if err := s.ConfigStore.UpdateMCPClientConfig(ctx, id, client); err != nil {
+		return err
+	}
+	s.readsFail.Store(true)
+	return nil
+}
+
+// TestCompleteMCPClientOAuth_AnAdminRepairNotReloadedStillHandsTheRuntimeItsDiscovery: once an
+// admin repair sign-in is promoted to the admin credential, a retried completion finds no sign-in
+// to promote and answers 409. So the read of the repaired client back into memory is retried: one
+// failed read is read again and the route succeeds. When every retry fails, the route still
+// persists and hands the runtime what verification found, keeps the client's previous record, and
+// answers the failed reload.
+func TestCompleteMCPClientOAuth_AnAdminRepairNotReloadedStillHandsTheRuntimeItsDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		failOnce bool
+	}{
+		{name: "a read failing once is retried", failOnce: true},
+		{name: "reads failing past the retries keep the previous record"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+			require.NoError(t, h.store.ConfigStore.CreateOauthConfig(ctx, &configtables.TableOauthConfig{
+				ID: "oauth-wiki", ClientID: schemas.NewSecretVar("bifrost"), TokenURL: "https://idp.invalid/token",
+				AuthorizeURL: "https://idp.invalid/authorize", RedirectURI: "http://localhost/api/oauth/callback", Status: "authorized",
+			}))
+			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+				ID: "client-wiki", Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserOauth,
+				OauthConfigID: schemas.Ptr("oauth-wiki"), ToolsToExecute: []string{"*"},
+			}))
+			require.NoError(t, h.store.ConfigStore.CreateOauthToken(ctx, &configtables.TableMCPOauthToken{
+				ID: "token-admin", AuthMode: "shared", OauthConfigID: "oauth-wiki", Status: "active", AccessToken: "admin-token", TokenType: "Bearer",
+			}))
+			require.NoError(t, h.refreshMCPClientRow(ctx, "client-wiki"))
+			previous := findMCPClientConfig(h.store, "client-wiki")
+			require.NotNil(t, previous)
+			readsFail := &atomic.Bool{}
+			require.NoError(t, h.store.ConfigStore.DB().Callback().Query().Before("gorm:query").Register("test:fail_reads", func(tx *gorm.DB) {
+				if tc.failOnce && !readsFail.CompareAndSwap(true, false) || !tc.failOnce && !readsFail.Load() {
+					return
+				}
+				_ = tx.AddError(errors.New("sql: database is closed"))
+			}))
+			h.store.ConfigStore = reloadFailingToolListStore{ConfigStore: h.store.ConfigStore, readsFail: readsFail}
+
+			status, body := doMCPRequest(t, h.completeMCPClientOAuth, fasthttp.MethodPost, "", "oauth-wiki", false)
+			failedRead := !tc.failOnce || !readsFail.Load()
+			readsFail.Store(false)
+			require.True(t, failedRead, "the reload's first read failed")
+			current := findMCPClientConfig(h.store, "client-wiki")
+			require.NotNil(t, current)
+			if tc.failOnce {
+				assert.Equal(t, fasthttp.StatusOK, status, body, "the retried read brings the client into memory")
+			} else {
+				assert.Equal(t, fasthttp.StatusInternalServerError, status, body)
+				assert.Contains(t, body, "failed to reload in-memory state", "the failed reload is reported, not a retry that can no longer run")
+				assert.Same(t, previous, current, "the client keeps its previous record")
+			}
+
+			admin, err := h.store.ConfigStore.GetAdminOauthTokenByMCPClientID(ctx, "client-wiki")
+			require.NoError(t, err)
+			require.NotNil(t, admin, "the sign-in is promoted to the admin credential")
+			stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, "client-wiki")
+			require.NoError(t, err)
+			assert.Contains(t, stored.DiscoveredTools, "wiki-search", "the tool list is written")
+			assert.Equal(t, "Search before you write.", stored.DiscoveredInstructions, "the rest of the discovery is persisted")
+			assert.Equal(t, []string{"client-wiki"}, recorder.toolsSet, "the runtime is handed the discovery")
+		})
+	}
 }
 
 // assertKeepsNoDiscovery checks config keeps nothing the admin's verification found: no tools,

@@ -293,9 +293,10 @@ func TestAuditChange_MCPClientUpdateRecordedWhenVKAssignmentFails(t *testing.T) 
 		AuthType:       schemas.MCPAuthTypeNone,
 	}
 	store := &lib.Config{
-		MCPConfig:    &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}},
+		MCPConfig:    &schemas.MCPConfig{},
 		ClientConfig: &configstore.ClientConfig{},
 	}
+	libtest.MCPClients(t, store, existing)
 	cfgStore := &auditVKUpdateStore{}
 	store.ConfigStore = cfgStore
 	h := &MCPHandler{store: store, mcpManager: &fakeMCPManagerVerifyOnly{}}
