@@ -579,6 +579,12 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+	// The GenAI Interactions route's decisions about the caller's own request.
+	ctx.ClearValue(schemas.BifrostContextKeyGenAITranslationRefusal)
+	ctx.ClearValue(genAIPassthroughSuspendedKey)
+	ctx.ClearValue(schemas.BifrostContextKeyInteractionsAPI)
+	ctx.ClearValue(schemas.BifrostContextKeyInteractionsLocation)
+	ctx.ClearValue(schemas.BifrostContextKeyInteractionsProject)
 }
 
 // PrepareContextForInternalRequest marks ctx as an internal sub-request issued
