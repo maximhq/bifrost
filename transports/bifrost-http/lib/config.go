@@ -3439,10 +3439,11 @@ func applyCodeModeDiscoveryRanker(mcpCfg, fileCfg *schemas.MCPConfig) {
 }
 
 // resolveCodeModeDiscoveryRanker merges the file setting with its environment
-// overrides. A URL from the environment replaces a decision model from the
-// file and a decision model from the environment replaces a URL and token
-// file from the file; both from the environment conflict. It returns nil when
-// neither a URL nor a decision model is set or the result is invalid.
+// overrides. A URL from the environment replaces the file's URL, token file
+// and decision model, and a decision model from the environment replaces a URL
+// and token file from the file; both from the environment conflict. A token
+// file from the environment applies last. It returns nil when neither a URL
+// nor a decision model is set or the result is invalid.
 func resolveCodeModeDiscoveryRanker(fileCfg *schemas.MCPConfig) *schemas.MCPCodeModeDiscoveryRanker {
 	var ranker schemas.MCPCodeModeDiscoveryRanker
 	if fileCfg != nil && fileCfg.ToolManagerConfig != nil && fileCfg.ToolManagerConfig.CodeModeDiscoveryRanker != nil {
@@ -3451,7 +3452,9 @@ func resolveCodeModeDiscoveryRanker(fileCfg *schemas.MCPConfig) *schemas.MCPCode
 	envURL := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerURL))
 	envDecisionModel := strings.TrimSpace(os.Getenv(envCodeModeDiscoveryRankerDecisionModel))
 	if envURL != "" {
-		ranker.URL = envURL
+		// A new endpoint must not receive the file endpoint's bearer token; an
+		// explicit token-file variable below still applies to it.
+		ranker.URL, ranker.TokenFile = envURL, ""
 		if envDecisionModel == "" {
 			ranker.DecisionModel, ranker.Fallbacks = "", nil
 		}
