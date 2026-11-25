@@ -20,6 +20,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeyRequestID`               | `x-request-id`                                       | `string`              | Custom request ID for tracking                                                                                                        |
 | `BifrostContextKeySendBackRawRequest`      | `x-bf-send-back-raw-request`                         | `bool`                | Include raw provider request in the response                                                                                          |
 | `BifrostContextKeySendBackRawResponse`     | `x-bf-send-back-raw-response`                        | `bool`                | Include raw provider response in the response                                                                                         |
+| `BifrostContextKeySendBackCost`            | `x-bf-send-back-cost`                                | `bool`                | Return Bifrost's computed cost of the request; overrides `client.send_back_cost` either way                                          |
 | `BifrostContextKeyStoreRawRequestResponse` | `x-bf-store-raw-request-response`                    | `bool`                | Persist raw request/response in log records                                                                                           |
 | `BifrostContextKeyPromptCacheAutoInject`   | `x-bf-prompt-cache-auto-inject`                      | `bool`                | Per-request override of the provider's `prompt_cache.auto_inject`; only honored when the provider has a `prompt_cache` block configured |
 | `BifrostContextKeyDisableContentLogging`   | `x-bf-disable-content-logging`                       | `bool`                | Per-request override for content logging; only honored when `allow_per_request_content_storage_override` is enabled in logging config |
@@ -520,6 +521,44 @@ The raw response appears in `extra_fields.raw_response`:
     }
 }
 ````
+
+### Send Back Cost
+
+**Context Key:** `BifrostContextKeySendBackCost`  
+**Header:** `x-bf-send-back-cost`  
+**Type:** `bool` (header values: `"true"` or `"false"`)  
+**Required:** No
+
+Return the cost Bifrost computed for this request: in `extra_fields.cost` on `/v1` responses, errors and the final stream chunk, and in the `x-bifrost-cost` response header on every route. Either value overrides the gateway's `client.send_back_cost` setting for this request. Unlike the raw-response headers, it needs no `allow_per_request_raw_override`. See [Send Back Cost](/features/send-back-cost) for what each route returns.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-send-back-cost: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+ctx.SetValue(schemas.BifrostContextKeySendBackCost, true)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+if err == nil && response.ExtraFields.Cost != nil {
+    fmt.Println(response.ExtraFields.Cost.TotalCost)
+}
+```
+</Tab>
+</Tabs>
 
 ### Store Raw Request/Response
 

@@ -49,6 +49,14 @@ On a stream the headers are written before the first chunk. `x-bifrost-upstream-
 On `/v1` error responses, `x-bifrost-fallback-index` and `x-bifrost-upstream-latency-ms` are not sent; the drop-in routes send both.
 </Note>
 
+## Cost
+
+| Header | Sent when | Value |
+|---|---|---|
+| `x-bifrost-cost` | [Send back cost](/features/send-back-cost) is on (`client.send_back_cost`, or `x-bf-send-back-cost: true` on the request) and the request cost something | Bifrost's computed cost of the request in USD, for example `0.000625`: the same total as `extra_fields.cost.total_cost`. Also sent on errors that cost something and on `/v1/mcp/tool/execute`. |
+
+It is sent in both `extra_fields_placement` modes, and on the SDK routes it is the only place the cost appears. On streams the headers go out before the cost exists, so a `/v1` stream carries it in its final chunk's `extra_fields.cost` instead.
+
 ## Cache
 
 When [semantic caching](/features/semantic-caching) looks a request up, the response carries `x-bifrost-cache-*` headers: whether it was a hit, the hit type, the similarity and the cache entry. See [its response headers](/features/semantic-caching#response-headers) for the full list.
