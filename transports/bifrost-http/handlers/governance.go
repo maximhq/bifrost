@@ -3320,10 +3320,24 @@ func recordVirtualKeyRotated(ctx *fasthttp.RequestCtx, vk *configstoreTables.Tab
 	lib.RecordAuditChange(ctx, "virtual_key.rotated", "virtual_key", vk.ID, vk.Name, nil, map[string]any{"virtual_key_id": vk.ID, "rotated": true})
 }
 
+// virtualKeyReloadWarning reports a rotation that was saved but not loaded into memory.
+const virtualKeyReloadWarning = "rotated, but the in-memory reload failed; the old value may still work until the key is saved again or Bifrost restarts"
+
 // rotateVirtualKey handles POST /api/governance/virtual-keys/{vk_id}/rotate - Rotate only the virtual key value
 func (h *GovernanceHandler) rotateVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
 	preloadedVk, err := h.rotateVirtualKeyByID(ctx, vkID)
+	if errors.Is(err, ErrVirtualKeyRotatedReloadFailed) && preloadedVk != nil {
+		// The new value is saved; returning it is the only way the caller ever sees it.
+		logger.Error("failed to reload rotated virtual key %s: %v", vkID, err)
+		recordVirtualKeyRotated(ctx, preloadedVk)
+		SendJSON(ctx, map[string]interface{}{
+			"message":     "Virtual key rotated, but the in-memory reload failed; the old value may still work until the key is saved again or Bifrost restarts",
+			"warning":     virtualKeyReloadWarning,
+			"virtual_key": preloadedVk,
+		})
+		return
+	}
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, 404, "Virtual key not found")
@@ -3369,8 +3383,14 @@ func (h *GovernanceHandler) rotateVirtualKeys(ctx *fasthttp.RequestCtx) {
 
 	rotated := make([]*configstoreTables.TableVirtualKey, 0, len(ids))
 	failures := make(map[string]string)
+	reloadFailures := make(map[string]string)
 	for _, id := range ids {
 		vk, err := h.rotateVirtualKeyByID(ctx, id)
+		if errors.Is(err, ErrVirtualKeyRotatedReloadFailed) && vk != nil {
+			logger.Error("failed to reload rotated virtual key %s: %v", id, err)
+			reloadFailures[id] = virtualKeyReloadWarning
+			err = nil
+		}
 		if err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
 				failures[id] = "virtual key not found"
@@ -3390,6 +3410,9 @@ func (h *GovernanceHandler) rotateVirtualKeys(ctx *fasthttp.RequestCtx) {
 	}
 	if len(failures) > 0 {
 		response["errors"] = failures
+	}
+	if len(reloadFailures) > 0 {
+		response["warnings"] = reloadFailures
 	}
 	if len(rotated) == 0 {
 		response["message"] = "Failed to rotate virtual keys"
