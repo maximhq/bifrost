@@ -57,6 +57,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
+	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/routing"
@@ -164,6 +165,24 @@ func GetBuiltinPluginNames() []string {
 // IsBuiltinPlugin checks if a plugin is a built-in plugin
 func IsBuiltinPlugin(name string) bool {
 	return slices.Contains(builtinPluginNames, name)
+}
+
+// fixedBuiltinPluginNames are the built-in plugins Bifrost configures itself, from the client
+// config, the model catalog or their own APIs rather than a plugin config: the plugins API refuses
+// to create, change or delete them.
+var fixedBuiltinPluginNames = []string{
+	governance.PluginName,
+	routing.PluginName,
+	logging.PluginName,
+	prompts.PluginName,
+	compat.PluginName,
+	modelcatalogresolver.PluginName,
+}
+
+// IsFixedBuiltinPlugin reports whether name is a built-in plugin the plugins API may not create,
+// change or delete.
+func IsFixedBuiltinPlugin(name string) bool {
+	return slices.Contains(fixedBuiltinPluginNames, name)
 }
 
 // pluginOrderInfo stores ordering metadata for a plugin.
