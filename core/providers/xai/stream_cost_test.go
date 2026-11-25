@@ -1,13 +1,17 @@
 package xai
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -234,5 +238,57 @@ func TestResponsesStreamPreservesProviderReportedCost(t *testing.T) {
 	}
 	if got, want := completed.Response.Usage.OutputTokensDetails.ReasoningTokens, 51; got != want {
 		t.Fatalf("reasoning tokens = %d, want %d", got, want)
+	}
+}
+
+func BenchmarkToXAISpeechRequest(b *testing.B) {
+	req := &schemas.BifrostSpeechRequest{
+		Model: "grok-tts",
+		Input: &schemas.SpeechInput{Input: "Hello from xAI through Bifrost, a short sentence to synthesize."},
+		Params: &schemas.SpeechParameters{
+			VoiceConfig:    &schemas.SpeechVoiceInput{Voice: schemas.Ptr("ara")},
+			ResponseFormat: "wav",
+			ExtraParams:    map[string]interface{}{"sample_rate": 16000},
+		},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := providerUtils.MarshalSorted(ToXAISpeechRequest(req)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkFileLastGuard measures the guard over staged multipart bodies of growing
+// size. It keeps no body bytes, so its allocations do not grow with the upload.
+// "audio" is random bytes; "adversarial" puts the delimiter prefix, followed by
+// ordinary bytes, every 64 bytes of the file body.
+func BenchmarkFileLastGuard(b *testing.B) {
+	const boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+	rnd := rand.New(rand.NewSource(1))
+	for _, kind := range []string{"audio", "adversarial"} {
+		for _, size := range []int{1 << 20, 16 << 20} {
+			audio := make([]byte, size)
+			rnd.Read(audio)
+			if kind == "adversarial" {
+				for i := 0; i+64 <= size; i += 64 {
+					copy(audio[i:], "\r\n--"+boundary+"X")
+				}
+			}
+			body := append([]byte("--"+boundary+"\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngrok-voice-transcribe-2.0\r\n"+
+				"--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\n"), audio...)
+			body = append(body, "\r\n--"+boundary+"--\r\n"...)
+			b.Run(fmt.Sprintf("%s/%dMiB", kind, size>>20), func(b *testing.B) {
+				b.SetBytes(int64(len(body)))
+				b.ReportAllocs()
+				buf := make([]byte, 32<<10)
+				for b.Loop() {
+					g := newFileLastGuard(bytes.NewReader(body), boundary)
+					if _, err := io.CopyBuffer(io.Discard, struct{ io.Reader }{g}, buf); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
 	}
 }

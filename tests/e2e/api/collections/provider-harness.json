@@ -351851,6 +351851,59 @@
           }
         }
       ]
+    },
+    {
+      "name": "388. xAI speech without a voice uses the eve default (xai audio) (PR #10265)",
+      "description": "xAI's /v1/tts falls back to the eve voice and ToXAISpeechRequest sends voice_id eve when the request names none, but the /v1/audio/speech handler rejected every voice-less request except ElevenLabs with 'voice is required for speech completion' before it reached the provider. Before the fix this case returned 400; after it, xAI answers with mp3 audio in the default voice.",
+      "item": [
+        {
+          "name": "388.1 xai/grok-tts native /v1/audio/speech without voice returns mp3 audio in the default voice (xai audio) - #10265",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native without voice: 200 with mp3 audio bytes, not a voice-required 400', function () {",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  var ct = pm.response.headers.get('Content-Type') || '';",
+                  "  pm.expect(ct, 'content type').to.match(/audio|octet-stream/);",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio too small').to.be.above(2000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3: ' + head).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-tts\",\n  \"input\": \"Hello from xAI through Bifrost.\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

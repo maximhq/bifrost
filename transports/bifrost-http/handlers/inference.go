@@ -1784,7 +1784,9 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Speech
 	// resolution: it routes sound models to /v1/sound-generation and still rejects
 	// voice-less text-to-speech with "voice parameter is required". Every other
 	// provider keeps the original handler-level 400, so TTS behavior is unchanged.
-	if base.Provider != schemas.Elevenlabs {
+	// xAI is exempt too: /v1/tts falls back to its "eve" voice, which ToXAISpeechRequest
+	// sends when the request names none.
+	if base.Provider != schemas.Elevenlabs && base.Provider != schemas.XAI {
 		if req.SpeechParameters == nil || req.VoiceConfig == nil || (req.VoiceConfig.Voice == nil && len(req.VoiceConfig.MultiVoiceConfig) == 0) {
 			return nil, nil, fmt.Errorf("voice is required for speech completion")
 		}

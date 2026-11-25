@@ -425,6 +425,13 @@ func (provider *XAIProvider) Transcription(ctx *schemas.BifrostContext, key sche
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
 		guard = guardStagedTranscriptionBody(ctx)
 	}
+	// The large-response path streams xAI's raw body to the client and skips
+	// handleXAITranscriptionResponse, losing the word and duration usage mapping.
+	// A transcript is small next to its audio, so keep it buffered, as rerank does.
+	if threshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64); threshold > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(0))
+		defer ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, threshold)
+	}
 	response, bifrostErr := openai.HandleOpenAITranscriptionRequest(
 		ctx,
 		provider.client,

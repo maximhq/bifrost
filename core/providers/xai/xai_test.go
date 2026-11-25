@@ -314,6 +314,101 @@ func TestXAITranscriptionLargePayloadFileMustBeLast(t *testing.T) {
 	}
 }
 
+// Audio bytes can contain the delimiter prefix "\r\n--<boundary>" followed by ordinary
+// bytes. That is not a delimiter, so a file-last body carrying it must pass.
+func TestXAITranscriptionLargePayloadBoundaryLikeAudio(t *testing.T) {
+	t.Parallel()
+
+	audio := "RIFF\x00\x00\x00\x00WAVE" + strings.Repeat("\r\n--bX\r\n\r\n\r\n--b-x\r\n--b \tY\r\n--b\r", 2000) + "tail"
+	body := "--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngrok-voice-transcribe-2.0\r\n" +
+		"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\n" + audio + "\r\n--b--\r\n"
+
+	readers := map[string]func(string) io.Reader{
+		"whole":    func(s string) io.Reader { return strings.NewReader(s) },
+		"one byte": func(s string) io.Reader { return iotest.OneByteReader(strings.NewReader(s)) },
+	}
+	for name, newReader := range readers {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var gotLen int
+			provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				gotLen = len(raw)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(xaiSTTResponse))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			stageLargePayload(ctx, body, "multipart/form-data; boundary=b")
+			ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, newReader(body))
+			resp, bifrostErr := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostTranscriptionRequest{Model: "grok-voice-transcribe-2.0"})
+			require.Nil(t, bifrostErr)
+			assert.Equal(t, "The quick brown fox jumps over the lazy dog.", resp.Text)
+			assert.Equal(t, len(body), gotLen, "the staged body is forwarded unchanged")
+		})
+	}
+}
+
+// A part whose headers reach the guard's 8 KiB limit cannot be classified. The guard
+// refuses the body instead of giving up, so a field after such a file part is not
+// silently dropped by xAI.
+func TestXAITranscriptionLargePayloadOversizedPartHeaderIsRefused(t *testing.T) {
+	t.Parallel()
+
+	provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(xaiSTTResponse))
+	})
+	body := "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nX-Pad: " + strings.Repeat("p", 9<<10) + "\r\nContent-Type: audio/wav\r\n\r\nRIFF\x00\x00\x00\x00WAVEfake\r\n" +
+		"--b\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\nsv\r\n--b--\r\n"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stageLargePayload(ctx, body, "multipart/form-data; boundary=b")
+	resp, bifrostErr := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostTranscriptionRequest{Model: "grok-voice-transcribe-2.0"})
+	require.Nil(t, resp)
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+	assert.Contains(t, bifrostErr.Error.Message, "headers exceed")
+}
+
+// With a large-response threshold set, a transcript over it must still be decoded from
+// xAI's shape (words named "text", duration usage) instead of streamed to the client raw,
+// on both the normal and the staged path. The threshold is restored afterwards.
+func TestXAITranscriptionLargeResponseThresholdStillDecodes(t *testing.T) {
+	t.Parallel()
+
+	staged := "--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngrok-voice-transcribe-2.0\r\n" +
+		"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\x00\x00\x00\x00WAVEfake\r\n--b--\r\n"
+	for _, largePayload := range []bool{false, true} {
+		t.Run(map[bool]string{false: "normal", true: "staged"}[largePayload], func(t *testing.T) {
+			t.Parallel()
+			provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(xaiSTTResponse))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(64))
+			req := &schemas.BifrostTranscriptionRequest{Model: "grok-voice-transcribe-2.0"}
+			if largePayload {
+				stageLargePayload(ctx, staged, "multipart/form-data; boundary=b")
+			} else {
+				req.Input = &schemas.TranscriptionInput{File: []byte("RIFF\x00\x00\x00\x00WAVEfake"), Filename: "a.wav"}
+			}
+			resp, bifrostErr := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, req)
+			require.Nil(t, bifrostErr)
+			assert.Equal(t, "The quick brown fox jumps over the lazy dog.", resp.Text)
+			require.Len(t, resp.Words, 9)
+			assert.Equal(t, "The", resp.Words[0].Word)
+			require.NotNil(t, resp.Usage)
+			require.NotNil(t, resp.Usage.Seconds)
+			assert.Equal(t, 2.846, *resp.Usage.Seconds)
+			assert.Nil(t, ctx.Value(schemas.BifrostContextKeyLargeResponseMode), "the body must not be left for raw streaming")
+			assert.Equal(t, int64(64), ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold))
+		})
+	}
+}
+
 func TestXAISpeechError(t *testing.T) {
 	t.Parallel()
 

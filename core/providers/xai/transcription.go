@@ -78,7 +78,8 @@ func handleXAITranscriptionResponse(responseBody []byte, response *schemas.Bifro
 }
 
 // maxPartHeaderBytes bounds the multipart part headers fileLastGuard buffers. A part
-// whose headers run longer is not a form field the guard can judge, so it stops checking.
+// whose headers run longer cannot be classified, so the guard refuses the body rather
+// than stop checking and let a later field through.
 const maxPartHeaderBytes = 8 << 10
 
 const (
@@ -174,10 +175,23 @@ func (g *fileLastGuard) scan(data []byte) {
 			g.state = guardDone // closing delimiter
 			return
 		}
+		// A delimiter ends its line: optional transport padding, then CRLF. Anything
+		// else means the file body merely contains the delimiter bytes, so go back to
+		// seeking from the bytes that follow them.
+		rest := bytes.TrimLeft(g.buf, " \t")
+		partial := len(rest) == 0 || len(rest) == 1 && (rest[0] == '\r' || rest[0] == '-' && len(g.buf) == 1)
+		if !partial && (rest[0] != '\r' || rest[1] != '\n') {
+			// Bytes from earlier reads can only be padding, '-' or a CR, and a delimiter
+			// can start at that CR, so keep their tail and rescan this read in full.
+			old := g.buf[:prev]
+			g.buf = append(g.buf[:0], old[len(old)-min(len(old), len(g.delim)-1):]...)
+			g.state = guardSeekDelimiter
+			continue
+		}
 		end := bytes.Index(g.buf, []byte("\r\n\r\n"))
 		if end < 0 {
 			if len(g.buf) >= maxPartHeaderBytes {
-				g.state = guardDone
+				g.err = fmt.Errorf("xAI transcription: multipart part headers exceed %d bytes, so the file cannot be confirmed as the last part", maxPartHeaderBytes)
 			}
 			return
 		}
