@@ -39,6 +39,13 @@ func (p *LoggerPlugin) handleInteractionJob(ctx *schemas.BifrostContext, entry *
 	}
 }
 
+// recordInterruptedJob records the run a failed stream left going, so the sweeper settles it.
+func (p *LoggerPlugin) recordInterruptedJob(entry *logstore.Log, bifrostErr *schemas.BifrostError) {
+	if run := bifrostErr.ExtraFields.ProviderJob; run != nil && run.ID != "" && p.batchStore != nil {
+		p.recordInteractionJob(entry, run)
+	}
+}
+
 // interactionJobOf returns the stored run a result reports on and the model or agent that ran it.
 func interactionJobOf(result *schemas.BifrostResponse) (*schemas.BifrostPassthroughJob, string) {
 	if result == nil {

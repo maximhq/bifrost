@@ -336,6 +336,55 @@ func TestInteractionReadSettlesUnderTheCreate(t *testing.T) {
 	assert.Equal(t, "key-create", stored.SelectedKeyID)
 }
 
+// TestPostLLMHookRecordsAnInterruptedInteractionRun pins that a background stream that ended in an error still
+// records the run it started, under the create, whether the error came alone or with a response.
+func TestPostLLMHookRecordsAnInterruptedInteractionRun(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, bs, newInteractionPricingManager(t), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	for id, result := range map[string]*schemas.BifrostResponse{"int_alone": nil, "int_with": {ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeInProgress}}} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-"+id)
+		_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ResponsesStreamRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.Gemini, Model: testInteractionAgent, Params: &schemas.ResponsesParameters{Background: schemas.Ptr(true)}}})
+		require.NoError(t, err)
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		_, _, err = plugin.PostLLMHook(ctx, result, &schemas.BifrostError{StatusCode: schemas.Ptr(499), Error: &schemas.ErrorField{Message: "client disconnected"}, ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType: schemas.ResponsesStreamRequest, RoutingInfo: schemas.RoutingInfo{Provider: schemas.Gemini, Model: testInteractionAgent},
+			ProviderJob: &schemas.BifrostPassthroughJob{ID: id, Status: "in_progress", Created: true, PollPath: "/interactions/" + id},
+		}})
+		require.NoError(t, err)
+		job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindInteraction, string(schemas.Gemini), id))
+		require.NoError(t, err)
+		require.NotNil(t, job, id)
+		assert.Equal(t, "/interactions/"+id, job.Endpoint)
+		require.NotNil(t, job.SourceLogID)
+		assert.Equal(t, "req-"+id, *job.SourceLogID)
+	}
+}
+
+// TestPreLLMHookMarksJobAccounting pins that a Responses request is told its run will be settled only when there
+// is a store to settle it from.
+func TestPreLLMHookMarksJobAccounting(t *testing.T) {
+	marked := func(bs jobaccounting.SweepStore, request *schemas.BifrostRequest) bool {
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), bs, nil, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = plugin.Cleanup() })
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req")
+		_, _, err = plugin.PreLLMHook(ctx, request)
+		require.NoError(t, err)
+		on, _ := ctx.Value(schemas.BifrostContextKeyJobAccounting).(bool)
+		return on
+	}
+	responses := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.Gemini, Model: "m", Params: &schemas.ResponsesParameters{}}}
+	assert.True(t, marked(newFakeBatchStore(), responses))
+	assert.False(t, marked(nil, responses))
+	assert.False(t, marked(newFakeBatchStore(), &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Gemini, Model: "m", Params: &schemas.ChatParameters{}}}))
+}
+
 // TestPostLLMHookRecordsAStreamedTypedInteractionRun pins a background run started through a
 // streamed typed Responses request (/v1/responses with stream and background). The stream hands
 // the run off on its final chunk while it is still going; that chunk records the run, so a later
