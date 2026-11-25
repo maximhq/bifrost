@@ -325,6 +325,9 @@ func (m *MCPManager) dialClientConn(ctx *schemas.BifrostContext, state *schemas.
 		// no live transport — we have nothing to execute against.
 		return nil, nil, "", fmt.Errorf("ephemeral MCP connection was short-circuited by plugin for %s", config.Name)
 	}
+	if ctx.Value(schemas.BifrostContextKeyMCPProgressReporter) != nil {
+		relayProgress(tempClient)
+	}
 
 	release := func() {
 		if err := tempClient.Close(); err != nil {
@@ -3499,6 +3502,7 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 		if listChanges(initResult) {
 			toolChanges = m.newToolChangeListener(config.ID, externalClient)
 		}
+		relayProgress(externalClient)
 		// Retrieve tools from the external server through the list_tools plugin gate.
 		// Use a bounded timeout context to prevent indefinite hangs during tool retrieval.
 		// For STDIO/SSE, ctx is longLivedCtx (no timeout), so we create a separate one here.

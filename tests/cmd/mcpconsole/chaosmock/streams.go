@@ -1,6 +1,10 @@
 package chaosmock
 
-import "sync"
+import (
+	"context"
+	"sync"
+	"time"
+)
 
 // streamRegistry tracks the open server-to-client channels a virtual server
 // holds. It exists for two reasons that pull in opposite directions and both
@@ -91,6 +95,38 @@ func (r *streamRegistry) send(id string, payload []byte) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// sendWait is send that waits up to timeout, or until ctx ends, for buffer space. It retries under
+// the lock rather than blocking on the channel, since addKeyed may close a stream it replaces.
+func (r *streamRegistry) sendWait(ctx context.Context, id string, payload []byte, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	retry := time.NewTicker(time.Millisecond)
+	defer retry.Stop()
+	for {
+		r.mu.Lock()
+		ch, ok := r.keyed[id]
+		sent := false
+		if ok {
+			select {
+			case ch <- payload:
+				sent = true
+			default:
+			}
+		}
+		r.mu.Unlock()
+		if sent || !ok {
+			return sent
+		}
+		select {
+		case <-retry.C:
+		case <-deadline.C:
+			return false
+		case <-ctx.Done():
+			return false
+		}
 	}
 }
 

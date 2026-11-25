@@ -1178,6 +1178,151 @@ func TestMCPGateway_PassesInputRequiredThrough(t *testing.T) {
 	assert.Empty(t, *tm.carried.Load())
 }
 
+// An upstream's progress on a tools/call reaches the caller under the caller's own token, before the
+// result; a caller that sent no token gets none, and the upstream is not asked for any.
+func TestMCPGateway_RelaysUpstreamProgress(t *testing.T) {
+	// The caller acknowledges the last step, so the result is sent only once the progress has arrived.
+	relayed := make(chan struct{}, 1)
+	upstream := server.NewMCPServer("progress-upstream", "1.0.0", server.WithToolCapabilities(true))
+	upstream.AddTool(mcp.NewTool("work"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if req.Params.Meta == nil || req.Params.Meta.ProgressToken == nil {
+			return mcp.NewToolResultText("no token"), nil
+		}
+		srv := server.ServerFromContext(ctx)
+		for step := 1; step <= 2; step++ {
+			params := map[string]any{"progressToken": req.Params.Meta.ProgressToken, "progress": float64(step), "total": float64(2), "message": fmt.Sprintf("step %d", step)}
+			if err := srv.SendNotificationToClient(ctx, string(mcp.MethodNotificationProgress), params); err != nil {
+				return nil, err
+			}
+		}
+		select {
+		case <-relayed:
+		case <-time.After(5 * time.Second):
+		}
+		return mcp.NewToolResultText("done"), nil
+	})
+	upstream.AddTool(mcp.NewTool("quiet"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("quiet"), nil
+	})
+	streamable := httptest.NewServer(server.NewStreamableHTTPServer(upstream))
+	t.Cleanup(streamable.Close)
+	sse := httptest.NewServer(server.NewSSEServer(upstream))
+	t.Cleanup(sse.Close)
+
+	for _, up := range []struct {
+		name           string
+		connectionType schemas.MCPConnectionType
+		url            string
+	}{
+		{"streamable", schemas.MCPConnectionTypeHTTP, streamable.URL},
+		{"sse", schemas.MCPConnectionTypeSSE, sse.URL + "/sse"},
+	} {
+		t.Run(up.name, func(t *testing.T) { testRelaysUpstreamProgress(t, up.connectionType, up.url, relayed) })
+	}
+}
+
+func testRelaysUpstreamProgress(t *testing.T, connectionType schemas.MCPConnectionType, upstreamURL string, relayed chan<- struct{}) {
+	ctx := context.Background()
+	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	upstreamConfig := &schemas.MCPClientConfig{
+		ID: "slow", Name: "slow", EndpointSlug: "slow", ConnectionType: connectionType,
+		ConnectionString: schemas.NewSecretVar(upstreamURL), ToolsToExecute: []string{"*"},
+	}
+	require.NoError(t, m.AddClient(ctx, upstreamConfig))
+	cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{upstreamConfig}}}
+	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, nil, nil, nil)
+	require.NoError(t, err)
+	baseURL := startGateway(t, h)
+
+	for _, version := range []string{mcp.ProtocolVersion20250618, mcp.ProtocolVersion20251125, mcp.ProtocolVersion20260728} {
+		t.Run(version, func(t *testing.T) {
+			tr, err := transport.NewStreamableHTTP(baseURL + "/mcp")
+			require.NoError(t, err)
+			c := client.NewClient(tr, client.WithProtocolVersion(version))
+			var mu sync.Mutex
+			var progress []map[string]any
+			c.OnNotification(func(n mcp.JSONRPCNotification) {
+				if n.Method == string(mcp.MethodNotificationProgress) {
+					mu.Lock()
+					progress = append(progress, n.Params.AdditionalFields)
+					mu.Unlock()
+					if n.Params.AdditionalFields["progress"] == float64(2) {
+						select {
+						case relayed <- struct{}{}:
+						default:
+						}
+					}
+				}
+			})
+			require.NoError(t, c.Start(ctx))
+			t.Cleanup(func() { _ = c.Close() })
+			init := mcp.InitializeRequest{}
+			init.Params.ProtocolVersion = version
+			_, err = c.Initialize(ctx, init)
+			require.NoError(t, err)
+
+			call := mcp.CallToolRequest{}
+			call.Params.Name = "slow-work"
+			call.Params.Meta = &mcp.Meta{ProgressToken: "caller-token"}
+			result, err := c.CallTool(ctx, call)
+			require.NoError(t, err)
+			require.False(t, result.IsError, "%v", result.Content)
+			assert.Equal(t, "done", result.Content[0].(mcp.TextContent).Text)
+			mu.Lock()
+			assert.Equal(t, []map[string]any{
+				{"progressToken": "caller-token", "progress": float64(1), "total": float64(2), "message": "step 1"},
+				{"progressToken": "caller-token", "progress": float64(2), "total": float64(2), "message": "step 2"},
+			}, progress, "progress arrives before the result, under the caller's token")
+			progress = nil
+			mu.Unlock()
+
+			call.Params.Meta = nil
+			result, err = c.CallTool(ctx, call)
+			require.NoError(t, err)
+			assert.Equal(t, "no token", result.Content[0].(mcp.TextContent).Text)
+
+			quiet := mcp.CallToolRequest{}
+			quiet.Params.Name = "slow-quiet"
+			quiet.Params.Meta = &mcp.Meta{ProgressToken: "caller-token"}
+			result, err = c.CallTool(ctx, quiet)
+			require.NoError(t, err, "a call that asked for progress and got none is answered all the same")
+			assert.Equal(t, "quiet", result.Content[0].(mcp.TextContent).Text)
+			mu.Lock()
+			assert.Empty(t, progress)
+			mu.Unlock()
+		})
+	}
+}
+
+// Only the requests that may answer with a stream leave the inline path.
+func TestOpensMCPStream(t *testing.T) {
+	cases := []struct {
+		name, httpMethod, mcpMethod, body string
+		want                              bool
+	}{
+		{"legacy GET stream", fasthttp.MethodGet, "", "", true},
+		{"modern listen", fasthttp.MethodPost, "subscriptions/listen", `{}`, true},
+		{"legacy listen in body", fasthttp.MethodPost, "", `{"method":"subscriptions/listen"}`, true},
+		{"tools/call with progressToken", fasthttp.MethodPost, "", `{"method":"tools/call","params":{"name":"t","_meta":{"progressToken":1}}}`, true},
+		{"modern tools/call with progressToken", fasthttp.MethodPost, "tools/call", `{"params":{"_meta":{"progressToken":"p"}}}`, true},
+		{"tools/call without progressToken", fasthttp.MethodPost, "", `{"method":"tools/call","params":{"name":"t","_meta":{}}}`, false},
+		{"progressToken on another method", fasthttp.MethodPost, "", `{"method":"tools/list","params":{"_meta":{"progressToken":1}}}`, false},
+		{"DELETE", fasthttp.MethodDelete, "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.httpMethod)
+			if tc.mcpMethod != "" {
+				ctx.Request.Header.Set(mcp.HeaderMethod, tc.mcpMethod)
+			}
+			ctx.Request.SetBodyString(tc.body)
+			assert.Equal(t, tc.want, opensMCPStream(&ctx))
+		})
+	}
+}
+
 // A caller narrowed away from the owning client lists none of its prompts or resources and gets
 // not-found for them.
 func TestMCPGateway_NarrowedCallerCannotReachPromptsOrResources(t *testing.T) {
@@ -1331,6 +1476,7 @@ func BenchmarkMCPGateway(b *testing.B) {
 		{"initialize/2025-11-25", map[string]string{"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"bench","version":"0"}}}`},
 		{"tools-list/2025-11-25", legacy, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
 		{"tools-call/2025-11-25", legacy, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gw-echo","arguments":{"text":"hi"}}}`},
+		{"tools-call-progress/2025-11-25", legacy, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gw-echo","arguments":{"text":"hi"},"_meta":{"progressToken":"p"}}}`},
 		{"tools-list-narrowed/2025-11-25", narrowed("gw-echo"), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
 		{"tools-call-hidden/2025-11-25", narrowed("other-tool"), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gw-echo","arguments":{"text":"hi"}}}`},
 		{"discover/2026-07-28", modern("server/discover", ""), `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMeta + `}}`},

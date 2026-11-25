@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/mcpvouch"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -1157,4 +1160,162 @@ func TestRoundTripState(t *testing.T) {
 	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
 	assert.Equal(t, RoundTripID("req-2"), CallRoundTripID(ctx), "a first round's id comes from its request")
 	assert.Equal(t, id, CallRoundTripID(context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, id)), "a retry keeps the id it carried")
+}
+
+// A call asks the upstream for progress only when ctx carries a reporter, under a fresh token whose
+// progress reaches that reporter until the call ends, keeping any other _meta the call had.
+func TestWithProgressToken(t *testing.T) {
+	call := mcp.CallToolRequest{}
+	call.Params.Meta = &mcp.Meta{AdditionalFields: map[string]any{"trace": "t1"}}
+
+	unchanged, stop := withProgressToken(context.Background(), call)
+	stop()
+	assert.Same(t, call.Params.Meta, unchanged.Params.Meta)
+
+	type step struct {
+		progress float64
+		total    *float64
+		message  string
+	}
+	var reported []step
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPProgressReporter,
+		ProgressReporter(func(_ context.Context, progress float64, total *float64, message string) {
+			reported = append(reported, step{progress, total, message})
+		}))
+	sent, stop := withProgressToken(ctx, call)
+	token, ok := sent.Params.Meta.ProgressToken.(string)
+	require.True(t, ok)
+	assert.NotEmpty(t, token)
+	assert.Equal(t, "t1", sent.Params.Meta.AdditionalFields["trace"])
+	assert.Nil(t, call.Params.Meta.ProgressToken, "the caller's request is not modified")
+
+	total := float64(2)
+	deliverProgress(map[string]any{"progressToken": token, "progress": float64(1), "total": total, "message": "half"})
+	deliverProgress(map[string]any{"progressToken": token, "progress": float64(2)})
+	deliverProgress(map[string]any{"progressToken": "another-call", "progress": float64(1)})
+	deliverProgress(map[string]any{"progressToken": token, "progress": "1"})
+	// An in-process server hands its notification over without a JSON round trip, so numbers keep their Go type.
+	four := float64(4)
+	deliverProgress(map[string]any{"progressToken": token, "progress": 3, "total": int64(4)})
+	deliverProgress(map[string]any{"progressToken": token, "progress": json.Number("4")})
+	assert.Equal(t, []step{{1, &total, "half"}, {2, nil, ""}, {3, &four, ""}, {4, nil, ""}}, reported, "only this call's well-formed progress is reported")
+
+	stop()
+	deliverProgress(map[string]any{"progressToken": token, "progress": float64(5)})
+	assert.Len(t, reported, 4, "nothing is reported once the call has ended")
+	_, ok = progressRoutes.Load(token)
+	assert.False(t, ok)
+}
+
+// A reporter stuck on a caller that stopped reading does not hold up the end of the call: stopping
+// cancels the delivery in flight and waits only for it to return.
+func TestWithProgressToken_StopUnblocksDelivery(t *testing.T) {
+	entered := make(chan struct{})
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPProgressReporter,
+		ProgressReporter(func(ctx context.Context, _ float64, _ *float64, _ string) {
+			close(entered)
+			<-ctx.Done()
+		}))
+	sent, stop := withProgressToken(ctx, mcp.CallToolRequest{})
+	token := sent.Params.Meta.ProgressToken.(string)
+	delivered := make(chan struct{})
+	go func() {
+		defer close(delivered)
+		deliverProgress(map[string]any{"progressToken": token, "progress": float64(1)})
+	}()
+	<-entered
+
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop waited on a delivery that cannot finish")
+	}
+	<-delivered
+}
+
+// An in-process upstream's progress reaches the caller: its notifications skip JSON, so progress and
+// total arrive as Go ints rather than float64s.
+func TestInProcessUpstreamProgressIsRelayed(t *testing.T) {
+	upstream := server.NewMCPServer("inproc", "1.0.0", server.WithToolCapabilities(true))
+	upstream.AddTool(mcp.NewTool("work"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if req.Params.Meta == nil || req.Params.Meta.ProgressToken == nil {
+			return mcp.NewToolResultText("no token"), nil
+		}
+		params := map[string]any{"progressToken": req.Params.Meta.ProgressToken, "progress": 1, "total": 2}
+		if err := server.ServerFromContext(ctx).SendNotificationToClient(ctx, string(mcp.MethodNotificationProgress), params); err != nil {
+			return nil, err
+		}
+		// The in-process transport forwards notifications on their own goroutine, so a result sent at once
+		// can overtake them; the work after the step leaves it time to go out first.
+		time.Sleep(50 * time.Millisecond)
+		return mcp.NewToolResultText("done"), nil
+	})
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	require.NoError(t, m.AddClient(context.Background(), &schemas.MCPClientConfig{
+		ID: "inproc", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, InProcessServer: upstream, ToolsToExecute: []string{"*"},
+	}))
+
+	type step struct {
+		progress, total float64
+	}
+	var mu sync.Mutex
+	var reported []step
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPProgressReporter,
+		ProgressReporter(func(_ context.Context, progress float64, total *float64, _ string) {
+			mu.Lock()
+			defer mu.Unlock()
+			reported = append(reported, step{progress, *total})
+		}))
+	name, callType, id := "inproc-work", "function", "call-1"
+	result, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.ChatAssistantMessageToolCall{
+		ID: &id, Type: &callType, Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+	})
+	require.Nil(t, bErr)
+	require.NotNil(t, result)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []step{{1, 2}}, reported)
+}
+
+// progressNumber reads every Go number an in-process server may send, named types included, as both
+// progress and total, and nothing that is not a number.
+func TestProgressNumber(t *testing.T) {
+	type percent uint8
+	numbers := map[string]any{
+		"float64": float64(3), "float32": float32(3), "int": 3, "int8": int8(3), "int16": int16(3), "int32": int32(3),
+		"int64": int64(3), "uint": uint(3), "uint8": uint8(3), "uint16": uint16(3), "uint32": uint32(3), "uint64": uint64(3),
+		"uintptr": uintptr(3), "named": percent(3), "json.Number": json.Number("3"),
+	}
+	type step struct{ progress, total float64 }
+	var reported []step
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPProgressReporter,
+		ProgressReporter(func(_ context.Context, progress float64, total *float64, _ string) {
+			require.NotNil(t, total, "total was dropped")
+			reported = append(reported, step{progress, *total})
+		}))
+	sent, stop := withProgressToken(ctx, mcp.CallToolRequest{})
+	t.Cleanup(stop)
+	token := sent.Params.Meta.ProgressToken.(string)
+	for name, v := range numbers {
+		t.Run(name, func(t *testing.T) {
+			got, ok := progressNumber(v)
+			assert.True(t, ok)
+			assert.Equal(t, float64(3), got)
+			reported = nil
+			deliverProgress(map[string]any{"progressToken": token, "progress": v, "total": v})
+			assert.Equal(t, []step{{3, 3}}, reported, "as progress and as total")
+		})
+	}
+	for name, v := range map[string]any{"string": "3", "nil": nil, "bool": true, "malformed json.Number": json.Number("x")} {
+		t.Run("not a number: "+name, func(t *testing.T) {
+			_, ok := progressNumber(v)
+			assert.False(t, ok)
+		})
+	}
 }

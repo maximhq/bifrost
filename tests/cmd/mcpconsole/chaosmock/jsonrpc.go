@@ -35,6 +35,9 @@ const (
 // acts on it at all.
 const NotificationToolListChanged = "notifications/tools/list_changed"
 
+// NotificationProgress reports progress on a request that carried a progressToken.
+const NotificationProgress = "notifications/progress"
+
 // request is an inbound JSON-RPC message. ID is held as raw JSON because MCP
 // permits both string and number ids and a mock must echo back exactly what it
 // was given, including shapes a stricter decoder would normalize.

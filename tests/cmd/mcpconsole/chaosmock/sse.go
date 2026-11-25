@@ -179,9 +179,27 @@ func (s *Server) ServeSSEMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.deliver(sessionID, res.Response)
+	// Unlike a broadcast, these belong to this request, so a full stream is waited on, and a request
+	// whose messages could not all be queued is not acknowledged.
+	payload, err := json.Marshal(res.Response)
+	if err != nil {
+		http.Error(w, "response could not be encoded", http.StatusInternalServerError)
+		return
+	}
+	for _, msg := range append(res.Notifications, payload) {
+		if !s.streams.sendWait(r.Context(), sessionID, msg, sseDeliveryTimeout) {
+			http.Error(w, "stream did not accept the response", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	if len(res.Notifications) > 0 {
+		s.counters.progressCall(res.ProgressTool)
+	}
 	w.WriteHeader(http.StatusAccepted)
 }
+
+// sseDeliveryTimeout bounds how long a request waits for room on its session's stream.
+const sseDeliveryTimeout = 5 * time.Second
 
 // deliver writes a JSON-RPC message to one session's stream.
 func (s *Server) deliver(sessionID string, msg *response) {

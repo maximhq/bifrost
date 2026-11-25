@@ -51,10 +51,21 @@ type Tool struct {
 	// environment the system under test spawned its subprocess with.
 	ReplyEnv string `json:"reply_env,omitempty"`
 
+	// Progress is the notifications/progress a call reports, in order, before its result. They are
+	// sent only when the call carries a progressToken, as MCP asks of a server.
+	Progress []ProgressStep `json:"progress,omitempty"`
+
 	// Fault, when non-nil, replaces the server-wide fault set for calls to
 	// this tool. It is how a scenario breaks one tool while leaving the rest
 	// of the server healthy, which no server-level knob can express.
 	Fault *Faults `json:"fault,omitempty"`
+}
+
+// ProgressStep is one notifications/progress a tool call reports.
+type ProgressStep struct {
+	Progress float64 `json:"progress"`
+	Total    float64 `json:"total,omitempty"`
+	Message  string  `json:"message,omitempty"`
 }
 
 // wireTool is the part of a Tool that tools/list sends.
@@ -75,8 +86,9 @@ func (t Tool) wire() wireTool {
 
 // Validate rejects a definition that would otherwise misbehave quietly:
 // annotations, an output schema or a reply that is not a JSON object, icons
-// that are not a JSON array, a reply error without a code, two reply sources, or a
-// per-tool fault field that cannot apply to one tool's call. In a chaos harness
+// that are not a JSON array, a reply error without a code, two reply sources,
+// progress that does not increase, or a per-tool fault field that cannot apply
+// to one tool's call. In a chaos harness
 // a silently ignored field looks exactly like the client coping.
 func (t Tool) Validate() error {
 	if !isObjectOrEmpty(t.Annotations) {
@@ -108,6 +120,14 @@ func (t Tool) Validate() error {
 	}
 	if hasJSON(t.OutputSchema) && t.ReplyEnv != "" {
 		return fmt.Errorf("tool %q: reply_env answers text only, so it cannot honour an outputSchema", t.Name)
+	}
+	for i, step := range t.Progress {
+		if step.Progress <= 0 || (i > 0 && step.Progress <= t.Progress[i-1].Progress) {
+			return fmt.Errorf("tool %q: progress must be positive and increase with every step", t.Name)
+		}
+		if step.Total != 0 && step.Total < step.Progress {
+			return fmt.Errorf("tool %q: a progress step's total cannot be below its progress", t.Name)
+		}
 	}
 	if t.Fault != nil {
 		if err := t.Fault.validateForTool(); err != nil {
