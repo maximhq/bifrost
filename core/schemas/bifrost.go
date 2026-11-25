@@ -425,7 +425,6 @@ const (
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
 	BifrostContextKeyRequestQuery                        BifrostContextKey = "bifrost-request-query"                            // map[string]string (request query params with lowercased keys; consumed by governance routing CEL rules)
 	BifrostContextKeyRoutingAllowedProviders             BifrostContextKey = "bifrost-routing-allowed-providers"                // []ModelProvider; when set, downstream routing layers (enterprise LB, model-catalog-resolver) must intersect their candidate providers with this set. Plugins set this when they have an opinion about which providers are valid for the request — even if they couldn't pick one themselves. Empty slice means "no provider is permitted" (fail-closed).
-	BifrostContextKeyProviderResolutionError             BifrostContextKey = "bifrost-provider-resolution-error"                // string; set by a PreRequestHook plugin that deliberately left the provider unset, e.g. model-catalog-resolver for a decision model several providers serve. When no provider is set after PreRequestHook, core returns this as the 400 message instead of the generic auto-resolve error.
 	BifrostContextKeyAllowPerRequestStorageOverride      BifrostContextKey = "bifrost-allow-per-request-storage-override"       // bool (set by transport from config — gates whether x-bf-disable-content-logging and x-bf-store-raw-request-response per-request overrides are honored)
 	BifrostContextKeyAllowPerRequestRawOverride          BifrostContextKey = "bifrost-allow-per-request-raw-override"           // bool (set by transport from config — gates whether x-bf-send-back-raw-request and x-bf-send-back-raw-response per-request overrides are honored)
 	BifrostContextKeyGuardrailMetadata                   BifrostContextKey = "bifrost-guardrail-debug"                          // *BifrostGuardrailMetadata (set by enterprise guardrails plugin - DO NOT SET THIS MANUALLY)
@@ -860,6 +859,12 @@ type Fallback struct {
 // NOTE: Bifrost Request is submitted back to pool after every use so DO NOT keep references to this struct after use, especially in go routines.
 type BifrostRequest struct {
 	RequestType RequestType
+	// ProviderResolutionError is set by a PreRequestHook plugin that deliberately left the provider
+	// unset, e.g. model-catalog-resolver for a decision model several providers serve. When no
+	// provider is set after PreRequestHook, core returns it as the 400 message instead of the
+	// generic auto-resolve error. It lives on the request rather than the context because nil-ctx
+	// callers share one context.
+	ProviderResolutionError string `json:"-"`
 
 	ListModelsRequest            *BifrostListModelsRequest
 	ModelRetrieveRequest         *BifrostModelRetrieveRequest

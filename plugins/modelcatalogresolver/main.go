@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
@@ -35,16 +36,20 @@ var integrationTypeToDefaultProvider = map[string]schemas.ModelProvider{
 // Plugin resolves the default provider for unprefixed model strings using the model catalog.
 type Plugin struct {
 	catalog *modelcatalog.ModelCatalog
-	logger  schemas.Logger
+	// live holds the configured providers, read for a custom provider's allowed_requests. Nil
+	// treats every provider as allowed.
+	live   *livestore.Store
+	logger schemas.Logger
 }
 
 // Init returns a new resolver plugin. The catalog is required; if nil, the plugin returns
 // an error rather than silently no-op'ing — a nil catalog at boot is a misconfiguration.
-func Init(catalog *modelcatalog.ModelCatalog, logger schemas.Logger) (*Plugin, error) {
+// live supplies the provider configurations; nil treats every provider as allowed.
+func Init(catalog *modelcatalog.ModelCatalog, live *livestore.Store, logger schemas.Logger) (*Plugin, error) {
 	if catalog == nil {
 		return nil, fmt.Errorf("model-catalog-resolver: catalog is required")
 	}
-	return &Plugin{catalog: catalog, logger: logger}, nil
+	return &Plugin{catalog: catalog, live: live, logger: logger}, nil
 }
 
 // GetName implements schemas.BasePlugin.
@@ -60,8 +65,8 @@ func (p *Plugin) Cleanup() error { return nil }
 // When the catalog returns multiple providers for an unprefixed model, the resolver prefers the
 // integration's canonical provider (looked up from BifrostContextKeyIntegrationType set by the
 // integration router) if it's in the candidate list. Otherwise it picks the first candidate, except
-// for a decision request, which it leaves unresolved with BifrostContextKeyProviderResolutionError
-// set so core answers 400 naming the candidates.
+// for a decision request, which it leaves unresolved with req.ProviderResolutionError set so core
+// answers 400 naming the candidates.
 //
 // If the catalog returns zero providers, the resolver leaves req.Provider empty — the
 // empty-provider validation in handleRequest/handleStreamRequest then returns a clear error.
@@ -90,6 +95,18 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 		return nil
 	}
 
+	// A custom provider whose allowed_requests forbid decisions is refused by core on every
+	// attempt, so it is not a candidate: it neither makes the model ambiguous nor becomes the pick.
+	// When every candidate is gated none is dropped: the request fails either way.
+	if req.RequestType == schemas.DecisionRequest && len(candidates) > 1 {
+		if allowed := p.allowedFor(candidates, req.RequestType); len(allowed) > 0 && len(allowed) < len(candidates) {
+			candidates = allowed
+			if !slices.Contains(candidates, selected) {
+				selected = candidates[0]
+			}
+		}
+	}
+
 	candidateStrs := make([]string, len(candidates))
 	for i, prov := range candidates {
 		candidateStrs[i] = string(prov)
@@ -105,7 +122,7 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 			"decision model %s is served by more than one provider (%s); send it as provider/model, for example %s/%s, or add a routing rule that sets the provider",
 			model, strings.Join(candidateStrs, ", "), candidates[0], model,
 		)
-		ctx.SetValue(schemas.BifrostContextKeyProviderResolutionError, reason)
+		req.ProviderResolutionError = reason
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelWarn, fmt.Sprintf(
 			"No provider specified for decision model %s and the model catalog has %d options: [%s]; leaving req.Provider empty",
 			model, len(candidates), strings.Join(candidateStrs, ", "),
@@ -196,6 +213,23 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 func ResolveProviderFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatalog.ModelCatalog, model string) (schemas.ModelProvider, []schemas.ModelProvider) {
 	selected, candidates, _ := resolveProvider(ctx, catalog, model)
 	return selected, candidates
+}
+
+// allowedFor returns the providers whose configuration lets them serve requestType: every
+// provider except a custom provider whose allowed_requests leave it out, the gate core applies
+// on each attempt. providers is not changed.
+func (p *Plugin) allowedFor(providers []schemas.ModelProvider, requestType schemas.RequestType) []schemas.ModelProvider {
+	if p.live == nil {
+		return providers
+	}
+	allowed := make([]schemas.ModelProvider, 0, len(providers))
+	for _, prov := range providers {
+		if stored, ok := p.live.Collections.Providers.Get(string(prov)); ok && !stored.Config.CustomProviderConfig.IsOperationAllowed(requestType) {
+			continue
+		}
+		allowed = append(allowed, prov)
+	}
+	return allowed
 }
 
 // resolveProvider is ResolveProviderFromCatalog plus whether the selection was pinned by the

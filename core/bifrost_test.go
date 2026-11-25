@@ -3757,7 +3757,7 @@ func TestFilterKeysByID(t *testing.T) {
 type fakeRoutingPlugin struct {
 	name            string
 	pinKeyID        string // written to BifrostContextKeyRoutingPinnedAPIKeyID when non-empty
-	resolutionError string // written to BifrostContextKeyProviderResolutionError when non-empty
+	resolutionError string // written to req.ProviderResolutionError when non-empty
 }
 
 func (f *fakeRoutingPlugin) GetName() string { return f.name }
@@ -3769,7 +3769,7 @@ func (f *fakeRoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sch
 		ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, f.pinKeyID)
 	}
 	if f.resolutionError != "" {
-		ctx.SetValue(schemas.BifrostContextKeyProviderResolutionError, f.resolutionError)
+		req.ProviderResolutionError = f.resolutionError
 	}
 	return nil
 }
@@ -4007,6 +4007,73 @@ func TestProviderResolutionErrorIsPerRequest(t *testing.T) {
 				t.Fatalf("second request: message %q, want the generic %q", got, ProviderAutoResolveErrorMessage)
 			}
 		})
+	}
+}
+
+// interleavedResolverPlugin leaves the provider unset for every request. For model "a" it gives a
+// reason and then waits until the hook of the request for model "b", which gives none, has run.
+type interleavedResolverPlugin struct {
+	reason  string
+	aHooked chan struct{} // closed once the "a" request's reason is set
+	bHooked chan struct{} // closed once the "b" request's hook has run
+}
+
+func (p *interleavedResolverPlugin) GetName() string { return "interleaved-resolver" }
+func (p *interleavedResolverPlugin) Cleanup() error  { return nil }
+func (p *interleavedResolverPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	_, model, _ := req.GetRequestFields()
+	switch model {
+	case "a":
+		req.ProviderResolutionError = p.reason
+		close(p.aHooked)
+		<-p.bHooked
+	case "b":
+		close(p.bHooked)
+	}
+	return nil
+}
+func (p *interleavedResolverPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *interleavedResolverPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestProviderResolutionErrorConcurrentNilCtx pins that two concurrent nil-ctx requests, which
+// share the instance context, each get their own provider resolution error: request b runs its
+// whole pre-request phase while request a, whose plugin gave a reason, waits between its hook and
+// its validation. a must still get its reason and b the generic message.
+func TestProviderResolutionErrorConcurrentNilCtx(t *testing.T) {
+	const reason = "model a is served by more than one provider (azure, openai)"
+	input := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	plugin := &interleavedResolverPlugin{reason: reason, aHooked: make(chan struct{}), bHooked: make(chan struct{})}
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	message := func(model string) string {
+		_, bifrostErr := client.ChatCompletionRequest(nil, &schemas.BifrostChatRequest{Model: model, Input: input})
+		if bifrostErr == nil || bifrostErr.Error == nil {
+			return fmt.Sprintf("no error: %v", bifrostErr)
+		}
+		return bifrostErr.Error.Message
+	}
+	aMessage := make(chan string, 1)
+	go func() { aMessage <- message("a") }()
+	<-plugin.aHooked
+	if got := message("b"); got != ProviderAutoResolveErrorMessage {
+		t.Errorf("request b: message %q, want the generic %q", got, ProviderAutoResolveErrorMessage)
+	}
+	if got := <-aMessage; got != reason {
+		t.Errorf("request a: message %q, want %q", got, reason)
 	}
 }
 
