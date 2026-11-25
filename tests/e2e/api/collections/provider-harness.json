@@ -349971,7 +349971,7 @@
     },
     {
       "name": "383. Anthropic Managed Agents deployments through /anthropic_passthrough (anthropic-deployments-passthrough) (#10373 / PR #10374) [SERIAL]",
-      "description": "Claude Managed Agents deployments live at /v1/deployments/{id} on the Anthropic API, and /anthropic_passthrough forwards them. Path model parsing read any deployments/{x} segment as an Azure deployment name, so the deployment id became the request's model and governance refused it with model_blocked before anything reached Anthropic: 'Model depl_... is not allowed for virtual key ...'. A key that allows every Anthropic model was refused too, because the id is not in the model catalog. The fix reads no model from a deployments path, and a deployments request that names no model skips the model allowlist (the agent's model was checked when the agent was created), while a model its body names is still checked. The cases create a virtual key that allows one Claude model on any Anthropic key, then read a deployment that does not exist and unpause it, with the Managed Agents beta header. Both must reach Anthropic and come back with its own 404 not_found_error. Red before the change: 403 model_blocked naming the deployment id. No model runs and nothing is created on the Anthropic account. Requires the governance plugin and an Anthropic key with Managed Agents access; the key is deleted at the end.",
+      "description": "Claude Managed Agents deployments live at /v1/deployments/{id} on the Anthropic API, and /anthropic_passthrough forwards them. Path model parsing read any deployments/{x} segment as an Azure deployment name, so the deployment id became the request's model and governance refused it with model_blocked before anything reached Anthropic, even under a key that allows every Anthropic model, because the id is not in the model catalog. The fix reads no model from a deployments path. Reading, pausing and archiving a deployment start nothing and skip the model allowlist. Create, update, run and unpause can start runs of an agent whose model governance never sees, so a key that restricts models is refused and a key that allows every Anthropic model passes. The cases create two virtual keys on any Anthropic key, one allowing only claude-haiku-4-5 and one allowing every model, and send the Managed Agents beta header for a deployment that does not exist. The restricted key reads it and gets Anthropic's own 404 not_found_error, and is refused with 403 model_blocked when it unpauses it. The all-models key reads and unpauses it and gets Anthropic's 404 both times. Red before the change: every case is 403 model_blocked naming the deployment id. No model runs and nothing is created on the Anthropic account. Requires the governance plugin and an Anthropic key with Managed Agents access; both keys are deleted at the end.",
       "item": [
         {
           "name": "anthropic anthropic-deployments-passthrough setup: create a virtual key that allows only claude-haiku-4-5 - #10373",
@@ -350053,6 +350053,85 @@
           }
         },
         {
+          "name": "anthropic anthropic-deployments-passthrough setup: create a virtual key that allows every Anthropic model - #10373",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('anthropicDeploymentsAllVkId');",
+                  "  pm.collectionVariables.unset('anthropicDeploymentsAllVkValue');",
+                  "  pm.collectionVariables.set('anthropicDeploymentsAllVkName', 'harness-anthropic-deployments-all-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "// Its id is the only reference to it, so it is cleared only once the delete is confirmed.",
+                  "var staleVkId = pm.collectionVariables.get('anthropicDeploymentsAllVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('anthropic-deployments-passthrough: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    // Keep the id so cleanup and the next run retry the delete, and drop the value",
+                  "    // so the deployment cases skip instead of running on the stale key.",
+                  "    pm.collectionVariables.unset('anthropicDeploymentsAllVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic-deployments-passthrough: all-models virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('anthropic-deployments-passthrough: the virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('anthropicDeploymentsAllVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('anthropicDeploymentsAllVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{anthropicDeploymentsAllVkName}}\",\"provider_configs\":[{\"provider\":\"anthropic\",\"allowed_models\":[\"*\"],\"key_ids\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
           "name": "[EXPECT-404] anthropic claude-haiku-4-5 anthropic-deployments-passthrough: a model-restricted key reading a deployment reaches Anthropic - #10373",
           "event": [
             {
@@ -350105,7 +350184,7 @@
           }
         },
         {
-          "name": "[EXPECT-404] anthropic claude-haiku-4-5 anthropic-deployments-passthrough: a model-restricted key unpausing a deployment reaches Anthropic - #10373",
+          "name": "[EXPECT-403] anthropic claude-haiku-4-5 anthropic-deployments-passthrough: a model-restricted key unpausing a deployment is refused, since it can start a run - #10373",
           "event": [
             {
               "listen": "prerequest",
@@ -350122,15 +350201,11 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('anthropic-deployments-passthrough: unpausing a deployment reaches Anthropic and gets its not_found_error', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
-                  "  var body = {};",
-                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
-                  "  pm.expect(body.type, 'not an Anthropic error: ' + pm.response.text()).to.equal('error');",
-                  "  pm.expect(body.error && body.error.type, 'not not_found_error: ' + pm.response.text()).to.equal('not_found_error');",
+                  "pm.test('anthropic-deployments-passthrough: unpausing a deployment under a model-restricted key is refused by governance', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'not refused by the model allowlist: ' + pm.response.text()).to.include('model_blocked');",
                   "});",
-                  "pm.test('anthropic-deployments-passthrough: unpausing a deployment is not refused by the model allowlist', function () {",
-                  "  pm.expect(pm.response.text(), 'refused by governance: ' + pm.response.text()).to.not.include('model_blocked');",
+                  "pm.test('anthropic-deployments-passthrough: the refusal does not name the deployment id as the model', function () {",
                   "  pm.expect(pm.response.text(), 'deployment id read as a model: ' + pm.response.text()).to.not.include('depl_01HarnessMissingDeploy');",
                   "});"
                 ]
@@ -350143,6 +350218,110 @@
               {
                 "key": "x-bf-vk",
                 "value": "{{anthropicDeploymentsVkValue}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "managed-agents-2026-04-01"
+              }
+            ],
+            "url": "{{baseUrl}}/anthropic_passthrough/v1/deployments/depl_01HarnessMissingDeploy/unpause"
+          }
+        },
+        {
+          "name": "[EXPECT-404] anthropic anthropic-deployments-passthrough: an all-models key reading a deployment reaches Anthropic - #10373",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The setup did not create the all-models key, so there is nothing to send it with.",
+                  "if (!pm.collectionVariables.get('anthropicDeploymentsAllVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic-deployments-passthrough: under an all-models key, reading a deployment reaches Anthropic and gets its not_found_error', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(body.type, 'not an Anthropic error: ' + pm.response.text()).to.equal('error');",
+                  "  pm.expect(body.error && body.error.type, 'not not_found_error: ' + pm.response.text()).to.equal('not_found_error');",
+                  "});",
+                  "pm.test('anthropic-deployments-passthrough: under an all-models key, reading a deployment is not refused by the model allowlist', function () {",
+                  "  pm.expect(pm.response.text(), 'refused by governance: ' + pm.response.text()).to.not.include('model_blocked');",
+                  "  pm.expect(pm.response.text(), 'deployment id read as a model: ' + pm.response.text()).to.not.include('depl_01HarnessMissingDeploy');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{anthropicDeploymentsAllVkValue}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "managed-agents-2026-04-01"
+              }
+            ],
+            "url": "{{baseUrl}}/anthropic_passthrough/v1/deployments/depl_01HarnessMissingDeploy"
+          }
+        },
+        {
+          "name": "[EXPECT-404] anthropic anthropic-deployments-passthrough: an all-models key unpausing a deployment reaches Anthropic - #10373",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The setup did not create the all-models key, so there is nothing to send it with.",
+                  "if (!pm.collectionVariables.get('anthropicDeploymentsAllVkValue')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic-deployments-passthrough: under an all-models key, unpausing a deployment reaches Anthropic and gets its not_found_error', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(body.type, 'not an Anthropic error: ' + pm.response.text()).to.equal('error');",
+                  "  pm.expect(body.error && body.error.type, 'not not_found_error: ' + pm.response.text()).to.equal('not_found_error');",
+                  "});",
+                  "pm.test('anthropic-deployments-passthrough: under an all-models key, unpausing a deployment is not refused by the model allowlist', function () {",
+                  "  pm.expect(pm.response.text(), 'refused by governance: ' + pm.response.text()).to.not.include('model_blocked');",
+                  "  pm.expect(pm.response.text(), 'deployment id read as a model: ' + pm.response.text()).to.not.include('depl_01HarnessMissingDeploy');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{anthropicDeploymentsAllVkValue}}"
               },
               {
                 "key": "anthropic-version",
@@ -350191,6 +350370,43 @@
             "method": "DELETE",
             "header": [],
             "url": "{{baseUrl}}/api/governance/virtual-keys/{{anthropicDeploymentsVkId}}"
+          }
+        },
+        {
+          "name": "anthropic anthropic-deployments-passthrough cleanup: delete the all-models virtual key - #10373",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('anthropicDeploymentsAllVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic-deployments-passthrough: all-models virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the key is still there, so the next setup retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('anthropicDeploymentsAllVkId');",
+                  "  pm.collectionVariables.unset('anthropicDeploymentsAllVkValue');",
+                  "  pm.collectionVariables.unset('anthropicDeploymentsAllVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{anthropicDeploymentsAllVkId}}"
           }
         }
       ]

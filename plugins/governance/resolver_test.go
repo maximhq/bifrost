@@ -1149,19 +1149,21 @@ func TestPreLLMHookChecksInteractionsAgentAgainstAllowlist(t *testing.T) {
 	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
 }
 
-// A Claude Managed Agents deployments request runs no model of its own. One that names no model is
-// marked model-free by the router, so a key that restricts models reaches it: listing, reading, updating,
-// running, pausing, unpausing and archiving. One whose body names a model is not marked and is checked like
-// any passthrough, and a request that reaches governance with no model and no flag (a caller bypassing
-// the router) is still refused.
-func TestPreLLMHookAllowsModelFreeAnthropicDeploymentsUnderRestrictedKey(t *testing.T) {
+// Claude Managed Agents deployments name no model. The router marks reads, pause and archive
+// model-free, so a key that restricts models reaches them. Create, update, run and unpause can start
+// runs of an agent whose model governance never sees, so they are refused under that key and pass
+// under a key that allows every Anthropic model. A model the body names is checked as usual.
+func TestPreLLMHookAnthropicDeploymentsUnderModelAllowlists(t *testing.T) {
 	const allowed, denied = "claude-sonnet-4-5", "claude-opus-4-1"
-	vk := buildVirtualKeyWithProviders("vk-depl", "sk-bf-depl", "Deployments VK", []configstoreTables.TableVirtualKeyProviderConfig{
+	restricted := buildVirtualKeyWithProviders("vk-depl", "sk-bf-depl", "Deployments VK", []configstoreTables.TableVirtualKeyProviderConfig{
 		buildProviderConfig("anthropic", []string{allowed}),
+	})
+	everyModel := buildVirtualKeyWithProviders("vk-depl-all", "sk-bf-depl-all", "Deployments all-models VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"*"}),
 	})
 	logger := NewMockLogger()
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		VirtualKeys: []configstoreTables.TableVirtualKey{*restricted, *everyModel},
 	}, nil, nil)
 	require.NoError(t, err)
 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
@@ -1173,41 +1175,48 @@ func TestPreLLMHookAllowsModelFreeAnthropicDeploymentsUnderRestrictedKey(t *test
 			Provider: schemas.Anthropic, Model: model, Method: method, Path: path, Body: []byte(body),
 		}}
 	}
-	modelFree := func() *schemas.BifrostContext {
-		ctx := presentCtx("sk-bf-depl")
+	modelFree := func(vk string) *schemas.BifrostContext {
+		ctx := presentCtx(vk)
 		ctx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
 		return ctx
 	}
-
-	for _, req := range []*schemas.BifrostRequest{
+	reads := []*schemas.BifrostRequest{
 		deployment("GET", "/v1/deployments", "", ""),
 		deployment("GET", "/v1/deployments/depl_1", "", ""),
-		deployment("POST", "/v1/deployments/depl_1/run", "", ""),
-		deployment("POST", "/v1/deployments/depl_1", "", `{"name":"nightly"}`),
 		deployment("POST", "/v1/deployments/depl_1/pause", "", ""),
-		deployment("POST", "/v1/deployments/depl_1/unpause", "", ""),
 		deployment("POST", "/v1/deployments/depl_1/archive", "", ""),
-	} {
-		_, shortCircuit, err := plugin.PreLLMHook(modelFree(), req)
+	}
+	starts := []*schemas.BifrostRequest{
+		deployment("POST", "/v1/deployments", "", `{"agent":"agent_1"}`),
+		deployment("POST", "/v1/deployments/depl_1", "", `{"name":"nightly"}`),
+		deployment("POST", "/v1/deployments/depl_1/run", "", ""),
+		deployment("POST", "/v1/deployments/depl_1/unpause", "", ""),
+	}
+
+	for _, req := range reads {
+		_, shortCircuit, err := plugin.PreLLMHook(modelFree("sk-bf-depl"), req)
 		require.NoError(t, err)
 		assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
 	}
-
-	// Without the router's flag a request naming no model is refused under a restricted key.
-	_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("GET", "/v1/deployments/depl_1", "", ""))
-	require.NoError(t, err)
-	assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
-
-	// A model the body names is checked, on an update and on an action alike.
-	for _, path := range []string{"/v1/deployments/depl_1", "/v1/deployments/depl_1/run"} {
-		_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", path, denied, `{"model":"`+denied+`"}`))
+	for _, req := range starts {
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-depl"), req)
 		require.NoError(t, err)
 		assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
-
-		_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", path, allowed, `{"model":"`+allowed+`"}`))
+	}
+	// The bug in #10373: a key that allows every Anthropic model reaches every deployments request.
+	for _, req := range append(append([]*schemas.BifrostRequest{}, reads...), starts...) {
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-depl-all"), req)
 		require.NoError(t, err)
 		assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
 	}
+
+	// A model the body names is checked under the restricted key.
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", "/v1/deployments/depl_1/run", denied, `{"model":"`+denied+`"}`))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-depl"), deployment("POST", "/v1/deployments/depl_1/run", allowed, `{"model":"`+allowed+`"}`))
+	require.NoError(t, err)
+	assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
 }
 
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK

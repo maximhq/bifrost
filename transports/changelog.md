@@ -103,7 +103,7 @@
   The allowlist is empty by default, so no plugin URL is fetched until its host is listed. Set `BIFROST_PLUGIN_URL_ALLOWLIST` (comma-separated hosts, `*.example.com` or `*`) before upgrading if you load plugins from a URL.
   </Warning>
 - **Dashboard** - Log headers and the date picker fit on mobile, the upgrading screen appears only when the server confirms a chunk is gone, and the datasheet editor hides entries without a provider
-- **Anthropic Passthrough Deployments** - `/anthropic_passthrough/v1/deployments/{id}` (Managed Agents deployments: get, update, run, pause, unpause, archive) no longer reads the deployment id as the model, so virtual keys are not refused with `model_blocked`. A deployments request that names no model passes a key that restricts models; a model its body names is still checked
+- **Anthropic Passthrough Deployments** - `/anthropic_passthrough/v1/deployments/{id}` (Managed Agents deployments) no longer reads the deployment id as the model, so a virtual key that allows every Anthropic model is not refused with `model_blocked`. Reading, pausing and archiving a deployment also pass a key that restricts models; create, update, run and unpause still need a key that allows every Anthropic model
 
 ## 🔧 Maintenance
 
