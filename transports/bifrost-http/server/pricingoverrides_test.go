@@ -14,7 +14,7 @@ import (
 // into the live store, which the model catalog prices from, and a delete drops it.
 func TestPricingOverrideWritesFollowTheDatabase(t *testing.T) {
 	ctx := context.Background()
-	config := libtest.Config(t, nil)
+	config := libtest.Config(t, nil, nil)
 	config.ModelCatalog = catalogForTest(t, nil)
 	server := &BifrostHTTPServer{Config: config}
 	providerID := "openai"

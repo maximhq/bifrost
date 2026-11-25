@@ -30,8 +30,11 @@ func newestTestHandler(t testing.TB) *ProviderHandler {
 			ClientConfig: &configstore.ClientConfig{},
 			ModelCatalog: catalog,
 		}, map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI:  {Keys: []schemas.Key{{ID: "key-a"}}},
-			schemas.Mistral: {Keys: []schemas.Key{{ID: "key-m"}}},
+			schemas.OpenAI:  {},
+			schemas.Mistral: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI:  {{ID: "key-a"}},
+			schemas.Mistral: {{ID: "key-m"}},
 		}),
 		modelsManager: &mockModelsManager{filtered: map[schemas.ModelProvider][]string{
 			schemas.OpenAI:  {"synthetic-old", "synthetic-new", "synthetic-mid", "synthetic-untimed"},
@@ -116,6 +119,7 @@ func BenchmarkListNewestModels(b *testing.B) {
 	catalog := catalogForTest(b, nil)
 	filtered := make(map[schemas.ModelProvider][]string, len(providers))
 	configs := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(providers))
+	keys := make(map[schemas.ModelProvider][]schemas.Key, len(providers))
 	for _, provider := range providers {
 		data := make([]schemas.Model, 0, 300)
 		for i := range 300 {
@@ -125,10 +129,11 @@ func BenchmarkListNewestModels(b *testing.B) {
 		}
 		keyID := "key-" + string(provider)
 		catalog.UpsertLiveFromResponse(provider, keyID, false, &schemas.BifrostListModelsResponse{Data: data})
-		configs[provider] = configstore.ProviderConfig{Keys: []schemas.Key{{ID: keyID}}}
+		configs[provider] = configstore.ProviderConfig{}
+		keys[provider] = []schemas.Key{{ID: keyID}}
 	}
 	h := &ProviderHandler{
-		config: libtest.FileOnly(b, &lib.Config{ClientConfig: &configstore.ClientConfig{}, ModelCatalog: catalog}, configs),
+		config:        libtest.FileOnly(b, &lib.Config{ClientConfig: &configstore.ClientConfig{}, ModelCatalog: catalog}, configs, keys),
 		modelsManager: &mockModelsManager{filtered: filtered},
 	}
 	ctx := &fasthttp.RequestCtx{}

@@ -20,7 +20,7 @@ import (
 func TestRefreshPromptsFollowsEachWrite(t *testing.T) {
 	SetLogger(bifrost.NewNoOpLogger())
 	ctx := context.Background()
-	config := libtest.Config(t, nil)
+	config := libtest.Config(t, nil, nil)
 	server := &BifrostHTTPServer{Config: config, Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline)}
 	prompts, versions := config.LiveStore.Collections.Prompts, config.LiveStore.Collections.PromptVersions
 
@@ -57,7 +57,7 @@ func TestRefreshPromptsFollowsEachWrite(t *testing.T) {
 func TestRefreshPromptsServesWhatIsStoredWhateverTheCallerSees(t *testing.T) {
 	SetLogger(bifrost.NewNoOpLogger())
 	ctx := context.Background()
-	config := libtest.Config(t, nil)
+	config := libtest.Config(t, nil, nil)
 	server := &BifrostHTTPServer{Config: config, Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline)}
 
 	require.NoError(t, config.ConfigStore.CreatePrompt(ctx, &configstoreTables.TablePrompt{ID: "p1", Name: "Support"}))

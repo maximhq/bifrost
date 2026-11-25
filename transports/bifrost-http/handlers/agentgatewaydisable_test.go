@@ -45,7 +45,7 @@ func TestAgentDisabledWhileItsRecordIsStaleCannotBeCalled(t *testing.T) {
 	pipeline := &grantPipeline{granted: map[string]bool{"sk-bf-one": true}}
 	manager.SetPluginPipeline(func() agent.PluginPipeline { return pipeline }, func(agent.PluginPipeline) {})
 
-	config := libtest.Config(t, nil)
+	config := libtest.Config(t, nil, nil)
 	config.ClientConfig = &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway"), MCPServerAuthMode: tables.MCPServerAuthModeHeaders, EnforceAuthOnInference: true}
 	h := NewAgentGatewayHandler(manager, nil, config, nil)
 	require.NoError(t, config.ConfigStore.DB().Create(&tables.TableAgentRegistration{Name: "alpha", AgentCardURL: cardURL, Enabled: true}).Error)

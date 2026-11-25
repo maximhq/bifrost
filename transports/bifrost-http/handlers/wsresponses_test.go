@@ -84,7 +84,7 @@ func TestResolveWSStreamIdleTimeoutUsesProviderOverride(t *testing.T) {
 		schemas.OpenAI: {
 			NetworkConfig: &schemas.NetworkConfig{StreamIdleTimeoutInSeconds: 7},
 		},
-	})
+	}, nil)
 
 	timeout := resolveWSStreamIdleTimeout(cfg, schemas.OpenAI)
 	assert.Equal(t, 7*time.Second, timeout)
@@ -599,7 +599,7 @@ func newTwoKeyWSResponsesHarness(t *testing.T, fake *fakeOpenAIResponses) (*WSRe
 
 	h := &WSResponsesHandler{
 		client:       client,
-		config:       libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}),
+		config:       libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, nil),
 		handlerStore: testWSHandlerStore{},
 		pool:         pool,
 		sessions:     bfws.NewSessionManager(10),

@@ -271,6 +271,7 @@ type ConfigData struct {
 	// per-process generated value.
 	SetupToken         *schemas.SecretVar                    `json:"setup_token,omitempty"`
 	Providers          map[string]configstore.ProviderConfig `json:"providers"`
+	ProviderKeys       map[string][]schemas.Key              `json:"-"` // each provider's "keys", split off its providers entry by UnmarshalJSON
 	FrameworkConfig    *framework.FrameworkConfig            `json:"framework,omitempty"`
 	MCP                *MCPFileConfig                        `json:"mcp,omitempty"`
 	Webhooks           []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
@@ -597,6 +598,15 @@ func (cd *ConfigData) governanceSectionPresent(name string) bool {
 	}
 }
 
+// providerFileEntry is one entry of config.json's "providers": the provider's configuration with
+// its keys nested inside, the file's shape. It exists only to decode that shape: UnmarshalJSON
+// splits each entry into ConfigData.Providers and ConfigData.ProviderKeys as it reads it, so no
+// value past the parser holds a provider and its keys together.
+type providerFileEntry struct {
+	Keys []schemas.Key `json:"keys"`
+	configstore.ProviderConfig
+}
+
 // UnmarshalJSON unmarshals the ConfigData from JSON using internal unmarshallers
 // for VectorStoreConfig, ConfigStoreConfig, and LogsStoreConfig to ensure proper
 // type safety and configuration parsing.
@@ -612,33 +622,33 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 
 	// First, unmarshal into a temporary struct to get all fields except the complex configs
 	type TempConfigData struct {
-		Version            int                                   `json:"version,omitempty"`
-		EnvLabel           string                                `json:"env_label,omitempty"`
-		DisableOnboarding  *bool                                 `json:"disable_onboarding,omitempty"`
-		SourceOfTruth      string                                `json:"source_of_truth,omitempty"`
-		FrameworkConfig    json.RawMessage                       `json:"framework,omitempty"`
-		Server             *ServerConfig                         `json:"server,omitempty"`
-		Client             *configstore.ClientConfig             `json:"client"`
-		EncryptionKey      *schemas.SecretVar                    `json:"encryption_key"`
-		AuthConfig         *configstore.AuthConfig               `json:"auth_config,omitempty"`
-		SetupToken         *schemas.SecretVar                    `json:"setup_token,omitempty"`
-		Providers          map[string]configstore.ProviderConfig `json:"providers"`
-		MCP                *MCPFileConfig                        `json:"mcp,omitempty"`
-		Webhooks           []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
-		Agents             []*AgentRegistrationFileConfig        `json:"agents,omitempty"`
-		Relays             []*schemas.RelayConfig                `json:"relays,omitempty"`
-		DatasheetOverrides []DatasheetOverrideFileConfig         `json:"datasheet_overrides,omitempty"`
-		ModelRouters       []configstore.ModelRouter             `json:"model_routers,omitempty"`
-		Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
-		VectorStoreConfig  json.RawMessage                       `json:"vector_store,omitempty"`
-		ConfigStoreConfig  json.RawMessage                       `json:"config_store,omitempty"`
-		LogsStoreConfig    json.RawMessage                       `json:"logs_store,omitempty"`
-		Plugins            []*schemas.PluginConfig               `json:"plugins,omitempty"`
-		WebSocket          *schemas.WebSocketConfig              `json:"websocket,omitempty"`
-		FeatureFlags       *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
-		ProxyConfig        *GlobalProxyFileConfig                `json:"proxy_config,omitempty"`
-		Warp               *WarpFileConfig                       `json:"warp,omitempty"`
-		SkillsRegistry     *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
+		Version            int                            `json:"version,omitempty"`
+		EnvLabel           string                         `json:"env_label,omitempty"`
+		DisableOnboarding  *bool                          `json:"disable_onboarding,omitempty"`
+		SourceOfTruth      string                         `json:"source_of_truth,omitempty"`
+		FrameworkConfig    json.RawMessage                `json:"framework,omitempty"`
+		Server             *ServerConfig                  `json:"server,omitempty"`
+		Client             *configstore.ClientConfig      `json:"client"`
+		EncryptionKey      *schemas.SecretVar             `json:"encryption_key"`
+		AuthConfig         *configstore.AuthConfig        `json:"auth_config,omitempty"`
+		SetupToken         *schemas.SecretVar             `json:"setup_token,omitempty"`
+		Providers          map[string]providerFileEntry   `json:"providers"`
+		MCP                *MCPFileConfig                 `json:"mcp,omitempty"`
+		Webhooks           []*WebhookEndpointConfig       `json:"webhooks,omitempty"`
+		Agents             []*AgentRegistrationFileConfig `json:"agents,omitempty"`
+		Relays             []*schemas.RelayConfig         `json:"relays,omitempty"`
+		DatasheetOverrides []DatasheetOverrideFileConfig  `json:"datasheet_overrides,omitempty"`
+		ModelRouters       []configstore.ModelRouter      `json:"model_routers,omitempty"`
+		Governance         *configstore.GovernanceConfig  `json:"governance,omitempty"`
+		VectorStoreConfig  json.RawMessage                `json:"vector_store,omitempty"`
+		ConfigStoreConfig  json.RawMessage                `json:"config_store,omitempty"`
+		LogsStoreConfig    json.RawMessage                `json:"logs_store,omitempty"`
+		Plugins            []*schemas.PluginConfig        `json:"plugins,omitempty"`
+		WebSocket          *schemas.WebSocketConfig       `json:"websocket,omitempty"`
+		FeatureFlags       *FeatureFlagsFileConfig        `json:"feature_flags,omitempty"`
+		ProxyConfig        *GlobalProxyFileConfig         `json:"proxy_config,omitempty"`
+		Warp               *WarpFileConfig                `json:"warp,omitempty"`
+		SkillsRegistry     *SkillsRegistryConfig          `json:"skills_registry,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -656,7 +666,15 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.EncryptionKey = temp.EncryptionKey
 	cd.AuthConfig = temp.AuthConfig
 	cd.SetupToken = temp.SetupToken
-	cd.Providers = temp.Providers
+	cd.Providers, cd.ProviderKeys = nil, nil
+	if temp.Providers != nil {
+		cd.Providers = make(map[string]configstore.ProviderConfig, len(temp.Providers))
+		cd.ProviderKeys = make(map[string][]schemas.Key, len(temp.Providers))
+		for name, entry := range temp.Providers {
+			cd.Providers[name] = entry.ProviderConfig
+			cd.ProviderKeys[name] = entry.Keys
+		}
+	}
 	cd.MCP = temp.MCP
 	cd.Webhooks = temp.Webhooks
 	cd.Agents = temp.Agents
@@ -690,9 +708,12 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		}
 	}
 	cd.SkillsRegistry = temp.SkillsRegistry
-	// Initialize providers map if nil
+	// Initialize providers maps if nil
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
+	}
+	if cd.ProviderKeys == nil {
+		cd.ProviderKeys = make(map[string][]schemas.Key)
 	}
 
 	// Parse VectorStoreConfig using its internal unmarshaler
@@ -949,16 +970,11 @@ var DefaultClientConfig = configstore.ClientConfig{
 // tools_to_execute already meant "skip this client" in v1.4.x, so the behavior is unchanged.
 func applyV1Compat(configData *ConfigData) {
 	// 1. Provider key models
-	for providerName, providerCfg := range configData.Providers {
-		changed := false
-		for i := range providerCfg.Keys {
-			if len(providerCfg.Keys[i].Models) == 0 {
-				providerCfg.Keys[i].Models = schemas.WhiteList{"*"}
-				changed = true
+	for _, keys := range configData.ProviderKeys {
+		for i := range keys {
+			if len(keys[i].Models) == 0 {
+				keys[i].Models = schemas.WhiteList{"*"}
 			}
-		}
-		if changed {
-			configData.Providers[providerName] = providerCfg
 		}
 	}
 
@@ -2081,13 +2097,16 @@ func applyToolManagerToClientConfig(cc *configstore.ClientConfig, tm *schemas.MC
 	}
 }
 
-// loadProviders loads and merges providers from file with store using hash reconciliation
+// loadProviders loads and merges providers from file with store using hash reconciliation. A
+// provider's configuration and its keys are kept in two maps keyed by provider, read from the
+// store's provider and key rows and from config.json, where ConfigData has already split them.
 func loadProviders(ctx context.Context, config *Config, configData *ConfigData) error {
 	var providersInConfigStore map[schemas.ModelProvider]configstore.ProviderConfig
-	var err error
+	keysInConfigStore := make(map[schemas.ModelProvider][]schemas.Key)
 	if config.ConfigStore != nil {
 		logger.Debug("getting providers config from store")
-		providersInConfigStore, err = config.ConfigStore.GetProvidersConfig(ctx)
+		var err error
+		providersInConfigStore, keysInConfigStore, err = readStoredProviders(ctx, config.ConfigStore)
 		if err != nil {
 			logger.Warn("failed to get providers config from store: %v", err)
 		}
@@ -2096,69 +2115,111 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 		logger.Debug("no providers config found in store, processing from config file")
 		providersInConfigStore = make(map[schemas.ModelProvider]configstore.ProviderConfig)
 	}
-	existingProvidersForPrune := providersInConfigStore
+	existingProvidersForPrune, existingKeysForPrune := providersInConfigStore, keysInConfigStore
 	providersSectionPresent := configData.sectionPresent("providers")
 	if configData.isConfigJSONSourceOfTruth() && providersSectionPresent {
 		logger.Debug("source_of_truth=config.json: syncing providers exactly from config file")
 		authoritativeProviders := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(configData.Providers))
+		authoritativeKeys := make(map[schemas.ModelProvider][]schemas.Key, len(configData.Providers))
 		for providerName, providerCfgInFile := range configData.Providers {
 			provider := schemas.ModelProvider(strings.ToLower(providerName))
 			existingCfg, exists := providersInConfigStore[provider]
-			processAuthoritativeProvider(providerName, providerCfgInFile, existingCfg, exists, authoritativeProviders)
+			processAuthoritativeProvider(providerName, providerCfgInFile, configData.ProviderKeys[providerName], existingCfg, keysInConfigStore[provider], exists, authoritativeProviders, authoritativeKeys)
 		}
-		providersInConfigStore = authoritativeProviders
+		providersInConfigStore, keysInConfigStore = authoritativeProviders, authoritativeKeys
 	} else {
 		// Process provider configurations from file
 		if len(configData.Providers) > 0 {
 			for providerName, providerCfgInFile := range configData.Providers {
-				if err = processProvider(config, providerName, providerCfgInFile, providersInConfigStore); err != nil {
+				if err := processProvider(config, providerName, providerCfgInFile, configData.ProviderKeys[providerName], providersInConfigStore, keysInConfigStore); err != nil {
 					logger.Warn("failed to process provider %s: %v", providerName, err)
 				}
 			}
 		} else if len(providersInConfigStore) == 0 && (!configData.isConfigJSONSourceOfTruth() || providersSectionPresent) {
 			// No providers in file and none in DB — auto-detect from environment
-			autoDetectProviders(providersInConfigStore)
+			autoDetectProviders(providersInConfigStore, keysInConfigStore)
 		}
 	}
 	// Update store and config
 	if config.ConfigStore != nil {
 		logger.Debug("updating providers config in store")
+		var err error
 		if configData.isConfigJSONSourceOfTruth() && providersSectionPresent {
-			err = syncAuthoritativeProvidersInStore(ctx, config.ConfigStore, existingProvidersForPrune, providersInConfigStore)
+			err = syncAuthoritativeProvidersInStore(ctx, config.ConfigStore, existingProvidersForPrune, existingKeysForPrune, providersInConfigStore, keysInConfigStore)
 		} else {
-			err = config.ConfigStore.UpdateProvidersConfig(ctx, providersInConfigStore)
+			err = config.ConfigStore.UpdateProvidersConfig(ctx, providersInConfigStore, keysInConfigStore)
 		}
 		if err != nil {
 			logger.Fatal("failed to update providers config: %v", err)
 		}
 	}
 	config.boot.providers = providersInConfigStore
+	config.boot.providerKeys = keysInConfigStore
 	return nil
 }
 
-// syncAuthoritativeProvidersInStore persists providers and deletes DB-only providers and keys.
+// readStoredProviders reads every stored provider's configuration and, in one more query, the keys
+// of all of them in creation order, grouped by provider: the two reads the provider read with its
+// keys preloaded made. When either read fails it answers nil providers, an empty key map and the
+// error, so the caller handles it as a store with no providers.
+func readStoredProviders(ctx context.Context, store configstore.ConfigStore) (map[schemas.ModelProvider]configstore.ProviderConfig, map[schemas.ModelProvider][]schemas.Key, error) {
+	providers, err := store.GetProvidersConfig(ctx)
+	if err != nil {
+		return nil, make(map[schemas.ModelProvider][]schemas.Key), err
+	}
+	keys, err := StoredProviderKeys(ctx, store, providers)
+	if err != nil {
+		return nil, make(map[schemas.ModelProvider][]schemas.Key), err
+	}
+	return providers, keys, nil
+}
+
+// StoredProviderKeys reads the keys of every provider in providers from the config store in one
+// query, each provider's keys in creation order. A provider without keys has no entry.
+func StoredProviderKeys(ctx context.Context, store configstore.ConfigStore, providers map[schemas.ModelProvider]configstore.ProviderConfig) (map[schemas.ModelProvider][]schemas.Key, error) {
+	keys := make(map[schemas.ModelProvider][]schemas.Key, len(providers))
+	if len(providers) == 0 {
+		return keys, nil
+	}
+	names := make([]string, 0, len(providers))
+	for provider := range providers {
+		names = append(names, string(provider))
+	}
+	rows, err := registry.ProviderKeysByProviders(ctx, store.DB(), names)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		keys[row.Provider] = append(keys[row.Provider], row.Key)
+	}
+	return keys, nil
+}
+
+// syncAuthoritativeProvidersInStore persists providers and their keys and deletes DB-only
+// providers and keys.
 func syncAuthoritativeProvidersInStore(
 	ctx context.Context,
 	store configstore.ConfigStore,
 	existingProviders map[schemas.ModelProvider]configstore.ProviderConfig,
+	existingKeys map[schemas.ModelProvider][]schemas.Key,
 	authoritativeProviders map[schemas.ModelProvider]configstore.ProviderConfig,
+	authoritativeKeys map[schemas.ModelProvider][]schemas.Key,
 ) error {
 	return store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		for provider, existingConfig := range existingProviders {
-			newConfig, keepProvider := authoritativeProviders[provider]
-			if !keepProvider {
+		for provider := range existingProviders {
+			if _, keepProvider := authoritativeProviders[provider]; !keepProvider {
 				if err := store.DeleteProvider(ctx, provider, tx); err != nil {
 					return err
 				}
 				continue
 			}
-			keepKeys := make(map[string]bool, len(newConfig.Keys))
-			for _, key := range newConfig.Keys {
+			keepKeys := make(map[string]bool, len(authoritativeKeys[provider]))
+			for _, key := range authoritativeKeys[provider] {
 				if key.ID != "" {
 					keepKeys[key.ID] = true
 				}
 			}
-			for _, key := range existingConfig.Keys {
+			for _, key := range existingKeys[provider] {
 				if key.ID != "" && !keepKeys[key.ID] {
 					if err := store.DeleteProviderKey(ctx, provider, key.ID, tx); err != nil {
 						return err
@@ -2166,16 +2227,19 @@ func syncAuthoritativeProvidersInStore(
 				}
 			}
 		}
-		return store.UpdateProvidersConfig(ctx, authoritativeProviders, tx)
+		return store.UpdateProvidersConfig(ctx, authoritativeProviders, authoritativeKeys, tx)
 	})
 }
 
-// processProvider processes a single provider configuration from config file
+// processProvider processes a single provider configuration from config file, with keysInFile
+// the keys config.json declares for it.
 func processProvider(
 	_ *Config,
 	providerName string,
 	providerCfgInFile configstore.ProviderConfig,
+	keysInFile []schemas.Key,
 	providersInConfigStore map[schemas.ModelProvider]configstore.ProviderConfig,
+	keysInConfigStore map[schemas.ModelProvider][]schemas.Key,
 ) error {
 	provider := schemas.ModelProvider(strings.ToLower(providerName))
 
@@ -2192,9 +2256,9 @@ func processProvider(
 	}
 
 	// Process environment variables in keys (including key-level configs)
-	for i, providerKeyInFile := range providerCfgInFile.Keys {
+	for i, providerKeyInFile := range keysInFile {
 		if providerKeyInFile.ID == "" {
-			providerCfgInFile.Keys[i].ID = uuid.NewString()
+			keysInFile[i].ID = uuid.NewString()
 		}
 		if err := providerKeyInFile.Aliases.Validate(baseProvider); err != nil {
 			return fmt.Errorf("invalid aliases for key %q in provider %s: %w", providerKeyInFile.Name, provider, err)
@@ -2207,17 +2271,22 @@ func processProvider(
 	}
 	providerCfgInFile.ConfigHash = fileProviderConfigHash
 	// Merge with existing config using hash-based reconciliation
-	mergeProviderWithHash(provider, providerCfgInFile, providersInConfigStore)
+	mergeProviderWithHash(provider, providerCfgInFile, keysInFile, providersInConfigStore, keysInConfigStore)
 	return nil
 }
 
-// processAuthoritativeProvider adds one config.json provider to the authoritative provider set.
+// processAuthoritativeProvider adds one config.json provider, with keysInFile its keys, to the
+// authoritative provider and key sets. existingCfg and existingKeys are the stored provider's,
+// when exists.
 func processAuthoritativeProvider(
 	providerName string,
 	providerCfgInFile configstore.ProviderConfig,
+	keysInFile []schemas.Key,
 	existingCfg configstore.ProviderConfig,
+	existingKeys []schemas.Key,
 	exists bool,
 	providers map[schemas.ModelProvider]configstore.ProviderConfig,
+	keys map[schemas.ModelProvider][]schemas.Key,
 ) {
 	provider := schemas.ModelProvider(strings.ToLower(providerName))
 	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
@@ -2230,9 +2299,9 @@ func processAuthoritativeProvider(
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
 		baseProvider = providerCfgInFile.CustomProviderConfig.BaseProviderType
 	}
-	for i, providerKeyInFile := range providerCfgInFile.Keys {
+	for i, providerKeyInFile := range keysInFile {
 		if providerKeyInFile.ID == "" {
-			providerCfgInFile.Keys[i].ID = uuid.NewString()
+			keysInFile[i].ID = uuid.NewString()
 		}
 		if err := providerKeyInFile.Aliases.Validate(baseProvider); err != nil {
 			logger.Warn("invalid aliases for key %q in provider %s (writing through): %v", providerKeyInFile.Name, provider, err)
@@ -2244,26 +2313,32 @@ func processAuthoritativeProvider(
 	}
 	providerCfgInFile.ConfigHash = fileProviderConfigHash
 	if exists {
-		providerCfgInFile.Keys = mergeProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
+		keysInFile = mergeProviderKeys(provider, keysInFile, existingKeys)
 		providerCfgInFile.Status = existingCfg.Status
 		providerCfgInFile.Description = existingCfg.Description
 	}
 	providers[provider] = providerCfgInFile
+	keys[provider] = keysInFile
 }
 
-// mergeProviderWithHash merges provider config using hash-based reconciliation
+// mergeProviderWithHash merges provider config, with keysInFile its config.json keys, into the
+// stored providers and their keys using hash-based reconciliation.
 func mergeProviderWithHash(
 	provider schemas.ModelProvider,
 	providerCfgInFile configstore.ProviderConfig,
+	keysInFile []schemas.Key,
 	providersInConfigStore map[schemas.ModelProvider]configstore.ProviderConfig,
+	keysInConfigStore map[schemas.ModelProvider][]schemas.Key,
 ) {
 	existingCfg, exists := providersInConfigStore[provider]
 	if !exists {
 		// New provider - add from config.json
 		providersInConfigStore[provider] = providerCfgInFile
+		keysInConfigStore[provider] = keysInFile
 		noteConfigFileApplied("provider", string(provider))
 		return
 	}
+	existingKeys := keysInConfigStore[provider]
 	// Provider exists in DB - compare hashes
 	hashMatches := existingCfg.ConfigHash == providerCfgInFile.ConfigHash
 	if !hashMatches {
@@ -2283,20 +2358,18 @@ func mergeProviderWithHash(
 		// only and later edits take the normal mismatch path below.
 		logger.Warn("provider %s has too many request_path_overrides to verify its stored config hash, syncing settings from config file and keeping API-added keys", provider)
 		noteConfigFileApplied("provider", string(provider))
-		providerCfgInFile.Keys = reconcileProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
+		keysInConfigStore[provider] = reconcileProviderKeys(provider, keysInFile, existingKeys)
 		providersInConfigStore[provider] = providerCfgInFile
 	} else if !hashMatches {
 		// Hash mismatch - config.json was changed, sync from file
 		logger.Debug("config hash mismatch for provider %s, syncing from config file", provider)
 		noteConfigFileApplied("provider", string(provider))
-		mergedKeys := mergeProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
-		providerCfgInFile.Keys = mergedKeys
+		keysInConfigStore[provider] = mergeProviderKeys(provider, keysInFile, existingKeys)
 		providersInConfigStore[provider] = providerCfgInFile
 	} else {
 		// Provider hash matches - but still check individual keys
 		logger.Debug("config hash matches for provider %s, checking individual keys", provider)
-		mergedKeys := reconcileProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
-		existingCfg.Keys = mergedKeys
+		keysInConfigStore[provider] = reconcileProviderKeys(provider, keysInFile, existingKeys)
 		providersInConfigStore[provider] = existingCfg
 	}
 }
@@ -8588,7 +8661,7 @@ func (c *Config) SetGlobalProxyConfig(proxyConfig *configstoreTables.GlobalProxy
 	c.Mu.Unlock()
 	var inheriting []schemas.ModelProvider
 	c.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
-		if !hasOwnProxy(p.Settings.ProxyConfig) {
+		if !hasOwnProxy(p.Config.ProxyConfig) {
 			inheriting = append(inheriting, p.Name)
 		}
 		return true
@@ -8762,10 +8835,10 @@ func (c *Config) IsProviderConfigured(provider schemas.ModelProvider) bool {
 // set a passthrough policy, which is how a custom provider opts in to HTTP passthrough.
 func (c *Config) GetCustomProviderPassthrough(provider schemas.ModelProvider) (schemas.ModelProvider, bool, bool) {
 	p, exists := c.liveProvider(provider)
-	if !exists || p.Settings.CustomProviderConfig == nil {
+	if !exists || p.Config.CustomProviderConfig == nil {
 		return "", false, false
 	}
-	return p.Settings.CustomProviderConfig.BaseProviderType, p.Settings.Passthrough != nil, true
+	return p.Config.CustomProviderConfig.BaseProviderType, p.Config.Passthrough != nil, true
 }
 
 // GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
@@ -9626,8 +9699,9 @@ func (c *Config) FindPluginByName(name string) (schemas.BasePlugin, error) {
 	return FindPluginAs[schemas.BasePlugin](c, name)
 }
 
-// AddProvider writes a new provider and its keys to the config store, then refreshes the live
-// store from the rows written. Building the provider's instance is left to the caller's reload.
+// AddProvider writes a new provider's configuration to the config store, then refreshes the live
+// store from the row written. It writes no keys: a provider starts with none, and AddProviderKey
+// adds them. Building the provider's instance is left to the caller's reload.
 func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig) error {
 	if c.IsProviderConfigured(provider) {
 		return fmt.Errorf("provider %s: %w", provider, ErrAlreadyExists)
@@ -9635,11 +9709,6 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 	// Validate CustomProviderConfig if present
 	if err := ValidateCustomProvider(config, provider); err != nil {
 		return err
-	}
-	for i, key := range config.Keys {
-		if key.ID == "" {
-			config.Keys[i].ID = uuid.NewString()
-		}
 	}
 	if c.ConfigStore == nil {
 		return ErrNoConfigStore
@@ -9671,9 +9740,9 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 // returned and the record still matches the database: the old instance serves until the next
 // successful rebuild.
 //
-// Only settings are written: config.Keys is ignored, and the key rows, the config hash (the
-// config.json hash a restart compares, which keeps an operator's edits from being overwritten by
-// the file) and the status stay as stored. Keys are managed by their own writes, so a settings save
+// Only settings are written: the key rows, the config hash (the config.json hash a restart
+// compares, which keeps an operator's edits from being overwritten by the file) and the status
+// stay as stored. Keys are managed by their own writes, so a settings save
 // never brings back a deleted key or drops an added one, wherever that key write ran.
 func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig) error {
 	existing, exists := c.liveProvider(provider)
@@ -9681,7 +9750,7 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 		return ErrNotFound
 	}
 	// Validate CustomProviderConfig if present, ensuring immutable fields are not changed
-	if err := ValidateCustomProviderUpdate(config, existing.Settings.Config(), provider); err != nil {
+	if err := ValidateCustomProviderUpdate(config, existing.Config, provider); err != nil {
 		return err
 	}
 	if c.ConfigStore == nil {
@@ -10179,9 +10248,9 @@ func (c *Config) WebhookEndpointByName(name string) (*configstoreTables.TableWeb
 //   - Empty models list (provider will use default models)
 //   - Default concurrency and buffer size settings
 //
-// Detected providers are added to providers; loadProviders writes them to the config store with
-// the rest of the merged providers.
-func autoDetectProviders(providers map[schemas.ModelProvider]configstore.ProviderConfig) {
+// Detected providers are added to providers, and their keys to keys; loadProviders writes them to
+// the config store with the rest of the merged providers.
+func autoDetectProviders(providers map[schemas.ModelProvider]configstore.ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key) {
 	// Define common environment variable patterns for each provider
 	providerEnvVars := map[schemas.ModelProvider][]string{
 		schemas.OpenAI:    {"OPENAI_API_KEY", "OPENAI_KEY"},
@@ -10196,21 +10265,19 @@ func autoDetectProviders(providers map[schemas.ModelProvider]configstore.Provide
 			if os.Getenv(envVar) != "" {
 				// Generate a unique ID for the auto-detected key
 				keyID := uuid.NewString()
-				// Create default provider configuration
-				providerConfig := configstore.ProviderConfig{
-					Keys: []schemas.Key{
-						{
-							ID:     keyID,
-							Name:   fmt.Sprintf("%s_auto_detected", envVar),
-							Value:  *schemas.NewSecretVar("env." + envVar),
-							Models: schemas.WhiteList{"*"},
-							Weight: 1.0,
-						},
-					},
+				// Create default provider configuration and its key
+				providers[provider] = configstore.ProviderConfig{
 					ConcurrencyAndBufferSize: &schemas.DefaultConcurrencyAndBufferSize,
 				}
-				// Add to providers map
-				providers[provider] = providerConfig
+				keys[provider] = []schemas.Key{
+					{
+						ID:     keyID,
+						Name:   fmt.Sprintf("%s_auto_detected", envVar),
+						Value:  *schemas.NewSecretVar("env." + envVar),
+						Models: schemas.WhiteList{"*"},
+						Weight: 1.0,
+					},
+				}
 				logger.Info("auto-detected %s provider from environment variable %s", provider, envVar)
 				detectedCount++
 				break // Only use the first found env var for each provider

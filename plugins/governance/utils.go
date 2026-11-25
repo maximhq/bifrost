@@ -426,10 +426,10 @@ func isLiveSessionContinuation(ctx context.Context) bool {
 // type of a custom provider, otherwise provider itself. It reads that one provider's configuration.
 func configuredBaseProvider(live *livestore.Store, provider schemas.ModelProvider) schemas.ModelProvider {
 	p, ok := live.Collections.Providers.Get(string(provider))
-	if !ok || p.Settings.CustomProviderConfig == nil || p.Settings.CustomProviderConfig.BaseProviderType == "" {
+	if !ok || p.Config.CustomProviderConfig == nil || p.Config.CustomProviderConfig.BaseProviderType == "" {
 		return provider
 	}
-	return p.Settings.CustomProviderConfig.BaseProviderType
+	return p.Config.CustomProviderConfig.BaseProviderType
 }
 
 // ConfiguredProviderNames lists the providers configured in live, for holders allowed every
@@ -594,7 +594,7 @@ func (p *GovernancePlugin) modelMatcher(ctx *schemas.BifrostContext) grant.KeySc
 		var providerConfig *configstore.ProviderConfig
 		var keys []schemas.Key
 		if stored, ok := p.live.Collections.Providers.Get(provider); ok {
-			config := stored.Settings.Config()
+			config := stored.Config
 			providerConfig = &config
 			if list, ok := p.live.Views.ProviderKeyLists.Get(provider); ok {
 				keys = *list
@@ -615,9 +615,9 @@ func contextOf(ctx *schemas.BifrostContext) context.Context {
 
 // allowedThroughKeys is IsModelAllowedForProvider with the key-alias rule held to the keys key
 // selection can pick for this request: only keys the permit's key restriction allows, and the pinned
-// key when the request pins one. providerConfig holds the provider's settings and no keys, so the
-// catalog's own check is the direct match only; keys is the provider's key list, shared and read
-// only.
+// key when the request pins one. The catalog's own check is passed no keys, so it is the direct
+// match only; keys is the provider's key list, shared and read only, and only the alias rule here
+// reads it.
 //
 // The pin is consulted only when the unpinned keys refuse the alias. Narrowing a set of keys that
 // all map the name to an allowed model can only turn the answer into a refusal where the pin names
@@ -627,9 +627,9 @@ func contextOf(ctx *schemas.BifrostContext) context.Context {
 // literalAccessFor), so this access only widens what such a request may be told it reaches.
 func allowedThroughKeys(ctx context.Context, catalog *modelcatalog.ModelCatalog, provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, keys []schemas.Key, allowed, keyIDs []string) bool {
 	if providerConfig == nil || !modelcatalog.HasKeyAliases(keys) {
-		return catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed))
+		return catalog.IsModelAllowedForProvider(provider, model, providerConfig, nil, schemas.WhiteList(allowed))
 	}
-	if catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed)) {
+	if catalog.IsModelAllowedForProvider(provider, model, providerConfig, nil, schemas.WhiteList(allowed)) {
 		return true
 	}
 	if !modelcatalog.MayBeKeyAlias(provider, model, keys) {

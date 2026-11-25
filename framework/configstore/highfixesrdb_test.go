@@ -175,13 +175,16 @@ func buildProviderFixture(t *testing.T, s *RDBConfigStore, n int) providerFixtur
 	ctx := context.Background()
 	db := s.DB()
 	require.NoError(t, s.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
-		"openai": {Keys: []schemas.Key{
+		"openai":    {},
+		"anthropic": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {
 			{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1},
 			{ID: "k2", Name: "k2", Value: *schemas.NewSecretVar("sk-2"), Weight: 1},
-		}},
-		"anthropic": {Keys: []schemas.Key{
+		},
+		"anthropic": {
 			{ID: "a1", Name: "a1", Value: *schemas.NewSecretVar("sk-a1"), Weight: 1},
-		}},
+		},
 	}))
 	var keys []tables.TableKey
 	require.NoError(t, db.Find(&keys).Error)
@@ -274,9 +277,7 @@ func TestHighFixUpdateProviderRemovedKeysSetBased(t *testing.T) {
 			joinDeletes := countStatements(t, db, func(sql string) bool {
 				return deleteTarget(sql) == "GOVERNANCE_VIRTUAL_KEY_PROVIDER_CONFIG_KEYS"
 			})
-			require.NoError(t, ns.store.UpdateProvider(ctx, "openai", ProviderConfig{Keys: []schemas.Key{
-				{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1},
-			}}))
+			require.NoError(t, ns.store.UpdateProvider(ctx, "openai", ProviderConfig{}))
 			require.Zero(t, joinDeletes.count(), "a settings save deletes no join rows")
 			require.EqualValues(t, 10, countTableRows(t, db, "governance_virtual_key_provider_config_keys", "table_key_id = ?", fx.keyIDs["k2"]))
 			require.EqualValues(t, 1, countTableRows(t, db, "config_keys", "key_id = ?", "k2"))

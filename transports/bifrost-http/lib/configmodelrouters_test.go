@@ -513,10 +513,10 @@ func TestModelRouterConfigFallbackKeyNames(t *testing.T) {
 	initTestLogger()
 	store := createTestSQLiteConfigStore(t, t.TempDir())
 	ctx := context.Background()
-	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{Keys: []schemas.Key{
+	require.NoError(t, addProviderWithKeys(ctx, store, schemas.Anthropic, configstore.ProviderConfig{}, []schemas.Key{
 		{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
 		{ID: "k-anthropic-backup", Name: "Anthropic Backup", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
-	}}))
+	}))
 	withFallback := func(fallback string) string {
 		return `"targets":[{"tier":"SIMPLE","provider":"openai","model":"gpt-4o-mini","weight":1,"fallbacks":[` + fallback + `]}]`
 	}
@@ -559,9 +559,9 @@ func TestModelRouterConfigFallbackKeyRotation(t *testing.T) {
 	initTestLogger()
 	store := createTestSQLiteConfigStore(t, t.TempDir())
 	ctx := context.Background()
-	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{Keys: []schemas.Key{
+	require.NoError(t, addProviderWithKeys(ctx, store, schemas.Anthropic, configstore.ProviderConfig{}, []schemas.Key{
 		{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-	}}))
+	}))
 	file := `{"model_routers":[` + routerJSON("support", "Support",
 		`"targets":[{"tier":"SIMPLE","provider":"openai","model":"gpt-4o-mini","weight":1,"fallbacks":[{"provider":"anthropic","model":"claude-sonnet-4","provider_key_name":"Anthropic Prod"}]}]`,
 		"s", "m", "c") + `]}`
@@ -862,7 +862,7 @@ func TestModelRouterConfigLoadConfigEndToEnd(t *testing.T) {
 			},
 		}
 	}
-	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}, tempDir)
 	configData.ModelRouters = []configstore.ModelRouter{
@@ -1043,9 +1043,12 @@ func TestModelRouterConfigFileToLiveRouting(t *testing.T) {
 		"the two sections are ones the schema accepts")
 
 	tempDir := createTempDir(t)
-	file, err := json.Marshal(makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	// createConfigFile writes the provider's keys nested in its entry, which marshalling a
+	// ConfigData leaves out.
+	createConfigFile(t, tempDir, makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}, tempDir))
+	file, err := os.ReadFile(filepath.Join(tempDir, "config.json"))
 	require.NoError(t, err)
 	file, err = sjson.SetRawBytes(file, "governance", []byte(governance))
 	require.NoError(t, err)
@@ -1123,9 +1126,9 @@ func TestModelRouterConfigIdempotentBoot(t *testing.T) {
 		t.Run(mode.name, func(t *testing.T) {
 			ctx := context.Background()
 			store := &modelRouterWriteCounter{ConfigStore: createTestSQLiteConfigStore(t, t.TempDir())}
-			require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{Keys: []schemas.Key{
+			require.NoError(t, addProviderWithKeys(ctx, store, schemas.Anthropic, configstore.ProviderConfig{}, []schemas.Key{
 				{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-			}}))
+			}))
 			file := mode.prefix + `"governance":{"teams":[{"id":"team-eng","name":"Engineering"}]},"model_routers":[` +
 				routerJSON("support", "Support", `"description":"Support desk traffic",`+
 					`"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"},"session":{"enabled":true},`+

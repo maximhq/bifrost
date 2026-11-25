@@ -11,13 +11,15 @@ import (
 // FileInput is what config.json declares for the live store, as lib assembles it for a gateway
 // without a config store. Each domain that moves into the live store adds its part here.
 type FileInput struct {
-	Providers  map[schemas.ModelProvider]configstore.ProviderConfig
-	Governance *configstore.GovernanceConfig
+	Providers map[schemas.ModelProvider]configstore.ProviderConfig
+	// ProviderKeys is each provider's keys in config.json order, keyed as Providers is.
+	ProviderKeys map[schemas.ModelProvider][]schemas.Key
+	Governance   *configstore.GovernanceConfig
 }
 
 // FileRecords holds the records a gateway without a config store loads, built from config.json.
 type FileRecords struct {
-	Providers    []*Provider    // settings only: Config.Keys is nil
+	Providers    []*Provider    // settings only; keys are ProviderKeys
 	ProviderKeys []*ProviderKey // each provider's keys, Order their position in config.json
 	VirtualKeys  []*VirtualKey
 	Teams        []*Team
@@ -57,10 +59,10 @@ func FromConfig(in FileInput) *FileRecords {
 	for _, name := range names {
 		cfg := in.Providers[name]
 		g.Providers = append(g.Providers, &Provider{
-			Name: name, Settings: cfg.Settings(),
+			Name: name, Config: cfg,
 			BudgetID: providerBudget[string(name)], RateLimitID: providerRateLimit[string(name)],
 		})
-		for i, key := range cfg.Keys {
+		for i, key := range in.ProviderKeys[name] {
 			g.ProviderKeys = append(g.ProviderKeys, &ProviderKey{Provider: name, Order: int64(i), Key: key})
 		}
 	}

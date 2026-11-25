@@ -65,7 +65,7 @@ func TestGetModelsForProvider_ElevenlabsScribe(t *testing.T) {
 			}
 			for _, model := range []string{"eleven_turbo_v2_5", "scribe_v1", "scribe_v1_experimental", "scribe_v2", "nonexistent-scribe", "gpt-4o-mini"} {
 				want := slices.Contains(tc.want, model)
-				if allowed := mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, schemas.WhiteList{"*"}); allowed != want {
+				if allowed := mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, nil, schemas.WhiteList{"*"}); allowed != want {
 					t.Errorf("wildcard authorization for %s = %t, want %t", model, allowed, want)
 				}
 			}
@@ -74,7 +74,7 @@ func TestGetModelsForProvider_ElevenlabsScribe(t *testing.T) {
 				t.Error("Scribe missing from unfiltered management catalog")
 			}
 			mc.UpsertLive(schemas.OpenAI, "openai-key", false, []string{"gpt-4o-mini"})
-			if mc.IsModelAllowedForProvider(schemas.OpenAI, "scribe_v2", nil, schemas.WhiteList{"*"}) {
+			if mc.IsModelAllowedForProvider(schemas.OpenAI, "scribe_v2", nil, nil, schemas.WhiteList{"*"}) {
 				t.Error("ElevenLabs Scribe must not be granted on OpenAI")
 			}
 		})
@@ -97,7 +97,7 @@ func TestElevenlabsScribeCatalogReconcilesKeyChanges(t *testing.T) {
 		{schemas.WhiteList{"*"}, schemas.BlackList{"scribe_v2"}, false},
 	} {
 		mc.SetKeyConfigForProvider(schemas.Elevenlabs, []schemas.Key{{ID: "key-1", Models: tc.allowed, BlacklistedModels: tc.blocked}})
-		if got := mc.IsModelAllowedForProvider(schemas.Elevenlabs, "scribe_v2", nil, schemas.WhiteList{"*"}); got != tc.want {
+		if got := mc.IsModelAllowedForProvider(schemas.Elevenlabs, "scribe_v2", nil, nil, schemas.WhiteList{"*"}); got != tc.want {
 			t.Fatalf("authorization after key update = %t, want %t", got, tc.want)
 		}
 	}
@@ -110,11 +110,11 @@ func BenchmarkElevenlabsScribeWildcardAuthorization(b *testing.B) {
 	allowed := schemas.WhiteList{"*"}
 	for _, model := range []string{"scribe_v2", "eleven_turbo_v2_5"} {
 		b.Run(model, func(b *testing.B) {
-			_ = mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, allowed)
+			_ = mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, nil, allowed)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				_ = mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, allowed)
+				_ = mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, nil, allowed)
 			}
 		})
 	}

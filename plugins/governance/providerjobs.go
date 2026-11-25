@@ -718,7 +718,7 @@ func (p *GovernancePlugin) equivalentProviders(provider string) []string {
 	names := []string{provider}
 	configured := make(map[schemas.ModelProvider]configstore.ProviderConfig)
 	p.live.Collections.Providers.Range(func(rec *registry.Provider) bool {
-		configured[rec.Name] = rec.Settings.Config()
+		configured[rec.Name] = rec.Config
 		return true
 	})
 	if len(configured) == 0 {

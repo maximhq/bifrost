@@ -87,7 +87,7 @@ func TestOwnerReloadAdoptsCalendarBeforeItsLimitsArrive(t *testing.T) {
 	for name, o := range owners {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			config := libtest.Config(t, nil)
+			config := libtest.Config(t, nil, nil)
 			config.ClientConfig = &configstore.ClientConfig{}
 			// Registered before governance, so these run ahead of its own subscribers: what they
 			// read is what a sweep or charge racing the refresh would read.

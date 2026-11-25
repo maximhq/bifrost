@@ -133,17 +133,20 @@ func (r *capturingLiveIO) sent() (upstream, client []string) {
 func newLiveOwnerTestGateway(t testing.TB, store configstore.ConfigStore, extra ...schemas.ModelProvider) *liveGateway {
 	t.Helper()
 	providers := map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "openai", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}}},
+		schemas.OpenAI: {},
+	}
+	keys := map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "key-1", Name: "openai", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}},
 	}
 	for _, name := range extra {
 		providers[name] = configstore.ProviderConfig{
-			Keys:                 []schemas.Key{{ID: "key-" + string(name), Name: string(name), Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}},
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
 		}
+		keys[name] = []schemas.Key{{ID: "key-" + string(name), Name: string(name), Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}}
 	}
 	config := libtest.FileOnly(t, &lib.Config{
 		ClientConfig: &configstore.ClientConfig{EnforceVKObjectOwnership: true}, // the default; ClientConfig{} literals are off
-	}, providers)
+	}, providers, keys)
 	if store != nil {
 		config.ConfigStore = store
 	}
@@ -975,7 +978,9 @@ func BenchmarkLiveSessionControlRoute(b *testing.B) {
 		ClientConfig: &configstore.ClientConfig{},
 		ConfigStore:  store,
 	}, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "openai", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}}},
+		schemas.OpenAI: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "key-1", Name: "openai", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}},
 	})
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: lib.NewBaseAccount(config), Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
 	if err != nil {

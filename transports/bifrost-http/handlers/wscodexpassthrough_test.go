@@ -238,7 +238,7 @@ func newCodexRelayFixtureWith(t *testing.T, config *lib.Config, opts codexFixtur
 	}
 	if config.LiveStore == nil {
 		// The relay reads OpenAI's proxy and network config from the live store.
-		config = libtest.FileOnly(t, config, nil)
+		config = libtest.FileOnly(t, config, nil, nil)
 	}
 	plugins := opts.plugins
 	recorder := &codexPipelineRecorder{}
@@ -809,7 +809,9 @@ func codexGovernedFixture(t *testing.T, enforceAuth, allowDirectKeys bool) *code
 	config := libtest.FileOnlyGovernance(t, &lib.Config{
 		ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth},
 	}, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("sk-openai"), Weight: 1}}},
+		schemas.OpenAI: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("sk-openai"), Weight: 1}},
 	}, &configstore.GovernanceConfig{VirtualKeys: []configtables.TableVirtualKey{virtualKey("codex-a"), virtualKey("codex-b"), inactive, expired}})
 	plugin, err := governance.Init(t.Context(), nil, bifrost.NewNoOpLogger(), nil, config.LiveStore, nil, nil)
 	require.NoError(t, err)

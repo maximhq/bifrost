@@ -106,17 +106,18 @@ func newElevenlabsScribeHandler(tb testing.TB, keys []schemas.Key, virtualKeys [
 		ClientConfig: &configstore.ClientConfig{}, ModelCatalog: catalog,
 	}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.Elevenlabs: {
-			Keys:                     keys,
 			NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
 			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
 		},
 		schemas.OpenAI: {
-			Keys:                     []schemas.Key{{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("openai-provider-key"), Weight: 1}},
 			NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
 			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
 		},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Elevenlabs: keys,
+		schemas.OpenAI:     {{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("openai-provider-key"), Weight: 1}},
 	}, &configstore.GovernanceConfig{VirtualKeys: virtualKeys})
-	catalog.SetKeyConfigForProvider(schemas.OpenAI, libtest.Providers(config)[schemas.OpenAI].Keys)
+	catalog.SetKeyConfigForProvider(schemas.OpenAI, config.GetProviderKeys(schemas.OpenAI))
 	plugin, err := governance.Init(tb.Context(), nil, log, nil, config.LiveStore, catalog, nil)
 	require.NoError(tb, err)
 	client, err := bifrost.Init(tb.Context(), schemas.BifrostConfig{
@@ -268,7 +269,7 @@ func scribeCatalogAccess(catalog *modelcatalog.ModelCatalog, vk configtables.Tab
 		BlacklistedModels: config.BlacklistedModels, KeyIDs: config.KeyIDs(),
 	}}, nil)
 	return grant.NewAccess([]schemas.Permit{permit}, "", nil, "", func(provider, model string, allowed []string) bool {
-		return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, nil, schemas.WhiteList(allowed))
+		return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, nil, nil, schemas.WhiteList(allowed))
 	})
 }
 

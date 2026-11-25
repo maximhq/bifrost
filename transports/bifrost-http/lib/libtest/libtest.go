@@ -18,17 +18,18 @@ import (
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
-// Config returns a lib.Config over a new SQLite config store holding providers, with its live
-// store loaded from it.
-func Config(t testing.TB, providers map[schemas.ModelProvider]configstore.ProviderConfig) *lib.Config {
+// Config returns a lib.Config over a new SQLite config store holding providers, each with its keys
+// from keys, with its live store loaded from it. keys may be nil.
+func Config(t testing.TB, providers map[schemas.ModelProvider]configstore.ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key) *lib.Config {
 	t.Helper()
-	return WithProviders(t, &lib.Config{}, providers)
+	return WithProviders(t, &lib.Config{}, providers, keys)
 }
 
-// WithProviders gives c a new SQLite config store holding providers and a live store loaded from
-// it, and returns c. c must not have a config store of its own. A key without an ID or a name gets
-// one, since the store keys rows by both; the caller's maps are left as they are.
-func WithProviders(t testing.TB, c *lib.Config, providers map[schemas.ModelProvider]configstore.ProviderConfig) *lib.Config {
+// WithProviders gives c a new SQLite config store holding providers, each with its keys from keys,
+// and a live store loaded from it, and returns c. c must not have a config store of its own. A key
+// without an ID or a name gets one, since the store keys rows by both; the caller's maps are left
+// as they are. A provider in keys must also be in providers.
+func WithProviders(t testing.TB, c *lib.Config, providers map[schemas.ModelProvider]configstore.ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key) *lib.Config {
 	t.Helper()
 	if c.ConfigStore != nil {
 		t.Fatal("libtest: WithProviders creates the config store; build the config without one")
@@ -44,7 +45,7 @@ func WithProviders(t testing.TB, c *lib.Config, providers map[schemas.ModelProvi
 	}
 	t.Cleanup(func() { store.Close(ctx) })
 	if len(providers) > 0 {
-		if err := store.UpdateProvidersConfig(ctx, storable(providers)); err != nil {
+		if err := store.UpdateProvidersConfig(ctx, providers, storable(keys)); err != nil {
 			t.Fatalf("libtest: writing providers: %v", err)
 		}
 	}
@@ -63,19 +64,20 @@ func WithProviders(t testing.TB, c *lib.Config, providers map[schemas.ModelProvi
 	return c
 }
 
-// FileOnly loads providers into a new live store on c the way a gateway with the config store
-// disabled loads config.json, and returns c. Nothing can write them afterwards, which suits tests
-// that only read providers and need no database. A key without an ID gets one, as production gives
-// it; explicit IDs and the key order are kept, and the caller's maps are left as they are.
-func FileOnly(t testing.TB, c *lib.Config, providers map[schemas.ModelProvider]configstore.ProviderConfig) *lib.Config {
+// FileOnly loads providers, each with its keys from keys, into a new live store on c the way a
+// gateway with the config store disabled loads config.json, and returns c. Nothing can write them
+// afterwards, which suits tests that only read providers and need no database. A key without an ID
+// gets one, as production gives it; explicit IDs and the key order are kept, and the caller's maps
+// are left as they are.
+func FileOnly(t testing.TB, c *lib.Config, providers map[schemas.ModelProvider]configstore.ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key) *lib.Config {
 	t.Helper()
-	return FileOnlyGovernance(t, c, providers, nil)
+	return FileOnlyGovernance(t, c, providers, keys, nil)
 }
 
 // FileOnlyGovernance is FileOnly with the virtual keys, teams, customers, budgets, rate limits and
 // model configs gov declares loaded beside the providers, as config.json declares them to a
 // gateway without a config store. A governance store built on c's live store then serves them.
-func FileOnlyGovernance(t testing.TB, c *lib.Config, providers map[schemas.ModelProvider]configstore.ProviderConfig, gov *configstore.GovernanceConfig) *lib.Config {
+func FileOnlyGovernance(t testing.TB, c *lib.Config, providers map[schemas.ModelProvider]configstore.ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key, gov *configstore.GovernanceConfig) *lib.Config {
 	t.Helper()
 	live, err := livestore.New()
 	if err != nil {
@@ -85,7 +87,7 @@ func FileOnlyGovernance(t testing.TB, c *lib.Config, providers map[schemas.Model
 	if err := c.AttachLiveStore(live); err != nil {
 		t.Fatalf("libtest: attaching live store: %v", err)
 	}
-	if err := live.LoadRecords(context.Background(), lib.FileOnlyRecords(live, withKeyIDs(providers), gov)); err != nil {
+	if err := live.LoadRecords(context.Background(), lib.FileOnlyRecords(live, providers, withKeyIDs(keys), gov)); err != nil {
 		t.Fatalf("libtest: loading live store: %v", err)
 	}
 	return c
@@ -135,33 +137,32 @@ func FromStore(t testing.TB, c *lib.Config) *lib.Config {
 	return c
 }
 
-// SetProvider writes a provider's configuration straight to c's config store and refreshes it, as
-// a write made outside c is picked up, for a test that changes a provider partway through. A new
-// provider is added with its keys. For an existing one the settings are saved, a key the store does
-// not hold yet is created and one it holds is updated; a stored key config.Keys leaves out stays.
-func SetProvider(t testing.TB, c *lib.Config, provider schemas.ModelProvider, config configstore.ProviderConfig) {
+// SetProvider writes a provider's configuration and keys straight to c's config store and
+// refreshes it, as a write made outside c is picked up, for a test that changes a provider partway
+// through. A new provider is added with its keys. For an existing one the settings are saved, a key
+// the store does not hold yet is created and one it holds is updated; a stored key keys leaves out
+// stays.
+func SetProvider(t testing.TB, c *lib.Config, provider schemas.ModelProvider, config configstore.ProviderConfig, keys []schemas.Key) {
 	t.Helper()
 	if c.ConfigStore == nil {
 		t.Fatal("libtest: SetProvider writes the config store; build the config with Config or WithProviders")
 	}
 	ctx := context.Background()
-	config = storable(map[schemas.ModelProvider]configstore.ProviderConfig{provider: config})[provider]
+	keys = storable(map[schemas.ModelProvider][]schemas.Key{provider: keys})[provider]
 	if !c.IsProviderConfigured(provider) {
 		if err := c.ConfigStore.AddProvider(ctx, provider, config); err != nil {
 			t.Fatalf("libtest: adding provider %s: %v", provider, err)
 		}
-	} else {
-		if err := c.ConfigStore.UpdateProvider(ctx, provider, config); err != nil {
-			t.Fatalf("libtest: writing provider %s: %v", provider, err)
+	} else if err := c.ConfigStore.UpdateProvider(ctx, provider, config); err != nil {
+		t.Fatalf("libtest: writing provider %s: %v", provider, err)
+	}
+	for _, key := range keys {
+		err := c.ConfigStore.UpdateProviderKey(ctx, provider, key.ID, key)
+		if errors.Is(err, configstore.ErrNotFound) {
+			err = c.ConfigStore.CreateProviderKey(ctx, provider, key)
 		}
-		for _, key := range config.Keys {
-			err := c.ConfigStore.UpdateProviderKey(ctx, provider, key.ID, key)
-			if errors.Is(err, configstore.ErrNotFound) {
-				err = c.ConfigStore.CreateProviderKey(ctx, provider, key)
-			}
-			if err != nil {
-				t.Fatalf("libtest: writing key %s of provider %s: %v", key.ID, provider, err)
-			}
+		if err != nil {
+			t.Fatalf("libtest: writing key %s of provider %s: %v", key.ID, provider, err)
 		}
 	}
 	if err := c.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindProvider, ID: string(provider)}}); err != nil {
@@ -169,44 +170,49 @@ func SetProvider(t testing.TB, c *lib.Config, provider schemas.ModelProvider, co
 	}
 }
 
-// storable copies providers, giving each key without an ID or a name one of its own.
-func storable(providers map[schemas.ModelProvider]configstore.ProviderConfig) map[schemas.ModelProvider]configstore.ProviderConfig {
-	out := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(providers))
-	for provider, config := range providers {
-		keys := make([]schemas.Key, len(config.Keys))
-		for i, key := range config.Keys {
+// storable copies keys, giving each key without an ID or a name one of its own.
+func storable(keys map[schemas.ModelProvider][]schemas.Key) map[schemas.ModelProvider][]schemas.Key {
+	out := make(map[schemas.ModelProvider][]schemas.Key, len(keys))
+	for provider, providerKeys := range keys {
+		if providerKeys == nil {
+			out[provider] = nil
+			continue
+		}
+		copied := make([]schemas.Key, len(providerKeys))
+		for i, key := range providerKeys {
 			if key.ID == "" {
 				key.ID = missingKeyID(provider, i)
 			}
 			if key.Name == "" {
 				key.Name = key.ID
 			}
-			keys[i] = key
+			copied[i] = key
 		}
-		if config.Keys != nil {
-			config.Keys = keys
-		}
-		out[provider] = config
+		out[provider] = copied
 	}
 	return out
 }
 
-// withKeyIDs copies providers, giving each key without an ID one of its own, as the file loader
-// does, so two keys a test leaves without an ID stay two key records.
-func withKeyIDs(providers map[schemas.ModelProvider]configstore.ProviderConfig) map[schemas.ModelProvider]configstore.ProviderConfig {
-	out := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(providers))
-	for provider, config := range providers {
-		if config.Keys != nil {
-			keys := make([]schemas.Key, len(config.Keys))
-			for i, key := range config.Keys {
-				if key.ID == "" {
-					key.ID = missingKeyID(provider, i)
-				}
-				keys[i] = key
-			}
-			config.Keys = keys
+// withKeyIDs copies keys, giving each key without an ID one of its own, as the file loader does, so
+// two keys a test leaves without an ID stay two key records.
+func withKeyIDs(keys map[schemas.ModelProvider][]schemas.Key) map[schemas.ModelProvider][]schemas.Key {
+	if keys == nil {
+		return nil
+	}
+	out := make(map[schemas.ModelProvider][]schemas.Key, len(keys))
+	for provider, list := range keys {
+		if list == nil {
+			out[provider] = nil
+			continue
 		}
-		out[provider] = config
+		filled := make([]schemas.Key, len(list))
+		for i, key := range list {
+			if key.ID == "" {
+				key.ID = missingKeyID(provider, i)
+			}
+			filled[i] = key
+		}
+		out[provider] = filled
 	}
 	return out
 }
@@ -218,15 +224,12 @@ func missingKeyID(provider schemas.ModelProvider, i int) string {
 	return fmt.Sprintf("%s-key-%d", provider, i)
 }
 
-// Providers returns the providers c's live store holds, keyed by name, each with its keys.
+// Providers returns the configurations of the providers c's live store holds, keyed by name. A
+// test reads a provider's keys with c.GetProviderKeys.
 func Providers(c *lib.Config) map[schemas.ModelProvider]configstore.ProviderConfig {
 	out := make(map[schemas.ModelProvider]configstore.ProviderConfig)
 	c.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
-		config := p.Settings.Config()
-		if keys, ok := c.LiveStore.Views.ProviderKeyLists.Get(string(p.Name)); ok {
-			config.Keys = *keys
-		}
-		out[p.Name] = config
+		out[p.Name] = p.Config
 		return true
 	})
 	return out

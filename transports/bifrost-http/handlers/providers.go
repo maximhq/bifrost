@@ -312,7 +312,7 @@ func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
 	} else {
 		providers = make(map[schemas.ModelProvider]configstore.ProviderConfig)
 		h.config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
-			providers[p.Name] = p.Settings.Config()
+			providers[p.Name] = p.Config
 			return true
 		})
 	}
@@ -375,7 +375,7 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", lib.ErrNotFound))
 			return
 		}
-		copied := stored.Settings.Config()
+		copied := stored.Config
 		config = &copied
 	}
 	redactedConfig := config.Redacted()
@@ -564,16 +564,14 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	if !ok {
 		logger.Warn("Failed to get redacted config for provider %s: %v", payload.Provider, lib.ErrNotFound)
 		lib.RecordAuditChange(ctx, "provider.created", "provider", string(payload.Provider), string(payload.Provider), nil, auditProviderConfig(config.Redacted()))
-		// Fall back to the saved config, redacted and without keys
+		// Fall back to the saved config, redacted
 		sanitized := config.Redacted()
-		sanitized.Keys = nil
 		response := h.getProviderResponseFromConfig(payload.Provider, *sanitized, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
 	}
 
-	storedConfig := stored.Settings.Config()
-	redactedConfig := storedConfig.Redacted()
+	redactedConfig := stored.Config.Redacted()
 	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig, ProviderStatusActive)
 
 	lib.RecordAuditChange(ctx, "provider.created", "provider", string(payload.Provider), string(payload.Provider), nil, auditProviderConfig(redactedConfig))
@@ -638,8 +636,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	oldConfigRaw := &configstore.ProviderConfig{}
 	var oldRedactedConfig *configstore.ProviderConfig
 	if stored, err := h.config.ConfigStore.GetProviderConfig(ctx, provider); err == nil {
-		stored.Keys = nil // keys are managed by their own routes and never written here
-		oldConfigRaw = stored
+		oldConfigRaw = stored // keys are managed by their own routes and never read or written here
 		oldRedactedConfig = stored.Redacted()
 	} else if !errors.Is(err, configstore.ErrNotFound) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to read provider: %v", err))
@@ -829,16 +826,14 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	if !ok {
 		logger.Warn("Failed to get redacted config for provider %s: %v", provider, lib.ErrNotFound)
 		lib.RecordAuditChange(ctx, "provider.updated", "provider", string(provider), string(provider), before, auditProviderConfig(config.Redacted()))
-		// Fall back to the saved config, redacted and without keys
+		// Fall back to the saved config, redacted
 		sanitized := config.Redacted()
-		sanitized.Keys = nil
 		response := h.getProviderResponseFromConfig(provider, *sanitized, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
 	}
 
-	storedConfig := stored.Settings.Config()
-	redactedConfig := storedConfig.Redacted()
+	redactedConfig := stored.Config.Redacted()
 	response := h.getProviderResponseFromConfig(provider, *redactedConfig, ProviderStatusActive)
 
 	lib.RecordAuditChange(ctx, "provider.updated", "provider", string(provider), string(provider), before, auditProviderConfig(redactedConfig))
@@ -857,8 +852,7 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	// Check if provider exists
 	var existing *configstore.ProviderConfig
 	if stored, ok := h.config.LiveStore.Collections.Providers.Get(string(provider)); ok {
-		storedConfig := stored.Settings.Config()
-		existing = storedConfig.Redacted()
+		existing = stored.Config.Redacted()
 	}
 
 	// Any failure answers 500, a failed database delete included: a success would hide a provider
@@ -881,25 +875,28 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 // database in creation order, as listProviders reads providers, so the list shows what is saved;
 // without one they come from memory.
 func (h *ProviderHandler) listKeys(ctx *fasthttp.RequestCtx) {
-	var providers map[schemas.ModelProvider]configstore.ProviderConfig
+	keysByProvider := make(map[schemas.ModelProvider][]schemas.Key)
 	if h.configStore != nil {
-		var err error
-		if providers, err = h.configStore.GetProvidersConfig(ctx); err != nil {
+		providers, err := h.configStore.GetProvidersConfig(ctx)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get keys: %v", err))
+			return
+		}
+		if keysByProvider, err = lib.StoredProviderKeys(ctx, h.configStore, providers); err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get keys: %v", err))
 			return
 		}
 	} else {
-		providers = make(map[schemas.ModelProvider]configstore.ProviderConfig)
 		h.config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
 			var keys []schemas.Key
 			if list, ok := h.config.LiveStore.Views.ProviderKeyLists.Get(string(p.Name)); ok {
 				keys = *list
 			}
-			providers[p.Name] = configstore.ProviderConfig{Keys: keys}
+			keysByProvider[p.Name] = keys
 			return true
 		})
 	}
-	SendJSON(ctx, redactedKeys(providers))
+	SendJSON(ctx, redactedKeys(keysByProvider))
 }
 
 // mcpClientExists reports whether an MCP client with this name is configured.
@@ -909,133 +906,44 @@ func (h *ProviderHandler) mcpClientExists(name string) bool {
 }
 
 // redactedKeys lists every key of every provider as /api/keys reports it, providers by name and
-// each one's keys in the order given: identifiers readable, credentials masked. The keys
-// themselves, which may be the live store's, are left untouched.
-func redactedKeys(providers map[schemas.ModelProvider]configstore.ProviderConfig) []tables.TableKey {
+// each one's keys in the order given, each redacted by configstore.RedactedKey as the providers
+// API redacts it: identifiers readable, credentials masked. The keys themselves, which may be the
+// live store's, are left untouched. Status and description are left out, as this list has always
+// left them.
+func redactedKeys(keysByProvider map[schemas.ModelProvider][]schemas.Key) []tables.TableKey {
 	keys := make([]tables.TableKey, 0)
-	for _, providerKey := range slices.Sorted(maps.Keys(providers)) {
-		for _, key := range providers[providerKey].Keys {
-			models := key.Models
-			if models == nil {
-				models = []string{}
-			}
-			blacklisted := key.BlacklistedModels
-			if blacklisted == nil {
-				blacklisted = []string{}
-			}
-			configStoreKey := tables.TableKey{
-				KeyID:             key.ID,
-				Name:              key.Name,
-				Value:             *key.Value.Redacted(),
-				Models:            models,
-				BlacklistedModels: blacklisted,
-				Weight:            bifrost.Ptr(key.Weight),
-				Provider:          string(providerKey),
-				ConfigHash:        key.ConfigHash,
-				Enabled:           key.Enabled,
-			}
-			if key.AzureKeyConfig != nil {
-				cfg := *key.AzureKeyConfig // safe copy
-				// The endpoint is a hostname, not a credential: surface it in plaintext.
-				cfg.Endpoint = *cfg.Endpoint.RedactedIfSecret()
-				cfg.ClientID = cfg.ClientID.Redacted()
-				cfg.ClientSecret = cfg.ClientSecret.Redacted()
-				cfg.TenantID = cfg.TenantID.Redacted()
-				configStoreKey.AzureKeyConfig = &cfg
-			}
-			if key.BedrockKeyConfig != nil {
-				cfg := *key.BedrockKeyConfig // safe copy
-				cfg.ARN = key.BedrockKeyConfig.ARN.Redacted()
-				cfg.AccessKey = *cfg.AccessKey.Redacted()
-				cfg.ExternalID = cfg.ExternalID.Redacted()
-				// The region is a public identifier, not a credential: surface it in plaintext.
-				cfg.Region = cfg.Region.RedactedIfSecret()
-				cfg.RoleARN = cfg.RoleARN.Redacted()
-				cfg.RoleSessionName = cfg.RoleSessionName.Redacted()
-				cfg.SecretKey = *cfg.SecretKey.Redacted()
-				cfg.SessionToken = cfg.SessionToken.Redacted()
-				configStoreKey.BedrockKeyConfig = &cfg
-			}
-			if key.BedrockMantleKeyConfig != nil {
-				cfg := *key.BedrockMantleKeyConfig // safe copy
-				cfg.AccessKey = *cfg.AccessKey.Redacted()
-				cfg.SecretKey = *cfg.SecretKey.Redacted()
-				cfg.SessionToken = cfg.SessionToken.Redacted()
-				// The region is a public identifier, not a credential: surface it in plaintext.
-				cfg.Region = cfg.Region.RedactedIfSecret()
-				cfg.RoleARN = cfg.RoleARN.Redacted()
-				cfg.ExternalID = cfg.ExternalID.Redacted()
-				cfg.RoleSessionName = cfg.RoleSessionName.Redacted()
-				configStoreKey.BedrockMantleKeyConfig = &cfg
-			}
-			if key.SageMakerKeyConfig != nil {
-				cfg := *key.SageMakerKeyConfig // safe copy
-				cfg.AccessKey = *cfg.AccessKey.Redacted()
-				cfg.SecretKey = *cfg.SecretKey.Redacted()
-				cfg.SessionToken = cfg.SessionToken.Redacted()
-				// The region is a public identifier, not a credential: surface it in plaintext.
-				cfg.Region = cfg.Region.RedactedIfSecret()
-				cfg.RoleARN = cfg.RoleARN.Redacted()
-				cfg.ExternalID = cfg.ExternalID.Redacted()
-				cfg.RoleSessionName = cfg.RoleSessionName.Redacted()
-				cfg.Endpoints = cfg.Endpoints.Redacted()
-				configStoreKey.SageMakerKeyConfig = &cfg
-			}
-			if key.VertexKeyConfig != nil {
-				cfg := *key.VertexKeyConfig // safe copy
-				cfg.ProjectID = *cfg.ProjectID.Redacted()
-				cfg.ProjectNumber = *cfg.ProjectNumber.Redacted()
-				// The region is a public identifier, not a credential: surface it in plaintext.
-				cfg.Region = *cfg.Region.RedactedIfSecret()
-				cfg.AuthCredentials = *cfg.AuthCredentials.Redacted()
-				cfg.AWSWorkloadIdentity = cfg.AWSWorkloadIdentity.Redacted()
-				configStoreKey.VertexKeyConfig = &cfg
-			}
-			if key.ReplicateKeyConfig != nil {
-				configStoreKey.ReplicateKeyConfig = key.ReplicateKeyConfig
-			}
-			if key.VLLMKeyConfig != nil {
-				cfg := *key.VLLMKeyConfig // safe copy
-				// The URL is a service address, not a credential: surface it in plaintext.
-				cfg.URL = *cfg.URL.RedactedIfSecret()
-				configStoreKey.VLLMKeyConfig = &cfg
-			}
-			if key.OllamaKeyConfig != nil {
-				cfg := *key.OllamaKeyConfig // safe copy
-				// The URL is a service address, not a credential: surface it in plaintext.
-				cfg.URL = *cfg.URL.RedactedIfSecret()
-				configStoreKey.OllamaKeyConfig = &cfg
-			}
-			if key.SGLKeyConfig != nil {
-				cfg := *key.SGLKeyConfig // safe copy
-				// The URL is a service address, not a credential: surface it in plaintext.
-				cfg.URL = *cfg.URL.RedactedIfSecret()
-				configStoreKey.SGLKeyConfig = &cfg
-			}
-
-			if key.DatabricksKeyConfig != nil {
-				cfg := *key.DatabricksKeyConfig // safe copy
-				// The workspace URL is a hostname, not a credential: surface it in plaintext.
-				cfg.WorkspaceURL = *cfg.WorkspaceURL.RedactedIfSecret()
-				cfg.ClientID = cfg.ClientID.Redacted()
-				cfg.ClientSecret = cfg.ClientSecret.Redacted()
-				configStoreKey.DatabricksKeyConfig = &cfg
-			}
-			if key.CloudflareKeyConfig != nil {
-				cfg := *key.CloudflareKeyConfig // safe copy
-				// The account ID is an identifier, not a credential: surface it in plaintext.
-				cfg.AccountID = *cfg.AccountID.RedactedIfSecret()
-				configStoreKey.CloudflareKeyConfig = &cfg
-			}
-			if key.AnthropicKeyConfig != nil {
-				// Identifiers readable unless secret-backed; the identity token always masked.
-				configStoreKey.AnthropicKeyConfig = key.AnthropicKeyConfig.Redacted()
-			}
-			if key.OAuthKeyConfig != nil {
-				// Token URL readable, credentials and every extra_params value masked.
-				configStoreKey.OAuthKeyConfig = key.OAuthKeyConfig.Redacted()
-			}
-			keys = append(keys, configStoreKey)
+	for _, provider := range slices.Sorted(maps.Keys(keysByProvider)) {
+		for _, key := range keysByProvider[provider] {
+			redacted := configstore.RedactedKey(key)
+			keys = append(keys, tables.TableKey{
+				KeyID:                  redacted.ID,
+				Name:                   redacted.Name,
+				Value:                  redacted.Value,
+				Models:                 redacted.Models,
+				BlacklistedModels:      redacted.BlacklistedModels,
+				Weight:                 bifrost.Ptr(redacted.Weight),
+				Provider:               string(provider),
+				ConfigHash:             redacted.ConfigHash,
+				Enabled:                redacted.Enabled,
+				Aliases:                redacted.Aliases,
+				UseForBatchAPI:         redacted.UseForBatchAPI,
+				UseAnthropicEndpoints:  redacted.UseAnthropicEndpoints,
+				UseOpenAIEndpoints:     redacted.UseOpenAIEndpoints,
+				DisableContentLogging:  redacted.DisableContentLogging,
+				AzureKeyConfig:         redacted.AzureKeyConfig,
+				VertexKeyConfig:        redacted.VertexKeyConfig,
+				BedrockKeyConfig:       redacted.BedrockKeyConfig,
+				BedrockMantleKeyConfig: redacted.BedrockMantleKeyConfig,
+				SageMakerKeyConfig:     redacted.SageMakerKeyConfig,
+				VLLMKeyConfig:          redacted.VLLMKeyConfig,
+				ReplicateKeyConfig:     redacted.ReplicateKeyConfig,
+				OllamaKeyConfig:        redacted.OllamaKeyConfig,
+				SGLKeyConfig:           redacted.SGLKeyConfig,
+				DatabricksKeyConfig:    redacted.DatabricksKeyConfig,
+				CloudflareKeyConfig:    redacted.CloudflareKeyConfig,
+				AnthropicKeyConfig:     redacted.AnthropicKeyConfig,
+				OAuthKeyConfig:         redacted.OAuthKeyConfig,
+			})
 		}
 	}
 	return keys
@@ -1433,7 +1341,7 @@ func (h *ProviderHandler) customProviderConfig(provider schemas.ModelProvider) *
 	if !ok {
 		return nil
 	}
-	return stored.Settings.CustomProviderConfig
+	return stored.Config.CustomProviderConfig
 }
 
 // aliasTarget returns the model a key alias points at, in the order the

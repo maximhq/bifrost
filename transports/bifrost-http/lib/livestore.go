@@ -198,6 +198,9 @@ func (c *Config) AttachLiveStore(live *livestore.Store) error {
 type bootConfig struct {
 	// providers is loadProviders' merged provider set. Loaded without a config store.
 	providers map[schemas.ModelProvider]configstore.ProviderConfig
+	// providerKeys is the keys of each provider in providers, in config.json order. Loaded
+	// without a config store.
+	providerKeys map[schemas.ModelProvider][]schemas.Key
 	// mcpClients is the MCP client list loadMCPConfig hands the runtime. Skipped without a config
 	// store: MCP needs one.
 	mcpClients []*schemas.MCPClientConfig
@@ -234,15 +237,15 @@ type bootConfig struct {
 // rules. Datasheet overrides and feature flags are tables their owners fill in both modes. Loading
 // a skipped kind in this mode means adding its records here and dropping its loader's early return.
 func (b *bootConfig) records(live *livestore.Store) []livestore.Record {
-	return FileOnlyRecords(live, b.providers, b.governance)
+	return FileOnlyRecords(live, b.providers, b.providerKeys, b.governance)
 }
 
 // FileOnlyRecords wraps the records a gateway without a config store loads into live, as
 // registry.FromConfig builds them from config.json: settings-only provider records, a record per
 // provider key ordered by its position in config.json, and the governance records. Tests outside
 // lib load them the same way through libtest.
-func FileOnlyRecords(live *livestore.Store, providers map[schemas.ModelProvider]configstore.ProviderConfig, declared *configstore.GovernanceConfig) []livestore.Record {
-	return live.Collections.FileRecords(registry.FromConfig(registry.FileInput{Providers: providers, Governance: declared}))
+func FileOnlyRecords(live *livestore.Store, providers map[schemas.ModelProvider]configstore.ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key, declared *configstore.GovernanceConfig) []livestore.Record {
+	return live.Collections.FileRecords(registry.FromConfig(registry.FileInput{Providers: providers, ProviderKeys: keys, Governance: declared}))
 }
 
 // uniqueKeyIDs fails when two keys of b's providers share a key ID, naming the ID and both
@@ -251,8 +254,8 @@ func FileOnlyRecords(live *livestore.Store, providers map[schemas.ModelProvider]
 // Providers are visited by name, so the error names the same pair on every boot.
 func (b *bootConfig) uniqueKeyIDs() error {
 	owners := make(map[string]schemas.ModelProvider)
-	for _, name := range slices.Sorted(maps.Keys(b.providers)) {
-		for _, key := range b.providers[name].Keys {
+	for _, name := range slices.Sorted(maps.Keys(b.providerKeys)) {
+		for _, key := range b.providerKeys[name] {
 			first, taken := owners[key.ID]
 			switch {
 			case !taken:

@@ -36,7 +36,7 @@ func TestGetConfigForProvider_InheritsGlobalProxy(t *testing.T) {
 		schemas.Vertex: {},
 		schemas.Azure:  {ProxyConfig: &schemas.ProxyConfig{Type: schemas.NoProxy}},
 		schemas.OpenAI: {ProxyConfig: ownProxy},
-	})
+	}, nil)
 	account := NewBaseAccount(store)
 
 	for _, provider := range []schemas.ModelProvider{schemas.Vertex, schemas.Azure} {
@@ -193,7 +193,7 @@ func TestGetConfigForProvider_InheritedSkipTLSVerifyDoesNotLeak(t *testing.T) {
 		ProxyConfig: global,
 	}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.Vertex: {NetworkConfig: &stored},
-	})
+	}, nil)
 
 	config, err := NewBaseAccount(store).GetConfigForProvider(schemas.Vertex)
 	if err != nil {
@@ -211,7 +211,7 @@ func TestGetConfigForProvider_InheritedSkipTLSVerifyDoesNotLeak(t *testing.T) {
 }
 
 func TestSetGlobalProxyConfig_StoresWithoutClient(t *testing.T) {
-	store := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {}})
+	store := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {}}, nil)
 	global := enabledGlobalProxy()
 	if err := store.SetGlobalProxyConfig(global); err != nil {
 		t.Fatalf("SetGlobalProxyConfig: %v", err)
@@ -292,7 +292,7 @@ func TestGetConfigForProvider_ProxySourceMatrix(t *testing.T) {
 					}
 					store := withProviders(t, &Config{
 						ProxyConfig: global.config(),
-					}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {ProxyConfig: own.config}})
+					}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {ProxyConfig: own.config}}, nil)
 					config, err := NewBaseAccount(store).GetConfigForProvider(schemas.Vertex)
 					if err != nil {
 						t.Fatalf("GetConfigForProvider: %v", err)
@@ -332,7 +332,7 @@ func TestGetConfigForProvider_CarriesInjectedTools(t *testing.T) {
 	}
 	store := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: {InjectedTools: injected},
-	})
+	}, nil)
 
 	config, err := NewBaseAccount(store).GetConfigForProvider(schemas.OpenAI)
 	if err != nil {
@@ -350,7 +350,7 @@ func TestGetConfigForProvider_CarriesPassthrough(t *testing.T) {
 	store := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI:    {Passthrough: policy},
 		schemas.Anthropic: {},
-	})
+	}, nil)
 
 	config, err := NewBaseAccount(store).GetConfigForProvider(schemas.OpenAI)
 	if err != nil {
@@ -382,7 +382,7 @@ func TestGetConfigForProvider_UnreadableGlobalProxyFailsClosed(t *testing.T) {
 			}
 			store := withProviders(t, &Config{
 				ProxyConfig: global,
-			}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {}})
+			}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {}}, nil)
 			config, err := NewBaseAccount(store).GetConfigForProvider(schemas.Vertex)
 			if err == nil {
 				t.Fatalf("an unreadable global proxy was dropped, so inference would go direct (proxy_config %+v)", config.ProxyConfig)

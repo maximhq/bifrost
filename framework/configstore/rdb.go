@@ -774,8 +774,9 @@ func (s *RDBConfigStore) UpdateClientMetadata(ctx context.Context, patch map[str
 	})
 }
 
-// UpdateProvidersConfig updates the client configuration in the database.
-func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, tx ...*gorm.DB) error {
+// UpdateProvidersConfig upserts providers and their keys, keys[provider] for each, as the
+// config.json sync writes them. A provider without an entry in keys has its key rows left as stored.
+func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
 		txDB = tx[0]
@@ -843,8 +844,9 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 		}
 
 		// Create keys for this provider
-		dbKeys := make([]tables.TableKey, 0, len(providerConfig.Keys))
-		for _, key := range providerConfig.Keys {
+		providerKeys := keys[providerName]
+		dbKeys := make([]tables.TableKey, 0, len(providerKeys))
+		for _, key := range providerKeys {
 			// Use existing ConfigHash if set (came from reconciliation with DB),
 			// otherwise generate new hash (new key from config.json)
 			keyHash := key.ConfigHash
@@ -1059,9 +1061,9 @@ func (s *RDBConfigStore) cleanupVirtualKeyProviderConfigsForDeletedProvider(ctx 
 // UpdateProvider writes a provider's settings and nothing else. It never creates, updates or
 // deletes a key row: keys are written by their own calls (CreateProviderKey, UpdateProviderKey,
 // DeleteProviderKey), so a settings save cannot bring back a key deleted meanwhile, here or on
-// another node, or delete one added meanwhile. config.Keys is ignored. The config hash, the
-// status and description, and the provider's limits also stay as stored: the hash belongs to the
-// config.json sync (UpdateProvidersConfig), which compares against it on restart.
+// another node, or delete one added meanwhile. The config hash, the status and description, and
+// the provider's limits also stay as stored: the hash belongs to the config.json sync
+// (UpdateProvidersConfig), which compares against it on restart.
 func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
 		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
@@ -1099,7 +1101,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	return nil
 }
 
-// AddProvider creates a new provider configuration in the database.
+// AddProvider creates a new provider configuration in the database. It writes no key rows: a
+// provider's keys are created by CreateProviderKey.
 func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
@@ -1135,99 +1138,6 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	if err := txDB.WithContext(ctx).Create(&dbProvider).Error; err != nil {
 		return s.parseGormError(err)
 	}
-	// Create keys for this provider
-	for _, key := range configCopy.Keys {
-		dbKey := tables.TableKey{
-			Provider:               dbProvider.Name,
-			ProviderID:             dbProvider.ID,
-			KeyID:                  key.ID,
-			Name:                   key.Name,
-			Value:                  key.Value,
-			Models:                 key.Models,
-			BlacklistedModels:      key.BlacklistedModels,
-			Weight:                 &key.Weight,
-			Enabled:                key.Enabled,
-			UseForBatchAPI:         key.UseForBatchAPI,
-			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
-			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
-			DisableContentLogging:  key.DisableContentLogging,
-			AzureKeyConfig:         key.AzureKeyConfig,
-			VertexKeyConfig:        key.VertexKeyConfig,
-			BedrockKeyConfig:       key.BedrockKeyConfig,
-			BedrockMantleKeyConfig: key.BedrockMantleKeyConfig,
-			SageMakerKeyConfig:     key.SageMakerKeyConfig,
-			Aliases:                key.Aliases,
-			VLLMKeyConfig:          key.VLLMKeyConfig,
-			ReplicateKeyConfig:     key.ReplicateKeyConfig,
-			OllamaKeyConfig:        key.OllamaKeyConfig,
-			SGLKeyConfig:           key.SGLKeyConfig,
-			DatabricksKeyConfig:    key.DatabricksKeyConfig,
-			CloudflareKeyConfig:    key.CloudflareKeyConfig,
-			AnthropicKeyConfig:     key.AnthropicKeyConfig,
-			OAuthKeyConfig:         key.OAuthKeyConfig,
-			ConfigHash:             key.ConfigHash,
-			Status:                 string(key.Status),
-			Description:            key.Description,
-		}
-		// Handle Azure config
-		if key.AzureKeyConfig != nil {
-			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-			dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
-			dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
-		}
-		// Handle Vertex config
-		if key.VertexKeyConfig != nil {
-			dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
-			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
-			dbKey.VertexRegion = &key.VertexKeyConfig.Region
-			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
-			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
-			dbKey.VertexUseSessionRouting = &key.VertexKeyConfig.UseSessionRouting
-			wif, err := tables.MarshalVertexAWSWorkloadIdentityJSON(key.VertexKeyConfig.AWSWorkloadIdentity)
-			if err != nil {
-				return err
-			}
-			dbKey.VertexAWSWorkloadIdentityJSON = wif
-		}
-		// Handle Bedrock config
-		if key.BedrockKeyConfig != nil {
-			dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
-			dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
-			dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
-			dbKey.BedrockRegion = key.BedrockKeyConfig.Region
-			dbKey.BedrockARN = key.BedrockKeyConfig.ARN
-			dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
-			dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
-			dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
-			dbKey.BedrockBatchRoleARN = key.BedrockKeyConfig.BatchRoleARN
-			if key.BedrockKeyConfig.BatchS3Config != nil {
-				data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
-				if err != nil {
-					return err
-				}
-				s := string(data)
-				dbKey.BedrockBatchS3ConfigJSON = &s
-			} else {
-				dbKey.BedrockBatchS3ConfigJSON = nil
-			}
-			if key.BedrockKeyConfig.Endpoints != nil {
-				data, err := sonic.Marshal(key.BedrockKeyConfig.Endpoints)
-				if err != nil {
-					return err
-				}
-				s := string(data)
-				dbKey.BedrockEndpointsJSON = &s
-			} else {
-				dbKey.BedrockEndpointsJSON = nil
-			}
-		}
-
-		// Create the key
-		if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
-			return s.parseGormError(err)
-		}
-	}
-
 	return nil
 }
 
@@ -1287,11 +1197,11 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 	return nil
 }
 
-// GetProvidersConfig retrieves the provider configuration from the database, each provider's keys
-// in creation order (by row ID).
+// GetProvidersConfig retrieves every provider's configuration from the database, without keys:
+// GetProviderKeys reads a provider's keys.
 func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error) {
 	var dbProviders []tables.TableProvider
-	if err := s.DB().WithContext(ctx).Preload("Keys", func(k *gorm.DB) *gorm.DB { return k.Order("id") }).Find(&dbProviders).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Find(&dbProviders).Error; err != nil {
 		return nil, err
 	}
 	if len(dbProviders) == 0 {
@@ -1305,10 +1215,11 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 	return processedProviders, nil
 }
 
-// GetProviderConfig retrieves the provider configuration from the database.
+// GetProviderConfig retrieves a provider's configuration from the database, without its keys:
+// GetProviderKeys reads them.
 func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*ProviderConfig, error) {
 	var dbProvider tables.TableProvider
-	if err := s.DB().WithContext(ctx).Preload("Keys").Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -1319,15 +1230,10 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 	return &config, nil
 }
 
-// ProviderConfigFromTable builds a provider's configuration from its row, with the keys the row
-// was loaded with: preload Keys to include them.
+// ProviderConfigFromTable builds a provider's configuration from its row. Keys are not part of
+// it: SchemaKeyFromTableKey converts a key row.
 func ProviderConfigFromTable(dbProvider *tables.TableProvider) ProviderConfig {
-	keys := make([]schemas.Key, len(dbProvider.Keys))
-	for i, dbKey := range dbProvider.Keys {
-		keys[i] = SchemaKeyFromTableKey(dbKey)
-	}
 	return ProviderConfig{
-		Keys:                     keys,
 		NetworkConfig:            dbProvider.NetworkConfig,
 		ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
 		ProxyConfig:              dbProvider.ProxyConfig,

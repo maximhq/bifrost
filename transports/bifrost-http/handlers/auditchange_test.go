@@ -187,12 +187,14 @@ func TestAuditChange_ProviderKeyUpdate(t *testing.T) {
 
 	h := &ProviderHandler{
 		config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {Keys: []schemas.Key{{
+			schemas.OpenAI: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {{
 				ID:     "key-1",
 				Name:   "openai-key",
 				Value:  *schemas.NewSecretVar(storedValue),
 				Weight: 1,
-			}}},
+			}},
 		}),
 		modelsManager: &mockModelsManager{},
 	}
@@ -205,7 +207,7 @@ func TestAuditChange_ProviderKeyUpdate(t *testing.T) {
 	if ctx.Response.StatusCode() != fasthttp.StatusOK {
 		t.Fatalf("update status=%d body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	if got := libtest.Providers(h.config)[schemas.OpenAI].Keys[0].Value.GetValue(); got != newValue {
+	if got := h.config.GetProviderKeys(schemas.OpenAI)[0].Value.GetValue(); got != newValue {
 		t.Fatalf("stored value not updated, got %q", got)
 	}
 

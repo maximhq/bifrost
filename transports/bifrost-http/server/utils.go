@@ -177,7 +177,7 @@ func (s *BifrostHTTPServer) currentKeyStatus(ks schemas.KeyStatus) (status strin
 	if !ok {
 		return "", "", false
 	}
-	providerConfig := &stored.Settings // read only
+	providerConfig := &stored.Config // read only
 
 	if ks.KeyID == "" {
 		if providerConfig.CustomProviderConfig == nil || !providerConfig.CustomProviderConfig.IsKeyLess {
@@ -239,7 +239,7 @@ func (s *BifrostHTTPServer) updateKeyStatus(
 		// status on each key. Memory always matches the database, so the row is left alone too.
 		if ks.KeyID == "" {
 			if stored, ok := s.Config.LiveStore.Collections.Providers.Get(string(ks.Provider)); ok &&
-				(stored.Settings.CustomProviderConfig == nil || !stored.Settings.CustomProviderConfig.IsKeyLess) {
+				(stored.Config.CustomProviderConfig == nil || !stored.Config.CustomProviderConfig.IsKeyLess) {
 				logger.Warn("received provider-level status update for keyed provider %s; skipping", ks.Provider)
 				continue
 			}

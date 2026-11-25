@@ -119,15 +119,16 @@ func TestInteractionPollerReadsTheRunWithTheCreatingKey(t *testing.T) {
 		ModelCatalog: catalogForTest(t, nil),
 	}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.Gemini: {
-			Keys: []schemas.Key{
-				{ID: "key-other", Value: *schemas.NewSecretVar("gk-other"), Models: schemas.WhiteList{"*"}, Weight: 1},
-				{ID: "key-creator", Value: *schemas.NewSecretVar("gk-creator"), Models: schemas.WhiteList{"*"}, Weight: 1},
-			},
 			NetworkConfig: &schemas.NetworkConfig{
 				BaseURL:                        upstream.URL + "/v1beta",
 				AllowPrivateNetwork:            true,
 				DefaultRequestTimeoutInSeconds: 5,
 			},
+		},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Gemini: {
+			{ID: "key-other", Value: *schemas.NewSecretVar("gk-other"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: "key-creator", Value: *schemas.NewSecretVar("gk-creator"), Models: schemas.WhiteList{"*"}, Weight: 1},
 		},
 	})
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{

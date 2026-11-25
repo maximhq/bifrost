@@ -17,7 +17,7 @@ import (
 // rule test has no routing plugin, whose absence is the error it returns).
 func TestReloadOfARowDeletedMeanwhileDropsItsRecord(t *testing.T) {
 	ctx := context.Background()
-	config := libtest.Config(t, nil)
+	config := libtest.Config(t, nil, nil)
 	config.ModelCatalog = catalogForTest(t, nil)
 	server := &BifrostHTTPServer{Config: config}
 

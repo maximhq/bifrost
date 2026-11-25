@@ -378,7 +378,10 @@ func (mc *ModelCatalog) computeProvidersForModel(model string) []schemas.ModelPr
 //   - allowedModels=[]: deny-by-default.
 //   - explicit allowedModels: direct or provider-prefixed match against the
 //     provider's catalog.
-func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowedModels schemas.WhiteList) bool {
+//
+// providerConfig is the provider's configuration, nil when it has none. keys is read only for key
+// aliases, which may widen an explicit list; a caller that wants no alias widening passes nil.
+func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, keys []schemas.Key, allowedModels schemas.WhiteList) bool {
 	isCustomProvider := false
 	hasListModelsEndpointDisabled := false
 	if providerConfig != nil && providerConfig.CustomProviderConfig != nil {
@@ -403,8 +406,8 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 	// A key alias is a client-facing name for a provider model, resolved only after governance has
 	// decided, so a request for "claude-sonnet" reaches this check under the alias, not under the
 	// model it stands for. An allowlist that names the model should permit it.
-	return providerConfig != nil && MayBeKeyAlias(provider, model, providerConfig.Keys) &&
-		mc.aliasesResolveToAllowed(provider, model, providerConfig.Keys, allKeyIDs, allowedModels)
+	return MayBeKeyAlias(provider, model, keys) &&
+		mc.aliasesResolveToAllowed(provider, model, keys, allKeyIDs, allowedModels)
 }
 
 // allKeyIDs is the key restriction that restricts nothing.

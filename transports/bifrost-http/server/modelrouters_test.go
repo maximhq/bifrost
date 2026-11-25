@@ -24,7 +24,7 @@ import (
 // matters is that the read got past the store to it.
 func TestModelRouterReloadsReadTheStoredRouter(t *testing.T) {
 	ctx := context.Background()
-	config := libtest.Config(t, nil)
+	config := libtest.Config(t, nil, nil)
 	router := &configstore.ModelRouter{ID: "support", Name: "Support", ComplexityAnalyzerConfig: configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{SimpleMedium: 0.10, MediumComplex: 0.30},
 		Keywords: configstore.ComplexityEditableKeywordConfig{

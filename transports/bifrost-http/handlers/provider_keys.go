@@ -80,7 +80,7 @@ func (h *ProviderHandler) listProviderKeys(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider keys: %v", err))
 		return
 	}
-	keys := append([]schemas.Key(nil), redactKeys(stored)...)
+	keys := append([]schemas.Key(nil), configstore.RedactedKeys(stored)...)
 
 	SendJSON(ctx, ListProviderKeysResponse{Keys: keys, Total: len(keys)})
 }
@@ -137,7 +137,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", lib.ErrNotFound))
 		return
 	}
-	providerConfig := stored.Settings
+	providerConfig := stored.Config
 
 	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
 		SendError(ctx, fasthttp.StatusBadRequest, "Cannot add keys to a keyless provider")
@@ -248,7 +248,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", lib.ErrNotFound))
 		return
 	}
-	providerConfig := stored.Settings
+	providerConfig := stored.Config
 
 	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
 		SendError(ctx, fasthttp.StatusBadRequest, "Cannot update keys on a keyless provider")
@@ -273,7 +273,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 	}
 	storedSchemaKey := configstore.SchemaKeyFromTableKey(*storedKey)
 	oldRawKey := &storedSchemaKey
-	before := lib.AuditSnapshot(redactKeys([]schemas.Key{*oldRawKey})[0])
+	before := lib.AuditSnapshot(configstore.RedactedKey(*oldRawKey))
 
 	if err := rejectUnknownOAuthKeyConfigFields(ctx.PostBody()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -454,7 +454,7 @@ func (h *ProviderHandler) refreshProviderModels(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider keys: %v", err))
 		return
 	}
-	keys := append([]schemas.Key(nil), redactKeys(stored)...)
+	keys := append([]schemas.Key(nil), configstore.RedactedKeys(stored)...)
 
 	lib.RecordAuditChange(ctx, "provider.models_refreshed", "provider", string(provider), string(provider), nil, map[string]any{"key_count": len(keys)})
 	SendJSON(ctx, ListProviderKeysResponse{Keys: keys, Total: len(keys)})
@@ -550,13 +550,7 @@ func (h *ProviderHandler) redactedKeyOf(ctx context.Context, provider schemas.Mo
 		}
 		key = rec.Key
 	}
-	return redactKeys([]schemas.Key{key})[0], nil
-}
-
-// redactKeys returns copies of keys as the keys API shows them: identifiers readable,
-// credentials masked. The keys themselves, which may be the live store's, are left untouched.
-func redactKeys(keys []schemas.Key) []schemas.Key {
-	return (&configstore.ProviderConfig{Keys: keys}).Redacted().Keys
+	return configstore.RedactedKey(key), nil
 }
 
 // decodeKeyUpdate decodes a key update body with patch semantics: a field the

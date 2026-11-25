@@ -11,8 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newProviderDB returns a new SQLite config store holding providers.
-func newProviderDB(t *testing.T, providers map[schemas.ModelProvider]configstore.ProviderConfig) configstore.ConfigStore {
+// newProviderDB returns a new SQLite config store holding one provider, with default settings, per
+// entry of keys, and that entry's keys.
+func newProviderDB(t *testing.T, keys map[schemas.ModelProvider][]schemas.Key) configstore.ConfigStore {
 	t.Helper()
 	ctx := context.Background()
 	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
@@ -22,7 +23,11 @@ func newProviderDB(t *testing.T, providers map[schemas.ModelProvider]configstore
 	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	require.NoError(t, err)
 	t.Cleanup(func() { store.Close(ctx) })
-	require.NoError(t, store.UpdateProvidersConfig(ctx, providers))
+	providers := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(keys))
+	for provider := range keys {
+		providers[provider] = configstore.ProviderConfig{}
+	}
+	require.NoError(t, store.UpdateProvidersConfig(ctx, providers, keys))
 	return store
 }
 
@@ -35,10 +40,10 @@ func key(id string) schemas.Key {
 // end, each page holding at most the rows asked for.
 func TestProvidersPageWalksEveryProviderInNameOrder(t *testing.T) {
 	ctx := context.Background()
-	store := newProviderDB(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Anthropic: {Keys: []schemas.Key{key("a1")}},
-		schemas.Gemini:    {Keys: []schemas.Key{key("g1")}},
-		schemas.OpenAI:    {Keys: []schemas.Key{key("o1")}},
+	store := newProviderDB(t, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {key("a1")},
+		schemas.Gemini:    {key("g1")},
+		schemas.OpenAI:    {key("o1")},
 	})
 
 	var names []schemas.ModelProvider
@@ -63,8 +68,8 @@ func TestProvidersPageWalksEveryProviderInNameOrder(t *testing.T) {
 // TestProvidersByNameLeavesOutMissingRows checks that a name with no row is simply absent, which is
 // how a refresh learns that a provider was deleted.
 func TestProvidersByNameLeavesOutMissingRows(t *testing.T) {
-	store := newProviderDB(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{key("o1")}},
+	store := newProviderDB(t, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {key("o1")},
 	})
 	rows, err := ProvidersByName(context.Background(), store.DB(), []string{string(schemas.OpenAI), string(schemas.Anthropic)})
 	require.NoError(t, err)
@@ -86,9 +91,9 @@ func keyIDs(recs []*ProviderKey) []string {
 // named as the parent, and leaves other providers' keys out.
 func TestProviderKeysByProvidersReadsKeysInCreationOrder(t *testing.T) {
 	ctx := context.Background()
-	store := newProviderDB(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Anthropic: {Keys: []schemas.Key{key("a1")}},
-		schemas.OpenAI:    {Keys: []schemas.Key{key("o1")}},
+	store := newProviderDB(t, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {key("a1")},
+		schemas.OpenAI:    {key("o1")},
 	})
 	require.NoError(t, store.CreateProviderKey(ctx, schemas.OpenAI, key("o0")))
 
@@ -108,9 +113,9 @@ func TestProviderKeysByProvidersReadsKeysInCreationOrder(t *testing.T) {
 // pages follow the key_id cursor to the end, each holding at most the rows asked for.
 func TestProviderKeysByIDAndPage(t *testing.T) {
 	ctx := context.Background()
-	store := newProviderDB(t, map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Anthropic: {Keys: []schemas.Key{key("a1")}},
-		schemas.OpenAI:    {Keys: []schemas.Key{key("o1"), key("o2")}},
+	store := newProviderDB(t, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {key("a1")},
+		schemas.OpenAI:    {key("o1"), key("o2")},
 	})
 	recs, err := ProviderKeysByID(ctx, store.DB(), []string{"o2", "gone"})
 	require.NoError(t, err)

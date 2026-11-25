@@ -2491,7 +2491,7 @@ func TestGovernanceStore_CollectModelConfigsForKeyAliases(t *testing.T) {
 	// withKeys takes the subtest's t, so a fixture failure is reported by the subtest that hit it.
 	withKeys := func(t *testing.T, keys ...schemas.Key) *LocalGovernanceStore {
 		store, h := modelKeyStore(t, mk("sonnet-limit", sonnet), mk("opus-limit", opus))
-		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {Keys: keys}})
+		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{schemas.Bedrock: keys})
 		return store
 	}
 	off := false
@@ -2543,15 +2543,15 @@ func TestGovernanceStore_CollectModelConfigsForKeyAliases(t *testing.T) {
 		assert.Equal(t, []string{sonnet}, store.aliasTargets(ctx, &provider, "claude-sonnet"))
 
 		store, h := modelKeyStore(t, mk("sonnet-limit", sonnet), mk("alias-limit", "claude-sonnet"))
-		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.Bedrock: {{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}},
 		})
 		assert.Equal(t, []string{"alias-limit", "sonnet-limit"}, ids(collect(store, "claude-sonnet", &provider)))
 	})
 	t.Run("a provider-less config on the target is found", func(t *testing.T) {
 		store, h := modelKeyStore(t, buildModelConfig("any-provider", sonnet, nil, buildBudget("b-any", 100.0, "1d"), nil))
-		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.Bedrock: {{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}},
 		})
 		assert.Equal(t, []string{"any-provider"}, ids(collect(store, "claude-sonnet", &provider)))
 	})
@@ -2561,8 +2561,8 @@ func TestGovernanceStore_CollectModelConfigsForKeyAliases(t *testing.T) {
 		vkID := "vk-1"
 		scoped.ScopeID = &vkID
 		store, h := modelKeyStore(t, scoped)
-		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.Bedrock: {{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}},
 		})
 		budgetIDs, _ := store.CollectModelScopedGovernanceIDs(ctx, vkID, "", schemas.Bedrock, "claude-sonnet")
 		assert.Equal(t, []string{"b-vk-sonnet"}, budgetIDs)
@@ -2571,7 +2571,7 @@ func TestGovernanceStore_CollectModelConfigsForKeyAliases(t *testing.T) {
 	// store that cannot see that provider's config.
 	t.Run("a provider with no record leaves the lookup as it was", func(t *testing.T) {
 		store, h := modelKeyStore(t, mk("sonnet-limit", sonnet), mk("opus-limit", opus))
-		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}}})
+		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{schemas.Bedrock: {{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}})
 		h.deleteProvider(schemas.Bedrock)
 		assert.Empty(t, collect(store, "claude-sonnet", &provider))
 		assert.Nil(t, store.aliasTargets(ctx, &provider, "claude-sonnet"))
@@ -2626,8 +2626,8 @@ func TestGovernanceStore_CollectModelConfigsForKeyAliases(t *testing.T) {
 	t.Run("an exhausted limit on the alias target does not reach the aliased name when it runs as written", func(t *testing.T) {
 		sonnetCfg := buildModelConfig("sonnet-cfg", "claude-sonnet-4-6", &provider, buildBudget("b-sonnet-cfg", 100.0, "1d"), nil)
 		store, h := modelKeyStore(t, sonnetCfg)
-		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
+		h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.Bedrock: {{Models: anyModel, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}},
 		})
 		normal := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		literal := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -2668,8 +2668,8 @@ func TestGovernanceStore_KeyAliasTargetsResolvedOncePerAttempt(t *testing.T) {
 		mk("vk-a-sonnet", sonnet, configstoreTables.ModelConfigScopeVirtualKey, "vk-a"),
 		mk("vk-b-sonnet", sonnet, configstoreTables.ModelConfigScopeVirtualKey, "vk-b"),
 	)
-	h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Bedrock: {Keys: []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+	h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Bedrock: {{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}},
 	})
 
 	t.Run("GatherLimits with no access", func(t *testing.T) {
@@ -2745,10 +2745,10 @@ func BenchmarkGatherLimits_KeyAliases(b *testing.B) {
 				tc.set(ctx)
 			}
 			if tc.noMem {
-				h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}})
+				h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, nil)
 				h.deleteProvider(schemas.Bedrock)
 			} else {
-				h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {Keys: tc.keys}})
+				h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{schemas.Bedrock: tc.keys})
 			}
 			budgets, _, err := store.GatherLimits(ctx, nil, schemas.Bedrock, tc.model)
 			if err != nil || len(budgets) != tc.want {

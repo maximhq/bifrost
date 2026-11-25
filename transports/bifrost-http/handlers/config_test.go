@@ -92,7 +92,7 @@ func TestUpdateConfig_InferenceAuthBlocksUpstream(t *testing.T) {
 	}))
 	defer upstream.Close()
 	log := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	declared := libtest.FileOnlyGovernance(t, &lib.Config{}, nil, &configstore.GovernanceConfig{VirtualKeys: []configtables.TableVirtualKey{{
+	declared := libtest.FileOnlyGovernance(t, &lib.Config{}, nil, nil, &configstore.GovernanceConfig{VirtualKeys: []configtables.TableVirtualKey{{
 		ID: "setup-vk", Name: "setup-vk", Value: *schemas.NewSecretVar("sk-bf-setup"), IsActive: new(true),
 		ProviderConfigs: []configtables.TableVirtualKeyProviderConfig{{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true}},
 	}}})

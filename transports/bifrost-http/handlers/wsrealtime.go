@@ -677,7 +677,7 @@ func (h *WSRealtimeHandler) openRealtimeUpstream(
 	}
 	var proxyConfig *schemas.ProxyConfig
 	if stored, ok := h.config.LiveStore.Collections.Providers.Get(string(providerKey)); ok {
-		proxyConfig = stored.Settings.ProxyConfig
+		proxyConfig = stored.Config.ProxyConfig
 	}
 	upstream, err := h.pool.Get(bfws.PoolKey{
 		Provider: providerKey,
