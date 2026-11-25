@@ -308,6 +308,51 @@ test.describe('Virtual Key Management', () => {
       expect(currentUnselected).toBe(oldUnselected)
     })
 
+    // A reload failure cannot be forced from the browser, so these rotate for real and add the server's warning to the response.
+    test('should warn when a rotated key is saved but not loaded', async ({ virtualKeysManagementPage }) => {
+      const vkName = `Rotate Warning VK ${Date.now()}`
+      managementVKs.push(vkName)
+      await virtualKeysManagementPage.createVirtualKey(createVirtualKeyData({ name: vkName }))
+      const oldValue = await virtualKeysManagementPage.getDisplayedVirtualKeyValue(vkName)
+
+      await virtualKeysManagementPage.page.route('**/api/governance/virtual-keys/*/rotate', async (route) => {
+        const response = await route.fetch()
+        await route.fulfill({ response, json: { ...(await response.json()), warning: 'not loaded' } })
+      })
+      await virtualKeysManagementPage.rotateVirtualKey(vkName, ['The old value may still work'])
+
+      const newValue = await virtualKeysManagementPage.waitForVirtualKeyValueToChange(vkName, oldValue)
+      expect(newValue).toMatch(/^sk-bf-/)
+    })
+
+    for (const withError of [false, true]) {
+      test(`should warn on bulk rotation with ${withError ? 'warnings and errors' : 'only warnings'}`, async ({ virtualKeysManagementPage }) => {
+        const first = `Bulk Warning One ${Date.now()}`
+        const second = `Bulk Warning Two ${Date.now()}`
+        for (const name of [first, second]) {
+          managementVKs.push(name)
+          await virtualKeysManagementPage.createVirtualKey(createVirtualKeyData({ name }))
+        }
+        const oldFirst = await virtualKeysManagementPage.getDisplayedVirtualKeyValue(first)
+        const oldSecond = await virtualKeysManagementPage.getDisplayedVirtualKeyValue(second)
+
+        await virtualKeysManagementPage.page.route('**/api/governance/virtual-keys/rotate', async (route) => {
+          const response = await route.fetch()
+          const body = (await response.json()) as BulkRotateVirtualKeysApiResponse
+          const warnings = Object.fromEntries(body.virtual_keys.map((vk) => [vk.id, 'not loaded']))
+          const errors = withError ? { 'missing-vk-id': 'virtual key not found' } : undefined
+          await route.fulfill({ response, json: { ...body, warnings, errors } })
+        })
+        await virtualKeysManagementPage.bulkRotateVirtualKeys(
+          [first, second],
+          [withError ? 'Rotated 2 virtual keys. 1 failed.' : 'Rotated 2 virtual keys.', 'Keys saved but possibly not loaded: 2', 'old values may still work'],
+        )
+
+        expect(await virtualKeysManagementPage.waitForVirtualKeyValueToChange(first, oldFirst)).toMatch(/^sk-bf-/)
+        expect(await virtualKeysManagementPage.waitForVirtualKeyValueToChange(second, oldSecond)).toMatch(/^sk-bf-/)
+      })
+    }
+
     test('should rotate a virtual key through the API', async ({ request }) => {
       const vkName = `API Rotate VK ${Date.now()}`
       const createResp = (await virtualKeysApi.create(request, {

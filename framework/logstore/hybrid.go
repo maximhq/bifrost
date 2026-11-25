@@ -1825,8 +1825,8 @@ func (h *HybridLogStore) BulkUpdateCost(ctx context.Context, updates map[string]
 // GetNodeUsageAfter delegates to the inner store and returns usage
 // aggregates for the given node since cursor, used by the cluster gossip
 // path to ship incremental usage to peers.
-func (h *HybridLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
-	return h.inner.GetNodeUsageAfter(ctx, nodeID, cursor)
+func (h *HybridLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor, windows NodeUsageWindows) (*NodeUsageAggregate, error) {
+	return h.inner.GetNodeUsageAfter(ctx, nodeID, cursor, windows)
 }
 
 // Flush delegates to the inner store and forces any buffered DB writes since
@@ -3221,6 +3221,14 @@ func (h *HybridLogStore) DeleteRelayLogs(ctx context.Context, ids []string) erro
 
 func (h *HybridLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	return h.inner.DeleteRelayLogsBatch(ctx, cutoff, batchSize)
+}
+
+// ReclaimSpace delegates to the inner store when it can release freed pages.
+func (h *HybridLogStore) ReclaimSpace(ctx context.Context, maxPages int) (int64, error) {
+	if reclaimer, ok := h.inner.(SpaceReclaimer); ok {
+		return reclaimer.ReclaimSpace(ctx, maxPages)
+	}
+	return 0, nil
 }
 
 // Complexity suggestion methods - delegated directly. Suggestions, runs and

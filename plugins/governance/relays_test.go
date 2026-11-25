@@ -49,9 +49,9 @@ func newPluginForEndpointsWith(t testing.TB, modelConfigs []configstoreTables.Ta
 			cfg.RateLimits = append(cfg.RateLimits, *mc.RateLimit)
 		}
 	}
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, cfg, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, cfg, nil, nil)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin, store

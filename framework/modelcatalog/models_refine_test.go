@@ -11,7 +11,7 @@ import (
 // own prefix is stripped and re-refined (round-tripping canonical own-prefixed names),
 // and unknown namespace prefixes are left untouched.
 func TestRefineModelForProvider(t *testing.T) {
-	mc := NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	mc.UpsertLive(schemas.Groq, "groq-key", false, []string{"openai/gpt-oss-120b", "meta-llama/llama-4-scout-17b-16e-instruct", "qwen/qwen3-32b"})
 	mc.UpsertLive(schemas.OpenRouter, "or-key", false, []string{"openai/gpt-4o", "anthropic/claude-sonnet-4-5", "openrouter/auto"})
 	mc.UpsertLive(schemas.Perplexity, "pplx-key", false, []string{"perplexity/sonar", "anthropic/claude-opus-4-6"})
@@ -65,7 +65,7 @@ func TestRefineModelForProvider(t *testing.T) {
 // looks the alias up by the name it receives, so "system.ai.my-alias" would miss the alias and
 // be sent upstream as a literal model. Other providers keep their refinement unchanged.
 func TestRefineModelForProviderKeepsDatabricksKeyAliases(t *testing.T) {
-	mc := NewTestCatalog(nil)
+	mc := catalogForTest(t, nil)
 	mc.SetKeyConfigForProvider(schemas.Databricks, []schemas.Key{{
 		ID:      "dbx-key",
 		Models:  schemas.WhiteList{"*"},

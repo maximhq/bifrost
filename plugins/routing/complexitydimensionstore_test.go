@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -138,7 +139,11 @@ func (s *stubDimensionConfigStore) CleanupExpiredLockByKey(_ context.Context, lo
 
 func newTestDimensionStore(t *testing.T, backing configstore.ConfigStore) *persistentEmbeddingDimensionStore {
 	t.Helper()
-	store := newPersistentEmbeddingDimensionStore(context.Background(), backing, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	store, err := newPersistentEmbeddingDimensionStore(context.Background(), backing, live, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
 	require.NotNil(t, store)
 	return store
 }
@@ -234,7 +239,9 @@ func TestDimensionStoreToleratesAFailingConfigStore(t *testing.T) {
 // TestDimensionStoreNilBackingDisablesMemory documents deployments with no
 // config store: every boot measures, exactly as before.
 func TestDimensionStoreNilBackingDisablesMemory(t *testing.T) {
-	assert.Nil(t, newPersistentEmbeddingDimensionStore(context.Background(), nil, nil))
+	none, err := newPersistentEmbeddingDimensionStore(context.Background(), nil, nil, nil)
+	require.NoError(t, err)
+	assert.Nil(t, none)
 
 	var store *persistentEmbeddingDimensionStore
 	_, ok := store.Dimension("openai\x00model-a")

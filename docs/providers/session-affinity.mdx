@@ -118,7 +118,7 @@ Without health signals, a session follows its binding until the request actually
 - **Provider level**: if the load balancer marks the bound provider as failed for the requested model on this node (every key in that direction has failed), the binding is dropped and the routing decision stands. The next served request rebinds the session.
 - **Key level**: if the load balancer marks the bound key's route as failed on this node, holds the key because the provider refused it (see [Held keys](/enterprise/adaptive-routing/how-it-works#held-keys)), or the circuit breaker holds the key back, the binding is dropped and a key is picked normally. The next served request rebinds the session to the key that served it.
 
-Bindings live in the shared KV store and replicate across the cluster, while health is measured per node. A node that sees a provider failing drops the binding for every node. A node that has not observed the failure yet still follows the binding until its own load balancer marks the route as failed or the request fails there. A key held because the provider refused it is the exception: the hold reaches every node, so each one drops the binding before sending the key another request.
+Bindings live in the shared session store and replicate across the cluster, while health is measured per node. A node that sees a provider failing drops the binding for every node. A node that has not observed the failure yet still follows the binding until its own load balancer marks the route as failed or the request fails there. A key held because the provider refused it is the exception: the hold reaches every node, so each one drops the binding before sending the key another request.
 
 ## Controls
 
@@ -131,7 +131,7 @@ Bindings live in the shared KV store and replicate across the cluster, while hea
 A request sent with the switch off is routed as if it had no session: it neither follows nor updates any binding. Any other value is ignored with a warning and the default applies. There is no stored default; the switch is per request.
 
 <Note>
-Bindings live in Bifrost's KV store. The gateway always creates one, so nothing needs to be configured there. Go SDK users must set `KVStore` on `BifrostConfig`, otherwise affinity has nowhere to keep a binding and every request is routed as if it had no session. In an Enterprise cluster the KV store replicates, so a session can land on any node and still find its binding.
+Bindings live in Bifrost's session store. The gateway always creates one, so nothing needs to be configured there. Go SDK users pass `SessionAffinity: bifrost.NewSessionAffinity(store, logger)` on `BifrostConfig`, where `store` is any type with `Get`, `PutWithTTL`, `PutIfAbsent` and `Delete` over string keys and values (`bifrost.SessionAffinityStore`). With no `SessionAffinity` set, Bifrost logs a warning at startup and routes every request as if it had no session. In an Enterprise cluster the session store replicates, so a session can land on any node and still find its binding.
 </Note>
 
 ```bash Gateway
