@@ -2211,22 +2211,30 @@ func TestGovernanceStore_ProviderScopedModelLimitMatchesEverySpelling(t *testing
 
 // ModelConfigGoverns answers what a request-time limit lookup would: a gpt-4o config governs the
 // dated model on its provider (and on every provider when it names none), not a sibling model or
-// another provider, and an alias reaches the limit of the model the provider's keys map it to.
+// another provider, and an alias reaches the limit of the model the caller's usable keys map it to.
 func TestGovernanceStore_ModelConfigGovernsMatchesRequestLookup(t *testing.T) {
-	ctx := context.Background()
 	store := modelKeyStore(t)
 	openai := "openai"
-	assert.True(t, store.ModelConfigGoverns(ctx, "gpt-4o", &openai, schemas.OpenAI, "gpt-4o-2024-08-06"))
-	assert.True(t, store.ModelConfigGoverns(ctx, "gpt-4o", nil, schemas.Azure, "gpt-4o-2024-08-06"))
-	assert.False(t, store.ModelConfigGoverns(ctx, "gpt-4o", &openai, schemas.OpenAI, "gpt-4o-mini"))
-	assert.False(t, store.ModelConfigGoverns(ctx, "gpt-4o", &openai, schemas.Anthropic, "gpt-4o"))
+	all := schemas.WhiteList{"*"}
+	assert.True(t, store.ModelConfigGoverns("gpt-4o", &openai, schemas.OpenAI, "gpt-4o-2024-08-06", all))
+	assert.True(t, store.ModelConfigGoverns("gpt-4o", nil, schemas.Azure, "gpt-4o-2024-08-06", all))
+	assert.False(t, store.ModelConfigGoverns("gpt-4o", &openai, schemas.OpenAI, "gpt-4o-mini", all))
+	assert.False(t, store.ModelConfigGoverns("gpt-4o", &openai, schemas.Anthropic, "gpt-4o", all))
 
+	// Two keys map the alias to different models; only the keys the caller may use count.
 	bedrock := "bedrock"
-	const sonnet = "us.anthropic.claude-sonnet-4-6"
+	const sonnet, opus = "us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-opus-4-6"
 	store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.Bedrock: {Keys: []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		schemas.Bedrock: {Keys: []schemas.Key{
+			{ID: "key-sonnet", Models: all, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			{ID: "key-opus", Models: all, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: opus}}},
+		}},
 	}}
-	assert.True(t, store.ModelConfigGoverns(ctx, sonnet, &bedrock, schemas.Bedrock, "claude-sonnet"))
+	assert.True(t, store.ModelConfigGoverns(sonnet, &bedrock, schemas.Bedrock, "claude-sonnet", all))
+	assert.True(t, store.ModelConfigGoverns(opus, &bedrock, schemas.Bedrock, "claude-sonnet", all))
+	assert.True(t, store.ModelConfigGoverns(sonnet, &bedrock, schemas.Bedrock, "claude-sonnet", schemas.WhiteList{"key-sonnet"}))
+	assert.False(t, store.ModelConfigGoverns(opus, &bedrock, schemas.Bedrock, "claude-sonnet", schemas.WhiteList{"key-sonnet"}))
+	assert.False(t, store.ModelConfigGoverns(opus, &bedrock, schemas.Bedrock, "claude-sonnet", nil))
 }
 
 // The spelling an operator stores a provider-scoped config under is canonicalised the same way a

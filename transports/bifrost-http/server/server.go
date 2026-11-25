@@ -1109,15 +1109,15 @@ func (s *BifrostHTTPServer) ModelConfigIndexKey(model string, provider *string) 
 
 // modelConfigGoverner is the governance store's request-time model limit matching.
 type modelConfigGoverner interface {
-	ModelConfigGoverns(ctx context.Context, configModel string, configProvider *string, provider schemas.ModelProvider, model string) bool
+	ModelConfigGoverns(configModel string, configProvider *string, provider schemas.ModelProvider, model string, keyIDs schemas.WhiteList) bool
 }
 
 // modelConfigGoverns matches a model config to a request the way the governance store resolves
 // request limits; a store without that matching falls back to canonical spellings.
-func (s *BifrostHTTPServer) modelConfigGoverns(ctx context.Context, configModel string, configProvider *string, provider schemas.ModelProvider, model string) bool {
+func (s *BifrostHTTPServer) modelConfigGoverns(configModel string, configProvider *string, provider schemas.ModelProvider, model string, keyIDs schemas.WhiteList) bool {
 	if governancePlugin, err := s.getGovernancePlugin(); err == nil && governancePlugin != nil {
 		if store, ok := governancePlugin.GetGovernanceStore().(modelConfigGoverner); ok {
-			return store.ModelConfigGoverns(ctx, configModel, configProvider, provider, model)
+			return store.ModelConfigGoverns(configModel, configProvider, provider, model, keyIDs)
 		}
 	}
 	return governance.CanonicalModelConfigName(configModel, configProvider) == governance.CanonicalModelConfigName(model, configProvider)

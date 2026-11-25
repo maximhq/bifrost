@@ -6003,7 +6003,12 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		if match == nil {
 			match = canonicalModelConfigMatch
 		}
-		upstreamHealth = vkUpstreamHealth(ctx, source(time.Now()), vk.ProviderConfigs, vk.AllowAllProviders, models, match)
+		upstreamHealth = vkUpstreamHealth(source(time.Now()), vk.ProviderConfigs, vk.AllowAllProviders, models, match)
+	}
+	// The provider configs' keys are loaded only to resolve key aliases above; the response has
+	// never carried them, and a self-service caller has no use for provider key IDs.
+	for i := range vk.ProviderConfigs {
+		vk.ProviderConfigs[i].Keys = nil
 	}
 
 	SendJSON(ctx, map[string]interface{}{

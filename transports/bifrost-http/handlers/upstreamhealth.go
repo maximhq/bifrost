@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -14,9 +13,10 @@ import (
 type UpstreamHealthSource func(now time.Time) []schemas.UpstreamHealth
 
 // ModelConfigMatcher reports whether a model config for (configModel, configProvider) governs a
-// request for model on provider, the way inference resolves a request's model limits: by the
-// model's canonical and base names and the models the provider's key aliases map it to.
-type ModelConfigMatcher func(ctx context.Context, configModel string, configProvider *string, provider schemas.ModelProvider, model string) bool
+// request for model on provider sent through the keys keyIDs allows, the way inference resolves a
+// request's model limits: by the model's canonical and base names and the models those keys'
+// aliases map it to.
+type ModelConfigMatcher func(configModel string, configProvider *string, provider schemas.ModelProvider, model string, keyIDs schemas.WhiteList) bool
 
 // SetUpstreamHealthSource wires the snapshot the virtual-key quota endpoint reports as
 // upstream_health. Without it the field is reported empty.
@@ -32,9 +32,12 @@ func (h *GovernanceHandler) SetModelConfigMatcher(match ModelConfigMatcher) {
 
 // canonicalModelConfigMatch is the matcher used without the governance store: a limit applies to
 // the model it names, in any spelling that canonicalises to it.
-func canonicalModelConfigMatch(_ context.Context, configModel string, configProvider *string, _ schemas.ModelProvider, model string) bool {
+func canonicalModelConfigMatch(configModel string, configProvider *string, _ schemas.ModelProvider, model string, _ schemas.WhiteList) bool {
 	return governance.CanonicalModelConfigName(configModel, configProvider) == governance.CanonicalModelConfigName(model, configProvider)
 }
+
+// allProviderKeys is the key restriction on a provider granted by allow_all_providers: none.
+var allProviderKeys = schemas.WhiteList{"*"}
 
 // vkUpstreamHealth returns the upstream health of the provider/model pairs the virtual key
 // can reach, with each pair's EffectiveRemainingFraction narrowed by the static budgets and rate
@@ -43,8 +46,9 @@ func canonicalModelConfigMatch(_ context.Context, configModel string, configProv
 // pair is reachable through a provider config that allows the model, or, when the key allows all
 // providers, through any provider it names no config for: inference grants those with every
 // model. Every pair in the snapshot was dispatched to, so its provider is configured. match
-// decides which per-model limits govern a pair.
-func vkUpstreamHealth(ctx context.Context, snapshot []schemas.UpstreamHealth, providerConfigs []configstoreTables.TableVirtualKeyProviderConfig, allowAllProviders bool, models []quotaModelUsage, match ModelConfigMatcher) []schemas.UpstreamHealth {
+// decides which per-model limits govern a pair, through the keys the key's provider config allows
+// (every key on a provider granted by allow_all_providers).
+func vkUpstreamHealth(snapshot []schemas.UpstreamHealth, providerConfigs []configstoreTables.TableVirtualKeyProviderConfig, allowAllProviders bool, models []quotaModelUsage, match ModelConfigMatcher) []schemas.UpstreamHealth {
 	out := make([]schemas.UpstreamHealth, 0, len(snapshot))
 	for _, entry := range snapshot {
 		var pc *configstoreTables.TableVirtualKeyProviderConfig
@@ -62,16 +66,20 @@ func vkUpstreamHealth(ctx context.Context, snapshot []schemas.UpstreamHealth, pr
 			continue
 		}
 		if entry.Available {
+			keyIDs := allProviderKeys
+			if pc != nil {
+				keyIDs = pc.KeyIDs()
+			}
 			if pc != nil {
 				entry.EffectiveRemainingFraction = min(entry.EffectiveRemainingFraction, staticRemainingFraction(pc.Budgets, pc.RateLimit))
 				for j := range pc.ModelBudgets {
-					if mb := &pc.ModelBudgets[j]; match(ctx, mb.ModelName, &pc.Provider, entry.Provider, entry.Model) {
+					if mb := &pc.ModelBudgets[j]; match(mb.ModelName, &pc.Provider, entry.Provider, entry.Model, keyIDs) {
 						entry.EffectiveRemainingFraction = min(entry.EffectiveRemainingFraction, staticRemainingFraction(mb.Budgets, mb.RateLimit))
 					}
 				}
 			}
 			for j := range models {
-				if m := &models[j]; m.Provider == nil && match(ctx, m.ModelName, nil, entry.Provider, entry.Model) {
+				if m := &models[j]; m.Provider == nil && match(m.ModelName, nil, entry.Provider, entry.Model, keyIDs) {
 					entry.EffectiveRemainingFraction = min(entry.EffectiveRemainingFraction, staticRemainingFraction(m.Budgets, m.RateLimit))
 				}
 			}

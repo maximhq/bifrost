@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -27,7 +26,7 @@ func TestVKUpstreamHealthFiltersReachablePairsAndFoldsStaticLimits(t *testing.T)
 		}},
 	}}
 
-	got := vkUpstreamHealth(context.Background(), snapshot, configs, false, nil, canonicalModelConfigMatch)
+	got := vkUpstreamHealth(snapshot, configs, false, nil, canonicalModelConfigMatch)
 	if len(got) != 2 || got[0].Model != "claude-a" || got[1].Model != "claude-b" {
 		t.Fatalf("expected only the reachable anthropic pairs, got %+v", got)
 	}
@@ -37,7 +36,7 @@ func TestVKUpstreamHealthFiltersReachablePairsAndFoldsStaticLimits(t *testing.T)
 	if got[1].EffectiveRemainingFraction != 0.25 {
 		t.Fatalf("expected the per-model request limit (25%% left) to bound the pair, got %v", got[1].EffectiveRemainingFraction)
 	}
-	if len(vkUpstreamHealth(context.Background(), snapshot, nil, false, nil, canonicalModelConfigMatch)) != 0 {
+	if len(vkUpstreamHealth(snapshot, nil, false, nil, canonicalModelConfigMatch)) != 0 {
 		t.Fatal("a key with no provider configs reaches nothing")
 	}
 }
@@ -55,11 +54,11 @@ func TestVKUpstreamHealthAllowAllProvidersReachesUnnamedProviders(t *testing.T) 
 		AllowedModels:     schemas.WhiteList{"*"},
 		BlacklistedModels: schemas.BlackList{"claude-blocked"},
 	}}
-	got := vkUpstreamHealth(context.Background(), snapshot, configs, true, nil, canonicalModelConfigMatch)
+	got := vkUpstreamHealth(snapshot, configs, true, nil, canonicalModelConfigMatch)
 	if len(got) != 2 || got[0].Model != "gpt-x" || got[1].Model != "claude-a" {
 		t.Fatalf("expected the unnamed provider and the named provider's allowed model, got %+v", got)
 	}
-	if got := vkUpstreamHealth(context.Background(), snapshot, nil, true, nil, canonicalModelConfigMatch); len(got) != 3 {
+	if got := vkUpstreamHealth(snapshot, nil, true, nil, canonicalModelConfigMatch); len(got) != 3 {
 		t.Fatalf("a key allowing all providers with no configs reaches every pair, got %+v", got)
 	}
 }
@@ -80,11 +79,39 @@ func TestVKUpstreamHealthFoldsLimitsTheMatcherGoverns(t *testing.T) {
 		}},
 	}}
 	models := []quotaModelUsage{{ModelName: "gpt-4o", Budgets: []configstoreTables.TableBudget{{MaxLimit: 10, CurrentUsage: 5}}}}
-	match := func(_ context.Context, configModel string, _ *string, _ schemas.ModelProvider, model string) bool {
+	match := func(configModel string, _ *string, _ schemas.ModelProvider, model string, _ schemas.WhiteList) bool {
 		return configModel == "gpt-4o" && model == "gpt-4o-2024-08-06"
 	}
-	got := vkUpstreamHealth(context.Background(), snapshot, configs, false, models, match)
+	got := vkUpstreamHealth(snapshot, configs, false, models, match)
 	if len(got) != 2 || got[0].EffectiveRemainingFraction != 0 || got[1].EffectiveRemainingFraction != 1 {
 		t.Fatalf("expected the exhausted gpt-4o budget to bound only its dated model, got %+v", got)
+	}
+}
+
+// The matcher resolves a pair through the keys the virtual key's provider config allows, so an
+// alias another key maps to an exhausted model does not take capacity from this key's route.
+func TestVKUpstreamHealthMatchesThroughTheConfigsKeys(t *testing.T) {
+	snapshot := []schemas.UpstreamHealth{
+		{Provider: schemas.Bedrock, Model: "claude-sonnet", Status: schemas.UpstreamHealthDegraded, Available: true, EffectiveRemainingFraction: 1},
+		{Provider: schemas.OpenAI, Model: "gpt-x", Status: schemas.UpstreamHealthDegraded, Available: true, EffectiveRemainingFraction: 1},
+	}
+	configs := []configstoreTables.TableVirtualKeyProviderConfig{{
+		Provider:      "bedrock",
+		AllowedModels: schemas.WhiteList{"*"},
+		Keys:          []configstoreTables.TableKey{{KeyID: "key-sonnet"}},
+	}}
+	models := []quotaModelUsage{{ModelName: "opus", Budgets: []configstoreTables.TableBudget{{MaxLimit: 10, CurrentUsage: 10}}}}
+	var seen []schemas.WhiteList
+	match := func(configModel string, _ *string, provider schemas.ModelProvider, _ string, keyIDs schemas.WhiteList) bool {
+		seen = append(seen, keyIDs)
+		// key-opus maps claude-sonnet to opus; key-sonnet does not.
+		return configModel == "opus" && provider == schemas.Bedrock && keyIDs.IsAllowed("key-opus")
+	}
+	got := vkUpstreamHealth(snapshot, configs, true, models, match)
+	if len(got) != 2 || got[0].EffectiveRemainingFraction != 1 {
+		t.Fatalf("expected the key-sonnet route to keep its capacity, got %+v", got)
+	}
+	if len(seen) != 2 || len(seen[0]) != 1 || seen[0][0] != "key-sonnet" || !seen[1].IsUnrestricted() {
+		t.Fatalf("expected the config's keys for bedrock and every key for the allow-all provider, got %v", seen)
 	}
 }

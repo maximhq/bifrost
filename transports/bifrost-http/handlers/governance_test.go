@@ -2474,6 +2474,35 @@ func TestGetVirtualKeyQuota_UpstreamHealthAllowAllProviders(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeyQuota_OmitsProviderConfigKeys: the quota lookup loads each provider config's key
+// IDs to resolve key aliases, but the self-service response does not carry them.
+func TestGetVirtualKeyQuota_OmitsProviderConfigKeys(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:       "vk-1",
+			Name:     "Production",
+			IsActive: &active,
+			ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
+				{ID: 7, VirtualKeyID: "vk-1", Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, Keys: []configstoreTables.TableKey{{ID: 3, KeyID: "provider-key-uuid"}}},
+			},
+		},
+	}
+	h := &GovernanceHandler{configStore: store}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if strings.Contains(string(ctx.Response.Body()), "provider-key-uuid") {
+		t.Fatalf("the quota response must not carry provider key IDs: %s", ctx.Response.Body())
+	}
+}
+
 // TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets verifies the
 // AP-managed-VK path: when a registered ExternalQuotaBudgetResolver returns budgets
 // (enterprise access-profile budgets, which carry the real usage), they REPLACE the VK's

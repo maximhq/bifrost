@@ -2395,9 +2395,11 @@ func (gs *LocalGovernanceStore) ModelConfigIndexKey(model string, provider *stri
 }
 
 // ModelConfigGoverns reports whether a model config for (configModel, configProvider) governs a
-// request for model on provider: whether collectModelConfigsFor would reach it, by the model's
-// canonical or base name or by a model the provider's key aliases map the name to.
-func (gs *LocalGovernanceStore) ModelConfigGoverns(ctx context.Context, configModel string, configProvider *string, provider schemas.ModelProvider, model string) bool {
+// request for model on provider sent through the keys keyIDs allows: whether collectModelConfigsFor
+// would reach it, by the model's canonical or base name or by a model one of those keys' aliases
+// maps the name to. A key the caller cannot use never resolves its alias, so it cannot bring in
+// another model's limit.
+func (gs *LocalGovernanceStore) ModelConfigGoverns(configModel string, configProvider *string, provider schemas.ModelProvider, model string, keyIDs schemas.WhiteList) bool {
 	if configProvider != nil && *configProvider != string(provider) {
 		return false
 	}
@@ -2409,13 +2411,18 @@ func (gs *LocalGovernanceStore) ModelConfigGoverns(ctx context.Context, configMo
 	if reaches(model) {
 		return true
 	}
-	providerName := string(provider)
-	for _, target := range gs.aliasTargets(ctx, &providerName, model) {
-		if reaches(target) {
-			return true
-		}
+	if gs.inMemoryStore == nil {
+		return false
 	}
-	return false
+	cfg, ok := configuredProvider(gs.inMemoryStore, provider)
+	if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) {
+		return false
+	}
+	found := false
+	modelcatalog.KeyAliasTargets(model, cfg.Keys, keyIDs, func(target string) {
+		found = found || reaches(target)
+	})
+	return found
 }
 
 // storeModelConfig indexes a model config under the key lookups will ask for. A provider-scoped
