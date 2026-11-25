@@ -346984,8 +346984,13 @@
                   "  var content = String(pm.response.json().content || '');",
                   "  var client = pm.collectionVariables.get('codeModeDiscoveryClient');",
                   "  pm.expect(content, 'no ranked shortlist header: ' + content).to.include('# Ranked shortlist for this query');",
-                  "  var files = content.split('\\n').filter(function (line) { return line.indexOf('servers/' + client + '/') === 0; }).map(function (line) { return line.split('  #')[0]; });",
-                  "  pm.expect(files[0], 'the matching tool is not ranked first: ' + content).to.equal('servers/' + client + '/echo.pyi');",
+                  "  // Tool binding lists servers/<client>/echo.pyi; server binding (the default) lists",
+                  "  // servers/<client>.pyi with the matching tool names beside it. Either is a pass.",
+                  "  var files = content.split('\\n').filter(function (line) { return line.indexOf('servers/') === 0; });",
+                  "  var first = files[0] || '';",
+                  "  var toolLevel = first.split('  #')[0] === 'servers/' + client + '/echo.pyi';",
+                  "  var serverLevel = first.indexOf('servers/' + client + '.pyi  # tools: echo') === 0;",
+                  "  pm.expect(toolLevel || serverLevel, 'the matching tool is not ranked first: ' + content).to.equal(true);",
                   "  pm.expect(files.length, 'the shortlist exceeds limit=2: ' + content).to.be.at.most(2);",
                   "});"
                 ]
