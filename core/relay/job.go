@@ -316,6 +316,10 @@ func (e *endpoint) statusCheckCandidates(ctx context.Context, req *schemas.Bifro
 	for _, i := range e.jobOrder {
 		job := e.routes[i].job
 		if id := matchStatusCheck(job.Poll, &effective, e.operatorHeaders); id != "" {
+			// Routes sharing one status check read the same job, so it is looked up once.
+			if slices.ContainsFunc(out, func(c statusCandidate) bool { return c.id == id && c.match.RouteKey == e.routes[i].jobRouteKey }) {
+				continue
+			}
 			poll := job.Poll
 			poll.Headers = maps.Clone(job.Poll.Headers)
 			out = append(out, statusCandidate{id: id, match: schemas.RelayJobMatch{RouteKey: e.routes[i].jobRouteKey, Poll: poll}})
@@ -346,20 +350,38 @@ func statusCandidatesKey(candidates []statusCandidate) string {
 	return b.String()
 }
 
-// jobRouteKey names a job route by its method, path and header matchers, so two job routes on one
-// relay never share a job row even when their upstreams hand out the same ids.
-func jobRouteKey(route schemas.RelayRouteConfig) string {
-	h := sha256.New()
-	h.Write([]byte(strings.ToUpper(route.Method) + "\x00" + route.Path))
-	names := make([]string, 0, len(route.Headers))
-	for name := range route.Headers {
-		names = append(names, name)
+// JobPollKey names a job by the status check that reads it: the same relay, status check and id
+// is the same upstream job. Editing the start route therefore leaves running jobs alone, and two
+// job families with different status checks never share a row even when both count 1, 2, 3. The
+// template is normalized as PollRequest sends it, so a cosmetic edit (an unset method, header
+// name case, a defaulted content type) keeps the key.
+func JobPollKey(poll schemas.RelayJobPoll) string {
+	method := strings.ToUpper(strings.TrimSpace(poll.Method))
+	if method == "" {
+		method = "POST"
 	}
-	slices.SortFunc(names, func(a, b string) int { return strings.Compare(strings.ToLower(a), strings.ToLower(b)) })
-	for _, name := range names {
-		h.Write([]byte("\x00" + strings.ToLower(name) + "=" + route.Headers[name]))
+	hasBody := poll.Body != ""
+	headers := make([][2]string, 0, len(poll.Headers))
+	for name, value := range poll.Headers {
+		lower := strings.ToLower(strings.TrimSpace(name))
+		// With a body, the poll sends the body's content type, not this header.
+		if hasBody && lower == "content-type" {
+			continue
+		}
+		headers = append(headers, [2]string{lower, value})
 	}
-	return "r" + hex.EncodeToString(h.Sum(nil))[:12]
+	slices.SortFunc(headers, func(a, b [2]string) int { return strings.Compare(a[0], b[0]) })
+	contentType := ""
+	if hasBody {
+		contentType = strings.TrimSpace(poll.ContentType)
+		if contentType == "" {
+			contentType = "application/json"
+		}
+	}
+	// A JSON array keeps the parts unambiguous whatever they contain.
+	canonical, _ := json.Marshal([]any{method, strings.TrimSpace(poll.Path), headers, poll.Body, contentType})
+	sum := sha256.Sum256(canonical)
+	return "r" + hex.EncodeToString(sum[:])[:12]
 }
 
 // idMatch collects the job id each place of a template names, and fails when two disagree.

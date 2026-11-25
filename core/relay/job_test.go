@@ -329,3 +329,28 @@ func TestStatusCheckCandidatesRefuseDotSegments(t *testing.T) {
 	e = &endpoint{routes: []compiledRoute{{job: plain}}, hasJobs: true, jobOrder: []int{0}}
 	assert.NotEmpty(t, e.statusCheckCandidates(context.Background(), &schemas.BifrostRelayRequest{Method: "GET", Path: "/status/j-1"}))
 }
+
+// The job key is the status check as it is sent: cosmetic differences keep it, a real change does not.
+func TestJobPollKey(t *testing.T) {
+	base := schemas.RelayJobPoll{Method: "POST", Path: "/status", Headers: map[string]string{"X-Amz-Target": "Textract.Get"}, Body: `{"JobId":"{{job.id}}"}`}
+	same := []schemas.RelayJobPoll{
+		{Method: "", Path: "/status", Headers: map[string]string{"x-amz-target": "Textract.Get"}, Body: base.Body},
+		{Method: "post", Path: " /status ", Headers: map[string]string{"X-AMZ-TARGET": "Textract.Get", "Content-Type": "text/plain"}, Body: base.Body, ContentType: "application/json"},
+	}
+	for _, p := range same {
+		assert.Equal(t, JobPollKey(base), JobPollKey(p), "%+v", p)
+	}
+	assert.Equal(t, JobPollKey(schemas.RelayJobPoll{Method: "GET", Path: "/j/{{job.id}}"}), JobPollKey(schemas.RelayJobPoll{Method: "GET", Path: "/j/{{job.id}}", Headers: map[string]string{}, ContentType: "application/xml"}),
+		"no headers is no headers, and a content type without a body is never sent")
+	changed := []schemas.RelayJobPoll{
+		{Method: "GET", Path: base.Path, Headers: base.Headers, Body: base.Body},
+		{Method: "POST", Path: "/status2", Headers: base.Headers, Body: base.Body},
+		{Method: "POST", Path: base.Path, Headers: map[string]string{"X-Amz-Target": "Textract.Other"}, Body: base.Body},
+		{Method: "POST", Path: base.Path, Headers: base.Headers, Body: `{"Id":"{{job.id}}"}`},
+		{Method: "POST", Path: base.Path, Headers: base.Headers, Body: base.Body, ContentType: "application/x-amz-json-1.1"},
+	}
+	for _, p := range changed {
+		assert.NotEqual(t, JobPollKey(base), JobPollKey(p), "%+v", p)
+	}
+	assert.Len(t, JobPollKey(base), 13, "the key keeps the row id length it had")
+}

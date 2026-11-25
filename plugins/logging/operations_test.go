@@ -21,6 +21,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	coremcp "github.com/maximhq/bifrost/core/mcp"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -6863,6 +6864,30 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	store.fail = errors.New("database is down")
 	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-5", RequestID: "req-5", RelayName: "textract"}, "", &schemas.RelayJobHandle{ID: "j-2", Params: `{"job":{}}`}, nil)
 	require.Len(t, store.jobs, 2, "a lookup error records nothing rather than risk a duplicate row")
+}
+
+// Jobs are filed under their status check, so a start route edited between two starts files the same
+// job in the same place: a retry is still one job, and reused_id_is_new_job still opens the next
+// generation rather than a fresh first one.
+func TestRelayJobRowFollowsTheStatusCheckAcrossStartRouteEdits(t *testing.T) {
+	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.batchStore = store
+	key := relay.JobPollKey(schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"})
+	before := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{}}`, RouteKey: key}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-1", RequestID: "req-1", RelayName: "textract"}, "", before, nil)
+	after := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{"usage":{"cost_per_request":0.2}}}`, RouteKey: key}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-2", RequestID: "req-2", RelayName: "textract"}, "", after, nil)
+	require.Len(t, store.jobs, 1, "a start retried after the start route was edited is the same job")
+
+	for _, row := range store.jobs {
+		row.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
+	}
+	reusing := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{}}`, RouteKey: key, ReusedIDIsNewJob: true}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3", RequestID: "req-3", RelayName: "textract"}, "", reusing, nil)
+	require.Len(t, store.jobs, 2)
+	gen2, _ := jobaccounting.RelayJobRowID("textract", key, "j-1", 2)
+	require.Contains(t, store.jobs, gen2, "a reused id after settlement opens the next generation of the same job")
 }
 
 // Past the last generation slot each start gets its own row, even when callers share an x-request-id.

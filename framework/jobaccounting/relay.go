@@ -1,9 +1,7 @@
 package jobaccounting
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -86,8 +84,8 @@ const MaxRelayJobGenerations = 64
 // RelayJobRowID is the coordination row id of a relay job, and its scoped job id, for generation
 // gen of an upstream id: the first start takes generation 1, a reused id after settlement the next.
 func RelayJobRowID(relayName, routeKey, upstreamID string, gen int) (id, scoped string) {
-	// The start route is part of the key, so two job routes whose upstreams hand out the same ids
-	// (each counting 1, 2, 3) never share a row.
+	// The status check is part of the key, so two job families whose upstreams hand out the same ids
+	// (each counting 1, 2, 3) never share a row, and editing a start route keeps its running jobs.
 	prefix := routeKey
 	if gen > 1 {
 		prefix += "g" + strconv.Itoa(gen)
@@ -103,9 +101,9 @@ type RelayStatusCheckPayload struct {
 	Body        []byte
 	RequestID   string    // the caller's Relay Logs row
 	SentAt      time.Time // when the caller's check started, to tell which generation it asked about
-	// Matches are the open jobs' routes whose templates the caller's check matched. A job settles
-	// only from its own route and template, so another job's check with the same id, or one from a
-	// template changed since the start, does not.
+	// Matches are the status checks the caller's check matched. A job settles only from its own
+	// status check (compared normalized), so another job family's check with the same id, or one
+	// from a template changed since the start, does not.
 	Matches []schemas.RelayJobMatch
 	Logger  schemas.Logger         // optional; where a settlement problem is reported
 	Emitter RelaySettlementEmitter // optional; reports the settled job to trace-fed metrics
@@ -135,7 +133,7 @@ func AccountRelayJob(ctx context.Context, stateStore JobStore, logs RelayJobLogS
 			continue
 		}
 		snap, err := relaySnapshot(job)
-		if err != nil || !samePoll(match.Poll, snap.Job.Poll) {
+		if err != nil || relay.JobPollKey(match.Poll) != relay.JobPollKey(snap.Job.Poll) {
 			continue
 		}
 		if done, _ := snap.Outcome(snap.Status(load.Body)); !done {
@@ -185,13 +183,6 @@ func HasRelayJob(ctx context.Context, store JobStore, relayName, routeKey, upstr
 		return false, err
 	}
 	return job != nil, nil
-}
-
-// samePoll compares two poll templates as they are stored, so an unset and an empty header map agree.
-func samePoll(a, b schemas.RelayJobPoll) bool {
-	ja, errA := json.Marshal(a)
-	jb, errB := json.Marshal(b)
-	return errA == nil && errB == nil && bytes.Equal(ja, jb)
 }
 
 // openRelayJob is the open job row for an upstream id: the generation a start recorded and no

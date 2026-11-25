@@ -747,10 +747,10 @@ func TestRelayStatusCheckSettlesOnlyFromTheJobsOwnPollTemplate(t *testing.T) {
 	assert.Nil(t, out)
 	assert.NotEqual(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus, "another template's reply does not settle it")
 
-	out, err = AccountRelayJob(ctx, store, logs, nil, donePoller(3), finished(schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}", Headers: map[string]string{}}))
+	out, err = AccountRelayJob(ctx, store, logs, nil, donePoller(3), finished(schemas.RelayJobPoll{Method: "get", Path: "/jobs/{{job.id}}", Headers: map[string]string{}}))
 	require.NoError(t, err)
 	require.NotNil(t, out)
-	assert.True(t, out.Accounted, "its own template settles it, an empty header map included")
+	assert.True(t, out.Accounted, "its own template settles it, whatever the method case or an empty header map")
 }
 
 func TestRelayStatusCheckIgnoresUnknownJobsAndFailedReplies(t *testing.T) {
@@ -1077,4 +1077,52 @@ func TestRelaySettlementIsEmittedOnce(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	require.Len(t, caller.rows, 1)
+}
+
+// Three start routes priced differently share one status check: each job is billed at the price its
+// own route had at the start, and a caller's check settles only the job it names.
+func TestRelayRoutesSharingAStatusCheckBillTheirOwnPrice(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	poll := schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}
+	key := relay.JobPollKey(poll)
+	prices := map[string]float64{"j-a": 0.01, "j-b": 0.02, "j-c": 0.03}
+	ids := map[string]string{}
+	for upstreamID, price := range prices {
+		snap := relay.JobSnapshot{
+			Job:   schemas.RelayJobConfig{IDPath: "JobId", StatusPath: "status", Succeeded: []string{"SUCCEEDED"}, Poll: poll},
+			Usage: &schemas.RelayUsageConfig{UnitsPath: "pages", CostPerUnit: schemas.Ptr(price)},
+		}
+		params, err := sonic.MarshalString(snap)
+		require.NoError(t, err)
+		id, scoped := RelayJobRowID("textract", key, upstreamID, 1)
+		past := time.Now().UTC().Add(-time.Second)
+		require.NoError(t, store.UpsertProviderJob(ctx, &cstables.TableProviderJob{ID: id, Kind: cstables.ProviderJobKindRelay, Provider: "textract",
+			JobID: scoped, Params: &params, NextCheckAt: &past, CreatedAt: time.Now().UTC()}))
+		ids[upstreamID] = id
+	}
+
+	// A caller's check for j-b settles j-b alone, at its own route's price.
+	req := statusCheck(200, `{"status":"SUCCEEDED","pages":10}`)
+	req.ProviderJobID = "j-b"
+	load := req.Payload.(RelayStatusCheckPayload)
+	load.Matches = []schemas.RelayJobMatch{{RouteKey: key, Poll: poll}}
+	req.Payload = load
+	logs := newFakeEndpointLogs()
+	out, err := AccountRelayJob(ctx, store, logs, nil, donePoller(10), req)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, ids["j-b"], out.JobID)
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusAccounted, store.jobs[ids["j-a"]].AccountingStatus)
+
+	// The sweeper settles the other two, each at its own price.
+	relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":10}`}, logs, nil).SweepOnce(ctx)
+	for upstreamID, price := range prices {
+		job := store.jobs[ids[upstreamID]]
+		assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus, upstreamID)
+		row := logs.rows[relayRowID(job)]
+		require.NotNil(t, row, upstreamID)
+		require.NotNil(t, row.Cost, upstreamID)
+		assert.InDelta(t, 10*price, *row.Cost, 1e-12, upstreamID)
+	}
 }

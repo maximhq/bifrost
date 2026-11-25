@@ -2158,3 +2158,86 @@ func TestServeDropsCallerMethodOverride(t *testing.T) {
 	assert.Empty(t, got.Get("X-Method-Override"))
 	assert.Equal(t, "kept", got.Get("X-Other"))
 }
+
+// Editing a start route keeps its running jobs: they are filed under their status check, so the
+// caller's check stays free and a retried start opens no second job. Editing the status check
+// itself is a different call, so it names a different job.
+func TestStartRouteEditKeepsRunningJobs(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "POST" {
+			_, _ = io.WriteString(w, `{"id":"j-1"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"status":"RUNNING"}`)
+	}))
+	defer upstream.Close()
+	job := &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"DONE"}, Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}}
+	cfg := bearerConfig("jobs", upstream.URL)
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/start", Job: job},
+		{Method: "GET", Path: "/**", Billable: schemas.Ptr(true), Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.5)}},
+	}
+	m, _ := newTestManager(t, cfg)
+	started := map[string]bool{}
+	m.SetJobLookup(func(_ context.Context, relayName, routeKey, jobID string) (bool, error) {
+		return started[relayName+"|"+routeKey+"|"+jobID], nil
+	})
+	start := func(path string, headers map[string]string) *schemas.RelayJobHandle {
+		t.Helper()
+		res, bErr := m.Serve(testCtx(t), Request{Endpoint: "jobs", Method: "POST", Path: path, Headers: headers, Body: []byte(`{}`)})
+		require.Nil(t, bErr)
+		require.NotNil(t, res.Response.Usage)
+		require.NotNil(t, res.Response.Usage.Job)
+		return res.Response.Usage.Job
+	}
+	check := func() *Result {
+		t.Helper()
+		res, bErr := m.Serve(testCtx(t), Request{Endpoint: "jobs", Method: "GET", Path: "/jobs/j-1", Headers: map[string]string{}})
+		require.Nil(t, bErr)
+		return res
+	}
+	handle := start("/start", nil)
+	started["jobs|"+handle.RouteKey+"|j-1"] = true
+	require.NotNil(t, check().Response.JobStatusCheck, "free before the edit")
+
+	// A new start path, a header matcher and a price: none of them is the status check.
+	edited := *cfg
+	edited.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/v2/start", Headers: map[string]string{"X-Op": "start*"}, Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.2)}, Job: job},
+		cfg.Routes[1],
+	}
+	require.NoError(t, m.Upsert(&edited))
+	res := check()
+	require.NotNil(t, res.Response.JobStatusCheck, "the running job's status check stays free after the start route is edited")
+	assert.Nil(t, res.Response.Usage, "and the priced catch-all does not charge it")
+	assert.Equal(t, handle.RouteKey, start("/v2/start", map[string]string{"x-op": "start"}).RouteKey, "a retried start files the job where it already is, so it is not opened twice")
+
+	// Editing the status check makes it another call, so it names another job.
+	pollEdited := edited
+	pollEdited.Routes = []schemas.RelayRouteConfig{edited.Routes[0], edited.Routes[1]}
+	newJob := *job
+	newJob.Poll = schemas.RelayJobPoll{Method: "GET", Path: "/v2/jobs/{{job.id}}"}
+	pollEdited.Routes[0].Job = &newJob
+	require.NoError(t, m.Upsert(&pollEdited))
+	assert.NotEqual(t, handle.RouteKey, start("/v2/start", map[string]string{"x-op": "start"}).RouteKey)
+}
+
+// Routes sharing one status check read the same jobs, so a check names each job once.
+func TestStatusCheckSharedByRoutesIsLookedUpOnce(t *testing.T) {
+	poll := schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}
+	job := func(price float64) *schemas.RelayJobConfig {
+		return &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"DONE"}, Poll: poll,
+			Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(price)}}
+	}
+	cfg := bearerConfig("jobs", "https://jobs.example.com")
+	cfg.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/a", Job: job(0.1)}, {Method: "POST", Path: "/b", Job: job(0.2)}, {Method: "POST", Path: "/c", Job: job(0.3)},
+	}
+	e, err := newEndpoint(cfg, nil)
+	require.NoError(t, err)
+	candidates := e.statusCheckCandidates(context.Background(), &schemas.BifrostRelayRequest{Method: "GET", Path: "/jobs/j-1", Headers: map[string]string{}})
+	require.Len(t, candidates, 1)
+	assert.Equal(t, JobPollKey(poll), candidates[0].match.RouteKey)
+	assert.Equal(t, "j-1", candidates[0].id)
+}

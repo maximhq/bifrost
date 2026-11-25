@@ -358,8 +358,8 @@ func (m *Manager) Names() []string {
 	return names
 }
 
-// JobLookup reports whether relayName started a job, open or settled, on the route routeKey names,
-// with this upstream id.
+// JobLookup reports whether relayName started a job, open or settled, read by the status check
+// routeKey names, with this upstream id.
 // A lookup that could not answer (the store failed) returns its error, never a plain false, so a
 // real status check is not charged or refused over a blip.
 type JobLookup func(ctx context.Context, relayName, routeKey, jobID string) (bool, error)
