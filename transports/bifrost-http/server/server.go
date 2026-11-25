@@ -1311,26 +1311,29 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 		logger.Error("failed to remove provider from client: %v", err)
 		return err
 	}
-	err = s.Config.RemoveProvider(ctx, provider)
-	if err != nil && !errors.Is(err, lib.ErrNotFound) {
-		logger.Error("failed to remove provider from config: %v. Client and config may be out of sync, please restart bifrost", err)
-		return fmt.Errorf("failed to remove provider from config: %w. Client and config may be out of sync, please restart bifrost", err)
+	removeErr := s.Config.RemoveProvider(ctx, provider)
+	if removeErr != nil && !errors.Is(removeErr, lib.ErrNotFound) {
+		logger.Error("failed to remove provider from config: %v. Client and config may be out of sync, please restart bifrost", removeErr)
+		return fmt.Errorf("failed to remove provider from config: %w. Client and config may be out of sync, please restart bifrost", removeErr)
 	}
 	// The provider is gone from the config store from here on. Removing it from the config dropped
 	// it from the live store, and its budget and rate limit with it, so governance stops enforcing them.
 	if s.Config.IsPluginLoaded(s.getGovernancePluginName()) {
 		if _, err := s.getGovernancePlugin(); err != nil {
+			if removeErr != nil {
+				return err // nothing was deleted here
+			}
 			return &lib.SavedNotAppliedError{Err: err}
 		}
 	}
 	if s.Config.ModelCatalog == nil {
-		return nil // no catalog means no cached pricing or live models to drop
+		return removeErr // no catalog means no cached pricing or live models to drop
 	}
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)
 	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, false)
 
-	return nil
+	return removeErr // lib.ErrNotFound when the store held no such provider
 }
 
 // OnKeyAdded refreshes the keyconfig snapshot and fetches list-models for the

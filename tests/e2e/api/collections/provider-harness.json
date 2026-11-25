@@ -350761,6 +350761,92 @@
           }
         }
       ]
+    },
+    {
+      "name": "386. Deleting an already deleted provider still succeeds (provider-repeat-delete)",
+      "description": "Pins DELETE /api/providers/{provider} for a provider that is already gone. The store reports ErrNotFound for the second delete, which the server and the handler must treat as done and answer 200, as the first delete does; only a delete that fails answers 500. The unit test mocks ErrNotFound at the handler, so this case covers the mapping from the store through the server.\n\nThe case creates a run-scoped keyless custom provider, deletes it twice and checks the provider list no longer names it. No inference request is sent. The case name carries openai only so the openai provider filter selects it. Run with FEATURE=\"provider-repeat-delete\".",
+      "item": [
+        {
+          "name": "openai custom provider deleted twice answers 200 both times and is gone from the list - provider-repeat-delete",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = 'harness-repeat-delete-run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('repeatDeleteProvider', provider);",
+                  "mgmt('POST', '/api/providers', JSON.stringify({provider: provider, custom_provider_config: {base_provider_type: 'openai', is_key_less: true}, network_config: {base_url: 'http://127.0.0.1:9', max_retries: 0}}), function (err, res) {",
+                  "  pm.test('setup: created the run-scoped provider', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('repeatDeleteProvider');",
+                  "pm.test('the first delete answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "  pm.test('the second delete answers 200 and names the provider', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    pm.expect((res.json() || {}).name, res.text()).to.equal(provider);",
+                  "  });",
+                  "  mgmt('GET', '/api/providers', null, function (err2, res2) {",
+                  "    pm.test('the provider is gone from the list', function () {",
+                  "      pm.expect(err2).to.equal(null);",
+                  "      pm.expect(res2.code, res2.text().slice(0, 400)).to.equal(200);",
+                  "      var names = ((res2.json() || {}).providers || []).map(function (p) { return p.name; });",
+                  "      pm.expect(names).to.not.include(provider);",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{repeatDeleteProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{repeatDeleteProvider}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

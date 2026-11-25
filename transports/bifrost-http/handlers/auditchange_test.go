@@ -825,7 +825,7 @@ func newKeyReadBackFailingHandler(t *testing.T, keys ...schemas.Key) (*ProviderH
 	t.Helper()
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
-	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: keys}})
+	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: keys})
 	attachBifrostClient(t, cfg)
 	store := cfg.ConfigStore
 	h := &ProviderHandler{
@@ -845,8 +845,8 @@ func TestCommitPoint_ProviderKeyCreateRecordedWhenReadBackFails(t *testing.T) {
 	h.createProviderKey(ctx)
 
 	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
-	keys, err := store.GetProviderConfig(context.Background(), schemas.OpenAI)
-	if err != nil || keys == nil || len(keys.Keys) != 1 {
+	keys, err := store.GetProviderKeys(context.Background(), schemas.OpenAI)
+	if err != nil || len(keys) != 1 {
 		t.Fatalf("expected the key to be stored, got %+v %v", keys, err)
 	}
 	change := requireCommitPointChange(t, ctx, "provider_key.created", "name", "commit-key")
@@ -878,13 +878,14 @@ func TestCommitPoint_DeleteProvider(t *testing.T) {
 		recorded  bool
 	}{
 		{"success", nil, fasthttp.StatusOK, true},
+		{"already deleted", lib.ErrNotFound, fasthttp.StatusOK, false},
 		{"nothing deleted", errors.New("client refused the removal"), fasthttp.StatusInternalServerError, false},
 		{"deleted, cleanup failed", &lib.SavedNotAppliedError{Err: errors.New("pricing manager not found")}, fasthttp.StatusInternalServerError, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			SetLogger(&mockLogger{})
 			h := &ProviderHandler{
-				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}),
+				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, nil),
 				modelsManager: &mockModelsManager{remove: func(context.Context, schemas.ModelProvider) error { return tc.removeErr }},
 			}
 			ctx := &fasthttp.RequestCtx{}
@@ -976,10 +977,10 @@ func TestCommitPoint_MCPClientUpdateRuntimeFailureKeepsStoredDiscovery(t *testin
 	SetLogger(&mockLogger{})
 	off := false
 	existing := &schemas.MCPClientConfig{ID: "client-pud", Name: "pud_mcp", EndpointSlug: "pud-slug", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone, PerUserDiscovery: &off}
-	store := &lib.Config{
-		MCPConfig:    &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}},
+	store := libtest.MCPClients(t, &lib.Config{
+		MCPConfig:    &schemas.MCPConfig{},
 		ClientConfig: &configstore.ClientConfig{},
-	}
+	}, existing)
 	store.ConfigStore = &storedDiscoveryRollbackStore{rollbackStore{failRollback: true}}
 	h := &MCPHandler{store: store, mcpManager: &failingRuntimeUpdateMCPManager{}, mcpCredentialCacheManager: &evictionLog{}}
 
@@ -995,8 +996,9 @@ func TestCommitPoint_MCPClientUpdateRuntimeFailureKeepsStoredDiscovery(t *testin
 
 	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
 	change := requireCommitPointChange(t, ctx, "mcp_client.updated", "per_user_discovery", true)
-	if existing.PerUserDiscovery == nil || *existing.PerUserDiscovery {
-		t.Fatalf("runtime config must keep its own value, after = %s", change.After)
+	live, ok := store.LiveStore.Collections.MCPClients.Get(existing.ID)
+	if !ok || live.Config.PerUserDiscovery == nil || *live.Config.PerUserDiscovery {
+		t.Fatalf("live config must keep its own value, live = %+v, after = %s", live, change.After)
 	}
 }
 
@@ -1091,7 +1093,7 @@ func TestCommitPoint_ProviderCreateRollback(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			SetLogger(&mockLogger{})
 			lib.SetLogger(&mockLogger{})
-			cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil)
+			cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil, nil)
 			store := &providerDeleteFailStore{ConfigStore: cfg.ConfigStore, failDelete: tc.failDelete, deleteErr: tc.deleteErr}
 			cfg.ConfigStore = store
 			h := &ProviderHandler{
@@ -1191,9 +1193,10 @@ func (providerUpdateRejectingStore) UpdateProvider(context.Context, schemas.Mode
 func TestCommitPoint_ProviderUpdateRejectedWriteRecordsNothing(t *testing.T) {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
-	store := setupPricingOverrideHandlerStore(t)
+	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil, nil)
+	store := cfg.ConfigStore
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{ClientConfig: &configstore.ClientConfig{}, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}, ConfigStore: store},
+		config:        cfg,
 		modelsManager: &mockModelsManager{},
 	}
 	addCtx := newTestRequestCtx(string(commitPointProviderBody(t)))
@@ -1204,7 +1207,7 @@ func TestCommitPoint_ProviderUpdateRejectedWriteRecordsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read providers: %v", err)
 	}
-	h.inMemoryStore.ConfigStore = providerUpdateRejectingStore{ConfigStore: store}
+	cfg.ConfigStore = providerUpdateRejectingStore{ConfigStore: store}
 
 	ctx := newTestRequestCtx(`{"concurrency_and_buffer_size":{"concurrency":3,"buffer_size":6},"custom_provider_config":{"base_provider_type":"openai","is_key_less":true}}`)
 	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
@@ -1225,7 +1228,7 @@ func TestCommitPoint_ProviderUpdateRejectedWriteRecordsNothing(t *testing.T) {
 func TestCommitPoint_ProviderUpdateRecordedWhenRuntimeRebuildFails(t *testing.T) {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
-	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil)
+	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil, nil)
 	store := cfg.ConfigStore
 	h := &ProviderHandler{
 		config:        cfg,

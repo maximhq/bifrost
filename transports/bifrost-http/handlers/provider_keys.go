@@ -202,7 +202,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 	if err := h.config.AddProviderKey(ctx, provider, key); err != nil {
 		logger.Warn("Failed to create key for provider %s: %v", provider, err)
 		if lib.IsSavedNotApplied(err) {
-			written := redactedProviderKey(key)
+			written := configstore.RedactedKey(key)
 			lib.RecordAuditChange(ctx, "provider_key.created", "provider_key", written.ID, written.Name, nil, written)
 		}
 		if errors.Is(err, lib.ErrNotFound) {
@@ -224,7 +224,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 	}
 	h.rearmComplexitySemanticClassifier(provider)
 
-	written := redactedProviderKey(key)
+	written := configstore.RedactedKey(key)
 	rec := lib.RecordAuditChange(ctx, "provider_key.created", "provider_key", written.ID, written.Name, nil, written)
 	redactedKey, err := h.redactedKeyOf(ctx, provider, key.ID)
 	if err != nil {
@@ -352,7 +352,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 	if err := h.config.UpdateProviderKey(ctx, provider, keyID, mergedKey); err != nil {
 		logger.Warn("Failed to update key %s for provider %s: %v", keyID, provider, err)
 		if lib.IsSavedNotApplied(err) {
-			written := redactedProviderKey(mergedKey)
+			written := configstore.RedactedKey(mergedKey)
 			lib.RecordAuditChange(ctx, "provider_key.updated", "provider_key", keyID, written.Name, before, written)
 		}
 		if errors.Is(err, lib.ErrNotFound) {
@@ -374,7 +374,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 	}
 	h.rearmComplexitySemanticClassifier(provider)
 
-	written := redactedProviderKey(mergedKey)
+	written := configstore.RedactedKey(mergedKey)
 	rec := lib.RecordAuditChange(ctx, "provider_key.updated", "provider_key", keyID, written.Name, before, written)
 	redactedKey, err := h.redactedKeyOf(ctx, provider, keyID)
 	if err != nil {
@@ -1414,13 +1414,4 @@ func rejectUnknownAnthropicKeyConfigFields(body []byte) error {
 		return fmt.Errorf("anthropic_key_config: %s", strings.TrimPrefix(err.Error(), "json: "))
 	}
 	return nil
-}
-
-// redactedProviderKey masks key's secrets the way the keys API shows them, for audit snapshots.
-func redactedProviderKey(key schemas.Key) schemas.Key {
-	redacted := (&configstore.ProviderConfig{Keys: []schemas.Key{key}}).Redacted()
-	if redacted == nil || len(redacted.Keys) == 0 {
-		return schemas.Key{ID: key.ID, Name: key.Name}
-	}
-	return redacted.Keys[0]
 }

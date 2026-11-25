@@ -22333,8 +22333,50 @@ func TestRemoveProvider_NotFound(t *testing.T) {
 	cfg := providerStore(t, nil, nil)
 
 	err := cfg.RemoveProvider(context.Background(), "nonexistent-provider")
-	if err != nil {
-		t.Fatalf("expected nil, got error: %v", err)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestRemoveProvider_RepeatedDelete(t *testing.T) {
+	initTestLogger()
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
+	})
+	if err := cfg.RemoveProvider(context.Background(), "test-provider"); err != nil {
+		t.Fatalf("first delete: %v", err)
+	}
+	if err := cfg.RemoveProvider(context.Background(), "test-provider"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("repeated delete: err = %v, want ErrNotFound", err)
+	}
+	// A cluster peer replaying a delete skips the store, and an absent provider is not its error.
+	peer := context.WithValue(context.Background(), schemas.BifrostContextKeySkipDBUpdate, true)
+	for name, store := range map[string]configstore.ConfigStore{"no store": nil, "with store": cfg.ConfigStore} {
+		cfg.ConfigStore = store
+		if err := cfg.RemoveProvider(peer, "test-provider"); err != nil {
+			t.Fatalf("peer delete %s: %v", name, err)
+		}
+	}
+}
+
+func TestRemoveProvider_StoreRowGoneStillClearsMemory(t *testing.T) {
+	initTestLogger()
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
+	})
+	cfg.ConfigStore = &mockConfigStoreDeleteProvider{ConfigStore: cfg.ConfigStore, deleteProviderErr: configstore.ErrNotFound}
+
+	for _, attempt := range []string{"row gone, still in memory", "gone from both"} {
+		if err := cfg.RemoveProvider(context.Background(), "test-provider"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s: err = %v, want ErrNotFound", attempt, err)
+		}
+		if cfg.IsProviderConfigured("test-provider") {
+			t.Fatalf("%s: provider should be removed from memory", attempt)
+		}
 	}
 }
 
