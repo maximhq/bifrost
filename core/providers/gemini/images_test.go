@@ -555,3 +555,36 @@ func BenchmarkToGeminiImageEditRequest(b *testing.B) {
 		})
 	}
 }
+
+// A URL-only image in a provider response is fetched and inlined when the
+// response is converted to the Gemini shape. That fetch goes through the shared
+// resource fetcher, so it follows the same rules as every other remote resource
+// Bifrost downloads: http/https only, public addresses only, bounded size.
+func TestToGeminiImageGenerationResponse_URLImageUsesSharedFetcher(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("not-a-real-image"))
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{name: "loopback address", url: srv.URL + "/image.png"},
+		{name: "non-http scheme", url: "file:///etc/hostname"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &schemas.BifrostImageGenerationResponse{
+				Data: []schemas.ImageData{{URL: tt.url}},
+			}
+			out, err := ToGeminiImageGenerationResponse(context.Background(), resp)
+			require.Error(t, err)
+			assert.Nil(t, out)
+		})
+	}
+	assert.Zero(t, hits, "a non-public image URL must not be requested")
+}

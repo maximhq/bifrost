@@ -7,12 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"net/http"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"unsafe"
 
 	"github.com/bytedance/sonic"
@@ -3453,38 +3451,16 @@ func encodeBytesToBase64String(bytes []byte) string {
 	return base64str
 }
 
-// downloadImageFromURL downloads an image from a URL and returns the base64-encoded string
+// downloadImageFromURL downloads an image from a URL and returns the base64-encoded string.
+// It goes through the shared resource fetcher, so the download uses the serving
+// provider's proxy, accepts http/https only, connects to public addresses only and
+// is bounded in size and time like every other remote resource Bifrost fetches.
 func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) {
-	client := fasthttp.Client{
-		ReadTimeout: time.Second * 30,
-	}
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	req.SetRequestURI(imageURL)
-	req.Header.SetMethod(http.MethodGet)
-
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, &client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return "", fmt.Errorf("failed to download image: %v", bifrostErr)
-	}
-
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return "", fmt.Errorf("failed to download image: status=%d", resp.StatusCode())
-	}
-
-	body, err := providerUtils.CheckAndDecodeBody(resp)
+	_, encoded, err := providerUtils.FetchAndEncodeURL(ctx, imageURL)
 	if err != nil {
-		return "", fmt.Errorf("failed to read image data: %w", err)
+		return "", fmt.Errorf("failed to download image: %w", err)
 	}
-
-	// Copy the body to avoid use-after-free
-	imageCopy := append([]byte(nil), body...)
-
-	return encodeBytesToBase64String(imageCopy), nil
+	return encoded, nil
 }
 
 // tokenToBytes converts a token string to its UTF-8 byte representation as []int
