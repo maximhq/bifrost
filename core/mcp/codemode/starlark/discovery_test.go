@@ -10,7 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -415,9 +415,9 @@ func TestListToolFilesExternalRankerSuccess(t *testing.T) {
 	}
 }
 
-// Two raw tool names that come to one canonical name get distinct candidate
-// ids, so a ranker that scores every candidate once is accepted, and each id
-// still names its own tool. Each is listed under its own raw-name file.
+// Two raw tool names that come to one canonical name get distinct callable
+// names, so a ranker that scores every candidate once is accepted, and each id
+// still names its own tool, whatever order the tools are listed in.
 func TestListToolFilesExternalRankerSharedFileGetsUniqueIDs(t *testing.T) {
 	rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
 		scores := []map[string]interface{}{}
@@ -443,8 +443,8 @@ func TestListToolFilesExternalRankerSharedFileGetsUniqueIDs(t *testing.T) {
 	if !strings.Contains(out, "(discovery ranker)") {
 		t.Fatalf("expected the ranker answer to be used:\n%s", out)
 	}
-	if paths := shortlistPaths(out); len(paths) != 2 || !slices.Contains(paths, "servers/crm/get-user.pyi") || !slices.Contains(paths, "servers/crm/get_user.pyi") {
-		t.Fatalf("expected one raw-name file per colliding tool, got %v\n%s", paths, out)
+	if paths := shortlistPaths(out); len(paths) != 2 || paths[0] == paths[1] {
+		t.Fatalf("expected one distinct file per colliding tool, got %v\n%s", paths, out)
 	}
 	req := nextRankRequest(t, rs, "find a user", out)
 	descriptions := map[string]string{}
@@ -454,21 +454,20 @@ func TestListToolFilesExternalRankerSharedFileGetsUniqueIDs(t *testing.T) {
 		}
 		descriptions[c.ID] = c.Description
 	}
-	// Raw-name order: "get-user" sorts before "get_user".
-	if descriptions["servers/crm/get_user.pyi"] != "Fetch a user by email" || descriptions["servers/crm/get_user.pyi#2"] != "Look up a user record" {
-		t.Fatalf("ids do not map to their tools: %v", descriptions)
+	if descriptions["servers/crm/get_user.pyi"] == descriptions["servers/crm/get_user_2.pyi"] {
+		t.Fatalf("ids do not map to distinct tools: %v", descriptions)
 	}
 
 	// The listing order of the tools does not change the ids or the revision.
-	_, revision := mode.discoveryCatalogue(context.Background(), schemas.CodeModeBindingLevelTool)
+	items, revision := mode.discoveryCatalogue(context.Background(), schemas.CodeModeBindingLevelTool)
 	manager.tools["crm"][0], manager.tools["crm"][1] = manager.tools["crm"][1], manager.tools["crm"][0]
-	items, swapped := mode.discoveryCatalogue(context.Background(), schemas.CodeModeBindingLevelTool)
+	swappedItems, swapped := mode.discoveryCatalogue(context.Background(), schemas.CodeModeBindingLevelTool)
 	if swapped != revision {
 		t.Fatal("revision changed with the order the tools were listed in")
 	}
-	for _, item := range items {
-		if item.candidate.ID == "servers/crm/get_user.pyi#2" && item.candidate.Description != "Look up a user record" {
-			t.Fatalf("id moved to another tool after reordering: %+v", item.candidate)
+	for i := range items {
+		if items[i].candidate.ID != swappedItems[i].candidate.ID || items[i].candidate.Description != swappedItems[i].candidate.Description {
+			t.Fatalf("id moved to another tool after reordering: %+v vs %+v", items[i].candidate, swappedItems[i].candidate)
 		}
 	}
 }
@@ -518,6 +517,142 @@ func TestListToolFilesSharedFilePathReadsRankedTool(t *testing.T) {
 			t.Fatalf("readToolFile(%s) returned the other colliding tool:\n%s", paths[0], content)
 		}
 	}
+}
+
+// Colliding tools each get a callable name that names exactly that tool: the
+// listed file, the def name and the getToolDocs name in its stub, and the
+// executeToolCode binding all reach the same tool, whatever order the tools
+// are listed in.
+func TestCollidingToolNamesStayConsistent(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["crm"] = &schemas.MCPClientState{Name: "crm", ExecutionConfig: &schemas.MCPClientConfig{ID: "crm-id", Name: "crm", IsCodeModeClient: true}}
+	byEmail := discoveryTestTool("crm-get-user", "Fetch a user by email", "email")
+	byID := discoveryTestTool("crm-get_user", "Look up a user record", "id")
+	byName := discoveryTestTool("crm-Get User", "Find a user by name", "name")
+	suffixed := discoveryTestTool("crm-get_user_2", "List user groups", "group")
+	descriptions := []string{"Fetch a user by email", "Look up a user record", "Find a user by name", "List user groups"}
+	defLine := regexp.MustCompile(`(?m)^def (\w+)\(`)
+	docsName := regexp.MustCompile(`getToolDocs\(server="crm", tool="([^"]+)"\)`)
+
+	for _, tools := range [][]schemas.ChatTool{{byEmail, byID, byName, suffixed}, {suffixed, byName, byID, byEmail}} {
+		manager.tools["crm"] = tools
+		// The complete listing renders the crm directory as "  crm/" followed
+		// by its files, one level deeper.
+		var files []string
+		inCRM := false
+		for _, line := range strings.Split(listToolFiles(t, mode, `{}`), "\n") {
+			switch {
+			case line == "  crm/":
+				inCRM = true
+			case inCRM && strings.HasPrefix(line, "    "):
+				files = append(files, "servers/crm/"+strings.TrimSpace(line))
+			default:
+				inCRM = false
+			}
+		}
+		if len(files) != len(tools) {
+			t.Fatalf("expected one file per crm tool, got %v", files)
+		}
+		bindings := map[string][]string{}
+		for _, tool := range tools {
+			bindings["crm"] = append(bindings["crm"], tool.Function.Name)
+		}
+		seen := map[string]bool{}
+		for _, file := range files {
+			stub := readFileContent(t, mode, file)
+			description := ""
+			for _, d := range descriptions {
+				if strings.Contains(stub, d) {
+					if description != "" {
+						t.Fatalf("%s documents more than one tool:\n%s", file, stub)
+					}
+					description = d
+				}
+			}
+			if description == "" || seen[description] {
+				t.Fatalf("%s does not document its own tool:\n%s", file, stub)
+			}
+			seen[description] = true
+			def := defLine.FindStringSubmatch(stub)
+			if def == nil || "servers/crm/"+def[1]+".pyi" != file {
+				t.Fatalf("%s: def name does not match the file:\n%s", file, stub)
+			}
+			docs := docsName.FindStringSubmatch(stub)
+			if docs == nil || docs[1] != def[1] {
+				t.Fatalf("%s: getToolDocs guidance does not name the tool:\n%s", file, stub)
+			}
+			if doc := getToolDocsContent(t, mode, "crm", docs[1]); !strings.Contains(doc, description) {
+				t.Fatalf("getToolDocs(%s) documents another tool:\n%s", docs[1], doc)
+			}
+			var called string
+			result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = crm."+def[1]+"()", bindings,
+				func(_ context.Context, _, tool string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+					called = tool
+					return "ok", nil
+				})
+			if result.Errors != nil {
+				t.Fatalf("crm.%s failed: %+v", def[1], result.Errors)
+			}
+			for _, tool := range tools {
+				if tool.Function.Name == called && *tool.Function.Description != description {
+					t.Fatalf("crm.%s called %s, but its stub documents %q", def[1], called, description)
+				}
+			}
+		}
+	}
+}
+
+// A reference that names one tool exactly wins over another tool that only
+// matches when case is ignored.
+func TestListToolFilesExactReferencePrefersExactCase(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	for _, name := range []string{"crm", "CRM"} {
+		manager.clients[name] = &schemas.MCPClientState{Name: name, ExecutionConfig: &schemas.MCPClientConfig{ID: name + "-id", Name: name, IsCodeModeClient: true}}
+	}
+	manager.tools["CRM"] = []schemas.ChatTool{discoveryTestTool("lookup", "Look up a user record", "id")}
+	manager.tools["crm"] = []schemas.ChatTool{
+		discoveryTestTool("lookup", "Fetch a user by email", "email"),
+		discoveryTestTool("GetUser", "Look up a user record", "id"),
+		discoveryTestTool("getuser", "Fetch a user by email", "email"),
+	}
+	for query, want := range map[string]string{
+		"servers/crm/lookup.pyi":  "servers/crm/lookup.pyi",
+		"servers/CRM/lookup.pyi":  "servers/CRM/lookup.pyi",
+		"crm.lookup":              "servers/crm/lookup.pyi",
+		"CRM.lookup":              "servers/CRM/lookup.pyi",
+		"servers/crm/getuser.pyi": "servers/crm/getuser.pyi",
+	} {
+		out := listToolFiles(t, mode, fmt.Sprintf(`{"query":%q}`, query))
+		if paths := shortlistPaths(out); len(paths) != 1 || paths[0] != want {
+			t.Fatalf("query %q: expected %s, got %v\n%s", query, want, paths, out)
+		}
+	}
+}
+
+func readFileContent(t *testing.T, mode *StarlarkCodeMode, fileName string) string {
+	t.Helper()
+	msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-read"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: fmt.Sprintf(`{"fileName":%q}`, fileName)},
+	})
+	if err != nil || msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+		t.Fatalf("readToolFile(%s) failed: %v", fileName, err)
+	}
+	return *msg.Content.ContentStr
+}
+
+func getToolDocsContent(t *testing.T, mode *StarlarkCodeMode, server, tool string) string {
+	t.Helper()
+	msg, err := mode.handleGetToolDocs(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-docs"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: fmt.Sprintf(`{"server":%q,"tool":%q}`, server, tool)},
+	})
+	if err != nil || msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+		t.Fatalf("getToolDocs(%s, %s) failed: %v", server, tool, err)
+	}
+	return *msg.Content.ContentStr
 }
 
 func TestListToolFilesExternalRankerInsufficientHint(t *testing.T) {

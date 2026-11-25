@@ -133,10 +133,11 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 				}
 
 				if foundTool == nil {
+					names := callableChatToolNames(clientName, tools)
 					availableTools := make([]string, 0)
 					for _, tool := range tools {
 						if tool.Function != nil {
-							availableTools = append(availableTools, getCanonicalToolName(clientName, tool.Function.Name))
+							availableTools = append(availableTools, names[tool.Function.Name])
 						}
 					}
 					errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools in this server are:\n", toolName, clientName)
@@ -166,9 +167,10 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 				client := s.clientManager.GetClientByName(name)
 				if client != nil && client.ExecutionConfig.CodeModeFor(ctx) {
 					if tools, ok := availableToolsPerClient[name]; ok {
+						names := callableChatToolNames(name, tools)
 						for _, tool := range tools {
 							if tool.Function != nil {
-								availableFiles = append(availableFiles, fmt.Sprintf("servers/%s/%s.pyi", name, getCanonicalToolName(name, tool.Function.Name)))
+								availableFiles = append(availableFiles, fmt.Sprintf("servers/%s/%s.pyi", name, names[tool.Function.Name]))
 							}
 						}
 					}
@@ -184,7 +186,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	}
 
 	// Generate compact Python signatures
-	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
+	fileContent := generateCompactSignatures(matchedClientName, matchedTools, callableChatToolNames(matchedClientName, availableToolsPerClient[matchedClientName]), isToolLevel, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
 
@@ -277,14 +279,16 @@ func parseVFSFilePath(fileName string) (serverName, toolName string, isToolLevel
 }
 
 // generateCompactSignatures generates compact Python function signatures for tools.
+// names maps each raw tool name to its callable name (see callableToolNames).
 // jsonModuleAvailable says whether the sandbox's json module is reachable (see generateTypeDefinitions).
-func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isToolLevel bool, instructions string, jsonModuleAvailable bool) string {
+func generateCompactSignatures(clientName string, tools []schemas.ChatTool, names map[string]string, isToolLevel bool, instructions string, jsonModuleAvailable bool) string {
 	var sb strings.Builder
 
 	// Minimal header
+	docsToolName := "tool_name"
 	if isToolLevel && len(tools) == 1 && tools[0].Function != nil {
-		toolName := getCanonicalToolName(clientName, tools[0].Function.Name)
-		sb.WriteString(fmt.Sprintf("# %s.%s tool\n", clientName, toolName))
+		docsToolName = names[tools[0].Function.Name]
+		sb.WriteString(fmt.Sprintf("# %s.%s tool\n", clientName, docsToolName))
 	} else {
 		sb.WriteString(fmt.Sprintf("# %s server tools\n", clientName))
 	}
@@ -296,7 +300,7 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 		sb.WriteString("# json.decode(s) parses a str that holds JSON; plain text raises.\n")
 	}
 	sb.WriteString("# A call that fails returns an error value: check hasattr(r, \"error\"); r.error holds the message, and fail(r.error) stops the run.\n")
-	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n", clientName))
+	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"%s\")\n", clientName, docsToolName))
 	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n")
 	if instructions != "" {
 		sb.WriteString("#\n")
@@ -309,7 +313,7 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 			continue
 		}
 
-		toolName := getCanonicalToolName(clientName, tool.Function.Name)
+		toolName := names[tool.Function.Name]
 
 		// Format inline parameters in Python style
 		params := formatPythonParams(tool.Function.Parameters)

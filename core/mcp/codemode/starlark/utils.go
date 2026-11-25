@@ -478,9 +478,63 @@ func parseToolName(toolName string) string {
 	return parsed
 }
 
-// getCanonicalToolName returns the exact callable tool identifier exposed in Starlark.
+// getCanonicalToolName returns the identifier a raw tool name normalizes to. Two
+// raw names on one server can share it; callableToolNames gives each its own.
 func getCanonicalToolName(clientName, originalToolName string) string {
 	return parseToolName(stripClientPrefix(originalToolName, clientName))
+}
+
+// callableToolNames maps each raw tool name of one server to the exact
+// identifier it is called by in executeToolCode, which is also its file name
+// and its def name. Raw names such as get-user and get_user normalize to one
+// canonical name. A tool whose raw name is that canonical name keeps it, and
+// otherwise the first in raw-name order does. The others get the canonical
+// name with the smallest suffix _2, _3, ... that is no tool's canonical name
+// and not yet given out, so every callable name names exactly one tool,
+// whatever order the tools are listed in.
+func callableToolNames(clientName string, rawNames []string) map[string]string {
+	sorted := slices.Clone(rawNames)
+	slices.Sort(sorted)
+	sorted = slices.Compact(sorted)
+	canonical := make(map[string]string, len(sorted))
+	taken := make(map[string]bool, len(sorted))
+	for _, raw := range sorted {
+		canonical[raw] = getCanonicalToolName(clientName, raw)
+		taken[canonical[raw]] = true
+	}
+	names := make(map[string]string, len(sorted))
+	claimed := make(map[string]bool, len(sorted))
+	for _, raw := range sorted {
+		if c := canonical[raw]; stripClientPrefix(raw, clientName) == c && !claimed[c] {
+			names[raw] = c
+			claimed[c] = true
+		}
+	}
+	for _, raw := range sorted {
+		if _, done := names[raw]; done {
+			continue
+		}
+		name := canonical[raw]
+		for n := 2; claimed[name]; n++ {
+			if candidate := fmt.Sprintf("%s_%d", canonical[raw], n); !taken[candidate] {
+				name = candidate
+			}
+		}
+		names[raw] = name
+		claimed[name] = true
+	}
+	return names
+}
+
+// callableChatToolNames is callableToolNames for a server's tool definitions.
+func callableChatToolNames(clientName string, tools []schemas.ChatTool) map[string]string {
+	rawNames := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Function != nil && tool.Function.Name != "" {
+			rawNames = append(rawNames, tool.Function.Name)
+		}
+	}
+	return callableToolNames(clientName, rawNames)
 }
 
 // getCompatibilityToolAlias returns the case-preserving alias derived from the raw tool name.
@@ -514,20 +568,28 @@ func matchesToolReference(requestedToolName, clientName, originalToolName string
 
 // findToolReference returns the index of the tool requestedToolName names, or
 // -1. Two raw names such as get-user and get_user share one canonical name, so
-// a tool whose raw name is exactly requestedToolName wins over the first loose
-// match: the raw-name file discovery lists for such a tool resolves to it.
+// an exact callable name (see callableToolNames) wins, then an exact raw name,
+// then the first loose match: a listed file or a stub's name resolves to the
+// tool it was shown for.
 func findToolReference(tools []schemas.ChatTool, requestedToolName, clientName string) int {
-	loose := -1
+	names := callableChatToolNames(clientName, tools)
+	raw, loose := -1, -1
 	for i, tool := range tools {
 		if tool.Function == nil {
 			continue
 		}
-		if stripClientPrefix(tool.Function.Name, clientName) == requestedToolName {
+		if names[tool.Function.Name] == requestedToolName {
 			return i
+		}
+		if raw < 0 && stripClientPrefix(tool.Function.Name, clientName) == requestedToolName {
+			raw = i
 		}
 		if loose < 0 && matchesToolReference(requestedToolName, clientName, tool.Function.Name) {
 			loose = i
 		}
+	}
+	if raw >= 0 {
+		return raw
 	}
 	return loose
 }
