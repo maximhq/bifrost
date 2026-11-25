@@ -191,8 +191,7 @@
 		"toggle": "Mostra/nascondi barra laterale"
 	},
 	"sheet": {
-		"collapse": "Comprimi",
-		"expand": "Espandi"
+		"resizeHandle": "Ridimensiona il pannello"
 	},
 	"tabs": {
 		"showMore_one": "Mostra {{count}} altra scheda",

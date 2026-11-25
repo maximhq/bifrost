@@ -20759,6 +20759,136 @@
               }
             },
             {
+              "name": "Cross-cut: openai content logging off via team outranks a virtual key set to on",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Team content logging off: chat succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                      "pm.test('Team content logging off: response is an assistant completion', function () { var j = pm.response.json(); var m = j && j.choices && j.choices[0] && j.choices[0].message; pm.expect(m && m.role, pm.response.text()).to.eql('assistant'); pm.expect(m.content, pm.response.text()).to.be.a('string').and.not.empty; });",
+                      "var reqId = pm.response.headers.get('x-request-id');",
+                      "pm.test('Team content logging off: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                      "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                      "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                      "function checkLog(attempt) {",
+                      "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                      "    if (!err && res.code === 200) {",
+                      "      var j = res.json();",
+                      "      pm.test('Team content logging off: content_hidden is true', function () { pm.expect(j.content_hidden, JSON.stringify(j)).to.eql(true); });",
+                      "      pm.test('Team content logging off: input_history is empty', function () { pm.expect(j.input_history || [], JSON.stringify(j.input_history)).to.have.lengthOf(0); });",
+                      "      pm.test('Team content logging off: output_message is absent', function () { pm.expect(j.output_message, JSON.stringify(j.output_message)).to.be.undefined; });",
+                      "      return;",
+                      "    }",
+                      "    // Only a 404 means the batching writer has not written the row yet; any other status or a",
+                      "    // transport error is a failure of its own, not a reason to try again.",
+                      "    if (!err && res.code === 404 && attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                      "    pm.test('Team content logging off: log row appeared', function () { pm.expect.fail('log ' + reqId + (err ? ' lookup failed: ' + String(err) : (res.code === 404 ? ' never appeared' : ' lookup returned ' + res.code + ': ' + res.text()))); });",
+                      "  });",
+                      "}",
+                      "checkLog(0);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-Bifrost-VK",
+                    "value": "sk-bf-test-key-teamoff"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Say hi\"}],\n  \"max_tokens\": 8\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "Cross-cut: openai content logging off via provider key hides log content",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('Provider key content logging off: chat succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                      "pm.test('Provider key content logging off: response is an assistant completion', function () { var j = pm.response.json(); var m = j && j.choices && j.choices[0] && j.choices[0].message; pm.expect(m && m.role, pm.response.text()).to.eql('assistant'); pm.expect(m.content, pm.response.text()).to.be.a('string').and.not.empty; });",
+                      "var reqId = pm.response.headers.get('x-request-id');",
+                      "pm.test('Provider key content logging off: x-request-id echoed', function () { pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty; });",
+                      "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                      "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                      "function checkLog(attempt) {",
+                      "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                      "    if (!err && res.code === 200) {",
+                      "      var j = res.json();",
+                      "      pm.test('Provider key content logging off: content_hidden is true', function () { pm.expect(j.content_hidden, JSON.stringify(j)).to.eql(true); });",
+                      "      pm.test('Provider key content logging off: input_history is empty', function () { pm.expect(j.input_history || [], JSON.stringify(j.input_history)).to.have.lengthOf(0); });",
+                      "      pm.test('Provider key content logging off: output_message is absent', function () { pm.expect(j.output_message, JSON.stringify(j.output_message)).to.be.undefined; });",
+                      "      return;",
+                      "    }",
+                      "    // Only a 404 means the batching writer has not written the row yet; any other status or a",
+                      "    // transport error is a failure of its own, not a reason to try again.",
+                      "    if (!err && res.code === 404 && attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                      "    pm.test('Provider key content logging off: log row appeared', function () { pm.expect.fail('log ' + reqId + (err ? ' lookup failed: ' + String(err) : (res.code === 404 ? ' never appeared' : ' lookup returned ' + res.code + ': ' + res.text()))); });",
+                      "  });",
+                      "}",
+                      "checkLog(0);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-Bifrost-VK",
+                    "value": "sk-bf-test-key"
+                  },
+                  {
+                    "key": "x-bf-api-key-id",
+                    "value": "openai-key-nocontent"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"openai/bf-nocontent-gpt-4o-mini\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Say hi\"}],\n  \"max_tokens\": 8\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
               "name": "Cross-cut: sampling-params silently dropped for Opus 4.7",
               "request": {
                 "method": "POST",
@@ -206756,6 +206886,634 @@
       ]
     },
     {
+      "name": "375. Warp presents its own virtual key for a caller with no identity (warp-virtual-key) [SERIAL]",
+      "description": "BF-2990. With client.enforce_auth_on_inference on, Warp failed for the local admin: the admin password login names no user, the dashboard has no way to attach a virtual key, and a dashboard session is not an inference credential, so every Warp model call was refused with virtual key is required. Warp's settings now take virtual_key_id: the virtual key its model calls present when the person asking has no identity of their own (the local admin, or a deployment without an identity provider). Signed-in users are governed as themselves and never use it; a virtual key the request presents still goes first. Cases: the setting is stored and echoed; an unknown key is a 400; a write that omits the field keeps it; and a chat from the harness, which has no identity, is governed by Warp's key - the key allows only anthropic, so the openai call is refused as model_blocked before any provider is reached, which proves the key was presented at no cost. Deleting the key clears it from Warp's settings (a setting naming a deleted key used to refuse every such turn with 409), so the cleanup deletes the key first and asserts that. The restore names virtual_key_id explicitly, since omitted keeps the stored value.",
+      "item": [
+        {
+          "name": "openai warp-virtual-key setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned the flag (see the test script).",
+                  "pm.collectionVariables.unset('warpVkFlagWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag;",
+                  "try { flag = (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0]; } catch (e) { flag = undefined; }",
+                  "pm.test('warp-virtual-key: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(flag.enabled, 'warp flag has no enabled state: ' + pm.response.text()).to.be.a('boolean');",
+                  "});",
+                  "// A failed read or a missing entry is not a disabled flag: record nothing, so the",
+                  "// enable and restore requests skip instead of switching off a flag that was on.",
+                  "if (pm.response.code === 200 && flag && typeof flag.enabled === 'boolean') {",
+                  "  pm.collectionVariables.set('warpVkFlagWas', flag.enabled ? 'true' : 'false');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai warp-virtual-key setup: enable warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the flag to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpVkFlagWas')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        },
+        {
+          "name": "openai warp-virtual-key setup: read current warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set again only by a read that really returned a config (see the test script).",
+                  "pm.collectionVariables.unset('warpVkConfigWas');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var config;",
+                  "try { config = pm.response.json(); } catch (e) { config = undefined; }",
+                  "var isConfig = pm.response.code === 200 && config !== null && typeof config === 'object' && !Array.isArray(config);",
+                  "pm.test('warp-virtual-key: warp config is a config object', function () {",
+                  "  pm.expect(isConfig, 'not a config: ' + pm.response.text()).to.equal(true);",
+                  "});",
+                  "// Saved unchanged, and only when it is a config: an error body must never be written",
+                  "// back by the restore. Without it the configure and restore requests skip.",
+                  "if (isConfig) { pm.collectionVariables.set('warpVkConfigWas', pm.response.text()); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-virtual-key setup: create a virtual key that allows only anthropic",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('warpVkId');",
+                  "pm.collectionVariables.unset('warpVkConfigured');",
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "pm.collectionVariables.set('warpVkName', 'harness-warp-virtual-key-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('warp-virtual-key: the virtual key has an id', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('warpVkId', vk.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{warpVkName}}\",\"provider_configs\":[{\"provider\":\"anthropic\",\"allowed_models\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-virtual-key: Warp's settings take the virtual key and echo it back",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No snapshot of the previous config to restore afterwards - leave it as it is.",
+                  "if (!pm.collectionVariables.get('warpVkConfigWas')) { pm.execution.skipRequest(); return; }",
+                  "// No key was created; the setup request above reports why.",
+                  "if (!pm.collectionVariables.get('warpVkId')) { pm.execution.skipRequest(); return; }",
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpVkConfigWas') || '{}');",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  virtual_key_id: pm.collectionVariables.get('warpVkId'),",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || ''",
+                  "};",
+                  "pm.collectionVariables.set('warpVkConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var view = {};",
+                  "try { view = pm.response.json() || {}; } catch (e) { view = {}; }",
+                  "pm.test('warp-virtual-key: the saved config names the virtual key', function () {",
+                  "  pm.expect(view.virtual_key_id, 'virtual_key_id not stored: ' + pm.response.text()).to.equal(pm.collectionVariables.get('warpVkId'));",
+                  "});",
+                  "// The chat below runs only once the key is really in place: without it the call would",
+                  "// go out ungoverned and spend tokens instead of being refused before any provider.",
+                  "if (pm.response.code === 200 && view.virtual_key_id === pm.collectionVariables.get('warpVkId')) { pm.collectionVariables.set('warpVkConfigured', '1'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpVkConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai warp-virtual-key: a virtual key that does not exist is refused",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Runs on top of the saved config above.",
+                  "if (!pm.collectionVariables.get('warpVkConfigured')) { pm.execution.skipRequest(); return; }",
+                  "var body = JSON.parse(pm.collectionVariables.get('warpVkConfigBody'));",
+                  "body.virtual_key_id = 'harness-warp-virtual-key-that-does-not-exist';",
+                  "pm.collectionVariables.set('warpVkBadBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: an unknown virtual key is a 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('names no virtual key');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpVkBadBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-virtual-key: a refused save and an omitted field keep the stored key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Runs on top of the saved config above.",
+                  "if (!pm.collectionVariables.get('warpVkConfigured')) { pm.execution.skipRequest(); return; }",
+                  "// The same body without virtual_key_id: a client that predates the field must not clear it.",
+                  "var body = JSON.parse(pm.collectionVariables.get('warpVkConfigBody'));",
+                  "delete body.virtual_key_id;",
+                  "pm.collectionVariables.set('warpVkOmitBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: config saved without the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var view = {};",
+                  "try { view = pm.response.json() || {}; } catch (e) { view = {}; }",
+                  "pm.test('warp-virtual-key: the stored virtual key is kept', function () {",
+                  "  pm.expect(view.virtual_key_id, 'virtual_key_id lost: ' + pm.response.text()).to.equal(pm.collectionVariables.get('warpVkId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpVkOmitBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-virtual-key: a caller with no identity is governed by Warp's key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Without Warp's key in place this call would run ungoverned and spend tokens; the configure request reports why.",
+                  "if (!pm.collectionVariables.get('warpVkConfigured')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "// The harness calls with no user and no virtual key, so Warp presents its own. That key",
+                  "// allows only anthropic, so the openai call is refused before any provider is reached:",
+                  "// the refusal is the proof the key was presented, at no cost.",
+                  "pm.test('warp-virtual-key: the turn failed without an answer', function () {",
+                  "  pm.expect(body.error, 'expected a refused turn: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.answer, 'a refused turn has no answer: ' + pm.response.text()).to.equal('');",
+                  "});",
+                  "pm.test('warp-virtual-key: refused by the key\\u2019s own provider list', function () {",
+                  "  pm.expect(body.error.code, 'wrong code: ' + pm.response.text()).to.equal('model_blocked');",
+                  "  pm.expect(body.error.message, pm.response.text()).to.include(\"Provider 'openai' is not allowed\");",
+                  "  pm.expect(body.error.message, pm.response.text()).to.not.include('virtual key is required');",
+                  "});",
+                  "if (body.conversation_id) { pm.collectionVariables.set('warpVkConversation', body.conversation_id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "[EXPECT-204] openai warp-virtual-key cleanup: delete the refused conversation",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The chat above reports why the thread is missing; nothing to delete.",
+                  "if (!pm.collectionVariables.get('warpVkConversation')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: refused conversation deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(204);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/conversations/{{warpVkConversation}}"
+          }
+        },
+        {
+          "name": "openai warp-virtual-key cleanup: delete the virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('warpVkId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('warpVkDeleted', '1'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{warpVkId}}"
+          }
+        },
+        {
+          "name": "openai warp-virtual-key: deleting the key clears it from Warp's settings",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only when this folder set the key and has just deleted it.",
+                  "if (!pm.collectionVariables.get('warpVkConfigured') || !pm.collectionVariables.get('warpVkDeleted')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: warp config readable after the key is deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var view = {};",
+                  "try { view = pm.response.json() || {}; } catch (e) { view = {}; }",
+                  "// A setting naming a deleted key refused every Warp turn from a caller with no identity",
+                  "// (409) until an administrator chose another; deleting the key now clears it.",
+                  "pm.test('warp-virtual-key: Warp no longer names the deleted key', function () {",
+                  "  pm.expect(view.virtual_key_id || '', 'still names the deleted key: ' + pm.response.text()).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-virtual-key cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The config was never snapshotted, so setup did not change it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpVkConfigWas')) { pm.execution.skipRequest(); return; }",
+                  "// Named explicitly: an omitted virtual_key_id keeps the stored one, and leaving Warp on",
+                  "// this folder's key would govern every other Warp folder by a key about to be deleted.",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpVkConfigWas'));",
+                  "was.virtual_key_id = was.virtual_key_id || '';",
+                  "pm.collectionVariables.set('warpVkRestoreBody', JSON.stringify(was));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// The snapshot is cleared only by the restore that used it, and only once that restore",
+                  "// succeeded, so a failed restore keeps it for inspection.",
+                  "if (pm.response.code === 200) {",
+                  "  ['ConfigWas', 'ConfigBody', 'BadBody', 'OmitBody', 'RestoreBody'].forEach(function (name) {",
+                  "    pm.collectionVariables.unset('warpVk' + name);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpVkRestoreBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-virtual-key cleanup: restore warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The flag was never snapshotted, so setup did not touch it - nothing to restore.",
+                  "if (!pm.collectionVariables.get('warpVkFlagWas')) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('warpVkFlagBody', JSON.stringify({ enabled: pm.collectionVariables.get('warpVkFlagWas') === 'true' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-virtual-key: flag restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Last request of the folder: nothing of this case is left behind.",
+                  "if (pm.response.code === 200) {",
+                  "  ['FlagWas', 'FlagBody', 'Configured', 'Conversation', 'Id', 'Name', 'Deleted'].forEach(function (name) {",
+                  "    pm.collectionVariables.unset('warpVk' + name);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpVkFlagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
+    },
+    {
       "name": "142. Tool-result cache marker survives translation to gpt-5.6 function_call_output (tool-result cache breakpoint)",
       "description": "Claude Code places its per-turn cache_control marker on the last block of the conversation, which is a tool_result after every tool call. The Anthropic converter carries that marker on the function_call_output item; the OpenAI Responses converter used to translate only input_text blocks, so the marker was stripped and the tool body flattened to a plain string: no prompt_cache_breakpoint, no explicit mode, and caching stopped after the first tool turn on gpt-5.6 / gpt-6. The fix marks the function_call_output content part (OpenAI documents prompt_cache_breakpoint there) and keeps the output in array form. Case 1 pins that the request stays in implicit mode: explicit-only mode checks only the breakpoints in the current request, so Claude Code's rolling marker never read the previous turn back. The rolling-marker cases send two Claude Code turns on OpenAI, the Bedrock runtime OpenAI endpoint (bedrock_openai_ep; plain bedrock sends a cross-region id through Converse and never reaches this converter) and Bedrock Mantle; turn 2 must read the turn-1 prefix back. Turn 1 sets a collection variable that turn 2 reads, so a filtered or rerun selection of turn 2 brings its turn 1 along. Case 2 pins the Claude Code shape through the drop-in messages route: system and tool_result both marked, so the cold write must extend past the 2000-token tool result (a write pinned at the system prefix is the pre-fix signature). The prompt cache mode comparison cases send one Claude Code conversation twice: once with prompt_cache_options.mode explicit through x-bf-passthrough-extra-params, once in the default implicit mode. The explicit arm must read turn 1's system prefix back, which needs all four turn-2 markers kept (the passthrough mode, not only the typed field, decides the ceiling), and the implicit arm must read more than the explicit arm. Case 3 pins the Chat Completions path, where cache_control on text parts is now translated too: the caller asks for explicit mode, so a stripped marker means no breakpoint and no write at all.",
       "item": [
@@ -243284,6 +244042,10 @@
                   "pm.test('control: without the direct key the request is refused for lacking a credential', function () {",
                   "  pm.expect(pm.response.code, text).to.eql(401);",
                   "  pm.expect(json.type, text).to.equal('virtual_key_required');",
+                  "});",
+                  "// Governance refused it, so it is declared as a policy refusal. Undeclared, the bare 401 was classified as the provider rejecting a key (provider_auth_failed) and Warp showed it as its model being unreachable.",
+                  "pm.test('the refusal is declared as governance-owned: extra_fields.error_type is policy_access_denied', function () {",
+                  "  pm.expect((json.extra_fields || {}).error_type, text).to.equal('policy_access_denied');",
                   "});"
                 ]
               }
@@ -348568,10 +349330,648 @@
           }
         }
       ]
+    },
+    {
+      "name": "379. Function call replay carrying reasoning fields (function call summary)",
+      "description": "A Responses input item that is not a reasoning item can still decode Bifrost's embedded reasoning fields: Codex replays function_call items with encrypted_content (and summary), which allocate ResponsesReasoning on the item. ResponsesMessage.MarshalJSON then re-emitted summary on the function_call (null, or [] here) and OpenAI rejected the request with 400 \"Unknown parameter: 'input[N].summary'\". The fix omits an empty summary on every non-reasoning item. These cases replay a function_call carrying summary:[] with its matching function_call_output; summary:[] reaches the same path as Codex's encrypted_content without needing an OpenAI-minted token, so the case is deterministic. Pinned on /v1/responses (unary and streamed) and on the /openai/v1/responses drop-in route Codex uses.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /v1/responses function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'response not completed: ' + body).to.equal('completed');",
+                  "  pm.expect(j.output, 'no output returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"stream\":false,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/responses stream function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'stream did not reach response.completed: ' + body).to.include('response.completed');",
+                  "  pm.expect(body, 'stream carried an error event: ' + body).to.not.include('\"type\":\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /openai/v1/responses stream function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'stream did not reach response.completed: ' + body).to.include('response.completed');",
+                  "  pm.expect(body, 'stream carried an error event: ' + body).to.not.include('\"type\":\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "380. OpenAI access_programs Daybreak selector (access programs)",
+      "description": "OpenAI's Responses API takes an access_programs object (developers.openai.com/api/docs/guides/daybreak) whose cyber member selects the trusted-access program: standard, daybreak_blue or daybreak_red. The response echoes the program that served the request (null on an implicit standard fallback). Bifrost did not model the field: on /v1/responses it fell into ExtraParams and was only forwarded under x-bf-passthrough-extra-params, so the caller silently got the model's default program, and the echo was dropped from the response. The fix types it on ResponsesParameters and BifrostResponsesResponse and forwards it only when the base provider is OpenAI. The cases pin: an explicit standard selection reaches OpenAI and its echo comes back (unary, streamed, and on the /openai/v1/responses drop-in route); daybreak_red on gpt-6-sol is rejected by OpenAI (invalid_access_program, or access_program_not_enabled on an org without Daybreak), which can only happen if the field reached the wire. Neither needs Daybreak approval on the harness org.",
+      "item": [
+        {
+          "name": "openai/gpt-6-sol /v1/responses access_programs standard is forwarded and echoed - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('explicit access_programs.cyber=standard reaches OpenAI and is echoed', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.access_programs, 'access_programs echo missing, so the selection was dropped before OpenAI or the echo was dropped on the way back: ' + text).to.be.an('object');",
+                  "  pm.expect(j.access_programs.cyber, 'unexpected program echoed: ' + text).to.equal('standard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-sol\",\"stream\":false,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"standard\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-6-sol /v1/responses stream access_programs standard is echoed on response.completed - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed explicit access_programs.cyber=standard is echoed on the completed response', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var completed = null;",
+                  "  var errors = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var payload = line.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    var ev = null;",
+                  "    try { ev = JSON.parse(payload); } catch (e) { return; }",
+                  "    if (ev && ev.type === 'error') { errors.push(payload); }",
+                  "    if (ev && ev.type === 'response.completed') { completed = ev; }",
+                  "  });",
+                  "  pm.expect(errors.length, 'stream carried an error event: ' + errors.join(' | ')).to.equal(0);",
+                  "  pm.expect(completed, 'stream did not reach response.completed: ' + body).to.not.equal(null);",
+                  "  pm.expect(completed.response.access_programs, 'access_programs echo missing on response.completed: ' + JSON.stringify(completed.response)).to.be.an('object');",
+                  "  pm.expect(completed.response.access_programs.cyber).to.equal('standard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-sol\",\"stream\":true,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"standard\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-6-sol /v1/responses access_programs daybreak_red is rejected by OpenAI [EXPECT-4XX] - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('daybreak_red on gpt-6-sol reaches OpenAI and is rejected with an access-program error', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'OpenAI did not reject the selection, so access_programs never reached it: ' + text).to.be.oneOf([400, 403]);",
+                  "  pm.expect(text, 'rejection is not an access-program error: ' + text).to.match(/invalid_access_program|access_program_not_enabled/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-sol\",\"stream\":false,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"daybreak_red\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-6-sol /openai/v1/responses access_programs standard is forwarded and echoed - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('drop-in route forwards access_programs and keeps the echo', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.access_programs, 'access_programs echo missing: ' + text).to.be.an('object');",
+                  "  pm.expect(j.access_programs.cyber, 'unexpected program echoed: ' + text).to.equal('standard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-6-sol\",\"stream\":false,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"standard\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "381. Logs list leaves detail-only fields to the by-id read (logs list projection)",
+      "description": "GET /api/logs carried fields that only the log detail sheet reads, and the sheet renders from GET /api/logs/{id} anyway. The list projection now leaves out alias_model_family, server_side_fallback_model, served_model, routing_engines_used, complexity_mechanism, model_router_id, model_router_name, video_generation_input and cache_debug; the by-id read still returns them.\n\n381.1 sends one OpenAI chat, whose answer names a dated snapshot so served_model is set, reads the log by id and asserts served_model is there, then lists the same row by request_id and asserts none of the detail-only keys appear while id, model, status and a real created_at do.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - the list row omits served_model and the other detail-only fields that GET /api/logs/{id} returns - openai/gpt-4o-mini - logs list projection",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var id = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('x-bifrost-request-id names the log entry', function () { pm.expect(id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "var DETAIL_ONLY = ['alias_model_family', 'server_side_fallback_model', 'served_model', 'routing_engines_used', 'complexity_mechanism', 'model_router_id', 'model_router_name', 'video_generation_input', 'cache_debug'];",
+                  "function checkList(full) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + encodeURIComponent(id) + '&limit=1', method: 'GET' }, function (err, res) {",
+                  "    var text = err ? String(err) : (res.code + ' ' + res.text());",
+                  "    pm.test('GET /api/logs answers 200', function () { pm.expect(err, text).to.eql(null); pm.expect(res.code, text).to.eql(200); });",
+                  "    var logs = []; try { logs = (res.json() || {}).logs || []; } catch (e) { logs = []; }",
+                  "    pm.test('the list finds the row by request_id', function () { pm.expect(logs.length, text.slice(0, 600)).to.eql(1); });",
+                  "    var row = logs[0] || {};",
+                  "    pm.test('the list row leaves every detail-only field to GET /api/logs/{id}', function () {",
+                  "      var present = DETAIL_ONLY.filter(function (k) { return Object.prototype.hasOwnProperty.call(row, k); });",
+                  "      pm.expect(present, JSON.stringify(row).slice(0, 800)).to.eql([]);",
+                  "    });",
+                  "    pm.test('the list row still carries the summary fields the table and other readers use', function () {",
+                  "      pm.expect(row.id, JSON.stringify(row).slice(0, 800)).to.eql(id);",
+                  "      pm.expect(row.model, JSON.stringify(row).slice(0, 800)).to.eql(full.model);",
+                  "      pm.expect(row.status, JSON.stringify(row).slice(0, 800)).to.eql('success');",
+                  "      pm.expect(row.created_at, 'created_at must be the real time, not the zero value').to.be.a('string').and.not.match(/^0001-/);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+                  "    var text = err ? String(err) : (res.code + ' ' + res.text());",
+                  "    if (err || (res.code !== 200 && res.code !== 404)) {",
+                  "      pm.test('GET /api/logs/{id} answers 200, or 404 before the row is written', function () { pm.expect.fail(text); });",
+                  "      return;",
+                  "    }",
+                  "    var j = null; if (res.code === 200) { try { j = res.json(); } catch (e) { j = null; } }",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('GET /api/logs/{id} carries served_model, the dated snapshot OpenAI answered with', function () {",
+                  "        pm.expect(j.served_model, JSON.stringify(j).slice(0, 800)).to.be.a('string').and.not.empty;",
+                  "        pm.expect(j.served_model, JSON.stringify(j).slice(0, 800)).to.not.eql(j.model);",
+                  "      });",
+                  "      checkList(j);",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 15) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('GET /api/logs/{id} carries served_model, the dated snapshot OpenAI answered with', function () { pm.expect.fail('log ' + id + ' never settled: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (id) { checkLog(0); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "382. Key aliases in an unfiltered model listing (alias model listing)",
+      "description": "The fallback model pickers of routing rules and model routers read GET /api/models with unfiltered=true, which holds a provider's raw catalog: an alias shows there only when its model_id is a model the provider lists live, so aliases to unlisted targets were never suggested. include_aliases=true adds the alias names on the provider's enabled keys where each key's own allow and block lists admit them, pattern aliases left out. It is opt-in because the deployments picker reads the same listing for a model_id, where an alias name is wrong. Each case creates a run-scoped OpenAI-backed provider with list_models off and placeholder keys, so the listing can hold nothing but aliases, and deletes it afterwards. Before the change the include_aliases listing is empty. Both routes parse the same query, so each is pinned. No provider calls are made. Run with FEATURE=\"alias model listing\".",
+      "item": [
+        {
+          "name": "openai custom provider /api/models lists gpt key aliases beside an unfiltered catalog only with include_aliases=true - alias model listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped provider with list_models off, so its listing holds nothing but alias names ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-alias-listing-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// Only providers older than ten minutes are swept, so a parallel shard's live provider is never touched.",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);",
+                  "var P = '/api/providers/' + encodeURIComponent(name);",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('aliasListingProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function (rd) {",
+                  "        // 404: a parallel run swept it first.",
+                  "        pm.test('setup: stale provider removed', function () { pm.expect([200, 404], 'unexpected status: ' + (rd ? rd.text() : 'no response')).to.include(rd && rd.code); });",
+                  "        if (rd && (rd.code === 200 || rd.code === 404)) { sweep(); }",
+                  "      });",
+                  "    }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false, allowed_requests: { chat_completion: true } } }, function (res) {",
+                  "      if (!expectOk('setup: created the run-scoped provider', res)) { return; }",
+                  "      // Recorded before the keys, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('aliasListingProvider', name);",
+                  "      var key = { name: name + '-key', value: 'sk-harness-alias-listing-placeholder', models: ['*'], blacklisted_models: ['harness-blocked-alias'], weight: 1, aliases: { 'harness-team-alias': { model_id: 'gpt-unlisted-a' }, 'harness-blocked-alias': { model_id: 'gpt-unlisted-b' }, 'regex:harness-pattern-.*': { model_id: 'gpt-unlisted-c' } } };",
+                  "      call('POST', P + '/keys', key, function (res2) {",
+                  "        if (!expectOk('setup: created the key with an alias, a blocked alias and a pattern alias', res2)) { return; }",
+                  "        var off = { name: name + '-disabled', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1, enabled: false, aliases: { 'harness-disabled-alias': { model_id: 'gpt-unlisted-d' } } };",
+                  "        call('POST', P + '/keys', off, function (res3) {",
+                  "          if (!expectOk('setup: created the disabled key with an alias', res3)) { return; }",
+                  "          // Unrestricted and alias-free: it must not lend its lists to the key that blocks its own alias.",
+                  "          call('POST', P + '/keys', { name: name + '-open', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1 }, function (res4) { expectOk('setup: created the unrestricted key', res4); });",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('aliasListingProvider');",
+                  "function namesOf(res) {",
+                  "  var body = null; try { body = res.json(); } catch (e) { body = null; }",
+                  "  return ((body && body.models) || []).map(function (m) { return m.name; });",
+                  "}",
+                  "pm.test('include_aliases listing returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('lists the alias once, and no blocked, pattern or disabled-key alias', function () {",
+                  "  pm.expect(namesOf(pm.response), pm.response.text()).to.eql(['harness-team-alias']);",
+                  "  pm.expect(pm.response.json().total, pm.response.text()).to.equal(1);",
+                  "});",
+                  "function cleanup() {",
+                  "  if (!name || name.indexOf('setup-failed') !== -1) { return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.sendRequest({ url: BASE + '/api/models?provider=' + encodeURIComponent(name) + '&unfiltered=true&limit=50', method: 'GET' }, function (err, res) {",
+                  "  pm.test('an unfiltered listing that does not ask for aliases has none', function () {",
+                  "    pm.expect(err, String(err)).to.eql(null);",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    pm.expect(namesOf(res), res.text()).to.eql([]);",
+                  "  });",
+                  "  cleanup();",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/models?provider={{aliasListingProvider}}&unfiltered=true&include_aliases=true&limit=50"
+          }
+        },
+        {
+          "name": "openai custom provider /api/models/details lists gpt key aliases beside an unfiltered catalog only with include_aliases=true - alias model listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped provider with list_models off, so its listing holds nothing but alias names ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-alias-listing-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// Only providers older than ten minutes are swept, so a parallel shard's live provider is never touched.",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);",
+                  "var P = '/api/providers/' + encodeURIComponent(name);",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('aliasListingProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function (rd) {",
+                  "        // 404: a parallel run swept it first.",
+                  "        pm.test('setup: stale provider removed', function () { pm.expect([200, 404], 'unexpected status: ' + (rd ? rd.text() : 'no response')).to.include(rd && rd.code); });",
+                  "        if (rd && (rd.code === 200 || rd.code === 404)) { sweep(); }",
+                  "      });",
+                  "    }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false, allowed_requests: { chat_completion: true } } }, function (res) {",
+                  "      if (!expectOk('setup: created the run-scoped provider', res)) { return; }",
+                  "      // Recorded before the keys, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('aliasListingProvider', name);",
+                  "      var key = { name: name + '-key', value: 'sk-harness-alias-listing-placeholder', models: ['*'], blacklisted_models: ['harness-blocked-alias'], weight: 1, aliases: { 'harness-team-alias': { model_id: 'gpt-unlisted-a' }, 'harness-blocked-alias': { model_id: 'gpt-unlisted-b' }, 'regex:harness-pattern-.*': { model_id: 'gpt-unlisted-c' } } };",
+                  "      call('POST', P + '/keys', key, function (res2) {",
+                  "        if (!expectOk('setup: created the key with an alias, a blocked alias and a pattern alias', res2)) { return; }",
+                  "        var off = { name: name + '-disabled', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1, enabled: false, aliases: { 'harness-disabled-alias': { model_id: 'gpt-unlisted-d' } } };",
+                  "        call('POST', P + '/keys', off, function (res3) {",
+                  "          if (!expectOk('setup: created the disabled key with an alias', res3)) { return; }",
+                  "          // Unrestricted and alias-free: it must not lend its lists to the key that blocks its own alias.",
+                  "          call('POST', P + '/keys', { name: name + '-open', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1 }, function (res4) { expectOk('setup: created the unrestricted key', res4); });",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('aliasListingProvider');",
+                  "function namesOf(res) {",
+                  "  var body = null; try { body = res.json(); } catch (e) { body = null; }",
+                  "  return ((body && body.models) || []).map(function (m) { return m.name; });",
+                  "}",
+                  "pm.test('include_aliases listing returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('lists the alias once, and no blocked, pattern or disabled-key alias', function () {",
+                  "  pm.expect(namesOf(pm.response), pm.response.text()).to.eql(['harness-team-alias']);",
+                  "  pm.expect(pm.response.json().total, pm.response.text()).to.equal(1);",
+                  "});",
+                  "function cleanup() {",
+                  "  if (!name || name.indexOf('setup-failed') !== -1) { return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.sendRequest({ url: BASE + '/api/models/details?provider=' + encodeURIComponent(name) + '&unfiltered=true&limit=50', method: 'GET' }, function (err, res) {",
+                  "  pm.test('an unfiltered listing that does not ask for aliases has none', function () {",
+                  "    pm.expect(err, String(err)).to.eql(null);",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    pm.expect(namesOf(res), res.text()).to.eql([]);",
+                  "  });",
+                  "  cleanup();",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/models/details?provider={{aliasListingProvider}}&unfiltered=true&include_aliases=true&limit=50"
+          }
+        }
+      ]
     }
   ,
     {
-      "name": "379. Chat message role validation (#9298) (chat-message-role-validation)",
+      "name": "383. Chat message role validation (#9298) (chat-message-role-validation)",
       "description": "Chat requests with missing, null or empty roles used to reach providers and could succeed on permissive backends. The native handler and shared OpenAI routes now refuse them with JSON 400 invalid_request_error before inference or SSE starts. Cases cover the native endpoint, OpenAI SDK aliases, LangChain, LiteLLM, PydanticAI and Azure deployment routes. The exact message and message index distinguish gateway validation from an unrelated provider/auth error. Large-payload passthrough is not parsed and remains outside this validation.",
       "event": [
         {
@@ -348595,7 +349995,7 @@
       ],
       "item": [
         {
-          "name": "379.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions missing messages[0].role - #9298",
+          "name": "383.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348618,7 +350018,7 @@
           "response": []
         },
         {
-          "name": "379.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages[0].role streaming - #9298",
+          "name": "383.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348641,7 +350041,7 @@
           "response": []
         },
         {
-          "name": "379.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions null messages[0].role - #9298",
+          "name": "383.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions null messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348664,7 +350064,7 @@
           "response": []
         },
         {
-          "name": "379.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions later message messages[1].role streaming - #9298",
+          "name": "383.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions later message messages[1].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348687,7 +350087,7 @@
           "response": []
         },
         {
-          "name": "379.5 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions missing messages[0].role - #9298",
+          "name": "383.5 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348710,7 +350110,7 @@
           "response": []
         },
         {
-          "name": "379.6 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions later message messages[1].role streaming - #9298",
+          "name": "383.6 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions later message messages[1].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348733,7 +350133,7 @@
           "response": []
         },
         {
-          "name": "379.7 [EXPECT-400] openai/gpt-4o-mini /openai/chat/completions null messages[0].role - #9298",
+          "name": "383.7 [EXPECT-400] openai/gpt-4o-mini /openai/chat/completions null messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348756,7 +350156,7 @@
           "response": []
         },
         {
-          "name": "379.8 [EXPECT-400] openai/gpt-4o-mini /langchain/v1/chat/completions missing messages[0].role - #9298",
+          "name": "383.8 [EXPECT-400] openai/gpt-4o-mini /langchain/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348779,7 +350179,7 @@
           "response": []
         },
         {
-          "name": "379.9 [EXPECT-400] openai/gpt-4o-mini /langchain/chat/completions empty messages[0].role streaming - #9298",
+          "name": "383.9 [EXPECT-400] openai/gpt-4o-mini /langchain/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348802,7 +350202,7 @@
           "response": []
         },
         {
-          "name": "379.10 [EXPECT-400] openai/gpt-4o-mini /litellm/v1/chat/completions missing messages[0].role - #9298",
+          "name": "383.10 [EXPECT-400] openai/gpt-4o-mini /litellm/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348825,7 +350225,7 @@
           "response": []
         },
         {
-          "name": "379.11 [EXPECT-400] openai/gpt-4o-mini /litellm/chat/completions empty messages[0].role streaming - #9298",
+          "name": "383.11 [EXPECT-400] openai/gpt-4o-mini /litellm/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348848,7 +350248,7 @@
           "response": []
         },
         {
-          "name": "379.12 [EXPECT-400] openai/gpt-4o-mini /pydanticai/v1/chat/completions missing messages[0].role - #9298",
+          "name": "383.12 [EXPECT-400] openai/gpt-4o-mini /pydanticai/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348871,7 +350271,7 @@
           "response": []
         },
         {
-          "name": "379.13 [EXPECT-400] openai/gpt-4o-mini /pydanticai/chat/completions empty messages[0].role streaming - #9298",
+          "name": "383.13 [EXPECT-400] openai/gpt-4o-mini /pydanticai/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348894,7 +350294,7 @@
           "response": []
         },
         {
-          "name": "379.14 [EXPECT-400] azure/gpt-4o-mini /openai/openai/deployments/gpt-4o-mini/chat/completions missing messages[0].role - #9298",
+          "name": "383.14 [EXPECT-400] azure/gpt-4o-mini /openai/openai/deployments/gpt-4o-mini/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348917,7 +350317,7 @@
           "response": []
         },
         {
-          "name": "379.15 [EXPECT-400] azure/gpt-4o-mini /azure/openai/deployments/gpt-4o-mini/chat/completions null messages[0].role streaming - #9298",
+          "name": "383.15 [EXPECT-400] azure/gpt-4o-mini /azure/openai/deployments/gpt-4o-mini/chat/completions null messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348942,7 +350342,7 @@
       ]
     },
     {
-      "name": "380. Native chat preparation error compatibility (#9298) (chat-message-role-validation)",
+      "name": "384. Native chat preparation error compatibility (#9298) (chat-message-role-validation)",
       "description": "The role-validation fix must only add error.type for missing message roles. Existing native chat preparation failures keep their JSON 400 envelope without error.type. Empty messages and malformed JSON are checked with stream false and true; all four requests fail before provider dispatch.",
       "event": [
         {
@@ -348966,7 +350366,7 @@
       ],
       "item": [
         {
-          "name": "380.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages stream=false - #9298",
+          "name": "384.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages stream=false - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -348989,7 +350389,7 @@
           "response": []
         },
         {
-          "name": "380.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages stream=true - #9298",
+          "name": "384.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages stream=true - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -349012,7 +350412,7 @@
           "response": []
         },
         {
-          "name": "380.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions malformed JSON stream=false - #9298",
+          "name": "384.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions malformed JSON stream=false - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -349035,7 +350435,7 @@
           "response": []
         },
         {
-          "name": "380.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions malformed JSON stream=true - #9298",
+          "name": "384.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions malformed JSON stream=true - #9298",
           "request": {
             "method": "POST",
             "header": [

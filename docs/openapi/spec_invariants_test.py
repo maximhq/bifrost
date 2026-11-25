@@ -1183,6 +1183,46 @@ def test_pricing_patch_above_12hr_fields():
     assert not problems, "PricingPatch 1hr+ tier drift:\n    " + "\n    ".join(problems)
 
 
+def test_access_programs_contract():
+    """OpenAI's access_programs (Daybreak): cyber takes exactly the three documented
+    programs, members Bifrost does not model are allowed and forwarded so OpenAI can
+    reject them, and every Responses body that carries the field references the one
+    component, in the YAML sources and in both bundles."""
+    programs = ["standard", "daybreak_blue", "daybreak_red"]
+    inference = load(HERE / "schemas" / "inference" / "responses.yaml")
+    integration = load(HERE / "schemas" / "integrations" / "openai" / "responses.yaml")
+    problems = []
+
+    component = inference.get("AccessPrograms") or {}
+    if component.get("properties", {}).get("cyber", {}).get("enum") != programs:
+        problems.append(f"responses.yaml AccessPrograms.cyber enum is {component.get('properties', {}).get('cyber', {}).get('enum')}, want {programs}")
+    if component.get("additionalProperties") is not True:
+        problems.append("responses.yaml AccessPrograms must set additionalProperties: true (unknown members are forwarded to OpenAI)")
+    if "forward" not in (component.get("description") or ""):
+        problems.append("responses.yaml AccessPrograms description must say unknown members are forwarded")
+
+    source_refs = [
+        ("responses.yaml ResponsesRequest", inference.get("ResponsesRequest"), "#/AccessPrograms"),
+        ("responses.yaml ResponsesResponse", inference.get("ResponsesResponse"), "#/AccessPrograms"),
+        ("integrations/openai/responses.yaml OpenAIResponsesRequest", integration.get("OpenAIResponsesRequest"), "../../inference/responses.yaml#/AccessPrograms"),
+    ]
+    for name, schema, want in source_refs:
+        got = ((schema or {}).get("properties") or {}).get("access_programs", {}).get("$ref")
+        if got != want:
+            problems.append(f"{name}.access_programs $ref is {got}, want {want}")
+
+    for bundle_name in ("openapi.json", "openapi-oss.json"):
+        schemas = json.loads((HERE / bundle_name).read_text(encoding="utf-8"))["components"]["schemas"]
+        bundled = schemas.get("AccessPrograms") or {}
+        if bundled.get("properties", {}).get("cyber", {}).get("enum") != programs or bundled.get("additionalProperties") is not True:
+            problems.append(f"{bundle_name} AccessPrograms drifted from responses.yaml: {bundled}")
+        for owner in ("ResponsesRequest", "ResponsesResponse", "OpenAIResponsesRequest"):
+            got = ((schemas.get(owner) or {}).get("properties") or {}).get("access_programs", {}).get("$ref")
+            if got != "#/components/schemas/AccessPrograms":
+                problems.append(f"{bundle_name} {owner}.access_programs $ref is {got}")
+    assert not problems, "access_programs contract drift:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
@@ -1206,5 +1246,6 @@ check("adaptive routing PUT descriptions state that an empty reroute_target is s
 
 check("pricing patch OpenAI 12h cache-creation rates are non-negative numbers in source and bundle", test_pricing_patch_above_12hr_fields)
 check("clamped list endpoints document limit maximum 100 and default 25", test_clamped_list_endpoints_document_the_page_bounds)
+check("access_programs schema: cyber programs, forwarded unknown members, one component on every Responses body", test_access_programs_contract)
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

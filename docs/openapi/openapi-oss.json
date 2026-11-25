@@ -83142,6 +83142,16 @@
           "403": {
             "description": "Caller lacks `WarpSession` View (enterprise)"
           },
+          "409": {
+            "description": "Warp's settings name a virtual key (`virtual_key_id`) that no longer\nexists, and the caller has no identity of their own to use instead.\nAn administrator chooses another key in Warp's settings.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Conversation exceeds the server's history limit",
             "content": {
@@ -96079,6 +96089,22 @@
           }
         }
       },
+      "AccessPrograms": {
+        "type": "object",
+        "description": "OpenAI trusted-access programs (Daybreak). On a request, selects the program the request runs under; it is forwarded only to OpenAI and dropped for every other provider. Members other than cyber, and a cyber that is not one of the listed values, are forwarded to OpenAI as sent, so a misspelled member is rejected with a 400 instead of silently running the model's default program. On a response, records the program that served the request; absent when OpenAI applied standard safeguards implicitly.\n",
+        "additionalProperties": true,
+        "properties": {
+          "cyber": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "daybreak_blue",
+              "daybreak_red"
+            ],
+            "description": "Cyber trusted-access program. Use the value OpenAI lists for the model."
+          }
+        }
+      },
       "ContextManagement": {
         "description": "Automatic context window management. The wire shape depends on the target provider: OpenAI-compatible providers accept an array of {type, compact_threshold} entries; Anthropic-compatible providers accept an object with an \"edits\" array (compact_20260112, clear_tool_uses_20250919, clear_thinking_20251015).\n",
         "oneOf": [
@@ -96612,6 +96638,9 @@
           "stream": {
             "type": "boolean"
           },
+          "access_programs": {
+            "$ref": "#/components/schemas/AccessPrograms"
+          },
           "background": {
             "type": "boolean"
           },
@@ -97021,6 +97050,9 @@
         "properties": {
           "id": {
             "type": "string"
+          },
+          "access_programs": {
+            "$ref": "#/components/schemas/AccessPrograms"
           },
           "background": {
             "type": "boolean"
@@ -103859,6 +103891,9 @@
           },
           "stream": {
             "type": "boolean"
+          },
+          "access_programs": {
+            "$ref": "#/components/schemas/AccessPrograms"
           },
           "context_management": {
             "$ref": "#/components/schemas/ContextManagement"
@@ -113593,6 +113628,13 @@
             "type": "boolean",
             "description": "Whether to use OpenAI-compatible endpoints for this key"
           },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The provider key's own content-logging decision. Omit or null to inherit. The key sits in the credential tier with the virtual key and access profile, below the business unit, team and user, so any of those that decides outranks it; inside the tier, any that says true wins. Stamped when the key is selected; once a request has been sent on a key that says true, a retry onto another key does not turn content back on. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
+          },
           "config_hash": {
             "type": "string",
             "description": "Hash of config.json version, used for change detection"
@@ -116863,6 +116905,13 @@
             "type": "object",
             "additionalProperties": true
           },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The team's own content-logging decision. Absent or null inherits. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. A team that says true keeps content off even for a virtual key set to false, and a team that says false keeps content on even for a key set to true. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
+          },
           "config_hash": {
             "type": [
               "string",
@@ -116932,6 +116981,13 @@
           "customer_id": {
             "type": "string"
           },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Omit or set null to inherit. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. A team that says true keeps content off even for a virtual key set to false, and a team that says false keeps content on even for a key set to true. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
+          },
           "budgets": {
             "type": "array",
             "description": "Budgets to create for this team; reset durations must be unique",
@@ -116973,6 +117029,13 @@
           "calendar_aligned": {
             "type": "boolean",
             "description": "Team-wide calendar alignment for budget and rate-limit resets. Omit to leave unchanged."
+          },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Tri-state. Omit to leave the current decision unchanged, null to clear it back to inheriting, true to force content off, false to force it on. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. A team that says true keeps content off even for a virtual key set to false, and a team that says false keeps content on even for a key set to true. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
           },
           "reset_budget_usage": {
             "type": "boolean",
@@ -120538,6 +120601,13 @@
               "null"
             ],
             "default": false
+          },
+          "disable_content_logging": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The provider key's own content-logging decision. Omit or null to inherit. The key sits in the credential tier with the virtual key and access profile, below the business unit, team and user, so any of those that decides outranks it; inside the tier, any that says true wins. Stamped when the key is selected; once a request has been sent on a key that says true, a retry onto another key does not turn content back on. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector's own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.\n"
           },
           "created_at": {
             "type": "string",
@@ -126273,6 +126343,10 @@
             "type": "string",
             "description": "Which of the provider's configured keys the default model uses. A\nreference, not a credential, so it round-trips in the clear - there is\nnothing here worth redacting. Empty when the provider needs no key.\n"
           },
+          "virtual_key_id": {
+            "type": "string",
+            "description": "ID of the virtual key Warp's model calls present when the person asking\nhas no user identity of their own: the local admin, or a deployment\nwithout an identity provider. A reference, not the key. Absent when\nnone is set.\n"
+          },
           "additional_models": {
             "type": "array",
             "description": "The other models an operator has exposed. A chat request may name any of\nthem, or the default, by `provider` and `model`; nothing else is\naccepted. Omitted when only the default is configured.\n",
@@ -126454,6 +126528,10 @@
           "api_key_id": {
             "type": "string",
             "description": "Which of the provider's configured keys Warp should use. Empty is valid\nand common: a provider on a trusted network, or one using ambient IAM\ncredentials, needs no key at all.\n"
+          },
+          "virtual_key_id": {
+            "type": "string",
+            "description": "ID of a virtual key Warp's model calls present when the person asking\nhas no user identity of their own: the local admin, or a deployment\nwithout an identity provider. Needed for that caller while\n`enforce_auth_on_inference` is on; signed-in users are governed as\nthemselves and never use it. Omitted keeps the stored value, and `\"\"`\nclears it. A key that does not exist, or is inactive, is rejected with\n`400` when the value changes.\n"
           },
           "additional_models": {
             "type": "array",

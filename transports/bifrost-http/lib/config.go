@@ -847,6 +847,9 @@ type Config struct {
 	// the seam enterprise builds and plugins publish through. See the doc on
 	// schemas.NotificationPublisher before adding the first caller.
 	NotificationPublisher schemas.NotificationPublisher
+	// NotificationResolver marks a subject's notifications as handled. Assigned
+	// alongside NotificationPublisher.
+	NotificationResolver schemas.NotificationResolver
 
 	// EnvLabel is a short label (max 10 chars) displayed in the UI sidebar to identify the
 	// environment (e.g. "staging", "prod"). Set via config.json env_label or BIFROST_ENV_LABEL env var.
@@ -2300,6 +2303,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
+					DisableContentLogging:  dbKey.DisableContentLogging,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
@@ -2394,6 +2398,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					Enabled:                dbKey.Enabled,
 					UseForBatchAPI:         dbKey.UseForBatchAPI,
 					UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
+					DisableContentLogging:  dbKey.DisableContentLogging,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v", dbKey.Name, provider, err)
