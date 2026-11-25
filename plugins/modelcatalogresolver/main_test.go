@@ -354,11 +354,11 @@ func TestPreRequestHookDecisionWithSeveralProviders(t *testing.T) {
 			wantReason: "decision model shared-model is served by more than one provider (anthropic, azure, openai, openai_custom); send it as provider/model, for example anthropic/shared-model, or add a routing rule that sets the provider",
 		},
 		{
-			name:       "every candidate gated off decisions drops none",
+			name:       "every candidate gated off decisions recommends none",
 			model:      "shared-model",
 			custom:     map[schemas.ModelProvider]bool{"aaa_gated": false, "bbb_gated": false},
 			allowed:    []schemas.ModelProvider{"aaa_gated", "bbb_gated"},
-			wantReason: "decision model shared-model is served by more than one provider (aaa_gated, bbb_gated); send it as provider/model, for example aaa_gated/shared-model, or add a routing rule that sets the provider",
+			wantReason: "decision model shared-model is served only by providers whose allowed_requests forbid decisions (aaa_gated, bbb_gated); allow decisions on one of them or send the model as provider/model for a provider that serves decisions",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

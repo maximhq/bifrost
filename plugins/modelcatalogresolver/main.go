@@ -95,9 +95,26 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 
 	// A custom provider whose allowed_requests forbid decisions is refused by core on every
 	// attempt, so it is not a candidate: it neither makes the model ambiguous nor becomes the pick.
-	// When every candidate is gated none is dropped: the request fails either way.
+	// When every candidate is gated none can serve the request, so none is recommended or picked,
+	// not even by the route's own provider: the 400 says why instead.
 	if req.RequestType == schemas.DecisionRequest && len(candidates) > 1 {
-		if allowed := p.allowedFor(candidates, req.RequestType); len(allowed) > 0 && len(allowed) < len(candidates) {
+		allowed := p.allowedFor(candidates, req.RequestType)
+		if len(allowed) == 0 {
+			gated := make([]string, len(candidates))
+			for i, prov := range candidates {
+				gated[i] = string(prov)
+			}
+			req.ProviderResolutionError = fmt.Sprintf(
+				"decision model %s is served only by providers whose allowed_requests forbid decisions (%s); allow decisions on one of them or send the model as provider/model for a provider that serves decisions",
+				model, strings.Join(gated, ", "),
+			)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelWarn, fmt.Sprintf(
+				"No provider specified for decision model %s and every catalog option forbids decisions: [%s]; leaving req.Provider empty",
+				model, strings.Join(gated, ", "),
+			))
+			return nil
+		}
+		if len(allowed) < len(candidates) {
 			candidates = allowed
 			if !slices.Contains(candidates, selected) {
 				selected = candidates[0]
