@@ -2458,6 +2458,44 @@ func TestProcessAndSendResponse_CompletesSpanWhenFinalSendFails(t *testing.T) {
 	}
 }
 
+// A read error (an idle timeout) on the final chunk ends the span as failed and runs
+// the post-hook finalizer before CloseStream, not as OK from CloseStream's safety net.
+func TestProcessAndSendError_CompletesSpanAsError(t *testing.T) {
+	for name, skip := range map[string]bool{"sent": false, "skipped by a plugin": true} {
+		t.Run(name, func(t *testing.T) {
+			tracer := &finalizerTestTracer{parked: true, chunks: 1}
+			ctx := newFinalizerTestContext(tracer)
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			hook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				if skip {
+					err.StreamControl = &schemas.StreamControl{SkipStream: schemas.Ptr(true)}
+				}
+				return resp, err
+			}
+			calls := 0
+			finalizer := func(context.Context) { calls++ }
+			responseChan := make(chan *schemas.BifrostStreamChunk, 1)
+
+			ProcessAndSendError(ctx, hook, ErrStreamIdleTimeout, responseChan, nil, finalizer)
+
+			if tracer.GetDeferredSpanHandle("trace-1") != nil {
+				t.Fatal("deferred span must be completed by ProcessAndSendError, not left for CloseStream")
+			}
+			if tracer.endStatus != schemas.SpanStatusError {
+				t.Fatalf("read error should end the span as %q, got %q", schemas.SpanStatusError, tracer.endStatus)
+			}
+			if calls != 1 {
+				t.Fatalf("post-hook finalizer should run before the stream closes, ran %d times", calls)
+			}
+
+			CloseStream(ctx, responseChan)
+			if tracer.endStatus != schemas.SpanStatusError {
+				t.Errorf("CloseStream overwrote the span status with %q", tracer.endStatus)
+			}
+		})
+	}
+}
+
 // TestProviderSendsDoneMarker guards the stream termination switch: a provider
 // missing from the non-DONE case would make the stream loop in
 // core/providers/openai/openai.go wait indefinitely for a [DONE] marker it never sends.
