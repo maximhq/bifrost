@@ -377,17 +377,18 @@ func TestProbeDecision_DeadlineCoversQueueWait(t *testing.T) {
 	}, probeUpstreamReply{status: http.StatusOK, body: `{"model":"decider","answers":[{"type":"predicate","name":"probe","probability":0.9}]}`, hold: release})
 	t.Cleanup(func() { close(release) })
 
-	held := &schemas.BifrostDecisionRequest{
-		Provider:  probeTestProvider,
-		Model:     "decider",
-		Input:     schemas.DecisionInput{Text: schemas.Ptr("held")},
-		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("held")}},
-	}
+	// Each held request is its own value: the request path writes the model it
+	// resolves back into the request.
 	for range 4 {
 		go func() {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			defer ctx.Cancel()
-			_, _ = h.client.DecisionRequest(ctx, held)
+			_, _ = h.client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
+				Provider:  probeTestProvider,
+				Model:     "decider",
+				Input:     schemas.DecisionInput{Text: schemas.Ptr("held")},
+				Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("held")}},
+			})
 		}()
 	}
 	time.Sleep(200 * time.Millisecond)
