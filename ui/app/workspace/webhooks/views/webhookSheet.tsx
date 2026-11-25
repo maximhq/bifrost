@@ -213,7 +213,7 @@ export function WebhookSheet({ open, endpoint, onClose, onSecret }: WebhookSheet
 
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0" data-testid="webhook-sheet-content">
+			<SheetContent resizeKey="webhook" className="flex w-full flex-col overflow-x-hidden px-0" data-testid="webhook-sheet-content">
 				<SheetHeader className="flex flex-col items-start pt-8" headerClassName="px-4 md:px-6">
 					<SheetTitle>{isEditing ? endpoint.name : t("webhooks.sheet.addTitle")}</SheetTitle>
 					<SheetDescription>{isEditing ? t("webhooks.sheet.editDescription") : t("webhooks.sheet.addDescription")}</SheetDescription>

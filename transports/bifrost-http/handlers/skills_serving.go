@@ -150,9 +150,10 @@ type SkillsServingHandler struct {
 }
 
 // NewSkillsServingHandler creates a new SkillsServingHandler.
-// Returns nil if the store or live configuration is missing.
+// Returns nil if the live configuration is missing. store is nil when the config store is
+// disabled; the routes then answer 503 from RequireConfigStoreMiddleware.
 func NewSkillsServingHandler(store configstore.ConfigStore, objectStore objectstore.ObjectStore, config *lib.Config) *SkillsServingHandler {
-	if store == nil || config == nil {
+	if config == nil {
 		return nil
 	}
 	return &SkillsServingHandler{config: config, store: store, objectStore: objectStore, gitAvailable: CheckGitAvailability(), gitRepos: newSkillsGitRepoCache()}
@@ -168,36 +169,38 @@ func (h *SkillsServingHandler) Close() {
 
 // RegisterRoutes registers public serving endpoints.
 // These routes are intentionally NOT wrapped with auth middlewares — marketplace
-// URLs cannot carry credentials securely.
+// URLs cannot carry credentials securely. Every route serves skills from the config
+// store, so each one is still guarded by RequireConfigStoreMiddleware.
 func (h *SkillsServingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	guard := RequireConfigStoreMiddleware(h.store)
 	// Git-based marketplace routes only registered when git binary is available,
 	// since Claude Code and Codex require git clone support.
 	if h.gitAvailable {
 		// Claude Code and Claude Desktop/Cowork marketplace
 		claudeMarketplaceBase := "/api/skills/serve/claude-code.git"
-		r.GET("/api/skills/serve/claude-code/.claude-plugin/marketplace.json", lib.ChainMiddlewares(h.claudeCodeMarketplace, h.requireMarketplaceURL))
-		r.GET(claudeMarketplaceBase+"/info/refs", lib.ChainMiddlewares(h.claudeCodeMarketplaceGit(), h.requireMarketplaceURL))
-		r.POST(claudeMarketplaceBase+"/git-upload-pack", lib.ChainMiddlewares(h.claudeCodeMarketplaceGit(), h.requireMarketplaceURL))
+		r.GET("/api/skills/serve/claude-code/.claude-plugin/marketplace.json", lib.ChainMiddlewares(h.claudeCodeMarketplace, guard, h.requireMarketplaceURL))
+		r.GET(claudeMarketplaceBase+"/info/refs", lib.ChainMiddlewares(h.claudeCodeMarketplaceGit(), guard, h.requireMarketplaceURL))
+		r.POST(claudeMarketplaceBase+"/git-upload-pack", lib.ChainMiddlewares(h.claudeCodeMarketplaceGit(), guard, h.requireMarketplaceURL))
 
 		// Codex marketplace — Codex expects .agents/plugins/marketplace.json
-		r.GET("/api/skills/serve/codex/.agents/plugins/marketplace.json", lib.ChainMiddlewares(h.codexMarketplace, h.requireMarketplaceURL))
+		r.GET("/api/skills/serve/codex/.agents/plugins/marketplace.json", lib.ChainMiddlewares(h.codexMarketplace, guard, h.requireMarketplaceURL))
 		// Codex marketplace git routes (Codex clones the marketplace URL itself)
 		codexMktBase := "/api/skills/serve/codex"
-		r.GET(codexMktBase+"/info/refs", lib.ChainMiddlewares(h.codexMarketplaceGit(), h.requireMarketplaceURL))
-		r.POST(codexMktBase+"/git-upload-pack", lib.ChainMiddlewares(h.codexMarketplaceGit(), h.requireMarketplaceURL))
+		r.GET(codexMktBase+"/info/refs", lib.ChainMiddlewares(h.codexMarketplaceGit(), guard, h.requireMarketplaceURL))
+		r.POST(codexMktBase+"/git-upload-pack", lib.ChainMiddlewares(h.codexMarketplaceGit(), guard, h.requireMarketplaceURL))
 
 		// Git smart HTTP serving (shared by both Claude Code and Codex)
 		for _, harness := range configstore.SkillHarnessNames {
-			h.registerGitRoutes(r, harness)
+			h.registerGitRoutes(r, harness, guard)
 		}
 	} else {
 		logger.Warn("git binary not found — Claude Code / Codex marketplace routes disabled")
 	}
 
 	// Generic download (always available, no git required)
-	r.GET("/api/skills/serve/all/download.zip", h.allSkillsZipDownload)
-	r.GET("/api/skills/serve/{skill-name}/download.zip", h.genericZipDownload)
-	r.GET("/api/skills/serve/{skill-name}/files/{filepath:*}", h.genericFileDownload)
+	r.GET("/api/skills/serve/all/download.zip", lib.ChainMiddlewares(h.allSkillsZipDownload, guard))
+	r.GET("/api/skills/serve/{skill-name}/download.zip", lib.ChainMiddlewares(h.genericZipDownload, guard))
+	r.GET("/api/skills/serve/{skill-name}/files/{filepath:*}", lib.ChainMiddlewares(h.genericFileDownload, guard))
 }
 
 // pluginNamePrefix is prepended to all skill names when exposed as marketplace plugins.
@@ -582,11 +585,11 @@ func assembleMarketplaceRepoSpec(marketplaceJSON []byte, harness string) *GitRep
 // Git smart HTTP serving via direct git upload-pack
 // ============================================================================
 
-// registerGitRoutes registers Git smart HTTP routes for a given harness.
-func (h *SkillsServingHandler) registerGitRoutes(r *router.Router, harness string) {
+// registerGitRoutes registers Git smart HTTP routes for a given harness, behind guard.
+func (h *SkillsServingHandler) registerGitRoutes(r *router.Router, harness string, guard schemas.BifrostHTTPMiddleware) {
 	base := "/api/skills/serve/" + harness + "/plugins/{skill-name}"
-	r.GET(base+"/info/refs", lib.ChainMiddlewares(h.servePluginGit(harness), h.requireMarketplaceURL))
-	r.POST(base+"/git-upload-pack", lib.ChainMiddlewares(h.servePluginGit(harness), h.requireMarketplaceURL))
+	r.GET(base+"/info/refs", lib.ChainMiddlewares(h.servePluginGit(harness), guard, h.requireMarketplaceURL))
+	r.POST(base+"/git-upload-pack", lib.ChainMiddlewares(h.servePluginGit(harness), guard, h.requireMarketplaceURL))
 }
 
 // servePluginGit handles git smart HTTP for per-plugin repos.

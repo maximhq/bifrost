@@ -39,7 +39,8 @@ export class VirtualKeysManagementPage extends VirtualKeysPage {
     throw new Error(`Virtual key "${name}" value did not change after rotation`);
   }
 
-  async rotateVirtualKey(name: string): Promise<void> {
+  /** warningTexts makes the rotation expect a warning toast with those texts instead of success. */
+  async rotateVirtualKey(name: string, warningTexts?: string[]): Promise<void> {
     await this.forceCloseToasts();
     await this.openVirtualKeyEditor(name);
 
@@ -51,7 +52,11 @@ export class VirtualKeysManagementPage extends VirtualKeysPage {
     await confirmBtn.waitFor({ state: "visible", timeout: 5000 });
     await confirmBtn.click();
 
-    await this.waitForSuccessToast("rotated");
+    if (warningTexts) {
+      await this.waitForWarningToast(...warningTexts);
+    } else {
+      await this.waitForSuccessToast("rotated");
+    }
     await this.closeSheet();
     await this.goto();
     await this.searchVirtualKeys(name);
@@ -86,7 +91,7 @@ export class VirtualKeysManagementPage extends VirtualKeysPage {
     }
   }
 
-  async bulkRotateVirtualKeys(names: string[]): Promise<void> {
+  async bulkRotateVirtualKeys(names: string[], warningTexts?: string[]): Promise<void> {
     await this.forceCloseToasts();
     for (const name of names) {
       await this.selectVirtualKey(name);
@@ -100,7 +105,11 @@ export class VirtualKeysManagementPage extends VirtualKeysPage {
     await confirmBtn.waitFor({ state: "visible", timeout: 5000 });
     await confirmBtn.click();
 
-    await this.waitForSuccessToast("Rotated");
+    if (warningTexts) {
+      await this.waitForWarningToast(...warningTexts);
+    } else {
+      await this.waitForSuccessToast("Rotated");
+    }
     await this.goto();
   }
 }

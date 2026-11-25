@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -79,14 +78,17 @@ func (h *ProviderHandler) probeDecision(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err))
 		return
 	}
-	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
-	if err != nil {
-		if errors.Is(err, lib.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
-			return
-		}
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
+	// The probe goes through the running client, so it checks the provider and
+	// keys the client serves: the live store's, not the config store's.
+	stored, ok := h.config.LiveStore.Collections.Providers.Get(string(provider))
+	if !ok {
+		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", lib.ErrNotFound))
 		return
+	}
+	config := &stored.Config
+	var keys []schemas.Key
+	if list, ok := h.config.LiveStore.Views.ProviderKeyLists.Get(string(provider)); ok {
+		keys = *list
 	}
 
 	var payload decisionProbeRequest
@@ -104,12 +106,12 @@ func (h *ProviderHandler) probeDecision(ctx *fasthttp.RequestCtx) {
 	keyID := strings.TrimSpace(payload.KeyID)
 	var target string
 	if keyID != "" {
-		i := slices.IndexFunc(config.Keys, func(key schemas.Key) bool { return key.ID == keyID })
+		i := slices.IndexFunc(keys, func(key schemas.Key) bool { return key.ID == keyID })
 		if i < 0 {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("key %q is not configured for provider %q", keyID, provider))
 			return
 		}
-		target = keyAliasTarget(config.Keys[i], model)
+		target = keyAliasTarget(keys[i], model)
 	} else {
 		target = h.aliasTarget(provider, model)
 	}
@@ -144,7 +146,7 @@ func (h *ProviderHandler) probeDecision(ctx *fasthttp.RequestCtx) {
 
 	if bifrostErr != nil {
 		result.Provider, result.Model = probedRoute(result.Provider, result.Model, bifrostErr.ExtraFields.RoutingInfo, "")
-		result.Error = decisionProbeErrorFrom(bifrostErr, decisionProbeSecrets(config))
+		result.Error = decisionProbeErrorFrom(bifrostErr, decisionProbeSecrets(config, keys))
 		SendJSON(ctx, result)
 		return
 	}
@@ -307,7 +309,7 @@ func decisionProbeErrorFrom(bifrostErr *schemas.BifrostError, secrets []string) 
 // live in each provider's own token cache, which the handler cannot read, so
 // they are not listed. Empty values are skipped, since scrubbing "" would
 // insert the marker between every character.
-func decisionProbeSecrets(config *configstore.ProviderConfig) []string {
+func decisionProbeSecrets(config *configstore.ProviderConfig, keys []schemas.Key) []string {
 	var secrets []string
 	add := func(value string) {
 		if value != "" {
@@ -319,8 +321,8 @@ func decisionProbeSecrets(config *configstore.ProviderConfig) []string {
 			add(value.GetValue())
 		}
 	}
-	for i := range config.Keys {
-		key := &config.Keys[i]
+	for i := range keys {
+		key := &keys[i]
 		add(key.Value.GetValue())
 		if c := key.AzureKeyConfig; c != nil {
 			addPtr(c.ClientSecret)

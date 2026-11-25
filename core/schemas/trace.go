@@ -54,10 +54,10 @@ func GetBoolAttr(attrs map[string]any, key string) bool {
 	return v
 }
 
-// ContentLoggingDisabledForTrace reports whether governance turned content logging off for the
-// request behind this trace, through its virtual key or a project it was scoped to
-// (AttrBifrostContentLoggingDisabled on the root span). Every connector ORs this into its own
-// disable_content_logging: governance can only tighten what a connector exports, never loosen it.
+// ContentLoggingDisabledForTrace reports whether the content-logging layers of the request behind
+// this trace resolved to off, including a project the request was scoped to
+// (AttrBifrostContentLoggingDisabled true on the root span). Every connector ORs this into its own
+// disable_content_logging: the layers can only tighten what a connector exports, never loosen it.
 // Nil-safe, so a connector can call it on any trace.
 func ContentLoggingDisabledForTrace(t *Trace) bool {
 	if t == nil || t.RootSpan == nil {
@@ -1319,12 +1319,12 @@ const (
 	// unlike time_to_first_chunk it includes gateway overhead. Streaming only.
 	AttrBifrostTimeToFirstTokenMs = "bifrost.response.time_to_first_token_ms"
 
-	// AttrBifrostContentLoggingDisabled is set to true on the root span when governance turned
-	// content logging off for the request: its virtual key did, or a project it was scoped to did.
-	// Connectors read it through ContentLoggingDisabledForTrace and strip content the way their own
-	// disable_content_logging would. A key that keeps content on never writes it. It may read false
-	// when a project that keeps content on overrides a key that turned it off; a connector reads
-	// false the same as absent, so nothing can loosen a connector's own setting.
+	// AttrBifrostContentLoggingDisabled is set to true on the root span when the request's
+	// content-logging layers resolve to off (see StampContentLoggingDecision), or a project the
+	// request was scoped to turned content off. Connectors read it through
+	// ContentLoggingDisabledForTrace and strip content the way their own disable_content_logging
+	// would. Only true acts: it is written false solely to undo an earlier true when a higher layer
+	// or a project turns content back on, so it can never loosen a connector's own setting.
 	AttrBifrostContentLoggingDisabled = "bifrost.content_logging.disabled"
 
 	AttrBifrostProviderName        = "bifrost.provider.name"
