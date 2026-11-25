@@ -47280,7 +47280,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Add MCP client",
-        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client; tool\npricing can only be set once the tool list is known. For shared-connection\nclients tools are fetched after client creation; for per-user auth types\nthey are discovered during the create/verify flow itself.\n\nTwo cases require a genuinely authenticated admin session and are refused\nwith 403 when dashboard authentication is disabled or unconfigured, even\nthough other management endpoints stay reachable in that state:\nconnection_type \"stdio\" (which runs the supplied command as a gateway\nsubprocess), and connection_type \"http\"/\"sse\" whose connection_string\nresolves to a loopback, private-network, link-local, or CGNAT address.\nPublic http/sse targets are unaffected.\n\nFor auth_type \"token_exchange\", verification and tool discovery run\nduring the create as the signed-in admin: Bifrost exchanges the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in. A request with\nneither (for example one made with an API key) creates the client in\npending_verification; finish it with\nPOST /api/mcp/client/{id}/verify-exchange.\n\nFor auth_type \"oauth\" and \"per_user_oauth\", the name and endpoint slug\nare checked before the OAuth flow starts, so a conflict returns 409 at\ncreate rather than when the flow is completed, and endpoint_slug is kept\nfor the client the completion creates. OAuth discovery against a private\naddress that mcp_oauth_private_allowlist does not permit returns 400.\n\nauth_type must be one of the MCPAuthType values; any other value returns\n400. per_user_oauth and token_exchange need connection_type \"http\", and\nper_user_headers needs \"http\" or \"openapi\": each call opens its own\nconnection, so all three return 400 on \"sse\" and \"stdio\". An omitted\nauth_type is \"headers\".\n",
+        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client; tool\npricing can only be set once the tool list is known. For shared-connection\nclients tools are fetched after client creation; for per-user auth types\nthey are discovered during the create/verify flow itself.\n\nTwo cases require a genuinely authenticated admin session and are refused\nwith 403 when dashboard authentication is disabled or unconfigured, even\nthough other management endpoints stay reachable in that state:\nconnection_type \"stdio\" (which runs the supplied command as a gateway\nsubprocess), and connection_type \"http\"/\"sse\" whose connection_string\nresolves to a loopback, private-network, link-local, or CGNAT address.\nPublic http/sse targets are unaffected. auth_type \"aws_sigv4\" is refused\nthe same way, since it signs requests with Bifrost's own AWS identity.\n\nFor auth_type \"token_exchange\", verification and tool discovery run\nduring the create as the signed-in admin: Bifrost exchanges the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in. A request with\nneither (for example one made with an API key) creates the client in\npending_verification; finish it with\nPOST /api/mcp/client/{id}/verify-exchange.\n\nFor auth_type \"oauth\" and \"per_user_oauth\", the name and endpoint slug\nare checked before the OAuth flow starts, so a conflict returns 409 at\ncreate rather than when the flow is completed, and endpoint_slug is kept\nfor the client the completion creates. OAuth discovery against a private\naddress that mcp_oauth_private_allowlist does not permit returns 400.\n\nauth_type must be one of the MCPAuthType values; any other value returns\n400. per_user_oauth and token_exchange need connection_type \"http\", and\nper_user_headers needs \"http\" or \"openapi\": each call opens its own\nconnection, so all three return 400 on \"sse\" and \"stdio\". An omitted\nauth_type is \"headers\".\n",
         "tags": [
           "MCP"
         ],
@@ -47407,6 +47407,43 @@
                           {
                             "if": {
                               "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "aws_sigv4"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "aws_sigv4"
+                              ],
+                              "description": "When `auth_type` is `aws_sigv4`, `aws_sigv4` must carry a `region`.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "aws_sigv4"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "aws_sigv4"
+                                ]
+                              },
+                              "description": "An `aws_sigv4` block only applies to auth_type \"aws_sigv4\"; reject it\nfor every other auth_type, including an omitted one, which defaults\nto \"headers\".\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
                                 "per_user_discovery"
                               ],
                               "properties": {
@@ -47522,7 +47559,8 @@
                               "per_user_oauth",
                               "per_user_headers",
                               "token_exchange",
-                              "client_credentials"
+                              "client_credentials",
+                              "aws_sigv4"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -48330,6 +48368,356 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"client_credentials\".\nNot accepted for connection_type \"stdio\" or \"openapi\".\n"
+                          },
+                          "aws_sigv4": {
+                            "type": "object",
+                            "required": [
+                              "region"
+                            ],
+                            "properties": {
+                              "region": {
+                                "description": "AWS region requests are signed for, such as us-east-1 or us-gov-west-1.\nSupports env.VAR_NAME and vault.path references. A value from a\nreference is redacted in API responses; a literal is returned as set.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "service": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "bedrock-agentcore",
+                                  "aws-mcp",
+                                  "lambda",
+                                  "execute-api"
+                                ],
+                                "description": "SigV4 signing name. Empty: bedrock-agentcore (AgentCore Gateway).\naws-mcp for the AWS MCP Server, lambda for Lambda function URLs,\nexecute-api for API Gateway.\n"
+                              },
+                              "role_arn": {
+                                "description": "IAM role to assume before signing. Omitted: requests are signed with\nBifrost's own identity from the default credential chain (environment,\nEKS Pod Identity, IRSA, instance profile). Supports env.VAR_NAME and\nvault.path references.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "external_id": {
+                                "description": "External ID for the AssumeRole call, when the role's trust policy\nrequires one. Requires role_arn. Supports env.VAR_NAME and vault.path\nreferences. Always masked in API responses, also when entered as a\nliteral. On update, sending the mask back keeps the stored value, also\nwhen role_arn changes; send the new external ID when the new role needs\na different one. On create, send the value itself or a reference.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "session_name": {
+                                "description": "Role session name, 2 to 64 of letters, digits and +=,.@_-. Empty:\nbifrost-session. Requires role_arn. Supports env.VAR_NAME and\nvault.path references.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              }
+                            },
+                            "allOf": [
+                              {
+                                "if": {
+                                  "anyOf": [
+                                    {
+                                      "required": [
+                                        "external_id"
+                                      ],
+                                      "properties": {
+                                        "external_id": {
+                                          "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "type",
+                                                "ref"
+                                              ],
+                                              "properties": {
+                                                "type": {
+                                                  "enum": [
+                                                    "env",
+                                                    "vault"
+                                                  ]
+                                                },
+                                                "ref": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "value"
+                                              ],
+                                              "properties": {
+                                                "value": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "type": {
+                                                  "const": "plain_text"
+                                                }
+                                              },
+                                              "if": {
+                                                "not": {
+                                                  "required": [
+                                                    "type"
+                                                  ]
+                                                }
+                                              },
+                                              "then": {
+                                                "not": {
+                                                  "required": [
+                                                    "ref"
+                                                  ]
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "required": [
+                                        "session_name"
+                                      ],
+                                      "properties": {
+                                        "session_name": {
+                                          "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "type",
+                                                "ref"
+                                              ],
+                                              "properties": {
+                                                "type": {
+                                                  "enum": [
+                                                    "env",
+                                                    "vault"
+                                                  ]
+                                                },
+                                                "ref": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "value"
+                                              ],
+                                              "properties": {
+                                                "value": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "type": {
+                                                  "const": "plain_text"
+                                                }
+                                              },
+                                              "if": {
+                                                "not": {
+                                                  "required": [
+                                                    "type"
+                                                  ]
+                                                }
+                                              },
+                                              "then": {
+                                                "not": {
+                                                  "required": [
+                                                    "ref"
+                                                  ]
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ]
+                                },
+                                "then": {
+                                  "required": [
+                                    "role_arn"
+                                  ],
+                                  "properties": {
+                                    "role_arn": {
+                                      "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "type",
+                                            "ref"
+                                          ],
+                                          "properties": {
+                                            "type": {
+                                              "enum": [
+                                                "env",
+                                                "vault"
+                                              ]
+                                            },
+                                            "ref": {
+                                              "type": "string",
+                                              "minLength": 1
+                                            }
+                                          }
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "value"
+                                          ],
+                                          "properties": {
+                                            "value": {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            "type": {
+                                              "const": "plain_text"
+                                            }
+                                          },
+                                          "if": {
+                                            "not": {
+                                              "required": [
+                                                "type"
+                                              ]
+                                            }
+                                          },
+                                          "then": {
+                                            "not": {
+                                              "required": [
+                                                "ref"
+                                              ]
+                                            }
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  }
+                                },
+                                "description": "external_id and session_name apply to role_arn."
+                              }
+                            ],
+                            "additionalProperties": false,
+                            "description": "Required when creating a client with auth_type \"aws_sigv4\". Not\naccepted for connection_type \"stdio\". `headers` and\n`allowed_extra_headers` cannot name `Authorization` or any `X-Amz-*`\nheader, which the signer sets (400).\n"
                           },
                           "per_user_discovery": {
                             "type": "boolean",
@@ -48482,6 +48870,43 @@
                           {
                             "if": {
                               "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "aws_sigv4"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "aws_sigv4"
+                              ],
+                              "description": "When `auth_type` is `aws_sigv4`, `aws_sigv4` must carry a `region`.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "aws_sigv4"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "aws_sigv4"
+                                ]
+                              },
+                              "description": "An `aws_sigv4` block only applies to auth_type \"aws_sigv4\"; reject it\nfor every other auth_type, including an omitted one, which defaults\nto \"headers\".\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
                                 "per_user_discovery"
                               ],
                               "properties": {
@@ -48597,7 +49022,8 @@
                               "per_user_oauth",
                               "per_user_headers",
                               "token_exchange",
-                              "client_credentials"
+                              "client_credentials",
+                              "aws_sigv4"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -49406,6 +49832,356 @@
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"client_credentials\".\nNot accepted for connection_type \"stdio\" or \"openapi\".\n"
                           },
+                          "aws_sigv4": {
+                            "type": "object",
+                            "required": [
+                              "region"
+                            ],
+                            "properties": {
+                              "region": {
+                                "description": "AWS region requests are signed for, such as us-east-1 or us-gov-west-1.\nSupports env.VAR_NAME and vault.path references. A value from a\nreference is redacted in API responses; a literal is returned as set.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "service": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "bedrock-agentcore",
+                                  "aws-mcp",
+                                  "lambda",
+                                  "execute-api"
+                                ],
+                                "description": "SigV4 signing name. Empty: bedrock-agentcore (AgentCore Gateway).\naws-mcp for the AWS MCP Server, lambda for Lambda function URLs,\nexecute-api for API Gateway.\n"
+                              },
+                              "role_arn": {
+                                "description": "IAM role to assume before signing. Omitted: requests are signed with\nBifrost's own identity from the default credential chain (environment,\nEKS Pod Identity, IRSA, instance profile). Supports env.VAR_NAME and\nvault.path references.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "external_id": {
+                                "description": "External ID for the AssumeRole call, when the role's trust policy\nrequires one. Requires role_arn. Supports env.VAR_NAME and vault.path\nreferences. Always masked in API responses, also when entered as a\nliteral. On update, sending the mask back keeps the stored value, also\nwhen role_arn changes; send the new external ID when the new role needs\na different one. On create, send the value itself or a reference.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "session_name": {
+                                "description": "Role session name, 2 to 64 of letters, digits and +=,.@_-. Empty:\nbifrost-session. Requires role_arn. Supports env.VAR_NAME and\nvault.path references.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              }
+                            },
+                            "allOf": [
+                              {
+                                "if": {
+                                  "anyOf": [
+                                    {
+                                      "required": [
+                                        "external_id"
+                                      ],
+                                      "properties": {
+                                        "external_id": {
+                                          "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "type",
+                                                "ref"
+                                              ],
+                                              "properties": {
+                                                "type": {
+                                                  "enum": [
+                                                    "env",
+                                                    "vault"
+                                                  ]
+                                                },
+                                                "ref": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "value"
+                                              ],
+                                              "properties": {
+                                                "value": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "type": {
+                                                  "const": "plain_text"
+                                                }
+                                              },
+                                              "if": {
+                                                "not": {
+                                                  "required": [
+                                                    "type"
+                                                  ]
+                                                }
+                                              },
+                                              "then": {
+                                                "not": {
+                                                  "required": [
+                                                    "ref"
+                                                  ]
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "required": [
+                                        "session_name"
+                                      ],
+                                      "properties": {
+                                        "session_name": {
+                                          "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "type",
+                                                "ref"
+                                              ],
+                                              "properties": {
+                                                "type": {
+                                                  "enum": [
+                                                    "env",
+                                                    "vault"
+                                                  ]
+                                                },
+                                                "ref": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "value"
+                                              ],
+                                              "properties": {
+                                                "value": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "type": {
+                                                  "const": "plain_text"
+                                                }
+                                              },
+                                              "if": {
+                                                "not": {
+                                                  "required": [
+                                                    "type"
+                                                  ]
+                                                }
+                                              },
+                                              "then": {
+                                                "not": {
+                                                  "required": [
+                                                    "ref"
+                                                  ]
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ]
+                                },
+                                "then": {
+                                  "required": [
+                                    "role_arn"
+                                  ],
+                                  "properties": {
+                                    "role_arn": {
+                                      "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "type",
+                                            "ref"
+                                          ],
+                                          "properties": {
+                                            "type": {
+                                              "enum": [
+                                                "env",
+                                                "vault"
+                                              ]
+                                            },
+                                            "ref": {
+                                              "type": "string",
+                                              "minLength": 1
+                                            }
+                                          }
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "value"
+                                          ],
+                                          "properties": {
+                                            "value": {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            "type": {
+                                              "const": "plain_text"
+                                            }
+                                          },
+                                          "if": {
+                                            "not": {
+                                              "required": [
+                                                "type"
+                                              ]
+                                            }
+                                          },
+                                          "then": {
+                                            "not": {
+                                              "required": [
+                                                "ref"
+                                              ]
+                                            }
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  }
+                                },
+                                "description": "external_id and session_name apply to role_arn."
+                              }
+                            ],
+                            "additionalProperties": false,
+                            "description": "Required when creating a client with auth_type \"aws_sigv4\". Not\naccepted for connection_type \"stdio\". `headers` and\n`allowed_extra_headers` cannot name `Authorization` or any `X-Amz-*`\nheader, which the signer sets (400).\n"
+                          },
                           "per_user_discovery": {
                             "type": "boolean",
                             "default": false,
@@ -49442,7 +50218,8 @@
                               "none",
                               "headers",
                               "oauth",
-                              "client_credentials"
+                              "client_credentials",
+                              "aws_sigv4"
                             ],
                             "description": "The per-user auth types open a new connection for each call, which an\nSSE stream does not allow, so SSE takes the shared auth types only.\n"
                           }
@@ -49567,6 +50344,43 @@
                           {
                             "if": {
                               "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "aws_sigv4"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "aws_sigv4"
+                              ],
+                              "description": "When `auth_type` is `aws_sigv4`, `aws_sigv4` must carry a `region`.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "aws_sigv4"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "aws_sigv4"
+                                ]
+                              },
+                              "description": "An `aws_sigv4` block only applies to auth_type \"aws_sigv4\"; reject it\nfor every other auth_type, including an omitted one, which defaults\nto \"headers\".\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
                                 "per_user_discovery"
                               ],
                               "properties": {
@@ -49682,7 +50496,8 @@
                               "per_user_oauth",
                               "per_user_headers",
                               "token_exchange",
-                              "client_credentials"
+                              "client_credentials",
+                              "aws_sigv4"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -50490,6 +51305,356 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"client_credentials\".\nNot accepted for connection_type \"stdio\" or \"openapi\".\n"
+                          },
+                          "aws_sigv4": {
+                            "type": "object",
+                            "required": [
+                              "region"
+                            ],
+                            "properties": {
+                              "region": {
+                                "description": "AWS region requests are signed for, such as us-east-1 or us-gov-west-1.\nSupports env.VAR_NAME and vault.path references. A value from a\nreference is redacted in API responses; a literal is returned as set.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "service": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "bedrock-agentcore",
+                                  "aws-mcp",
+                                  "lambda",
+                                  "execute-api"
+                                ],
+                                "description": "SigV4 signing name. Empty: bedrock-agentcore (AgentCore Gateway).\naws-mcp for the AWS MCP Server, lambda for Lambda function URLs,\nexecute-api for API Gateway.\n"
+                              },
+                              "role_arn": {
+                                "description": "IAM role to assume before signing. Omitted: requests are signed with\nBifrost's own identity from the default credential chain (environment,\nEKS Pod Identity, IRSA, instance profile). Supports env.VAR_NAME and\nvault.path references.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "external_id": {
+                                "description": "External ID for the AssumeRole call, when the role's trust policy\nrequires one. Requires role_arn. Supports env.VAR_NAME and vault.path\nreferences. Always masked in API responses, also when entered as a\nliteral. On update, sending the mask back keeps the stored value, also\nwhen role_arn changes; send the new external ID when the new role needs\na different one. On create, send the value itself or a reference.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "session_name": {
+                                "description": "Role session name, 2 to 64 of letters, digits and +=,.@_-. Empty:\nbifrost-session. Requires role_arn. Supports env.VAR_NAME and\nvault.path references.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              }
+                            },
+                            "allOf": [
+                              {
+                                "if": {
+                                  "anyOf": [
+                                    {
+                                      "required": [
+                                        "external_id"
+                                      ],
+                                      "properties": {
+                                        "external_id": {
+                                          "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "type",
+                                                "ref"
+                                              ],
+                                              "properties": {
+                                                "type": {
+                                                  "enum": [
+                                                    "env",
+                                                    "vault"
+                                                  ]
+                                                },
+                                                "ref": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "value"
+                                              ],
+                                              "properties": {
+                                                "value": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "type": {
+                                                  "const": "plain_text"
+                                                }
+                                              },
+                                              "if": {
+                                                "not": {
+                                                  "required": [
+                                                    "type"
+                                                  ]
+                                                }
+                                              },
+                                              "then": {
+                                                "not": {
+                                                  "required": [
+                                                    "ref"
+                                                  ]
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "required": [
+                                        "session_name"
+                                      ],
+                                      "properties": {
+                                        "session_name": {
+                                          "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "type",
+                                                "ref"
+                                              ],
+                                              "properties": {
+                                                "type": {
+                                                  "enum": [
+                                                    "env",
+                                                    "vault"
+                                                  ]
+                                                },
+                                                "ref": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "value"
+                                              ],
+                                              "properties": {
+                                                "value": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "type": {
+                                                  "const": "plain_text"
+                                                }
+                                              },
+                                              "if": {
+                                                "not": {
+                                                  "required": [
+                                                    "type"
+                                                  ]
+                                                }
+                                              },
+                                              "then": {
+                                                "not": {
+                                                  "required": [
+                                                    "ref"
+                                                  ]
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ]
+                                },
+                                "then": {
+                                  "required": [
+                                    "role_arn"
+                                  ],
+                                  "properties": {
+                                    "role_arn": {
+                                      "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "type",
+                                            "ref"
+                                          ],
+                                          "properties": {
+                                            "type": {
+                                              "enum": [
+                                                "env",
+                                                "vault"
+                                              ]
+                                            },
+                                            "ref": {
+                                              "type": "string",
+                                              "minLength": 1
+                                            }
+                                          }
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "value"
+                                          ],
+                                          "properties": {
+                                            "value": {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            "type": {
+                                              "const": "plain_text"
+                                            }
+                                          },
+                                          "if": {
+                                            "not": {
+                                              "required": [
+                                                "type"
+                                              ]
+                                            }
+                                          },
+                                          "then": {
+                                            "not": {
+                                              "required": [
+                                                "ref"
+                                              ]
+                                            }
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  }
+                                },
+                                "description": "external_id and session_name apply to role_arn."
+                              }
+                            ],
+                            "additionalProperties": false,
+                            "description": "Required when creating a client with auth_type \"aws_sigv4\". Not\naccepted for connection_type \"stdio\". `headers` and\n`allowed_extra_headers` cannot name `Authorization` or any `X-Amz-*`\nheader, which the signer sets (400).\n"
                           },
                           "per_user_discovery": {
                             "type": "boolean",
@@ -50671,6 +51836,43 @@
                           {
                             "if": {
                               "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "aws_sigv4"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "aws_sigv4"
+                              ],
+                              "description": "When `auth_type` is `aws_sigv4`, `aws_sigv4` must carry a `region`.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "aws_sigv4"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "aws_sigv4"
+                                ]
+                              },
+                              "description": "An `aws_sigv4` block only applies to auth_type \"aws_sigv4\"; reject it\nfor every other auth_type, including an omitted one, which defaults\nto \"headers\".\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
                                 "per_user_discovery"
                               ],
                               "properties": {
@@ -50786,7 +51988,8 @@
                               "per_user_oauth",
                               "per_user_headers",
                               "token_exchange",
-                              "client_credentials"
+                              "client_credentials",
+                              "aws_sigv4"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -51595,6 +52798,356 @@
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"client_credentials\".\nNot accepted for connection_type \"stdio\" or \"openapi\".\n"
                           },
+                          "aws_sigv4": {
+                            "type": "object",
+                            "required": [
+                              "region"
+                            ],
+                            "properties": {
+                              "region": {
+                                "description": "AWS region requests are signed for, such as us-east-1 or us-gov-west-1.\nSupports env.VAR_NAME and vault.path references. A value from a\nreference is redacted in API responses; a literal is returned as set.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "service": {
+                                "type": "string",
+                                "enum": [
+                                  "",
+                                  "bedrock-agentcore",
+                                  "aws-mcp",
+                                  "lambda",
+                                  "execute-api"
+                                ],
+                                "description": "SigV4 signing name. Empty: bedrock-agentcore (AgentCore Gateway).\naws-mcp for the AWS MCP Server, lambda for Lambda function URLs,\nexecute-api for API Gateway.\n"
+                              },
+                              "role_arn": {
+                                "description": "IAM role to assume before signing. Omitted: requests are signed with\nBifrost's own identity from the default credential chain (environment,\nEKS Pod Identity, IRSA, instance profile). Supports env.VAR_NAME and\nvault.path references.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "external_id": {
+                                "description": "External ID for the AssumeRole call, when the role's trust policy\nrequires one. Requires role_arn. Supports env.VAR_NAME and vault.path\nreferences. Always masked in API responses, also when entered as a\nliteral. On update, sending the mask back keeps the stored value, also\nwhen role_arn changes; send the new external ID when the new role needs\na different one. On create, send the value itself or a reference.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "session_name": {
+                                "description": "Role session name, 2 to 64 of letters, digits and +=,.@_-. Empty:\nbifrost-session. Requires role_arn. Supports env.VAR_NAME and\nvault.path references.\n",
+                                "oneOf": [
+                                  {
+                                    "type": "string",
+                                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                                  },
+                                  {
+                                    "type": "object",
+                                    "description": "Resolved form, as returned by GET responses",
+                                    "properties": {
+                                      "value": {
+                                        "type": "string",
+                                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                                      },
+                                      "ref": {
+                                        "type": "string",
+                                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "plain_text",
+                                          "env",
+                                          "vault"
+                                        ],
+                                        "description": "Source type of the value"
+                                      }
+                                    }
+                                  }
+                                ]
+                              }
+                            },
+                            "allOf": [
+                              {
+                                "if": {
+                                  "anyOf": [
+                                    {
+                                      "required": [
+                                        "external_id"
+                                      ],
+                                      "properties": {
+                                        "external_id": {
+                                          "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "type",
+                                                "ref"
+                                              ],
+                                              "properties": {
+                                                "type": {
+                                                  "enum": [
+                                                    "env",
+                                                    "vault"
+                                                  ]
+                                                },
+                                                "ref": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "value"
+                                              ],
+                                              "properties": {
+                                                "value": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "type": {
+                                                  "const": "plain_text"
+                                                }
+                                              },
+                                              "if": {
+                                                "not": {
+                                                  "required": [
+                                                    "type"
+                                                  ]
+                                                }
+                                              },
+                                              "then": {
+                                                "not": {
+                                                  "required": [
+                                                    "ref"
+                                                  ]
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "required": [
+                                        "session_name"
+                                      ],
+                                      "properties": {
+                                        "session_name": {
+                                          "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "type",
+                                                "ref"
+                                              ],
+                                              "properties": {
+                                                "type": {
+                                                  "enum": [
+                                                    "env",
+                                                    "vault"
+                                                  ]
+                                                },
+                                                "ref": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "value"
+                                              ],
+                                              "properties": {
+                                                "value": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "type": {
+                                                  "const": "plain_text"
+                                                }
+                                              },
+                                              "if": {
+                                                "not": {
+                                                  "required": [
+                                                    "type"
+                                                  ]
+                                                }
+                                              },
+                                              "then": {
+                                                "not": {
+                                                  "required": [
+                                                    "ref"
+                                                  ]
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ]
+                                },
+                                "then": {
+                                  "required": [
+                                    "role_arn"
+                                  ],
+                                  "properties": {
+                                    "role_arn": {
+                                      "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "type",
+                                            "ref"
+                                          ],
+                                          "properties": {
+                                            "type": {
+                                              "enum": [
+                                                "env",
+                                                "vault"
+                                              ]
+                                            },
+                                            "ref": {
+                                              "type": "string",
+                                              "minLength": 1
+                                            }
+                                          }
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "value"
+                                          ],
+                                          "properties": {
+                                            "value": {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            "type": {
+                                              "const": "plain_text"
+                                            }
+                                          },
+                                          "if": {
+                                            "not": {
+                                              "required": [
+                                                "type"
+                                              ]
+                                            }
+                                          },
+                                          "then": {
+                                            "not": {
+                                              "required": [
+                                                "ref"
+                                              ]
+                                            }
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  }
+                                },
+                                "description": "external_id and session_name apply to role_arn."
+                              }
+                            ],
+                            "additionalProperties": false,
+                            "description": "Required when creating a client with auth_type \"aws_sigv4\". Not\naccepted for connection_type \"stdio\". `headers` and\n`allowed_extra_headers` cannot name `Authorization` or any `X-Amz-*`\nheader, which the signer sets (400).\n"
+                          },
                           "per_user_discovery": {
                             "type": "boolean",
                             "default": false,
@@ -51626,9 +53179,10 @@
                             "enum": [
                               "none",
                               "headers",
-                              "per_user_headers"
+                              "per_user_headers",
+                              "aws_sigv4"
                             ],
-                            "description": "The synthesized server has no remote MCP handshake, so only the\nheader-shaped auth types apply. Static `headers` and per-user\nheaders are forwarded to the upstream API on every call; the\ndocument's own security schemes are satisfied from\n`openapi_config.security_credentials`. OAuth-flavored and\ntoken-exchange auth types are rejected with 400.\n"
+                            "description": "The synthesized server has no remote MCP handshake, so only the\nheader-shaped auth types and aws_sigv4 apply. Static `headers` and\nper-user headers are forwarded to the upstream API on every call;\nthe document's own security schemes are satisfied from\n`openapi_config.security_credentials`. With aws_sigv4 every\nupstream API request is signed, while `spec_url` is fetched\nunsigned. OAuth-flavored and token-exchange auth types are\nrejected with 400.\n"
                           },
                           "openapi_config": {
                             "$ref": "#/components/schemas/MCPOpenAPIConfig"
@@ -51706,7 +53260,7 @@
             }
           },
           "403": {
-            "description": "The request was not genuinely authenticated (dashboard authentication is disabled or unconfigured) and connection_type is \"stdio\", or is \"http\"/\"sse\" with a connection_string resolving to a loopback, private-network, link-local, or CGNAT address."
+            "description": "The request was not genuinely authenticated (dashboard authentication is disabled or unconfigured) and connection_type is \"stdio\", or is \"http\"/\"sse\" with a connection_string resolving to a loopback, private-network, link-local, or CGNAT address, or auth_type is \"aws_sigv4\"."
           },
           "422": {
             "description": "A per-user client failed verification during create, and was not\ncreated: per_user_headers sample values were rejected upstream, or\nfor token_exchange the admin credential exchange failed, the\nadmin's Bifrost sign-in has expired (sign in to Bifrost again and\nretry), or the upstream verification connection failed.\n",
@@ -51821,7 +53375,7 @@
                     "additionalProperties": {
                       "type": "string"
                     },
-                    "description": "Custom headers to include in requests.\nOnly used when auth_type is \"headers\". Supports env./vault. references.\nValues echoed back redacted from a GET response are recognized and\npreserve the stored value, so a fetch-modify-put round trip is safe.\n"
+                    "description": "Custom headers to include in requests.\nOnly used when auth_type is \"headers\" or \"aws_sigv4\". Supports\nenv./vault. references. On `aws_sigv4` clients they are sent with each\nsigned request (headers that change in transit are not covered by the\nsignature); `Authorization` and `X-Amz-*` names are refused with 400,\nhere and in `allowed_extra_headers`.\nValues echoed back redacted from a GET response are recognized and\npreserve the stored value, so a fetch-modify-put round trip is safe.\n"
                   },
                   "allowed_extra_headers": {
                     "type": "array",
@@ -52609,6 +54163,356 @@
                     "additionalProperties": false,
                     "description": "For `client_credentials` clients only. Omitted preserves the stored\nconfiguration; when sent, it replaces the stored block, and when it\ndiffers from it, Bifrost discovers what was left empty and requests one\ntoken. Round-tripped from a prior GET:\n- a masked `client_id` keeps the stored value;\n- a masked plain-text `client_secret` or `private_key` keeps the stored\n  value, except when `token_url` or `assertion_audience` changes, which\n  requires the secret or key itself (400 otherwise);\n- an `env.` or `vault.` reference is kept as the reference, also when the\n  target changes, since the credential is never sent back.\nSending an `env.` or `vault.` reference requires an authenticated admin\n(403 when dashboard authentication is off); to change other settings,\nomit `client_credentials` and the stored block is kept.\nIf the token request succeeds but reconnecting the live client fails,\nthe change is saved and the response is 200 with status\n`partial_success`; the client retries with the new credentials, so do\nnot resend them.\n"
                   },
+                  "aws_sigv4": {
+                    "type": "object",
+                    "required": [
+                      "region"
+                    ],
+                    "properties": {
+                      "region": {
+                        "description": "AWS region requests are signed for, such as us-east-1 or us-gov-west-1.\nSupports env.VAR_NAME and vault.path references. A value from a\nreference is redacted in API responses; a literal is returned as set.\n",
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                          },
+                          {
+                            "type": "object",
+                            "description": "Resolved form, as returned by GET responses",
+                            "properties": {
+                              "value": {
+                                "type": "string",
+                                "description": "Resolved value (redacted in GET responses for secret fields)"
+                              },
+                              "ref": {
+                                "type": "string",
+                                "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "plain_text",
+                                  "env",
+                                  "vault"
+                                ],
+                                "description": "Source type of the value"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "service": {
+                        "type": "string",
+                        "enum": [
+                          "",
+                          "bedrock-agentcore",
+                          "aws-mcp",
+                          "lambda",
+                          "execute-api"
+                        ],
+                        "description": "SigV4 signing name. Empty: bedrock-agentcore (AgentCore Gateway).\naws-mcp for the AWS MCP Server, lambda for Lambda function URLs,\nexecute-api for API Gateway.\n"
+                      },
+                      "role_arn": {
+                        "description": "IAM role to assume before signing. Omitted: requests are signed with\nBifrost's own identity from the default credential chain (environment,\nEKS Pod Identity, IRSA, instance profile). Supports env.VAR_NAME and\nvault.path references.\n",
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                          },
+                          {
+                            "type": "object",
+                            "description": "Resolved form, as returned by GET responses",
+                            "properties": {
+                              "value": {
+                                "type": "string",
+                                "description": "Resolved value (redacted in GET responses for secret fields)"
+                              },
+                              "ref": {
+                                "type": "string",
+                                "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "plain_text",
+                                  "env",
+                                  "vault"
+                                ],
+                                "description": "Source type of the value"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "external_id": {
+                        "description": "External ID for the AssumeRole call, when the role's trust policy\nrequires one. Requires role_arn. Supports env.VAR_NAME and vault.path\nreferences. Always masked in API responses, also when entered as a\nliteral. On update, sending the mask back keeps the stored value, also\nwhen role_arn changes; send the new external ID when the new role needs\na different one. On create, send the value itself or a reference.\n",
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                          },
+                          {
+                            "type": "object",
+                            "description": "Resolved form, as returned by GET responses",
+                            "properties": {
+                              "value": {
+                                "type": "string",
+                                "description": "Resolved value (redacted in GET responses for secret fields)"
+                              },
+                              "ref": {
+                                "type": "string",
+                                "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "plain_text",
+                                  "env",
+                                  "vault"
+                                ],
+                                "description": "Source type of the value"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "session_name": {
+                        "description": "Role session name, 2 to 64 of letters, digits and +=,.@_-. Empty:\nbifrost-session. Requires role_arn. Supports env.VAR_NAME and\nvault.path references.\n",
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                          },
+                          {
+                            "type": "object",
+                            "description": "Resolved form, as returned by GET responses",
+                            "properties": {
+                              "value": {
+                                "type": "string",
+                                "description": "Resolved value (redacted in GET responses for secret fields)"
+                              },
+                              "ref": {
+                                "type": "string",
+                                "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "plain_text",
+                                  "env",
+                                  "vault"
+                                ],
+                                "description": "Source type of the value"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "allOf": [
+                      {
+                        "if": {
+                          "anyOf": [
+                            {
+                              "required": [
+                                "external_id"
+                              ],
+                              "properties": {
+                                "external_id": {
+                                  "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "type",
+                                        "ref"
+                                      ],
+                                      "properties": {
+                                        "type": {
+                                          "enum": [
+                                            "env",
+                                            "vault"
+                                          ]
+                                        },
+                                        "ref": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "value"
+                                      ],
+                                      "properties": {
+                                        "value": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "type": {
+                                          "const": "plain_text"
+                                        }
+                                      },
+                                      "if": {
+                                        "not": {
+                                          "required": [
+                                            "type"
+                                          ]
+                                        }
+                                      },
+                                      "then": {
+                                        "not": {
+                                          "required": [
+                                            "ref"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            },
+                            {
+                              "required": [
+                                "session_name"
+                              ],
+                              "properties": {
+                                "session_name": {
+                                  "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "type",
+                                        "ref"
+                                      ],
+                                      "properties": {
+                                        "type": {
+                                          "enum": [
+                                            "env",
+                                            "vault"
+                                          ]
+                                        },
+                                        "ref": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "value"
+                                      ],
+                                      "properties": {
+                                        "value": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        "type": {
+                                          "const": "plain_text"
+                                        }
+                                      },
+                                      "if": {
+                                        "not": {
+                                          "required": [
+                                            "type"
+                                          ]
+                                        }
+                                      },
+                                      "then": {
+                                        "not": {
+                                          "required": [
+                                            "ref"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "role_arn"
+                          ],
+                          "properties": {
+                            "role_arn": {
+                              "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "type",
+                                    "ref"
+                                  ],
+                                  "properties": {
+                                    "type": {
+                                      "enum": [
+                                        "env",
+                                        "vault"
+                                      ]
+                                    },
+                                    "ref": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  }
+                                },
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "value"
+                                  ],
+                                  "properties": {
+                                    "value": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "type": {
+                                      "const": "plain_text"
+                                    }
+                                  },
+                                  "if": {
+                                    "not": {
+                                      "required": [
+                                        "type"
+                                      ]
+                                    }
+                                  },
+                                  "then": {
+                                    "not": {
+                                      "required": [
+                                        "ref"
+                                      ]
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "description": "external_id and session_name apply to role_arn."
+                      }
+                    ],
+                    "additionalProperties": false,
+                    "description": "For `aws_sigv4` clients only. Omitted preserves the stored\nconfiguration; when sent, it replaces the stored block. On an enabled\nclient a change applies at once: a persistent connection\n(needs_session_stickiness true) reconnects with the new signing\nsettings, and a per-call client signs its next call with them. A\ndisabled client stores the change and uses it when it is enabled\nagain. A masked plain-text value round-tripped from a prior GET keeps\nthe stored value; an `env.` or `vault.` reference is stored as sent.\nIf applying it fails, the change is still stored and the response is\n200 with status `partial_success`. An HTTP or SSE persistent connection\nkeeps its current settings until it reconnects; an `openapi` client is\nrebuilt from scratch, so its tool calls fail until a rebuild succeeds.\nPOST /api/mcp/client/{id}/reconnect retries.\n"
+                  },
                   "disabled": {
                     "type": "boolean",
                     "default": false,
@@ -52686,6 +54590,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "The request was not genuinely authenticated (dashboard authentication is disabled or unconfigured) and changes how an aws_sigv4 client signs with Bifrost's own AWS identity: it carries aws_sigv4, or, for an existing aws_sigv4 client, changes the TLS settings or the spec, spec_url or base_url of an OpenAPI client, whether or not aws_sigv4 is sent. That needs an admin session."
           },
           "409": {
             "description": "Nothing is applied. Either another MCP client already has the requested name, or the request changes oauth_config on a client whose OAuth verification has not completed.\n",
@@ -54213,9 +56120,10 @@
                                   "per_user_oauth",
                                   "per_user_headers",
                                   "token_exchange",
-                                  "client_credentials"
+                                  "client_credentials",
+                                  "aws_sigv4"
                                 ],
-                                "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n- client_credentials: OAuth client_credentials grant with a client registered in advance\n  at the server's authorization server; one token is shared by every caller and no\n  user signs in (MCP OAuth Client Credentials extension).\n"
+                                "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n- client_credentials: OAuth client_credentials grant with a client registered in advance\n  at the server's authorization server; one token is shared by every caller and no\n  user signs in (MCP OAuth Client Credentials extension).\n- aws_sigv4: AWS Signature Version 4. Bifrost signs every request with its own\n  AWS identity, optionally assuming a role first, for servers that require\n  AWS IAM such as Amazon Bedrock AgentCore Gateway. For connection_type\n  \"openapi\", the upstream API's requests are signed.\n"
                               },
                               "required_header_keys": {
                                 "type": "array",
@@ -54393,7 +56301,8 @@
                       "per_user_oauth",
                       "per_user_headers",
                       "token_exchange",
-                      "client_credentials"
+                      "client_credentials",
+                      "aws_sigv4"
                     ],
                     "description": "Defaults to none"
                   },
@@ -54515,9 +56424,10 @@
                             "per_user_oauth",
                             "per_user_headers",
                             "token_exchange",
-                            "client_credentials"
+                            "client_credentials",
+                            "aws_sigv4"
                           ],
-                          "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n- client_credentials: OAuth client_credentials grant with a client registered in advance\n  at the server's authorization server; one token is shared by every caller and no\n  user signs in (MCP OAuth Client Credentials extension).\n"
+                          "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n- client_credentials: OAuth client_credentials grant with a client registered in advance\n  at the server's authorization server; one token is shared by every caller and no\n  user signs in (MCP OAuth Client Credentials extension).\n- aws_sigv4: AWS Signature Version 4. Bifrost signs every request with its own\n  AWS identity, optionally assuming a role first, for servers that require\n  AWS IAM such as Amazon Bedrock AgentCore Gateway. For connection_type\n  \"openapi\", the upstream API's requests are signed.\n"
                         },
                         "required_header_keys": {
                           "type": "array",
@@ -152945,7 +154855,8 @@
               "per_user_oauth",
               "per_user_headers",
               "token_exchange",
-              "client_credentials"
+              "client_credentials",
+              "aws_sigv4"
             ],
             "description": "Authentication type for the MCP connection"
           },
@@ -153731,6 +155642,356 @@
             ],
             "additionalProperties": false,
             "description": "For `client_credentials` clients only, including the token_url,\nauth_method and signing_algorithm chosen on save. `client_id`,\n`client_secret` and `private_key` are redacted in this response.\n"
+          },
+          "aws_sigv4": {
+            "type": "object",
+            "required": [
+              "region"
+            ],
+            "properties": {
+              "region": {
+                "description": "AWS region requests are signed for, such as us-east-1 or us-gov-west-1.\nSupports env.VAR_NAME and vault.path references. A value from a\nreference is redacted in API responses; a literal is returned as set.\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "service": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "bedrock-agentcore",
+                  "aws-mcp",
+                  "lambda",
+                  "execute-api"
+                ],
+                "description": "SigV4 signing name. Empty: bedrock-agentcore (AgentCore Gateway).\naws-mcp for the AWS MCP Server, lambda for Lambda function URLs,\nexecute-api for API Gateway.\n"
+              },
+              "role_arn": {
+                "description": "IAM role to assume before signing. Omitted: requests are signed with\nBifrost's own identity from the default credential chain (environment,\nEKS Pod Identity, IRSA, instance profile). Supports env.VAR_NAME and\nvault.path references.\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "external_id": {
+                "description": "External ID for the AssumeRole call, when the role's trust policy\nrequires one. Requires role_arn. Supports env.VAR_NAME and vault.path\nreferences. Always masked in API responses, also when entered as a\nliteral. On update, sending the mask back keeps the stored value, also\nwhen role_arn changes; send the new external ID when the new role needs\na different one. On create, send the value itself or a reference.\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "session_name": {
+                "description": "Role session name, 2 to 64 of letters, digits and +=,.@_-. Empty:\nbifrost-session. Requires role_arn. Supports env.VAR_NAME and\nvault.path references.\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "external_id"
+                      ],
+                      "properties": {
+                        "external_id": {
+                          "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "object",
+                              "required": [
+                                "type",
+                                "ref"
+                              ],
+                              "properties": {
+                                "type": {
+                                  "enum": [
+                                    "env",
+                                    "vault"
+                                  ]
+                                },
+                                "ref": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            {
+                              "type": "object",
+                              "required": [
+                                "value"
+                              ],
+                              "properties": {
+                                "value": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "type": {
+                                  "const": "plain_text"
+                                }
+                              },
+                              "if": {
+                                "not": {
+                                  "required": [
+                                    "type"
+                                  ]
+                                }
+                              },
+                              "then": {
+                                "not": {
+                                  "required": [
+                                    "ref"
+                                  ]
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "required": [
+                        "session_name"
+                      ],
+                      "properties": {
+                        "session_name": {
+                          "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "object",
+                              "required": [
+                                "type",
+                                "ref"
+                              ],
+                              "properties": {
+                                "type": {
+                                  "enum": [
+                                    "env",
+                                    "vault"
+                                  ]
+                                },
+                                "ref": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            {
+                              "type": "object",
+                              "required": [
+                                "value"
+                              ],
+                              "properties": {
+                                "value": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "type": {
+                                  "const": "plain_text"
+                                }
+                              },
+                              "if": {
+                                "not": {
+                                  "required": [
+                                    "type"
+                                  ]
+                                }
+                              },
+                              "then": {
+                                "not": {
+                                  "required": [
+                                    "ref"
+                                  ]
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "role_arn"
+                  ],
+                  "properties": {
+                    "role_arn": {
+                      "description": "A secret-capable value that is set, as the server reads one: a non-empty\nstring; a reference object, which needs its type (env or vault) and a\nnon-empty ref; or a literal object with a non-empty value, typed\nplain_text or untyped without a ref.\n",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "type",
+                            "ref"
+                          ],
+                          "properties": {
+                            "type": {
+                              "enum": [
+                                "env",
+                                "vault"
+                              ]
+                            },
+                            "ref": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "value"
+                          ],
+                          "properties": {
+                            "value": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "type": {
+                              "const": "plain_text"
+                            }
+                          },
+                          "if": {
+                            "not": {
+                              "required": [
+                                "type"
+                              ]
+                            }
+                          },
+                          "then": {
+                            "not": {
+                              "required": [
+                                "ref"
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                "description": "external_id and session_name apply to role_arn."
+              }
+            ],
+            "additionalProperties": false,
+            "description": "For `aws_sigv4` clients only. `external_id` is always redacted in this\nresponse. `region`, `role_arn` and `session_name` are redacted when\nheld in an env or vault reference and otherwise returned as set.\n"
           },
           "per_user_discovery": {
             "type": "boolean",

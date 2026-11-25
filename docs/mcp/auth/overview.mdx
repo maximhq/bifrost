@@ -1,7 +1,7 @@
 ---
 title: "MCP Authentication"
 sidebarTitle: "Overview"
-description: "Pick the right auth type for your MCP servers. Bifrost supports None, Headers, OAuth 2.0, OAuth Client Credentials, Per-User OAuth, Per-User Headers, and Token Exchange."
+description: "Pick the right auth type for your MCP servers. Bifrost supports None, Headers, OAuth 2.0, OAuth Client Credentials, AWS SigV4, Per-User OAuth, Per-User Headers, and Token Exchange."
 icon: "shield-check"
 ---
 
@@ -25,6 +25,7 @@ Per-user auth applies to the **HTTP** connection type, because each call opens i
 | `per_user_headers`   | Each end-user, lazily       | HTTP headers (per-user)  | Per-user API keys, signed tokens, anything keyed to a person      |
 | `oauth`              | Admin, once                 | OAuth 2.0 access token   | Shared third-party service the whole team uses                    |
 | `client_credentials` | Bifrost, as a registered client | OAuth 2.0 access token, no sign-in | Machine-to-machine servers that issue tokens to pre-registered clients |
+| `aws_sigv4`          | Bifrost, with its AWS identity | AWS SigV4 signature on every request | AWS-hosted servers that require IAM, such as Amazon Bedrock AgentCore Gateway |
 | `per_user_oauth`     | Each end-user, lazily       | OAuth 2.0 access token   | Per-user services like Notion, GitHub, Sentry                     |
 | `token_exchange`     | Each caller, every call     | Exchanged identity-provider token (never stored) | First-party/internal MCP servers that trust your identity provider |
 
@@ -35,6 +36,7 @@ Per-user auth applies to the **HTTP** connection type, because each call opens i
 - [Per-User Headers](./per-user-headers) — each user submits their own header values
 - [OAuth 2.0](./oauth) — admin OAuth with token refresh
 - [OAuth Client Credentials](./client-credentials) — Bifrost gets its own token with a pre-registered client, no sign-in
+- [AWS SigV4](./aws-sigv4) — Bifrost signs every request with the AWS identity it runs as
 - [Per-User OAuth](./per-user-oauth) — each user authenticates themselves
 - [Token Exchange](./token-exchange) — each caller's identity token is exchanged automatically (enterprise)
 
@@ -42,7 +44,7 @@ Per-user auth applies to the **HTTP** connection type, because each call opens i
 
 ## Server-level vs per-user
 
-|                    | Server-level (`headers`, `oauth`, `client_credentials`) | Per-user (`per_user_oauth`, `per_user_headers`) |
+|                    | Server-level (`headers`, `oauth`, `client_credentials`, `aws_sigv4`) | Per-user (`per_user_oauth`, `per_user_headers`) |
 | ------------------ | ----------------------------------------- | ----------------------------------------------- |
 | Who authenticates  | Admin, once at setup                      | Each end-user, lazily on first tool call        |
 | Token / key scope  | Shared across all requests                | Per-identity, per-MCP-server                    |
@@ -68,7 +70,9 @@ For the full connection-state table, connection-mode (sticky vs. per-call) matri
 flowchart TD
     A[Does the MCP need any auth?] -->|No| N[Use 'none']
     A -->|Yes| B{Same credential for everyone?}
-    B -->|Yes| C{OAuth 2.0 provider?}
+    B -->|Yes| AW{Does the server require AWS IAM?}
+    AW -->|Yes| SV[Use 'aws_sigv4']
+    AW -->|No| C{OAuth 2.0 provider?}
     B -->|No, each user different| D{Does it trust your SCIM identity provider's issuer?}
     C -->|Yes, a person authorizes| O[Use 'oauth']
     C -->|Yes, Bifrost has its own client| CC[Use 'client_credentials']
@@ -84,6 +88,7 @@ A few common patterns:
 - "We have one company GitHub App and everyone uses it" → `oauth`
 - "We use a custom internal MCP with a bearer token" → `headers`
 - "The vendor gave us a client ID and secret for their MCP server, with no sign-in" → `client_credentials`
+- "Our AgentCore Gateway uses IAM authorization, and Bifrost runs on EKS with a role" → `aws_sigv4`
 - "Each user connects to their own Notion workspace" → `per_user_oauth`
 - "Each user has their own API key for an LLM provider's MCP wrapper" → `per_user_headers`
 - "Our own internal MCP server trusts our workforce identity provider" → `token_exchange`
