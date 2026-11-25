@@ -273069,7 +273069,16 @@
                   "});",
                   "pm.test('gateway tool search responses: the upstream gets bifrost_tool_search, not defer_loading', function () {",
                   "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
-                  "  pm.expect(wire, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  // raw_request is the last turn sent upstream. A turn that can still search declares bifrost_tool_search; the last allowed turn drops it and reports the earlier searches as text.",
+                  "  var request = rr;",
+                  "  if (typeof request === 'string') { try { request = JSON.parse(request); } catch (e) { request = {}; } }",
+                  "  var declared = [];",
+                  "  ((request || {}).tools || []).forEach(function (t) { (t.functionDeclarations || t.function_declarations || []).forEach(function (d) { declared.push(d.name); }); });",
+                  "  if (wire.indexOf('Tool searches already run') !== -1) {",
+                  "    pm.expect(declared, 'the last allowed turn must not offer the search: ' + declared.join(',').slice(0, 800)).to.not.include('bifrost_tool_search');",
+                  "  } else {",
+                  "    pm.expect(declared, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  }",
                   "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
                   "});",
                   "pm.test('gateway tool search responses: the search call never reaches the caller', function () {",
@@ -273138,7 +273147,16 @@
                   "});",
                   "pm.test('gateway tool search messages: the upstream gets bifrost_tool_search, not defer_loading', function () {",
                   "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
-                  "  pm.expect(wire, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  // raw_request is the last turn sent upstream. A turn that can still search declares bifrost_tool_search; the last allowed turn drops it and reports the earlier searches as text.",
+                  "  var request = rr;",
+                  "  if (typeof request === 'string') { try { request = JSON.parse(request); } catch (e) { request = {}; } }",
+                  "  var declared = [];",
+                  "  ((request || {}).tools || []).forEach(function (t) { (t.functionDeclarations || t.function_declarations || []).forEach(function (d) { declared.push(d.name); }); });",
+                  "  if (wire.indexOf('Tool searches already run') !== -1) {",
+                  "    pm.expect(declared, 'the last allowed turn must not offer the search: ' + declared.join(',').slice(0, 800)).to.not.include('bifrost_tool_search');",
+                  "  } else {",
+                  "    pm.expect(declared, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  }",
                   "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
                   "});",
                   "pm.test('gateway tool search messages: the search call never reaches the caller', function () {",
@@ -350842,6 +350860,734 @@
                 "api",
                 "providers",
                 "{{repeatDeleteProvider}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "387. Codex deferred namespace over 512 tools holds back through the gateway search (gateway tool search namespace)",
+      "description": "Codex with supports_search_tool sends a client tool_search plus its MCP tools inside a namespace marked defer_loading. On a model with no tool search of its own (Gemini on Vertex or the Gemini API, older GPT, ...) the gateway search used to bail out on any tool_search or namespace tool, and flattening dropped the namespace's defer_loading, so every member went upstream: an MCP gateway with ~700 tools hit Vertex's 400 \"At most 512 function declarations can be specified\". Bifrost now holds deferred namespace members back behind bifrost_tool_search and serves the search itself. Cases send the Codex shape over /openai/v1/responses with 513 deferred members, unary (raw_request pins the held-back wire) and streaming (the failing request type in the report).",
+      "item": [
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses Codex deferred namespace of 513 tools holds back through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex with supports_search_tool: a client tool_search, its default tools in the",
+                  "// \"functions\" namespace, and an MCP server's 513 tools in a namespace deferred as a whole.",
+                  "var members = [];",
+                  "for (var i = 0; i < 513; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] },",
+                  "    { type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }",
+                  "  ],",
+                  "  max_output_tokens: 256",
+                  "};",
+                  "pm.variables.set('codexDeferredNamespaceBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('gateway tool search namespace responses: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex rejected every deferred tool loaded up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search namespace responses: the upstream gets bifrost_tool_search and not the deferred namespace', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
+                  "  var declared = [];",
+                  "  (rr.tools || []).forEach(function (t) { (t.functionDeclarations || t.function_declarations || []).forEach(function (d) { declared.push(d.name); }); });",
+                  "  // raw_request is the last turn sent upstream. A turn that can still search declares bifrost_tool_search; the last allowed turn drops it and reports the earlier searches as text.",
+                  "  var finalTurn = wire.indexOf('Tool searches already run') !== -1;",
+                  "  if (finalTurn) {",
+                  "    pm.expect(declared, 'the last allowed turn must not offer the search: ' + declared.join(',').slice(0, 800)).to.not.include('bifrost_tool_search');",
+                  "  } else {",
+                  "    pm.expect(declared, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  }",
+                  "  pm.expect(declared.length, 'deferred members must be held back, got ' + declared.length + ' declarations').to.be.below(513);",
+                  "  // Each search loads at most 20 members and they stay declared; with 3 turns an attempt searches at most twice.",
+                  "  pm.expect(declared.filter(function (n) { return n.indexOf('mcp__demo__') === 0; }).length, 'only searched members may load: ' + declared.join(',').slice(0, 800)).to.be.at.most(40);",
+                  "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
+                  "});",
+                  "pm.test('gateway tool search namespace responses: the search call never reaches the caller', function () {",
+                  "  var output = body.output || [];",
+                  "  pm.expect(output.filter(function (x) { return x.type === 'function_call' && x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexDeferredNamespaceBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses stream Codex deferred namespace of 513 tools holds back through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex with supports_search_tool: a client tool_search, its default tools in the",
+                  "// \"functions\" namespace, and an MCP server's 513 tools in a namespace deferred as a whole.",
+                  "var members = [];",
+                  "for (var i = 0; i < 513; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] },",
+                  "    { type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }",
+                  "  ],",
+                  "  max_output_tokens: 256,",
+                  "  stream: true",
+                  "};",
+                  "pm.variables.set('codexDeferredNamespaceStreamBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gateway tool search namespace responses stream: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex rejected every deferred tool loaded up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var events = txt.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) {",
+                  "  try { return JSON.parse(l.slice(6)); } catch (e) { return null; }",
+                  "}).filter(function (e) { return e; });",
+                  "pm.test('gateway tool search namespace responses stream: completes without an error event', function () {",
+                  "  pm.expect(events.filter(function (e) { return e.type === 'error' || e.type === 'response.failed'; }).length, 'stream must not fail: ' + txt.slice(0, 600)).to.eql(0);",
+                  "  pm.expect(events.filter(function (e) { return e.type === 'response.completed'; }).length, 'want exactly one response.completed: ' + txt.slice(-600)).to.eql(1);",
+                  "});",
+                  "pm.test('gateway tool search namespace responses stream: the search call never reaches the caller', function () {",
+                  "  var isSearch = function (x) { return !!x && x.type === 'function_call' && x.name === 'bifrost_tool_search'; };",
+                  "  var leaked = events.filter(function (e) { return isSearch(e.item); }).map(function (e) { return e.item; });",
+                  "  events.filter(function (e) { return e.type === 'response.completed'; }).forEach(function (e) {",
+                  "    ((e.response || {}).output || []).filter(isSearch).forEach(function (x) { leaked.push(x); });",
+                  "  });",
+                  "  pm.expect(leaked.length, 'bifrost_tool_search leaked into the stream: ' + JSON.stringify(leaked).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexDeferredNamespaceStreamBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses Codex deferred namespace of 513 tools finds and calls the one weather member through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex shape with 512 filler MCP tools and one weather tool, all in a namespace deferred as a whole.",
+                  "var members = [];",
+                  "for (var i = 0; i < 512; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "members.splice(237, 0, { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } });",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool. Search for tools if the one you need is not loaded.',",
+                  "  input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use a weather tool.' }] }],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] },",
+                  "    { type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }",
+                  "  ],",
+                  "  max_output_tokens: 1024",
+                  "};",
+                  "pm.variables.set('codexDeferredNamespaceWeatherBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var output = body.output || [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "pm.test('gateway tool search namespace accuracy: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex rejected every deferred tool loaded up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search namespace accuracy: the search call never reaches the caller', function () {",
+                  "  pm.expect(calls.filter(function (x) { return x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace accuracy: the deferred get_weather member was found, loaded and called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want a get_weather call among 513 deferred members - a text-only reply never exercises the search: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(calls.filter(function (x) { return x.name !== 'get_weather' && x.name !== 'mcp__demo__get_weather'; }).length, 'only the weather tool fits the request: ' + JSON.stringify(calls).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexDeferredNamespaceWeatherBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses Codex deferred namespace of 513 tools with tool_choice pinning the bare weather member name declares and calls it through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex shape with 512 filler MCP tools and one weather tool, all in a namespace deferred as a whole; tool_choice pins get_weather by its bare name.",
+                  "var members = [];",
+                  "for (var i = 0; i < 512; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "members.splice(237, 0, { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } });",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool.',",
+                  "  input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use a weather tool.' }] }],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] },",
+                  "    { type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }",
+                  "  ],",
+                  "  tool_choice: { type: 'function', name: 'get_weather' },",
+                  "  max_output_tokens: 1024",
+                  "};",
+                  "pm.variables.set('codexDeferredNamespacePinnedBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var output = body.output || [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "pm.test('gateway tool search namespace pinned choice: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex rejected the request (a pinned member never declared, or every member loaded up front): ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search namespace pinned choice: the search call never reaches the caller', function () {",
+                  "  pm.expect(calls.filter(function (x) { return x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace pinned choice: the pinned get_weather member is declared from the first turn and called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want the forced get_weather call: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(calls.filter(function (x) { return x.name !== 'get_weather' && x.name !== 'mcp__demo__get_weather'; }).length, 'the choice forces get_weather alone: ' + JSON.stringify(calls).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexDeferredNamespacePinnedBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses stream Codex deferred namespace of 513 tools finds and calls the one weather member through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex shape with 512 filler MCP tools and one weather tool, all in a namespace deferred as a whole, streamed.",
+                  "var members = [];",
+                  "for (var i = 0; i < 512; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "members.splice(237, 0, { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } });",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool. Search for tools if the one you need is not loaded.',",
+                  "  input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use a weather tool.' }] }],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] },",
+                  "    { type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }",
+                  "  ],",
+                  "  max_output_tokens: 1024,",
+                  "  stream: true",
+                  "};",
+                  "pm.variables.set('codexDeferredNamespaceWeatherStreamBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gateway tool search namespace accuracy stream: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex rejected every deferred tool loaded up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var events = txt.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) {",
+                  "  try { return JSON.parse(l.slice(6)); } catch (e) { return null; }",
+                  "}).filter(function (e) { return e; });",
+                  "var completed = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "var output = completed.length ? ((completed[0].response || {}).output || []) : [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "pm.test('gateway tool search namespace accuracy stream: completes once without an error event', function () {",
+                  "  pm.expect(events.filter(function (e) { return e.type === 'error' || e.type === 'response.failed'; }).length, 'stream must not fail: ' + txt.slice(0, 600)).to.eql(0);",
+                  "  pm.expect(completed.length, 'want exactly one response.completed across the search turns: ' + txt.slice(-600)).to.eql(1);",
+                  "});",
+                  "pm.test('gateway tool search namespace accuracy stream: the search call never reaches the caller', function () {",
+                  "  var isSearch = function (x) { return !!x && x.type === 'function_call' && x.name === 'bifrost_tool_search'; };",
+                  "  var leaked = events.filter(function (e) { return isSearch(e.item); }).map(function (e) { return e.item; }).concat(output.filter(isSearch));",
+                  "  pm.expect(leaked.length, 'bifrost_tool_search leaked into the stream: ' + JSON.stringify(leaked).slice(0, 600)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace accuracy stream: the deferred get_weather member was found, loaded and called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want a get_weather call among 513 deferred members - a text-only reply never exercises the search: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(calls.filter(function (x) { return x.name !== 'get_weather' && x.name !== 'mcp__demo__get_weather'; }).length, 'only the weather tool fits the request: ' + JSON.stringify(calls).slice(0, 600)).to.eql(0);",
+                  "  var streamed = events.filter(function (e) { return e.type === 'response.output_item.done' && e.item && e.item.type === 'function_call' && (e.item.name === 'get_weather' || e.item.name === 'mcp__demo__get_weather'); });",
+                  "  pm.expect(streamed.length, 'the call must stream as an output item too, not only in response.completed').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexDeferredNamespaceWeatherStreamBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses Codex additional_tools item with a deferred namespace of 513 tools is held back and its weather member found through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex code mode: the MCP server's 512 filler tools and one weather tool sit in an additional_tools input item, in a namespace deferred as a whole.",
+                  "var members = [];",
+                  "for (var i = 0; i < 512; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "members.splice(237, 0, { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } });",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool. Search for tools if the one you need is not loaded.',",
+                  "  input: [",
+                  "    { type: 'additional_tools', role: 'developer', tools: [{ type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }] },",
+                  "    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use a weather tool.' }] }",
+                  "  ],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] }",
+                  "  ],",
+                  "  max_output_tokens: 1024",
+                  "};",
+                  "pm.variables.set('codexAdditionalToolsWeatherBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var output = body.output || [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('gateway tool search namespace additional_tools: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex received every additional_tools member up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search namespace additional_tools: the upstream gets neither the item nor the held-back members', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
+                  "  var declared = [];",
+                  "  (rr.tools || []).forEach(function (t) { (t.functionDeclarations || t.function_declarations || []).forEach(function (d) { declared.push(d.name); }); });",
+                  "  pm.expect(declared.length, 'deferred additional_tools members must be held back, got ' + declared.length + ' declarations').to.be.below(513);",
+                  "  // Each search loads at most 20 members and they stay declared; with 3 turns an attempt searches at most twice.",
+                  "  pm.expect(declared.filter(function (n) { return n.indexOf('mcp__demo__') === 0; }).length, 'only searched members may load: ' + declared.join(',').slice(0, 800)).to.be.at.most(40);",
+                  "  pm.expect(wire, 'the additional_tools item must not reach the upstream').to.not.include('additional_tools');",
+                  "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
+                  "});",
+                  "pm.test('gateway tool search namespace additional_tools: the search call never reaches the caller', function () {",
+                  "  pm.expect(calls.filter(function (x) { return x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace additional_tools: the deferred get_weather member was found, loaded and called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want a get_weather call among 513 deferred additional_tools members - a text-only reply never exercises the search: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(calls.filter(function (x) { return x.name !== 'get_weather' && x.name !== 'mcp__demo__get_weather'; }).length, 'only the weather tool fits the request: ' + JSON.stringify(calls).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexAdditionalToolsWeatherBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses stream Codex additional_tools item with a deferred namespace of 513 tools is held back and its weather member found through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex code mode: the MCP server's 512 filler tools and one weather tool sit in an additional_tools input item, in a namespace deferred as a whole.",
+                  "var members = [];",
+                  "for (var i = 0; i < 512; i++) {",
+                  "  members.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "members.splice(237, 0, { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } });",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool. Search for tools if the one you need is not loaded.',",
+                  "  input: [",
+                  "    { type: 'additional_tools', role: 'developer', tools: [{ type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', defer_loading: true, tools: members }] },",
+                  "    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use a weather tool.' }] }",
+                  "  ],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] }",
+                  "  ],",
+                  "  max_output_tokens: 1024,\n  stream: true",
+                  "};",
+                  "pm.variables.set('codexAdditionalToolsWeatherStreamBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gateway tool search namespace additional_tools stream: 200, not the 512 function declaration rejection', function () {",
+                  "  pm.expect(txt, 'Vertex received every additional_tools member up front: ' + txt.slice(0, 400)).to.not.include('At most 512 function declarations');",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var events = txt.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) {",
+                  "  try { return JSON.parse(l.slice(6)); } catch (e) { return null; }",
+                  "}).filter(function (e) { return e; });",
+                  "var completed = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "var output = completed.length ? ((completed[0].response || {}).output || []) : [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "pm.test('gateway tool search namespace additional_tools stream: completes once without an error event', function () {",
+                  "  pm.expect(events.filter(function (e) { return e.type === 'error' || e.type === 'response.failed'; }).length, 'stream must not fail: ' + txt.slice(0, 600)).to.eql(0);",
+                  "  pm.expect(completed.length, 'want exactly one response.completed across the search turns: ' + txt.slice(-600)).to.eql(1);",
+                  "});",
+                  "pm.test('gateway tool search namespace additional_tools stream: the search call never reaches the caller', function () {",
+                  "  var isSearch = function (x) { return !!x && x.type === 'function_call' && x.name === 'bifrost_tool_search'; };",
+                  "  var leaked = events.filter(function (e) { return isSearch(e.item); }).map(function (e) { return e.item; }).concat(output.filter(isSearch));",
+                  "  pm.expect(leaked.length, 'bifrost_tool_search leaked into the stream: ' + JSON.stringify(leaked).slice(0, 600)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace additional_tools stream: the deferred get_weather member was found, loaded and called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want a get_weather call among 513 deferred additional_tools members - a text-only reply never exercises the search: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(calls.filter(function (x) { return x.name !== 'get_weather' && x.name !== 'mcp__demo__get_weather'; }).length, 'only the weather tool fits the request: ' + JSON.stringify(calls).slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexAdditionalToolsWeatherStreamBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses Codex history whose deferred tools exist only in client search outputs calls the weather member they loaded through the gateway tool search",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Codex keeps deferred MCP tools on its side and runs the search itself: get_weather reaches the gateway only inside an earlier",
+                  "// client tool_search_output item (a session that started on a model with tool search), next to 80 other tools that search loaded: more than the 60 declarations the test allows, so restoring the whole history fails.",
+                  "var weather = { type: 'function', name: 'get_weather', description: 'Get the current weather for a city.', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } };",
+                  "var others = [];",
+                  "for (var i = 0; i < 80; i++) {",
+                  "  others.push({ type: 'function', name: 'demo_tool_' + i, description: 'Demo MCP tool number ' + i + '.', parameters: { type: 'object', properties: { arg: { type: 'string' } } } });",
+                  "}",
+                  "var body = {",
+                  "  model: 'vertex/gemini-4-argon',",
+                  "  instructions: 'Answer by calling a tool.',",
+                  "  input: [",
+                  "    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Which demo tools are there?' }] },",
+                  "    { type: 'tool_search_call', execution: 'client', call_id: 'call_ts1', status: 'completed', arguments: { query: 'demo' } },",
+                  "    { type: 'tool_search_output', execution: 'client', call_id: 'call_ts1', status: 'completed', tools: [{ type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', tools: others }] },",
+                  "    { type: 'tool_search_call', execution: 'client', call_id: 'call_ts2', status: 'completed', arguments: { query: 'weather' } },",
+                  "    { type: 'tool_search_output', execution: 'client', call_id: 'call_ts2', status: 'completed', tools: [{ type: 'namespace', name: 'mcp__demo', description: 'Demo MCP server.', tools: [weather] }] },",
+                  "    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'The demo server has weather and demo tools loaded.' }] },",
+                  "    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather in Paris? Use the weather tool.' }] }",
+                  "  ],",
+                  "  tools: [",
+                  "    { type: 'tool_search', execution: 'client', description: 'Search the deferred tools.' },",
+                  "    { type: 'namespace', name: 'functions', description: 'Default tools.', tools: [{ type: 'function', name: 'exec_command', description: 'Run a shell command.', parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] } }] }",
+                  "  ],",
+                  "  max_output_tokens: 1024",
+                  "};",
+                  "pm.variables.set('codexClientSearchHistoryBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var output = body.output || [];",
+                  "var calls = output.filter(function (x) { return x.type === 'function_call'; });",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('gateway tool search namespace client search history: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search namespace client search history: the tools the client search loaded are declared, at most 20 of them', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
+                  "  var declared = [];",
+                  "  (rr.tools || []).forEach(function (t) { (t.functionDeclarations || t.function_declarations || []).forEach(function (d) { declared.push(d.name); }); });",
+                  "  var demo = declared.filter(function (n) { return n.indexOf('mcp__demo__') === 0; });",
+                  "  pm.expect(demo, 'the newest search loaded get_weather, so it must be declared: ' + declared.join(',').slice(0, 800)).to.include('mcp__demo__get_weather');",
+                  "  // History restores at most 20; the attempt may still search twice, 20 members each.",
+                  "  pm.expect(demo.length, 'history searches load at most 20 tools; the rest stay searchable: ' + declared.join(',').slice(0, 800)).to.be.at.most(60);",
+                  "  pm.expect(JSON.stringify(rr), 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
+                  "});",
+                  "pm.test('gateway tool search namespace client search history: the search call never reaches the caller', function () {",
+                  "  pm.expect(calls.filter(function (x) { return x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "});",
+                  "pm.test('gateway tool search namespace client search history: get_weather, known only from the client search history, is called in its namespace', function () {",
+                  "  var weather = calls.filter(function (x) { return (x.namespace === 'mcp__demo' && x.name === 'get_weather') || x.name === 'mcp__demo__get_weather'; });",
+                  "  pm.expect(weather.length, 'want a get_weather call - before the fix Gemini never saw the tool: ' + JSON.stringify(output).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{codexClientSearchHistoryBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
               ]
             }
           }
