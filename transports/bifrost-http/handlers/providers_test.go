@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -4047,5 +4048,109 @@ func TestDatasheetOverrideHandlers_RejectInvalidBodies(t *testing.T) {
 	h.getDatasheetEntry(missing)
 	if missing.Response.StatusCode() != fasthttp.StatusNotFound {
 		t.Fatalf("entry for unknown model: %d, want 404", missing.Response.StatusCode())
+	}
+}
+
+// TestListModels_IncludeAliases lists key aliases only when an unfiltered listing asks for them.
+func TestListModels_IncludeAliases(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		want      []string
+		wantTotal int
+	}{
+		{"unfiltered alone", "unfiltered=true&limit=10", []string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"}, 3},
+		{"unfiltered with aliases", "unfiltered=true&include_aliases=true&limit=10", []string{"fast-chat", "gpt-4.1", "gpt-4o", "gpt-4o-mini", "team-gpt"}, 5},
+		{"searching for an alias", "unfiltered=true&include_aliases=true&query=TEAM&limit=10", []string{"team-gpt"}, 1},
+		{"first page", "unfiltered=true&include_aliases=true&limit=2", []string{"fast-chat", "gpt-4.1"}, 5},
+		{"last page", "unfiltered=true&include_aliases=true&limit=2&offset=4", []string{"team-gpt"}, 5},
+		{"without unfiltered the listing is narrowed as before", "include_aliases=true&limit=10", []string{"gpt-4o"}, 1},
+		{"false", "unfiltered=true&include_aliases=false&limit=10", []string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"}, 3},
+	} {
+		for _, route := range []struct {
+			name   string
+			path   string
+			handle func(*ProviderHandler, *fasthttp.RequestCtx)
+		}{
+			{name: "models", path: "/api/models", handle: (*ProviderHandler).listModels},
+			{name: "model details", path: "/api/models/details", handle: (*ProviderHandler).listModelDetails},
+		} {
+			t.Run(route.name+", "+tc.name, func(t *testing.T) {
+				// gpt-4o is an alias name and a listed model, so it must appear once.
+				keys := []schemas.Key{{ID: "key-a", Models: []string{"*"}, Aliases: schemas.KeyAliases{
+					"team-gpt":        {ModelID: "unlisted-a"},
+					"fast-chat":       {ModelID: "unlisted-b"},
+					"gpt-4o":          {ModelID: "unlisted-c"},
+					"regex:claude-.*": {ModelID: "unlisted-d"},
+				}}}
+				h := providerHandlerForTest(schemas.OpenAI, keys, []string{"gpt-4o", "gpt-4o-mini"}, []string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"})
+				h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+				h.inMemoryStore.ModelCatalog.SetKeyConfigForProvider(schemas.OpenAI, keys)
+				permit := grant.NewPermit(grant.PermitAccessProfile, "profile-test", "Test Profile", true, false,
+					[]schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"gpt-4o"}}}, nil)
+				h.modelsManager.(*mockModelsManager).access = grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
+
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.Header.SetMethod("GET")
+				ctx.Request.SetRequestURI(route.path + "?provider=openai&" + tc.query)
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialSessionToken, "session-token"))
+
+				route.handle(h, ctx)
+
+				if ctx.Response.StatusCode() != fasthttp.StatusOK {
+					t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+				}
+				var resp struct {
+					Models []struct {
+						Name string `json:"name"`
+					} `json:"models"`
+					Total int `json:"total"`
+				}
+				if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				got := make([]string, 0, len(resp.Models))
+				for _, model := range resp.Models {
+					got = append(got, model.Name)
+				}
+				if !slices.Equal(got, tc.want) || resp.Total != tc.wantTotal {
+					t.Fatalf("models = %v (total %d), want %v (total %d)", got, resp.Total, tc.want, tc.wantTotal)
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkListModels_Unfiltered measures the management listing the dashboard pickers read, with and without aliases.
+func BenchmarkListModels_Unfiltered(b *testing.B) {
+	SetLogger(&mockLogger{})
+	models := make([]string, 300)
+	for i := range models {
+		models[i] = fmt.Sprintf("model-%03d", i)
+	}
+	for _, aliasesPerKey := range []int{0, 10} {
+		keys := make([]schemas.Key, 4)
+		for i := range keys {
+			keys[i] = schemas.Key{ID: fmt.Sprintf("key-%d", i), Models: []string{"*"}, Aliases: schemas.KeyAliases{}}
+			for j := range aliasesPerKey {
+				keys[i].Aliases[fmt.Sprintf("alias-%d-%d", i, j)] = schemas.AliasConfig{ModelID: "unlisted"}
+			}
+		}
+		h := providerHandlerForTest(schemas.OpenAI, keys, models, models)
+		h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+		h.inMemoryStore.ModelCatalog.SetKeyConfigForProvider(schemas.OpenAI, keys)
+		for _, flag := range []string{"", "&include_aliases=true"} {
+			b.Run(fmt.Sprintf("aliases=%d,include=%t", len(keys)*aliasesPerKey, flag != ""), func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					ctx := &fasthttp.RequestCtx{}
+					ctx.Request.Header.SetMethod("GET")
+					ctx.Request.SetRequestURI("/api/models?provider=openai&unfiltered=true&limit=20" + flag)
+					h.listModels(ctx)
+				}
+			})
+		}
 	}
 }

@@ -983,6 +983,8 @@ type modelListQuery struct {
 	Limit      int
 	Offset     int
 	Unfiltered bool
+	// IncludeAliases adds key alias names to an unfiltered listing; a filtered one already has them.
+	IncludeAliases bool
 	// HideDeprecated drops deprecated models from the listing entirely, total included.
 	// Only the browse listing sets it, and only when nothing was searched for.
 	HideDeprecated bool
@@ -1012,6 +1014,7 @@ type listedModel struct {
 //   - keys: Comma-separated list of provider key UUIDs to filter models accessible by those keys
 //   - unfiltered: If true, list the provider's whole catalog: bypass provider-level model pool
 //     restrictions, and do not narrow to what the caller's virtual key or access allows.
+//   - include_aliases: If true with unfiltered, also list the alias names on the provider's keys.
 //   - limit: Maximum number of results to return (default: 5)
 //   - offset: Number of results to skip (for pagination)
 //   - include_deprecated: If true, list deprecated models even when nothing is searched for.
@@ -1070,6 +1073,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - keys: Comma-separated list of key IDs to filter models accessible by those keys
 //   - unfiltered: If true, list the provider's whole catalog: bypass provider-level model pool
 //     restrictions, and do not narrow to what the caller's virtual key or access allows.
+//   - include_aliases: If true with unfiltered, also list the alias names on the provider's keys.
 //   - limit: Maximum number of results to return (default: 20)
 //   - offset: Number of results to skip (for pagination)
 //
@@ -1335,6 +1339,7 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 		Limit:      defaultLimit,
 		Unfiltered: string(queryArgs.Peek("unfiltered")) == "true",
 	}
+	query.IncludeAliases = string(queryArgs.Peek("include_aliases")) == "true"
 	query.IncludeDeprecated = string(queryArgs.Peek("include_deprecated")) == "true"
 	query.Decisions = string(queryArgs.Peek("decisions")) == "true"
 
@@ -1467,6 +1472,12 @@ func (h *ProviderHandler) listManagementModelsForProvider(
 	models := h.modelsManager.GetModelsForProvider(provider)
 	if query.Unfiltered {
 		models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+		if catalog := h.inMemoryStore.ModelCatalog; query.IncludeAliases && catalog != nil {
+			// slices.Concat copies: the listing may share the catalog's memory.
+			models = slices.Concat(models, catalog.AliasNamesForProvider(provider))
+			slices.Sort(models)
+			models = slices.Compact(models)
+		}
 	}
 
 	// Keep only the models the caller may use on this provider. A model granted only through
