@@ -13,6 +13,16 @@ logs:
     summary: Get logs
     description: |
       Retrieves logs with filtering, search, and pagination via query parameters.
+
+      Each entry is a summary row, not the full log:
+
+      - `input_history` and `responses_input_history` hold only the last input message. Realtime turn rows (`object` is `realtime.turn`) keep their full history.
+      - Response payloads are left out. Realtime turn rows keep `output_message`.
+      - Of the other request payloads, only `speech_input`, `transcription_input` and `image_generation_input` are returned.
+      - Provider error payloads are left out, except for guardrail blocks.
+      - These fields are left out: `alias_model_family`, `server_side_fallback_model`, `served_model`, `routing_engines_used`, `complexity_mechanism`, `model_router_id`, `model_router_name`, `video_generation_input` and `cache_debug`.
+
+      Fetch a single entry with `GET /api/logs/{id}` for the full log.
     tags:
       - Logging
     parameters:

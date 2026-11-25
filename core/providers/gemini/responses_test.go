@@ -2748,3 +2748,85 @@ func BenchmarkConvertGeminiContentsToResponsesMessages_FunctionCalls(b *testing.
 		})
 	}
 }
+
+func TestMalformedOutputFailsResponsesStream(t *testing.T) {
+	t.Run("BeforeAnyOutputReturnsError", func(t *testing.T) {
+		var response GenerateContentResponse
+		require.NoError(t, json.Unmarshal([]byte(malformedResponseBody), &response))
+
+		state := AcquireGeminiResponsesStreamState()
+		t.Cleanup(func() { ReleaseGeminiResponsesStreamState(state) })
+
+		events, err := response.ToBifrostResponsesStream(0, state)
+		require.NotNil(t, err)
+		assert.Empty(t, events)
+		assert.Equal(t, 502, *err.StatusCode)
+	})
+
+	// The retry loop commits a stream on its first successful chunk. A first chunk
+	// carrying only metadata must not emit response.created / response.in_progress on
+	// its own, or the malformed chunk after it could not be retried.
+	t.Run("AfterLifecycleOnlyChunkReturnsError", func(t *testing.T) {
+		state := AcquireGeminiResponsesStreamState()
+		t.Cleanup(func() { ReleaseGeminiResponsesStreamState(state) })
+
+		var first GenerateContentResponse
+		require.NoError(t, json.Unmarshal([]byte(
+			`{"candidates":[{"content":{"role":"model"}}],"modelVersion":"gemini-3.1-pro-preview","responseId":"HzkEa9eBCNyRvfIPuK6LKA"}`,
+		), &first))
+		events, err := first.ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+		assert.Empty(t, events, "lifecycle events alone must not commit the stream")
+
+		var last GenerateContentResponse
+		require.NoError(t, json.Unmarshal([]byte(malformedResponseBody), &last))
+		events, err = last.ToBifrostResponsesStream(0, state)
+		require.NotNil(t, err)
+		assert.Empty(t, events)
+		assert.Equal(t, 502, *err.StatusCode)
+	})
+
+	t.Run("LifecycleEventsLeadFirstOutputChunk", func(t *testing.T) {
+		state := AcquireGeminiResponsesStreamState()
+		t.Cleanup(func() { ReleaseGeminiResponsesStreamState(state) })
+
+		var first GenerateContentResponse
+		require.NoError(t, json.Unmarshal([]byte(
+			`{"candidates":[{"content":{"role":"model"}}],"modelVersion":"gemini-3.1-pro-preview"}`,
+		), &first))
+		events, err := first.ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+		require.Empty(t, events)
+
+		var second GenerateContentResponse
+		require.NoError(t, json.Unmarshal([]byte(
+			`{"candidates":[{"content":{"role":"model","parts":[{"text":"Checking the weather"}]}}],"modelVersion":"gemini-3.1-pro-preview"}`,
+		), &second))
+		events, err = second.ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+		require.GreaterOrEqual(t, len(events), 3)
+		assert.Equal(t, schemas.ResponsesStreamResponseTypeCreated, events[0].Type)
+		assert.Equal(t, 0, events[0].SequenceNumber)
+		assert.Equal(t, schemas.ResponsesStreamResponseTypeInProgress, events[1].Type)
+		assert.Equal(t, 1, events[1].SequenceNumber)
+	})
+
+	t.Run("AfterOutputClosesNormally", func(t *testing.T) {
+		state := AcquireGeminiResponsesStreamState()
+		t.Cleanup(func() { ReleaseGeminiResponsesStreamState(state) })
+
+		var first GenerateContentResponse
+		require.NoError(t, json.Unmarshal([]byte(
+			`{"candidates":[{"content":{"role":"model","parts":[{"text":"Checking the weather"}]}}],"modelVersion":"gemini-3.1-pro-preview"}`,
+		), &first))
+		events, err := first.ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+		require.NotEmpty(t, events)
+
+		var last GenerateContentResponse
+		require.NoError(t, json.Unmarshal([]byte(malformedResponseBody), &last))
+		events, err = last.ToBifrostResponsesStream(len(events), state)
+		assert.Nil(t, err, "text already reached the client, so the stream must close rather than fail")
+		assert.NotEmpty(t, events)
+	})
+}

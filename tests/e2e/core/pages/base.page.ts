@@ -22,7 +22,7 @@ export class BasePage {
    * Filters out toasts that are being removed to avoid matching stale toasts.
    * Optionally filters by toast type (success, error, loading, default).
    */
-  getToast(type?: 'success' | 'error' | 'loading' | 'default'): Locator {
+  getToast(type?: 'success' | 'error' | 'warning' | 'loading' | 'default'): Locator {
     const selector = type
       ? `[data-sonner-toast][data-type="${type}"]:not([data-removed="true"]):not([data-e2e-dismissed])`
       : '[data-sonner-toast]:not([data-removed="true"]):not([data-e2e-dismissed])'
@@ -50,6 +50,19 @@ export class BasePage {
     await expect(toast).toBeVisible({ timeout: 10000 })
     if (message) {
       await expect(toast).toContainText(message)
+    }
+    // Consumed: retire it so the next wait cannot match this stale toast.
+    await this.waitForToastsToDisappear()
+  }
+
+  /**
+   * Wait for a warning toast to appear and contain every given text
+   */
+  async waitForWarningToast(...texts: string[]): Promise<void> {
+    const toast = this.getToast('warning')
+    await expect(toast).toBeVisible({ timeout: 10000 })
+    for (const text of texts) {
+      await expect(toast).toContainText(text)
     }
     // Consumed: retire it so the next wait cannot match this stale toast.
     await this.waitForToastsToDisappear()

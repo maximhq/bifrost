@@ -230,11 +230,16 @@ func (h *RoutingHandler) createModelRouter(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("%v; use a different priority", err))
 		case errors.Is(err, configstore.ErrAlreadyExists):
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
+		case errors.Is(err, configstore.ErrNotFound):
+			// A store may refuse a reference it cannot resolve for the caller
+			// with ErrNotFound, and that is a bad request, not a server failure.
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		default:
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to create model router: %v", err))
 		}
 		return
 	}
+	rec := lib.RecordAuditChange(ctx, "model_router.created", "model_router", router.ID, router.Name, nil, router)
 	if !h.reloadModelRouter(ctx, router.ID) {
 		return
 	}
@@ -243,7 +248,7 @@ func (h *RoutingHandler) createModelRouter(ctx *fasthttp.RequestCtx) {
 		sendModelRouterLoadError(ctx, router.ID, err)
 		return
 	}
-	lib.RecordAuditChange(ctx, "model_router.created", "model_router", saved.ID, saved.Name, nil, saved)
+	rec.SetAfter(saved)
 	SendJSON(ctx, saved)
 }
 
@@ -300,6 +305,13 @@ func (h *RoutingHandler) updateModelRouter(ctx *fasthttp.RequestCtx) {
 		}
 		return
 	}
+	// The update keeps the stored targets and routing, so the fallback snapshot carries them too.
+	written := *router
+	if before != nil {
+		written.Targets = before.Targets
+		written.Routing = before.Routing
+	}
+	rec := lib.RecordAuditChange(ctx, "model_router.updated", "model_router", id, router.Name, before, &written)
 	if !h.reloadModelRouter(ctx, id) {
 		return
 	}
@@ -308,7 +320,7 @@ func (h *RoutingHandler) updateModelRouter(ctx *fasthttp.RequestCtx) {
 		sendModelRouterLoadError(ctx, id, err)
 		return
 	}
-	lib.RecordAuditChange(ctx, "model_router.updated", "model_router", saved.ID, saved.Name, before, saved)
+	rec.SetAfter(saved)
 	SendJSON(ctx, saved)
 }
 
@@ -345,15 +357,15 @@ func (h *RoutingHandler) deleteModelRouter(ctx *fasthttp.RequestCtx) {
 		}
 		return
 	}
-	if err := h.routingManager.RemoveModelRouter(ctx, id); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("model router deleted but not removed from memory: %v, please restart bifrost to sync with the database", err))
-		return
-	}
 	name := id
 	if before != nil {
 		name = before.Name
 	}
 	lib.RecordAuditChange(ctx, "model_router.deleted", "model_router", id, name, before, nil)
+	if err := h.routingManager.RemoveModelRouter(ctx, id); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("model router deleted but not removed from memory: %v, please restart bifrost to sync with the database", err))
+		return
+	}
 	SendJSON(ctx, map[string]any{"message": "Model router deleted successfully"})
 }
 
@@ -372,6 +384,12 @@ func (h *RoutingHandler) resetModelRouter(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reset model router: %v", err))
 		return
 	}
+	// The reset keeps the stored targets, so the fallback snapshot carries them; the store returned the routing.
+	written := *restored
+	if before != nil {
+		written.Targets = before.Targets
+	}
+	rec := lib.RecordAuditChange(ctx, "model_router.reset", "model_router", restored.ID, restored.Name, before, &written)
 	if !h.reloadModelRouter(ctx, id) {
 		return
 	}
@@ -381,7 +399,7 @@ func (h *RoutingHandler) resetModelRouter(ctx *fasthttp.RequestCtx) {
 		sendModelRouterLoadError(ctx, id, err)
 		return
 	}
-	lib.RecordAuditChange(ctx, "model_router.reset", "model_router", restored.ID, restored.Name, before, saved)
+	rec.SetAfter(saved)
 	SendJSON(ctx, saved)
 }
 
@@ -428,7 +446,7 @@ func (h *RoutingHandler) getModelRouterStatus(ctx *fasthttp.RequestCtx) {
 
 // sendModelRouterNotServed answers for a router the routing plugin does not
 // serve. A saved router can be left out at startup, as session routing
-// without a KV store is, so the store decides: a saved router is reported as
+// without a session store is, so the store decides: a saved router is reported as
 // not loaded (503), and only one that is not saved as not found (404).
 func (h *RoutingHandler) sendModelRouterNotServed(ctx *fasthttp.RequestCtx, id string) {
 	if _, err := h.configStore.GetModelRouter(ctx, id); errors.Is(err, configstore.ErrNotFound) {
@@ -503,6 +521,11 @@ func (h *RoutingHandler) setModelRouterTargets(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save model router targets: %v", err))
 		return
 	}
+	targetsName := id
+	if before != nil {
+		targetsName = before.Name
+	}
+	rec := lib.RecordAuditChange(ctx, "model_router.targets_updated", "model_router", id, targetsName, beforeTargets, targets)
 	if err := h.routingManager.ReloadModelRouterTargets(ctx, id); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload model router targets in memory: %v, please restart bifrost to sync with the database", err))
 		return
@@ -512,7 +535,7 @@ func (h *RoutingHandler) setModelRouterTargets(ctx *fasthttp.RequestCtx) {
 		sendModelRouterLoadError(ctx, id, err)
 		return
 	}
-	lib.RecordAuditChange(ctx, "model_router.targets_updated", "model_router", saved.ID, saved.Name, beforeTargets, saved.Targets)
+	rec.SetAfter(saved.Targets)
 	SendJSON(ctx, saved)
 }
 
@@ -600,12 +623,21 @@ func (h *RoutingHandler) setModelRouterRouting(ctx *fasthttp.RequestCtx) {
 		case errors.Is(err, configstore.ErrModelRouterPriorityTaken):
 			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("%v; use a different priority", err))
 		case errors.Is(err, configstore.ErrNotFound):
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("model router %q not found", id))
+			// A store may refuse a reference it cannot resolve for the caller
+			// with ErrNotFound, and that is a bad request. The router was read
+			// above, so it is missing only if it no longer reads; a read that
+			// fails is answered as the first read's failure is.
+			if _, readErr := h.configStore.GetModelRouter(ctx, id); readErr != nil {
+				sendModelRouterLoadError(ctx, id, readErr)
+			} else {
+				SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			}
 		default:
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save model router routing: %v", err))
 		}
 		return
 	}
+	rec := lib.RecordAuditChange(ctx, "model_router.routing_updated", "model_router", id, before.Name, before.Routing, routing)
 	if err := h.routingManager.ReloadModelRouterRouting(ctx, id); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload model router routing in memory: %v, please restart bifrost to sync with the database", err))
 		return
@@ -615,6 +647,6 @@ func (h *RoutingHandler) setModelRouterRouting(ctx *fasthttp.RequestCtx) {
 		sendModelRouterLoadError(ctx, id, err)
 		return
 	}
-	lib.RecordAuditChange(ctx, "model_router.routing_updated", "model_router", saved.ID, saved.Name, before.Routing, saved.Routing)
+	rec.SetAfter(saved.Routing)
 	SendJSON(ctx, saved)
 }

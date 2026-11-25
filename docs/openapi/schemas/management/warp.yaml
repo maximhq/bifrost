@@ -66,6 +66,13 @@ WarpConfig:
         Which of the provider's configured keys the default model uses. A
         reference, not a credential, so it round-trips in the clear - there is
         nothing here worth redacting. Empty when the provider needs no key.
+    virtual_key_id:
+      type: string
+      description: |
+        ID of the virtual key Warp's model calls present when the person asking
+        has no user identity of their own: the local admin, or a deployment
+        without an identity provider. A reference, not the key. Absent when
+        none is set.
     additional_models:
       type: array
       description: |
@@ -257,6 +264,16 @@ WarpConfigInput:
         Which of the provider's configured keys Warp should use. Empty is valid
         and common: a provider on a trusted network, or one using ambient IAM
         credentials, needs no key at all.
+    virtual_key_id:
+      type: string
+      description: |
+        ID of a virtual key Warp's model calls present when the person asking
+        has no user identity of their own: the local admin, or a deployment
+        without an identity provider. Needed for that caller while
+        `enforce_auth_on_inference` is on; signed-in users are governed as
+        themselves and never use it. Omitted keeps the stored value, and `""`
+        clears it. A key that does not exist, or is inactive, is rejected with
+        `400` when the value changes.
     additional_models:
       type: array
       description: |
