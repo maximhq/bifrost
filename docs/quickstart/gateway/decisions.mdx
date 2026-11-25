@@ -16,6 +16,10 @@ Bifrost serves decisions on three routes. Each one reaches **every** decision pr
 | `POST /openai/v1/decisions` | OpenAI's Decisions API | [OpenAI SDKs](/integrations/openai-sdk/overview#decisions-api) | The provider a routing rule or your virtual key's weighted providers set; else `openai` when it serves the model and your virtual key allows it; else as on `/v1/decisions` |
 | `POST /typesafe/v1/systemone` | TypeSafe's System One API | [TypeSafe SDK](/integrations/typesafe-sdk) | The provider a routing rule or your virtual key's weighted providers set; else `typesafe` when it serves the model and your virtual key allows it; else as on `/v1/decisions` |
 
+<Note>
+  If Bifrost is served under a path prefix (`server.base_path`), clients behind that proxy send the prefixed routes, for example `/bifrost/v1/decisions`, `/bifrost/openai/v1/decisions` and `/bifrost/typesafe/v1/systemone`. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix).
+</Note>
+
 Bifrost settles the provider of a bare model name in this order, on every route:
 
 1. [Routing rules](/providers/routing-rules) that set a provider, then a `provider/model` prefix, then your virtual key's weighted provider selection: when the key's `provider_configs` give weights to providers that serve the model and pass their budget and rate-limit checks, one of them is picked by weight. A routing rule is the supported way to give a bare or logical model name a provider.
