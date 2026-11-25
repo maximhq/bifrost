@@ -1,14 +1,89 @@
 package openai
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
+
+func setOpenAIVideoGenerationBody(ctx *schemas.BifrostContext, outbound *fasthttp.Request, request *schemas.BifrostVideoGenerationRequest, provider schemas.ModelProvider, useJSON bool) *schemas.BifrostError {
+	if useJSON {
+		body, err := marshalOpenAIVideoGenerationJSON(request, ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true)
+		if err != nil {
+			return providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+		}
+		outbound.Header.SetContentType("application/json")
+		outbound.SetBody(body)
+		return nil
+	}
+
+	req, err := ToOpenAIVideoGenerationRequest(request)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("failed to convert video generation request to openai format", err)
+	}
+	if req == nil {
+		return providerUtils.NewBifrostOperationError("video generation input is not provided", nil)
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := parseVideoGenerationFormDataBodyFromRequest(writer, req, provider); err != nil {
+		return err
+	}
+	outbound.Header.SetContentType(writer.FormDataContentType())
+	outbound.SetBody(body.Bytes())
+	return nil
+}
+
+func marshalOpenAIVideoGenerationJSON(request *schemas.BifrostVideoGenerationRequest, passthrough bool) ([]byte, error) {
+	if request == nil || request.Input == nil {
+		return nil, fmt.Errorf("video generation input is required")
+	}
+	// Use only the resolved model and typed input/parameters. In particular, never reuse
+	// a caller's raw body: it may carry a different model or gateway routing fields.
+	body, err := providerUtils.MarshalSorted(struct {
+		Model string `json:"model"`
+		*schemas.VideoGenerationInput
+		*schemas.VideoGenerationParameters
+	}{request.Model, request.Input, request.Params})
+	if err != nil || !passthrough || len(request.GetExtraParams()) == 0 {
+		return body, err
+	}
+
+	extras := request.GetExtraParams()
+	forward := make(map[string]any, len(extras))
+	// The standard HTTP endpoint collects unknown top-level fields, including an
+	// extra_params wrapper if supplied. The OpenAI integration unwraps it on ingress.
+	if wrapped, ok := extras["extra_params"].(map[string]any); ok {
+		for name, value := range wrapped {
+			if isOpenAIVideoExtension(name) {
+				forward[name] = value
+			}
+		}
+	}
+	for name, value := range extras {
+		if isOpenAIVideoExtension(name) {
+			forward[name] = value
+		}
+	}
+	return providerUtils.MergeExtraParamsIntoJSON(body, forward)
+}
+
+func isOpenAIVideoExtension(name string) bool {
+	switch strings.ToLower(name) {
+	case "model", "provider", "fallbacks", "extra_params", "prompt", "input_reference", "video_uri",
+		"seconds", "size", "negative_prompt", "seed", "type", "output_format", "audio", "upscale_factor", "target_megapixels":
+		return false
+	default:
+		return true
+	}
+}
 
 // ToOpenAIVideoGenerationRequest converts a Bifrost Video Request to OpenAI format
 func ToOpenAIVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRequest) (*OpenAIVideoGenerationRequest, error) {

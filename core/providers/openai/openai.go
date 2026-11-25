@@ -34,6 +34,7 @@ type OpenAIProvider struct {
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 	disableStore         bool                          // Whether to force store=false on outgoing requests
+	videoGenerationJSON  bool                          // Whether typed video generation uses JSON instead of OpenAI multipart
 	authHTTPClient       *http.Client                  // Client for oauth_key_config token exchanges, routed through proxy_config
 	tokens               *tokencache.Cache[string]     // Tokens minted from oauth_key_config, one slot per credential
 }
@@ -80,6 +81,7 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 		sendBackRawResponse:  config.SendBackRawResponse,
 		customProviderConfig: config.CustomProviderConfig,
 		disableStore:         config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
+		videoGenerationJSON:  config.OpenAIConfig != nil && config.OpenAIConfig.VideoGenerationJSON,
 		authHTTPClient:       providerUtils.NewProviderHTTPClient(config.ProxyConfig, config.NetworkConfig, logger),
 		tokens:               tokencache.New[string](tokencache.Options{}),
 	}
@@ -4537,7 +4539,7 @@ func (provider *OpenAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		return nil, keyErr
 	}
 
-	return HandleOpenAIVideoGenerationRequest(
+	return handleOpenAIVideoGenerationRequest(
 		ctx,
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/videos", schemas.VideoGenerationRequest),
@@ -4549,6 +4551,7 @@ func (provider *OpenAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
+		provider.videoGenerationJSON,
 	)
 }
 
@@ -4751,6 +4754,24 @@ func HandleOpenAIVideoGenerationRequest(
 	sendBackRawResponse bool,
 	logger schemas.Logger,
 ) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return handleOpenAIVideoGenerationRequest(ctx, client, url, request, key, extraHeaders, authHeaders,
+		providerName, sendBackRawRequest, sendBackRawResponse, logger, false)
+}
+
+func handleOpenAIVideoGenerationRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostVideoGenerationRequest,
+	key schemas.Key,
+	extraHeaders map[string]schemas.SecretVar,
+	authHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+	useJSON bool,
+) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -4770,24 +4791,9 @@ func HandleOpenAIVideoGenerationRequest(
 		req.Header.Set(k, v)
 	}
 
-	// Use centralized converter
-	reqBody, err := ToOpenAIVideoGenerationRequest(request)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to convert video generation request to openai format", err)
+	if bifrostErr := setOpenAIVideoGenerationBody(ctx, req, request, providerName, useJSON); bifrostErr != nil {
+		return nil, bifrostErr
 	}
-	if reqBody == nil {
-		return nil, providerUtils.NewBifrostOperationError("video generation input is not provided", nil)
-	}
-
-	// Create multipart form
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	if err := parseVideoGenerationFormDataBodyFromRequest(writer, reqBody, providerName); err != nil {
-		return nil, err
-	}
-
-	req.Header.SetContentType(writer.FormDataContentType()) // This sets multipart/form-data with boundary
-	req.SetBody(body.Bytes())
 
 	// Make request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
@@ -4800,7 +4806,7 @@ func HandleOpenAIVideoGenerationRequest(
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
+	if status := resp.StatusCode(); status != fasthttp.StatusOK && !(useJSON && status == fasthttp.StatusAccepted) {
 		logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, providerUtils.SetErrorLatency(ParseOpenAIError(resp), latency)
 	}

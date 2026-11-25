@@ -351593,6 +351593,107 @@
           }
         }
       ]
+    },
+    {
+      "name": "388. OpenAI-compatible JSON video fixture (#10466 / PR #10467)",
+      "description": "Configure openai-video-json-fixture to use tests/e2e/api/fixtures/openai-video-json.mjs. This loopback backend requires JSON, checks 4K and the exact media fields, and returns HTTP 202. The standard video route uses top-level extensions and the OpenAI integration route uses extra_params.",
+      "item": [
+        {
+          "name": "[PREVIEW] openai fixture-video /v1/videos preserves backend-specific fields - #10466",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai-video-json-fixture/fixture-video\",\n  \"prompt\": \"loopback video fixture\",\n  \"size\": \"3840x2160\",\n  \"seconds\": \"5\",\n  \"seed\": 41,\n  \"image_reference\": [\n    {\n      \"file_id\": \"ref-fixture\"\n    }\n  ],\n  \"input_video\": {\n    \"job_id\": \"draft-fixture\"\n  },\n  \"sampler\": \"fixture-three-step\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('JSON video fixture accepted all fields', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  var video = pm.response.json();",
+                  "  pm.expect(video.id).to.match(/^video_fixture_[a-f0-9]+:openai-video-json-fixture$/);",
+                  "  pm.expect(video.status).to.eql('queued');",
+                  "  pm.expect(video.size).to.eql('3840x2160');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] openai fixture-video /openai/v1/videos preserves backend-specific fields - #10466",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai-video-json-fixture/fixture-video\",\n  \"prompt\": \"loopback video fixture\",\n  \"size\": \"3840x2160\",\n  \"seconds\": \"5\",\n  \"seed\": 41,\n  \"extra_params\": {\n    \"image_reference\": [\n      {\n        \"file_id\": \"ref-fixture\"\n      }\n    ],\n    \"input_video\": {\n      \"job_id\": \"draft-fixture\"\n    },\n    \"sampler\": \"fixture-three-step\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('JSON video fixture accepted all fields', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  var video = pm.response.json();",
+                  "  pm.expect(video.id).to.match(/^video_fixture_[a-f0-9]+:openai-video-json-fixture$/);",
+                  "  pm.expect(video.status).to.eql('queued');",
+                  "  pm.expect(video.size).to.eql('3840x2160');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

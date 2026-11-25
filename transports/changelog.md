@@ -19,6 +19,7 @@
 - **Soniox Provider** - New `soniox` provider for speech-to-text (async jobs behind `/v1/audio/transcriptions`), text-to-speech with streaming, and real-time transcription
 - **Baseten Provider** - New `baseten` provider for Model APIs and dedicated deployments: chat, Responses, embeddings and transcription, `/v1/decisions` through System One, image generation on dedicated deployments (including the dashboard's `/predict` URL), and rerank on dedicated BEI deployments
 - **Kimchi Provider** - New `kimchi` provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
+- **OpenAI-compatible JSON video** - `openai_config.video_generation_json` preserves backend-specific dimensions and opt-in video parameters while retaining native job settlement. [@XenoAmess](https://github.com/XenoAmess)
 - **MachGen Provider** - New `machgen` provider for MachGen's image and video models: text-to-image, image edit, and async video generation with retrieve and download, settled and priced by the video job sweeper. `/v1/models` lists the models each key can use, with their task types. Set up from the UI or `providers.machgen` in config.json (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)
 - **Sarvam Token Factory v2** - Sarvam chat and model listing move to Token Factory v2, and Sarvam Prism serves `/v1/decisions` (thanks [@vikashmaddi-sarvam](https://github.com/vikashmaddi-sarvam)!)
   <Warning>

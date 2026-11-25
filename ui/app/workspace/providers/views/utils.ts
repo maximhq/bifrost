@@ -14,7 +14,7 @@ export const buildProviderUpdatePayload = (provider: ModelProvider, updates: Par
 		store_raw_request_response: updates.store_raw_request_response ?? provider.store_raw_request_response,
 		ignore_provider_cost: updates.ignore_provider_cost ?? provider.ignore_provider_cost,
 		custom_provider_config: updates.custom_provider_config ?? provider.custom_provider_config,
-		openai_config: updates.openai_config ?? provider.openai_config,
+		openai_config: updates.openai_config ? { ...provider.openai_config, ...updates.openai_config } : provider.openai_config,
 		prompt_cache: updates.prompt_cache ?? provider.prompt_cache,
 		// null is how the tools tab clears the list, so presence decides, not ??.
 		injected_tools: "injected_tools" in updates ? updates.injected_tools : provider.injected_tools,
