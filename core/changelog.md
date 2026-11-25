@@ -1,4 +1,4 @@
-- fix: a stream cancelled after the HTTP stream producer panicked now ends as a 500 server_error in the post-hooks, not a 499 client cancellation, and its usage is still estimated (#10203) [@ahmedabdou14](https://github.com/ahmedabdou14)
+- fix: a stream cancelled after the HTTP stream producer panicked now ends as a 500 server_error in the post-hooks, not a 499 client cancellation, and its usage is still estimated (#10203) (thanks [@ahmedabdou14](https://github.com/ahmedabdou14)!)
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
 - feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)
