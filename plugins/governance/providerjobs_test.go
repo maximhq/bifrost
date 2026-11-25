@@ -1434,10 +1434,22 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/responses",
 				Body: []byte(`{"model":"gpt-4o","input":[{"role":"user","content":[{"type":"input_text","text":"hi"},{"type":"input_file","file_id":"file-bench"}]}]}`)}}
 		},
+		// A Responses create that continues from nothing names no object: no lookup.
+		"responses_create_no_reference": func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+		},
+		// One that continues from a stored response looks that response up.
+		"responses_continue_previous": func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o",
+				Params: &schemas.ResponsesParameters{PreviousResponseID: new("resp_bench")}}}
+		},
+		"responses_retrieve": func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.ResponsesRetrieveRequest, ResponsesRetrieveRequest: &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_bench"}}
+		},
 	}
 	// "on" is the default and runs every check; "off" is client.enforce_vk_object_ownership: false.
 	for _, mode := range []string{"off", "on"} {
-		for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_responses_body"} {
+		for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_responses_body", "responses_create_no_reference", "responses_continue_previous", "responses_retrieve"} {
 			build := cases[name]
 			b.Run(mode+"/"+name, func(b *testing.B) {
 				enforced = mode == "on"
@@ -1450,6 +1462,75 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 			})
 		}
 	}
+}
+
+// BenchmarkPostLLMHookRecordsStoredResponse measures what recording a stored response adds to
+// the post-hook. A create writes one ownership row. A stream names its response on several
+// events; only the first writes, and the rest cost a context read. A response the request asked
+// not to store writes nothing.
+func BenchmarkPostLLMHookRecordsStoredResponse(b *testing.B) {
+	store, err := configstore.NewConfigStore(context.Background(), &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: b.TempDir() + "/bench.db"},
+	}, NewMockLogger())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer store.Close(context.Background())
+	plugin := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
+	plugin.configStore = store
+	extra := func(requestType schemas.RequestType) schemas.BifrostResponseExtraFields {
+		return schemas.BifrostResponseExtraFields{RequestType: requestType, Provider: schemas.OpenAI}
+	}
+	create := func(requestType schemas.RequestType, params *schemas.ResponsesParameters) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: requestType, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Params: params}}
+	}
+	whole := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{ID: new("resp_bench_whole"), ExtraFields: extra(schemas.ResponsesRequest)}}
+	event := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeInProgress, ExtraFields: extra(schemas.ResponsesStreamRequest),
+		Response: &schemas.BifrostResponsesResponse{ID: new("resp_bench_stream")},
+	}}
+	started := func(b *testing.B, req *schemas.BifrostRequest) *schemas.BifrostContext {
+		ctx := presentCtx(mcpTestVKValue)
+		if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+		return ctx
+	}
+
+	b.Run("create_writes_one_row", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			b.StopTimer()
+			ctx := started(b, create(schemas.ResponsesRequest, nil))
+			b.StartTimer()
+			if _, _, err := plugin.PostLLMHook(ctx, whole, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("later_stream_event_writes_nothing", func(b *testing.B) {
+		ctx := started(b, create(schemas.ResponsesStreamRequest, nil))
+		if _, _, err := plugin.PostLLMHook(ctx, event, nil); err != nil {
+			b.Fatal(err)
+		}
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, _, err := plugin.PostLLMHook(ctx, event, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("store_false_writes_nothing", func(b *testing.B) {
+		ctx := started(b, create(schemas.ResponsesRequest, &schemas.ResponsesParameters{Store: new(false)}))
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, _, err := plugin.PostLLMHook(ctx, whole, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
 
 // newResourceNameTestPlugin is newProviderJobTestPlugin with the key also allowed on Gemini and
@@ -1844,4 +1925,509 @@ func BenchmarkPreLLMHookResourceNameLookup(b *testing.B) {
 			}
 		})
 	}
+}
+
+// storedResponseRequests builds, by name, every request that reaches a stored response by id on
+// OpenAI: the four lifecycle requests, a streamed retrieve, and the create and compaction requests
+// that continue from it through previous_response_id.
+func storedResponseRequests(responseID string) map[string]*schemas.BifrostRequest {
+	return map[string]*schemas.BifrostRequest{
+		"retrieve":        {RequestType: schemas.ResponsesRetrieveRequest, ResponsesRetrieveRequest: &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: responseID}},
+		"retrieve stream": {RequestType: schemas.ResponsesRetrieveStreamRequest, ResponsesRetrieveRequest: &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: responseID, Stream: new(true)}},
+		"delete":          {RequestType: schemas.ResponsesDeleteRequest, ResponsesDeleteRequest: &schemas.BifrostResponsesDeleteRequest{Provider: schemas.OpenAI, ResponseID: responseID}},
+		"cancel":          {RequestType: schemas.ResponsesCancelRequest, ResponsesCancelRequest: &schemas.BifrostResponsesCancelRequest{Provider: schemas.OpenAI, ResponseID: responseID}},
+		"input items":     {RequestType: schemas.ResponsesInputItemsRequest, ResponsesInputItemsRequest: &schemas.BifrostResponsesInputItemsRequest{Provider: schemas.OpenAI, ResponseID: responseID}},
+		"previous_response_id": {RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "m",
+			Params: &schemas.ResponsesParameters{PreviousResponseID: new(responseID)}}},
+		"previous_response_id stream": {RequestType: schemas.ResponsesStreamRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "m",
+			Params: &schemas.ResponsesParameters{PreviousResponseID: new(responseID)}}},
+		// Counting the input tokens of a continuation reads the stored response too.
+		"input_tokens previous_response_id": {RequestType: schemas.CountTokensRequest, CountTokensRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "m",
+			Params: &schemas.ResponsesParameters{PreviousResponseID: new(responseID)}}},
+		"compaction previous_response_id": {RequestType: schemas.CompactionRequest, CompactionRequest: &schemas.BifrostCompactionRequest{Provider: schemas.OpenAI, Model: "m", PreviousResponseID: new(responseID)}},
+	}
+}
+
+// A stored response is bound to the virtual key that created it. Retrieve, delete, cancel and
+// input_items on another key's response are refused as not found, and so is a new response or a
+// compaction that continues from it through previous_response_id. The creating key reaches its own
+// response, a response nobody recorded stays reachable, and a request that presented no key is
+// unrestricted.
+func TestPreLLMHookBindsStoredResponsesToTheCreatingVirtualKey(t *testing.T) {
+	plugin, store := newProviderJobTestPlugin(t)
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindResponse, "openai", "resp_own", "vk-mcp-stamp")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindResponse, "openai", "resp_other", "vk-someone-else")
+
+	for name := range storedResponseRequests("x") {
+		t.Run(name, func(t *testing.T) {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), storedResponseRequests("resp_own")[name])
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "the creating key reaches its own response")
+
+			_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), storedResponseRequests("resp_other")[name])
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "another key's response is refused")
+			require.NotNil(t, shortCircuit.Error.StatusCode)
+			assert.Equal(t, 404, *shortCircuit.Error.StatusCode, "refused as not found, not as forbidden")
+			require.NotNil(t, shortCircuit.Error.Type)
+			assert.Equal(t, string(DecisionAccessBlocked), *shortCircuit.Error.Type)
+			assert.Equal(t, "response 'resp_other' not found", shortCircuit.Error.Error.Message)
+
+			_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), storedResponseRequests("resp_unknown")[name])
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "a response with no row cannot be bound and stays reachable")
+
+			_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), storedResponseRequests("resp_other")[name])
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "a request that presented no key is unrestricted")
+		})
+	}
+
+	// A passthrough request addresses a response by its path, or continues from one in its body; an
+	// inline batch item continues from one in its body. Both reach the provider as written.
+	t.Run("passthrough and inline batch items", func(t *testing.T) {
+		pass := func(method, path, body string) *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Method: method, Path: path, Body: []byte(body)}}
+		}
+		inline := func(responseID string) *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI,
+				Requests: []schemas.BatchRequestItem{{CustomID: "a", Body: map[string]any{"model": "m", "input": "x", "previous_response_id": responseID}}}}}
+		}
+		for name, req := range map[string]*schemas.BifrostRequest{
+			"retrieve":             pass("GET", "/v1/responses/resp_other", ""),
+			"delete":               pass("DELETE", "/v1/responses/resp_other", ""),
+			"cancel":               pass("POST", "/v1/responses/resp_other/cancel", ""),
+			"input items":          pass("GET", "/v1/responses/resp_other/input_items", ""),
+			"previous_response_id": pass("POST", "/v1/responses", `{"model":"gpt-4o-mini","input":"x","previous_response_id":"resp_other"}`),
+			"compact":              pass("POST", "/v1/responses/compact", `{"model":"gpt-4o-mini","previous_response_id":"resp_other"}`),
+			"escaped key":          pass("POST", "/v1/responses", `{"model":"gpt-4o-mini","input":"x","\u0070revious_response_id":"resp_other"}`),
+			"inline batch item":    inline("resp_other"),
+		} {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "%s: another key's response is refused", name)
+			assert.Equal(t, 404, *shortCircuit.Error.StatusCode, name)
+			assert.Contains(t, shortCircuit.Error.Error.Message, "resp_other", name)
+		}
+		for name, req := range map[string]*schemas.BifrostRequest{
+			"own retrieve":             pass("GET", "/v1/responses/resp_own", ""),
+			"own previous_response_id": pass("POST", "/v1/responses", `{"model":"gpt-4o-mini","input":"x","previous_response_id":"resp_own"}`),
+			"unrecorded retrieve":      pass("GET", "/v1/responses/resp_unknown", ""),
+			"create":                   pass("POST", "/v1/responses", `{"model":"gpt-4o-mini","input":"x"}`),
+			// metadata takes any string keys. One that happens to be called previous_response_id is
+			// an annotation, not the response the request continues from.
+			"metadata annotation":   pass("POST", "/v1/responses", `{"model":"gpt-4o-mini","input":"x","metadata":{"previous_response_id":"resp_other"}}`),
+			"compact":               pass("POST", "/v1/responses/compact", `{"model":"gpt-4o-mini","input":"x"}`),
+			"own inline batch item": inline("resp_own"),
+		} {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, name)
+		}
+	})
+
+	// extra_params are merged into the body that is sent, over the typed field, so the id a
+	// request continues from can arrive there. Both places are checked.
+	t.Run("previous_response_id in extra params", func(t *testing.T) {
+		create := func(typed *string, extraID string) *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI, Model: "m",
+				Params: &schemas.ResponsesParameters{PreviousResponseID: typed, ExtraParams: map[string]any{"previous_response_id": extraID}},
+			}}
+		}
+		// The body is built by marshalling extra_params, which writes a *string or a named string
+		// type as the same JSON string a plain one gives. Each is checked like the plain one.
+		type responseID string
+		pointer := create(nil, "")
+		pointer.ResponsesRequest.Params.ExtraParams["previous_response_id"] = new("resp_other")
+		named := create(nil, "")
+		named.ResponsesRequest.Params.ExtraParams["previous_response_id"] = responseID("resp_other")
+		for name, req := range map[string]*schemas.BifrostRequest{
+			"only in extra params":      create(nil, "resp_other"),
+			"over an owned typed field": create(new("resp_own"), "resp_other"),
+			"as a string pointer":       pointer,
+			"as a named string type":    named,
+		} {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "%s: another key's response is refused", name)
+			assert.Equal(t, 404, *shortCircuit.Error.StatusCode, name)
+			assert.Contains(t, shortCircuit.Error.Error.Message, "resp_other", name)
+		}
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), create(nil, "resp_own"))
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "the creating key continues from its own response")
+
+		// A compaction carries the id in the same two places.
+		for name, req := range map[string]*schemas.BifrostRequest{
+			// A compaction with neither input nor a typed previous_response_id is refused before
+			// governance runs, so the id that is only in extra params travels with an input.
+			"compaction, only in extra params": {RequestType: schemas.CompactionRequest, CompactionRequest: &schemas.BifrostCompactionRequest{Provider: schemas.OpenAI, Model: "m",
+				Input:       []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("x")}}},
+				ExtraParams: map[string]any{"previous_response_id": "resp_other"}}},
+			"compaction, over an owned typed field": {RequestType: schemas.CompactionRequest, CompactionRequest: &schemas.BifrostCompactionRequest{Provider: schemas.OpenAI, Model: "m",
+				PreviousResponseID: new("resp_own"), ExtraParams: map[string]any{"previous_response_id": "resp_other"}}},
+		} {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "%s: another key's response is refused", name)
+			assert.Equal(t, 404, *shortCircuit.Error.StatusCode, name)
+		}
+		_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.CompactionRequest, CompactionRequest: &schemas.BifrostCompactionRequest{Provider: schemas.OpenAI, Model: "m",
+			PreviousResponseID: new("resp_own"), ExtraParams: map[string]any{"previous_response_id": "resp_own"}}})
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "the creating key compacts its own response")
+
+		count := create(new("resp_own"), "resp_other")
+		count.RequestType, count.CountTokensRequest, count.ResponsesRequest = schemas.CountTokensRequest, count.ResponsesRequest, nil
+		_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), count)
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit, "an input-token count is checked in both places too")
+		assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	})
+
+	// With client.enforce_vk_object_ownership turned off every key reaches every response.
+	t.Run("setting off", func(t *testing.T) {
+		enforced := false
+		plugin.objectOwnershipEnforcedFn = func() bool { return enforced }
+		t.Cleanup(func() { plugin.objectOwnershipEnforcedFn = nil })
+		for name, req := range storedResponseRequests("resp_other") {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "%s: another key's response is reachable while the setting is off", name)
+		}
+		enforced = true
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), storedResponseRequests("resp_other")["retrieve"])
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit, "another key's response is refused once the setting is on")
+	})
+
+	// A caller of the Go SDK can hand over the body to send as raw bytes. The provider is sent
+	// those bytes as they are, so an id that is only there is checked like the typed one.
+	t.Run("previous_response_id in a raw request body", func(t *testing.T) {
+		raw := func(id string) []byte {
+			return []byte(`{"model":"m","input":"x","previous_response_id":"` + id + `"}`)
+		}
+		requests := func(id string) map[string]*schemas.BifrostRequest {
+			return map[string]*schemas.BifrostRequest{
+				"create": {RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
+					Provider: schemas.OpenAI, Model: "m", RawRequestBody: raw(id)}},
+				"create over an owned typed field": {RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
+					Provider: schemas.OpenAI, Model: "m", RawRequestBody: raw(id),
+					Params: &schemas.ResponsesParameters{PreviousResponseID: new("resp_own")}}},
+				"input-token count": {RequestType: schemas.CountTokensRequest, CountTokensRequest: &schemas.BifrostResponsesRequest{
+					Provider: schemas.OpenAI, Model: "m", RawRequestBody: raw(id)}},
+				"compaction": {RequestType: schemas.CompactionRequest, CompactionRequest: &schemas.BifrostCompactionRequest{
+					Provider: schemas.OpenAI, Model: "m", RawRequestBody: raw(id)}},
+			}
+		}
+		for name, req := range requests("resp_other") {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "%s: another key's response is refused", name)
+			assert.Equal(t, 404, *shortCircuit.Error.StatusCode, name)
+			assert.Contains(t, shortCircuit.Error.Error.Message, "resp_other", name)
+		}
+		for name, req := range requests("resp_own") {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "%s: the creating key continues from its own response", name)
+		}
+		// Only the top-level field is the response a request continues from.
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "m",
+				RawRequestBody: []byte(`{"model":"m","input":"x","metadata":{"previous_response_id":"resp_other"}}`)}})
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "a metadata key of the same name is an annotation")
+	})
+
+	// Without a config store nothing is recorded: a lifecycle request cannot be checked and is
+	// refused like any other object addressed by id, while a request that only continues from a
+	// response is left open, like every other object a request names in passing.
+	t.Run("no config store", func(t *testing.T) {
+		bare := newAccessTestPlugin(t, buildVKForMCPStamping(nil), nil)
+		_, shortCircuit, err := bare.PreLLMHook(presentCtx(mcpTestVKValue), storedResponseRequests("resp_any")["retrieve"])
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit)
+		assert.Equal(t, 403, *shortCircuit.Error.StatusCode)
+		_, shortCircuit, err = bare.PreLLMHook(presentCtx(mcpTestVKValue), storedResponseRequests("resp_any")["previous_response_id"])
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit)
+	})
+}
+
+// A Responses create records the virtual key it ran under against the id of the response it
+// stored, whether the answer came whole or as a stream, and whether or not the ownership setting is
+// on. A response the provider did not store (store: false) has nothing to reach later and is not
+// recorded, a read of a response nobody recorded does not claim it, and a successful delete forgets
+// the response.
+func TestPostLLMHookRecordsStoredResponsesAndForgetsDeleted(t *testing.T) {
+	plugin, store := newProviderJobTestPlugin(t)
+	owner := func(id string) string {
+		rows, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindResponse, "openai", id)})
+		require.NoError(t, err)
+		if len(rows) == 0 {
+			return ""
+		}
+		assert.Equal(t, configstoreTables.ProviderObjectKindResponse, rows[0].Kind)
+		assert.Equal(t, "openai", rows[0].Provider)
+		assert.Equal(t, id, rows[0].ObjectID)
+		return rows[0].VirtualKeyID
+	}
+	create := func(requestType schemas.RequestType, params *schemas.ResponsesParameters) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: requestType, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "m", Params: params}}
+	}
+	extra := func(requestType schemas.RequestType) schemas.BifrostResponseExtraFields {
+		return schemas.BifrostResponseExtraFields{RequestType: requestType, Provider: schemas.OpenAI}
+	}
+	whole := func(id string, stored *bool) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{ID: new(id), Store: stored, ExtraFields: extra(schemas.ResponsesRequest)}}
+	}
+	chunk := func(eventType schemas.ResponsesStreamResponseType, id string, stored *bool) *schemas.BifrostResponse {
+		streamed := &schemas.BifrostResponsesStreamResponse{Type: eventType, ExtraFields: extra(schemas.ResponsesStreamRequest)}
+		if id != "" {
+			streamed.Response = &schemas.BifrostResponsesResponse{ID: new(id), Store: stored}
+		}
+		return &schemas.BifrostResponse{ResponsesStreamResponse: streamed}
+	}
+	run := func(t *testing.T, ctx *schemas.BifrostContext, req *schemas.BifrostRequest, results ...*schemas.BifrostResponse) {
+		t.Helper()
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		for _, result := range results {
+			_, _, err = plugin.PostLLMHook(ctx, result, nil)
+			require.NoError(t, err)
+		}
+	}
+
+	t.Run("create", func(t *testing.T) {
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, nil), whole("resp_whole", new(true)))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_whole"))
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, nil), whole("resp_no_echo", nil))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_no_echo"), "a response is stored unless store is false")
+	})
+	t.Run("background create", func(t *testing.T) {
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, &schemas.ResponsesParameters{Background: new(true)}), whole("resp_background", new(true)))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_background"))
+	})
+	t.Run("streamed create", func(t *testing.T) {
+		// The first event that names the response records it, before the stream has finished: a
+		// background stream can be dropped and the response read later.
+		ctx := presentCtx(mcpTestVKValue)
+		run(t, ctx, create(schemas.ResponsesStreamRequest, nil), chunk(schemas.ResponsesStreamResponseTypeCreated, "resp_stream", new(true)))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_stream"), "response.created records the response")
+		for _, result := range []*schemas.BifrostResponse{
+			chunk(schemas.ResponsesStreamResponseTypeInProgress, "resp_stream", new(true)),
+			chunk(schemas.ResponsesStreamResponseTypeOutputTextDelta, "", nil),
+			chunk(schemas.ResponsesStreamResponseTypeCompleted, "resp_stream", new(true)),
+		} {
+			_, _, err := plugin.PostLLMHook(ctx, result, nil)
+			require.NoError(t, err)
+		}
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_stream"))
+
+		// The row is written once for the whole stream, however many events name the response.
+		counting := &recordingObjectStore{ConfigStore: store}
+		plugin.configStore = counting
+		once := presentCtx(mcpTestVKValue)
+		run(t, once, create(schemas.ResponsesStreamRequest, nil),
+			chunk(schemas.ResponsesStreamResponseTypeCreated, "resp_stream_once", new(true)),
+			chunk(schemas.ResponsesStreamResponseTypeInProgress, "resp_stream_once", new(true)),
+			chunk(schemas.ResponsesStreamResponseTypeCompleted, "resp_stream_once", new(true)))
+		plugin.configStore = store
+		assert.Equal(t, 1, counting.upserts, "only the first event that names the response writes its row")
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_stream_once"))
+
+		// A stream whose first events name no response is recorded from the one that does.
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesStreamRequest, nil),
+			chunk(schemas.ResponsesStreamResponseTypeOutputTextDelta, "", nil),
+			chunk(schemas.ResponsesStreamResponseTypeCompleted, "resp_stream_late", new(true)))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_stream_late"), "response.completed records the response")
+	})
+	t.Run("not stored", func(t *testing.T) {
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, &schemas.ResponsesParameters{Store: new(false)}), whole("resp_unstored_echo", new(false)))
+		assert.Empty(t, owner("resp_unstored_echo"), "the provider says the response was not stored")
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, &schemas.ResponsesParameters{Store: new(false)}), whole("resp_unstored_request", nil))
+		assert.Empty(t, owner("resp_unstored_request"), "the request asked for the response not to be stored")
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesStreamRequest, &schemas.ResponsesParameters{Store: new(false)}),
+			chunk(schemas.ResponsesStreamResponseTypeCreated, "resp_unstored_stream", new(false)),
+			chunk(schemas.ResponsesStreamResponseTypeCompleted, "resp_unstored_stream", new(false)))
+		assert.Empty(t, owner("resp_unstored_stream"))
+	})
+	// extra_params are merged into the body that is sent, over the typed field. A request whose
+	// typed store is false can therefore still store its response, and that response is recorded.
+	t.Run("store turned back on in extra params", func(t *testing.T) {
+		params := &schemas.ResponsesParameters{Store: new(false), ExtraParams: map[string]any{"store": true}}
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, params), whole("resp_extra_stored", new(true)))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_extra_stored"))
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, params), whole("resp_extra_stored_no_echo", nil))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_extra_stored_no_echo"), "with no echo from the provider the response is taken as stored")
+		// A *bool is marshalled as the same true a plain bool gives.
+		pointer := &schemas.ResponsesParameters{Store: new(false), ExtraParams: map[string]any{"store": new(true)}}
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, pointer), whole("resp_extra_stored_pointer", nil))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_extra_stored_pointer"), "a store of true given as a pointer counts")
+		// Both places say false: nothing is stored and nothing is recorded.
+		off := &schemas.ResponsesParameters{Store: new(false), ExtraParams: map[string]any{"store": false}}
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, off), whole("resp_extra_unstored", nil))
+		assert.Empty(t, owner("resp_extra_unstored"))
+	})
+	// A Go SDK caller can hand over the body to send as raw bytes, and that body is what the
+	// provider stores by. A typed store of false does not speak for it: a raw body that says true,
+	// or says nothing (the provider's default is to store), still stores the response.
+	t.Run("store decided by a raw request body", func(t *testing.T) {
+		raw := func(body string) *schemas.BifrostRequest {
+			req := create(schemas.ResponsesRequest, &schemas.ResponsesParameters{Store: new(false)})
+			req.ResponsesRequest.RawRequestBody = []byte(body)
+			return req
+		}
+		run(t, presentCtx(mcpTestVKValue), raw(`{"model":"m","input":"x","store":true}`), whole("resp_raw_stored", nil))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_raw_stored"), "the raw body stores the response")
+		run(t, presentCtx(mcpTestVKValue), raw(`{"model":"m","input":"x"}`), whole("resp_raw_default", nil))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_raw_default"), "a raw body with no store is stored by default")
+		// The raw body agrees that nothing is stored.
+		run(t, presentCtx(mcpTestVKValue), raw(`{"model":"m","input":"x","store":false}`), whole("resp_raw_unstored", nil))
+		assert.Empty(t, owner("resp_raw_unstored"))
+	})
+	// The provider's own word is enough: a response it reports as not stored is not recorded even
+	// when the request said nothing about store.
+	t.Run("not stored, by the provider's report alone", func(t *testing.T) {
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, nil), whole("resp_provider_unstored", new(false)))
+		assert.Empty(t, owner("resp_provider_unstored"))
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesStreamRequest, nil),
+			chunk(schemas.ResponsesStreamResponseTypeCreated, "resp_provider_unstored_stream", new(false)),
+			chunk(schemas.ResponsesStreamResponseTypeCompleted, "resp_provider_unstored_stream", new(false)))
+		assert.Empty(t, owner("resp_provider_unstored_stream"))
+	})
+	t.Run("no key presented", func(t *testing.T) {
+		run(t, emptyCtx(), create(schemas.ResponsesRequest, nil), whole("resp_anonymous", new(true)))
+		assert.Empty(t, owner("resp_anonymous"), "an anonymous create binds to nobody")
+	})
+	t.Run("a read claims nothing", func(t *testing.T) {
+		requests := storedResponseRequests("resp_outside")
+		read := whole("resp_outside", new(true))
+		read.ResponsesResponse.ExtraFields = extra(schemas.ResponsesRetrieveRequest)
+		run(t, presentCtx(mcpTestVKValue), requests["retrieve"], read)
+		cancelled := whole("resp_outside", new(true))
+		cancelled.ResponsesResponse.ExtraFields = extra(schemas.ResponsesCancelRequest)
+		run(t, presentCtx(mcpTestVKValue), requests["cancel"], cancelled)
+		replay := chunk(schemas.ResponsesStreamResponseTypeCreated, "resp_outside", new(true))
+		replay.ResponsesStreamResponse.ExtraFields = extra(schemas.ResponsesRetrieveStreamRequest)
+		run(t, presentCtx(mcpTestVKValue), requests["retrieve stream"], replay)
+		assert.Empty(t, owner("resp_outside"), "a response created outside the gateway is not claimed by reading it")
+	})
+	// A create sent through the raw provider route stores a response too. It answers with the
+	// provider's own body, so the id is read from that body.
+	t.Run("passthrough create", func(t *testing.T) {
+		pass := func(requestType schemas.RequestType, method, path, body string) *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: requestType, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Method: method, Path: path, Body: []byte(body)}}
+		}
+		answer := func(requestType schemas.RequestType, status int, body string) *schemas.BifrostResponse {
+			return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{StatusCode: status, Body: []byte(body), ExtraFields: extra(requestType)}}
+		}
+		const createBody = `{"model":"gpt-4o-mini","input":"x"}`
+
+		run(t, presentCtx(mcpTestVKValue), pass(schemas.PassthroughRequest, "POST", "/v1/responses", createBody),
+			answer(schemas.PassthroughRequest, 200, `{"id":"resp_pass","object":"response","status":"completed","store":true}`))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_pass"))
+
+		// A streamed create is recorded from the first event that names the response.
+		run(t, presentCtx(mcpTestVKValue), pass(schemas.PassthroughStreamRequest, "POST", "/v1/responses", `{"model":"gpt-4o-mini","input":"x","stream":true}`),
+			answer(schemas.PassthroughStreamRequest, 200, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_pass_stream\",\"object\":\"response\",\"store\":true}}\n\n"),
+			answer(schemas.PassthroughStreamRequest, 200, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_pass_stream"))
+
+		// The stream is relayed in fixed-size reads, so the first event can arrive cut short. The
+		// id comes first in the response object and is read from what has arrived.
+		run(t, presentCtx(mcpTestVKValue), pass(schemas.PassthroughStreamRequest, "POST", "/v1/responses", `{"model":"gpt-4o-mini","input":"x","stream":true}`),
+			answer(schemas.PassthroughStreamRequest, 200, "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_pass_cut\",\"object\":\"response\",\"created_at\":1,\"instructions\":\"a long instruc"))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_pass_cut"))
+
+		// A cut event has not reached the store field yet, so the request's own store: false decides.
+		run(t, presentCtx(mcpTestVKValue), pass(schemas.PassthroughStreamRequest, "POST", "/v1/responses", `{"model":"gpt-4o-mini","input":"x","stream":true,"store":false}`),
+			answer(schemas.PassthroughStreamRequest, 200, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_pass_cut_unstored\",\"object\":\"response\",\"instructions\":\"a long instruc"))
+		assert.Empty(t, owner("resp_pass_cut_unstored"), "the request asked for the response not to be stored")
+
+		run(t, presentCtx(mcpTestVKValue), pass(schemas.PassthroughRequest, "POST", "/v1/responses", `{"model":"gpt-4o-mini","input":"x","store":false}`),
+			answer(schemas.PassthroughRequest, 200, `{"id":"resp_pass_unstored","object":"response","store":false}`))
+		assert.Empty(t, owner("resp_pass_unstored"), "a response the provider did not store is not recorded")
+
+		// The provider's report alone, with no store in the request body.
+		run(t, presentCtx(mcpTestVKValue), pass(schemas.PassthroughRequest, "POST", "/v1/responses", createBody),
+			answer(schemas.PassthroughRequest, 200, `{"id":"resp_pass_provider_unstored","object":"response","store":false}`))
+		assert.Empty(t, owner("resp_pass_provider_unstored"))
+
+		// A read can end right after "data: ", so the event's JSON opens the next read with no
+		// prefix of its own. The id is still found there.
+		run(t, presentCtx(mcpTestVKValue), pass(schemas.PassthroughStreamRequest, "POST", "/v1/responses", `{"model":"gpt-4o-mini","input":"x","stream":true}`),
+			answer(schemas.PassthroughStreamRequest, 200, "event: response.created\ndata: "),
+			answer(schemas.PassthroughStreamRequest, 200, "{\"type\":\"response.created\",\"response\":{\"id\":\"resp_pass_split\",\"object\":\"response\",\"store\":true}}\n\n"))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_pass_split"))
+
+		run(t, presentCtx(mcpTestVKValue), pass(schemas.PassthroughRequest, "POST", "/v1/responses", createBody),
+			answer(schemas.PassthroughRequest, 400, `{"error":{"message":"bad request"},"id":"resp_pass_failed"}`))
+		assert.Empty(t, owner("resp_pass_failed"), "a refused create stored nothing")
+
+		run(t, presentCtx(mcpTestVKValue), pass(schemas.PassthroughRequest, "GET", "/v1/responses/resp_pass_outside", ""),
+			answer(schemas.PassthroughRequest, 200, `{"id":"resp_pass_outside","object":"response","store":true}`))
+		assert.Empty(t, owner("resp_pass_outside"), "a read through the raw route claims nothing")
+
+		run(t, presentCtx(mcpTestVKValue), pass(schemas.PassthroughRequest, "POST", "/v1/responses/compact", createBody),
+			answer(schemas.PassthroughRequest, 200, `{"id":"resp_pass_compact","object":"response.compaction"}`))
+		assert.Empty(t, owner("resp_pass_compact"), "compaction is an operation, not a stored response")
+	})
+	// A write that fails leaves the response open to a later event of the same stream: the
+	// response is marked as recorded only once it is.
+	t.Run("a failed write is tried again on the next event", func(t *testing.T) {
+		flaky := &recordingObjectStore{ConfigStore: store, failUpserts: 2}
+		plugin.configStore = flaky
+		t.Cleanup(func() { plugin.configStore = store })
+		ctx := presentCtx(mcpTestVKValue)
+		run(t, ctx, create(schemas.ResponsesStreamRequest, nil), chunk(schemas.ResponsesStreamResponseTypeCreated, "resp_flaky", new(true)))
+		assert.Empty(t, owner("resp_flaky"), "both attempts of the first event failed")
+		assert.Equal(t, 2, flaky.upserts, "the first event wrote once and retried once")
+		_, _, err := plugin.PostLLMHook(ctx, chunk(schemas.ResponsesStreamResponseTypeCompleted, "resp_flaky", new(true)), nil)
+		require.NoError(t, err)
+		assert.Equal(t, 3, flaky.upserts, "the later event wrote once more")
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_flaky"), "the store recovered and a later event recorded the response")
+	})
+	t.Run("the first creator is kept", func(t *testing.T) {
+		seedProviderObject(t, store, configstoreTables.ProviderObjectKindResponse, "openai", "resp_taken", "vk-someone-else")
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, nil), whole("resp_taken", new(true)))
+		assert.Equal(t, "vk-someone-else", owner("resp_taken"))
+	})
+	t.Run("recorded while the setting is off", func(t *testing.T) {
+		enforced := false
+		plugin.objectOwnershipEnforcedFn = func() bool { return enforced }
+		t.Cleanup(func() { plugin.objectOwnershipEnforcedFn = nil })
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, nil), whole("resp_while_off", new(true)))
+		assert.Equal(t, "vk-mcp-stamp", owner("resp_while_off"))
+		run(t, presentCtx(mcpTestVKValue), create(schemas.ResponsesRequest, &schemas.ResponsesParameters{Store: new(false)}), whole("resp_unstored_while_off", nil))
+		assert.Empty(t, owner("resp_unstored_while_off"))
+	})
+
+	// The recorded response is refused to another key and reachable to its creator.
+	otherKey := buildVKForMCPStamping(nil)
+	otherKey.ID = "vk-other"
+	otherKey.Value = *schemas.NewSecretVar("sk-bf-other")
+	otherPlugin := newAccessTestPlugin(t, otherKey, nil)
+	otherPlugin.configStore = store
+	for name, req := range storedResponseRequests("resp_whole") {
+		_, shortCircuit, err := otherPlugin.PreLLMHook(presentCtx("sk-bf-other"), req)
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit, "%s: the recorded response is refused to another key", name)
+		assert.Equal(t, 404, *shortCircuit.Error.StatusCode, name)
+	}
+	_, shortCircuit, err := otherPlugin.PreLLMHook(presentCtx("sk-bf-other"), storedResponseRequests("resp_stream")["retrieve"])
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "the response recorded from a stream is refused to another key")
+
+	// A successful delete forgets the response; one the provider did not confirm keeps it.
+	deleted := func(id string, gone bool) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesDeleteResponse: &schemas.BifrostResponsesDeleteResponse{ID: id, Deleted: gone, ExtraFields: extra(schemas.ResponsesDeleteRequest)}}
+	}
+	run(t, presentCtx(mcpTestVKValue), storedResponseRequests("resp_whole")["delete"], deleted("resp_whole", false))
+	assert.Equal(t, "vk-mcp-stamp", owner("resp_whole"), "an unconfirmed delete keeps the row")
+	run(t, presentCtx(mcpTestVKValue), storedResponseRequests("resp_whole")["delete"], deleted("resp_whole", true))
+	assert.Empty(t, owner("resp_whole"), "a deleted response is forgotten")
 }

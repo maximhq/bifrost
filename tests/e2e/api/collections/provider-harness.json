@@ -330576,6 +330576,689 @@
       ]
     },
     {
+      "name": "Stored responses belong to the virtual key that created them (stored-response-owner)",
+      "description": "A Responses create stores the response at the provider under the operator's provider key, which every virtual key shares. Bifrost records the virtual key the create ran under, and only that key can retrieve the response or continue from it; another key is answered 404, as if the response did not exist. The folder creates two run-scoped virtual keys with OpenAI access. Key A creates a stored response (whole answer), reads it back (200), and key B is refused on retrieve (404) and on a new create that continues from it through previous_response_id (404). Key A then creates a second response as a stream; the id is read from the first event that names it, and key B is refused on retrieve (404), which shows a streamed create is recorded before the stream ends. Key A deletes both responses and the keys are removed. Needs client.enforce_vk_object_ownership on, which is the default. Small OpenAI spend: two short gpt-4o-mini responses.",
+      "item": [
+        {
+          "name": "setup: create run-scoped virtual key A with OpenAI access - stored-response-owner",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.collectionVariables.set('storedRespOwnerVkAId', '');",
+                  "pm.collectionVariables.set('storedRespOwnerVkAValue', '');",
+                  "pm.test('virtual key A created: HTTP 200 - stored-response-owner', function () { pm.expect(pm.response.code, 'failed: ' + text).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var vk = body.virtual_key || {};",
+                  "var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "pm.test('virtual key A has an id and a value - stored-response-owner', function () {",
+                  "  pm.expect(vk.id, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(value, text).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('storedRespOwnerVkAId', vk.id || '');",
+                  "pm.collectionVariables.set('storedRespOwnerVkAValue', value || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness-stored-response-owner-a-{{$timestamp}}\",\n  \"is_active\": true,\n  \"provider_configs\": [\n    {\n      \"provider\": \"openai\",\n      \"allowed_models\": [\n        \"*\"\n      ],\n      \"weight\": 1\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "setup: create run-scoped virtual key B with OpenAI access - stored-response-owner",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.collectionVariables.set('storedRespOwnerVkBId', '');",
+                  "pm.collectionVariables.set('storedRespOwnerVkBValue', '');",
+                  "pm.test('virtual key B created: HTTP 200 - stored-response-owner', function () { pm.expect(pm.response.code, 'failed: ' + text).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var vk = body.virtual_key || {};",
+                  "var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "pm.test('virtual key B has an id and a value - stored-response-owner', function () {",
+                  "  pm.expect(vk.id, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(value, text).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('storedRespOwnerVkBId', vk.id || '');",
+                  "pm.collectionVariables.set('storedRespOwnerVkBValue', value || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness-stored-response-owner-b-{{$timestamp}}\",\n  \"is_active\": true,\n  \"provider_configs\": [\n    {\n      \"provider\": \"openai\",\n      \"allowed_models\": [\n        \"*\"\n      ],\n      \"weight\": 1\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "openai responses create with key A stores a response - stored-response-owner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('storedRespOwnerRespId');",
+                  "var ready = pm.collectionVariables.get('storedRespOwnerVkAValue');",
+                  "pm.test('prerequisite storedRespOwnerVkAValue exists - stored-response-owner', function () { pm.expect(ready, 'an earlier step did not set storedRespOwnerVkAValue').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('create with key A exact response status - stored-response-owner', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the create returns a response id - stored-response-owner', function () {",
+                  "  var id = (pm.response.json() || {}).id;",
+                  "  pm.expect(id, 'failed: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('storedRespOwnerRespId', id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{storedRespOwnerVkAValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16,\n  \"store\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "openai responses retrieve with key A reads its own response - stored-response-owner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('storedRespOwnerRespId');",
+                  "pm.test('prerequisite storedRespOwnerRespId exists - stored-response-owner', function () { pm.expect(ready, 'an earlier step did not set storedRespOwnerRespId').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('retrieve with the creating key exact response status - stored-response-owner', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{storedRespOwnerVkAValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{storedRespOwnerRespId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{storedRespOwnerRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai responses retrieve with key B is refused - stored-response-owner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('storedRespOwnerRespId');",
+                  "pm.test('prerequisite storedRespOwnerRespId exists - stored-response-owner', function () { pm.expect(ready, 'an earlier step did not set storedRespOwnerRespId').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('retrieve with another key exact response status - stored-response-owner', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "});",
+                  "pm.test('retrieve with another key is refused as not found, naming the response - stored-response-owner', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{storedRespOwnerVkBValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{storedRespOwnerRespId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{storedRespOwnerRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai responses create with key B continuing from key A's response is refused - stored-response-owner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('storedRespOwnerRespId');",
+                  "pm.test('prerequisite storedRespOwnerRespId exists - stored-response-owner', function () { pm.expect(ready, 'an earlier step did not set storedRespOwnerRespId').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('previous_response_id with another key exact response status - stored-response-owner', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "});",
+                  "pm.test('previous_response_id with another key is refused as not found, naming the response - stored-response-owner', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{storedRespOwnerVkBValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Continue\",\n  \"max_output_tokens\": 16,\n  \"previous_response_id\": \"{{storedRespOwnerRespId}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "openai responses streamed create with key A stores a response - stored-response-owner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('storedRespOwnerStreamRespId');",
+                  "var ready = pm.collectionVariables.get('storedRespOwnerVkAValue');",
+                  "pm.test('prerequisite storedRespOwnerVkAValue exists - stored-response-owner', function () { pm.expect(ready, 'an earlier step did not set storedRespOwnerVkAValue').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed create with key A exact response status - stored-response-owner', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// The id is saved first, so the cleanup step still deletes the response when a later check fails.",
+                  "var streamText = pm.response.text();",
+                  "var streamId = streamText.match(/\"response\"\\s*:\\s*\\{\\s*\"id\"\\s*:\\s*\"([^\"]+)\"/);",
+                  "if (streamId) { pm.collectionVariables.set('storedRespOwnerStreamRespId', streamId[1]); }",
+                  "pm.test('the stream names the response it stored - stored-response-owner', function () {",
+                  "  pm.expect(streamId, 'failed: no response id in the stream: ' + streamText.slice(0, 400)).to.not.equal(null);",
+                  "});",
+                  "// An id in response.created is not a finished response: the stream must end on response.completed and carry no error.",
+                  "var streamEvents = [];",
+                  "var streamBad = 0;",
+                  "streamText.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { streamEvents.push(JSON.parse(data)); } catch (e) { streamBad += 1; }",
+                  "});",
+                  "pm.test('the streamed response finished without an error - stored-response-owner', function () {",
+                  "  var types = streamEvents.map(function (e) { return e && e.type; });",
+                  "  pm.expect(streamBad, streamBad + ' data line(s) were not valid JSON: ' + streamText.slice(0, 400)).to.equal(0);",
+                  "  pm.expect(types.filter(function (t) { return t === 'error' || t === 'response.failed' || t === 'response.incomplete'; }), 'failed: the stream reported a failure: ' + streamText.slice(-600)).to.have.lengthOf(0);",
+                  "  pm.expect(types, 'failed: no response.completed event: ' + streamText.slice(-600)).to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{storedRespOwnerVkAValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16,\n  \"store\": true,\n  \"stream\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai responses retrieve of the streamed response with key B is refused - stored-response-owner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('storedRespOwnerStreamRespId');",
+                  "pm.test('prerequisite storedRespOwnerStreamRespId exists - stored-response-owner', function () { pm.expect(ready, 'an earlier step did not set storedRespOwnerStreamRespId').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('retrieve of a streamed response with another key exact response status - stored-response-owner', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "});",
+                  "pm.test('retrieve of a streamed response with another key is refused as not found, naming the response - stored-response-owner', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{storedRespOwnerVkBValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{storedRespOwnerStreamRespId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{storedRespOwnerStreamRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "cleanup: openai responses delete with key A - stored-response-owner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('storedRespOwnerRespId');",
+                  "pm.test('prerequisite storedRespOwnerRespId exists - stored-response-owner', function () { pm.expect(ready, 'an earlier step did not set storedRespOwnerRespId').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete with the creating key exact response status - stored-response-owner', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{storedRespOwnerVkAValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{storedRespOwnerRespId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{storedRespOwnerRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "cleanup: openai responses delete of the streamed response with key A - stored-response-owner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('storedRespOwnerStreamRespId');",
+                  "pm.test('prerequisite storedRespOwnerStreamRespId exists - stored-response-owner', function () { pm.expect(ready, 'an earlier step did not set storedRespOwnerStreamRespId').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete of the streamed response with the creating key exact response status - stored-response-owner', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{storedRespOwnerVkAValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{storedRespOwnerStreamRespId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{storedRespOwnerStreamRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "cleanup: delete run-scoped openai virtual key A - stored-response-owner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('storedRespOwnerVkAId');",
+                  "pm.test('prerequisite storedRespOwnerVkAId exists - stored-response-owner', function () { pm.expect(ready, 'an earlier step did not set storedRespOwnerVkAId').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('virtual key A deleted: HTTP 200 - stored-response-owner', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{storedRespOwnerVkAId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{storedRespOwnerVkAId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cleanup: delete run-scoped openai virtual key B - stored-response-owner",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('storedRespOwnerVkBId');",
+                  "pm.test('prerequisite storedRespOwnerVkBId exists - stored-response-owner', function () { pm.expect(ready, 'an earlier step did not set storedRespOwnerVkBId').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('virtual key B deleted: HTTP 200 - stored-response-owner', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{storedRespOwnerVkBId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{storedRespOwnerVkBId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "350. Retrieved background responses restore custom tool calls (custom tools as functions)",
       "description": "A background response created with a custom tool is stored upstream with the function tool and function_call Bifrost rewrote it to, and GET /v1/responses/{id} has no prepared request carrying the rewritten names. Retrieve now rebuilds the names from the stored response tools (the input schema Bifrost generates) and restores the calls: plain retrieve rewrites the output, streaming retrieve learns the names from the first event that carries the response, turns output items back into custom_tool_call, drops argument deltas and sends function_call_arguments.done as custom_tool_call_input.done. 350.1 creates the response on openai/gpt-4o-mini (no custom tool row, so it is rewritten); 350.2-350.3 retrieve it plain and streamed; 350.4 deletes it. The /openai drop-in route is not pinned: with send_back_raw_response on (as in the harness profile) it forwards the raw OpenAI bytes, so the rewritten function_call reaches the client on that route by design.",
       "item": [
