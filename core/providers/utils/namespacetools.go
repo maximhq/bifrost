@@ -484,7 +484,7 @@ func realiasNamespacedFunctionCalls(input []schemas.ResponsesMessage, aliases ma
 
 // FlattenLoadedNamespaceTools flattens the namespaces a client tool search loaded, for a wire that takes the loaded
 // tools from the search's output and knows no namespace. Each output lists its members as functions under the names
-// FlattenResponsesNamespaceTools gives declared ones, function_call history uses the same names, and the aliases are
+// FlattenResponsesNamespaceTools gives declared ones, function_call history and tool_choice use the same names, and the aliases are
 // added to the request's, so the response is restored. A flat name that stands for another tool already is a 400, as
 // it is for declared namespaces. Copy-on-write; a request no search loaded a namespace for is returned as it is.
 func FlattenLoadedNamespaceTools(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
@@ -527,8 +527,37 @@ func FlattenLoadedNamespaceTools(ctx *schemas.BifrostContext, req *schemas.Bifro
 		}
 		maps.Copy(merged, aliases)
 		cp.NamespaceToolAliases = merged
+		if req.Params != nil && req.Params.ToolChoice != nil {
+			choice, bifrostErr := realiasLoadedToolChoice(req.Params, cp.Input, aliases)
+			if bifrostErr != nil {
+				return nil, bifrostErr
+			}
+			params := *req.Params
+			params.ToolChoice = choice
+			cp.Params = &params
+		}
 	}
 	return &cp, nil
+}
+
+// realiasLoadedToolChoice resolves a tool choice against the functions a search loaded under aliases, by the rules
+// for declared ones. input is the flattened one: a function it lists under a name of its own keeps that name.
+func realiasLoadedToolChoice(params *schemas.ResponsesParameters, input []schemas.ResponsesMessage, aliases map[string]schemas.NamespaceToolAlias) (*schemas.ResponsesToolChoice, *schemas.BifrostError) {
+	byFunction := make(map[string][]string, len(aliases))
+	for alias, target := range aliases {
+		byFunction[target.Name] = append(byFunction[target.Name], alias)
+	}
+	tools := slices.Clone(params.Tools)
+	for i := range input {
+		msg := &input[i]
+		if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeToolSearchOutput || !msg.IsClientToolSearchItem() {
+			continue
+		}
+		for _, name := range msg.ToolSearchOutputToolNames() {
+			tools = append(tools, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: &name})
+		}
+	}
+	return realiasToolChoice(params.ToolChoice, tools, byFunction, aliases)
 }
 
 func loadedNameClash(name string) *schemas.BifrostError {

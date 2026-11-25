@@ -309,6 +309,40 @@ func TestPrepareResponsesRequest_FlattensNamespacesASearchLoaded(t *testing.T) {
 	plain := request(`[{"type":"function","name":"plain"}]`)
 	assert.Nil(t, prepare(plain).NamespaceToolAliases)
 
+	// A choice names a loaded function as the caller knows it, and follows its flat name.
+	const other = `{"type":"namespace","name":"bank","tools":[{"type":"function","name":"convert_currency"}]}`
+	for name, tc := range map[string]struct {
+		loaded, choice, want string
+		refused              bool
+	}{
+		"forced":                      {`[` + fx + `]`, `{"type":"function","name":"convert_currency"}`, "fx__convert_currency", false},
+		"allowed":                     {`[` + fx + `]`, `{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"convert_currency"}]}`, "fx__convert_currency", false},
+		"already flat":                {`[` + fx + `]`, `{"type":"function","name":"fx__convert_currency"}`, "fx__convert_currency", false},
+		"unknown":                     {`[` + fx + `]`, `{"type":"function","name":"other"}`, "other", false},
+		"a loaded top-level function": {`[` + fx + `,{"type":"function","name":"convert_currency"}]`, `{"type":"function","name":"convert_currency"}`, "convert_currency", false},
+		"a default namespace member":  {`[` + fx + `,{"type":"namespace","name":"functions","tools":[{"type":"function","name":"convert_currency"}]}]`, `{"type":"function","name":"convert_currency"}`, "convert_currency", false},
+		"the same tool loaded twice":  {`[` + fx + `,` + fx + `]`, `{"type":"function","name":"convert_currency"}`, "fx__convert_currency", false},
+		"in two namespaces":           {`[` + fx + `,` + other + `]`, `{"type":"function","name":"convert_currency"}`, "", true},
+	} {
+		req := request(tc.loaded)
+		var choice schemas.ResponsesToolChoice
+		require.NoError(t, schemas.Unmarshal([]byte(tc.choice), &choice), name)
+		req.Params.ToolChoice = &choice
+		out, bifrostErr := prepareResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, req)
+		if tc.refused {
+			require.NotNil(t, bifrostErr, name)
+			assert.Contains(t, bifrostErr.Error.Message, "ambiguous", name)
+			continue
+		}
+		require.Nil(t, bifrostErr, name)
+		got, err := schemas.Marshal(out.Params.ToolChoice)
+		require.NoError(t, err)
+		assert.Contains(t, string(got), `"name":"`+tc.want+`"`, name)
+		kept, err := schemas.Marshal(req.Params.ToolChoice)
+		require.NoError(t, err)
+		assert.JSONEq(t, tc.choice, string(kept), name+": the caller's choice is not modified")
+	}
+
 	// A flat name that already stands for another tool is refused: the model's call could not be told apart.
 	named := func(name string) schemas.ResponsesTool {
 		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: &name, ResponsesToolFunction: &schemas.ResponsesToolFunction{}}
