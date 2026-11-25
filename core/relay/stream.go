@@ -28,7 +28,8 @@ type Stream struct {
 	reader  io.Reader // body behind the idle-timeout guard
 	stop    func()    // stops the idle-timeout guard
 	start   time.Time
-	counted bool // billable route and a 2xx reply
+	counted bool          // billable route and a 2xx reply
+	limits  relayTimeouts // the relay's timeouts, for a timeout error
 
 	framer       *providerUtils.SSEFramer // nil when the reply is not observed per event
 	runes        *providerUtils.RuneCounter
@@ -64,6 +65,7 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 		ctx:        ctx,
 		body:       resp.Body,
 		start:      start,
+		limits:     e.timeouts(),
 		counted:    billable && resp.StatusCode >= 200 && resp.StatusCode < 300,
 		finish:     finish,
 	}
@@ -313,7 +315,7 @@ func (s *Stream) complete(readErr error) {
 				Error:          &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled), Message: schemas.ErrRequestCancelled, Error: readErr},
 			}
 		default:
-			bifrostErr = transportError(readErr, time.Since(s.start))
+			bifrostErr = transportError(readErr, time.Since(s.start), s.limits)
 		}
 		s.finish(resp, bifrostErr)
 	})

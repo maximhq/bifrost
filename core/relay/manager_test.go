@@ -560,6 +560,8 @@ func TestServeStreamOpenIsBoundedByTimeout(t *testing.T) {
 	assert.Less(t, time.Since(begin), 5*time.Second, "the wait for the headers is bounded by timeout_seconds")
 	require.NotNil(t, bErr.Error.Type)
 	assert.Equal(t, schemas.RequestTimedOut, *bErr.Error.Type)
+	assert.Equal(t, `the upstream did not answer within 1 second; raise timeout_seconds in relay "slow"'s network settings`, bErr.Error.Message,
+		"the message names the relay's own timeout, not the provider network config")
 }
 
 func TestServeStreamBilledBySizeOnEarlyClose(t *testing.T) {
@@ -774,6 +776,7 @@ func TestServeStreamIdleTimeoutIsATimeout(t *testing.T) {
 	require.NotNil(t, pipeline.postErr[0])
 	require.NotNil(t, pipeline.postErr[0].Error.Type)
 	assert.Equal(t, schemas.RequestTimedOut, *pipeline.postErr[0].Error.Type)
+	assert.Equal(t, `the upstream sent nothing for 1 second; raise stream_idle_timeout_in_seconds in relay "slow"'s network settings`, pipeline.postErr[0].Error.Message)
 }
 
 func TestServeJobRouteHandsBackJob(t *testing.T) {

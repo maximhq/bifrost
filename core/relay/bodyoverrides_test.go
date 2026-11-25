@@ -38,6 +38,15 @@ func TestApplyBodyOverrides(t *testing.T) {
 		{name: "created for an empty POST", overrides: usage, body: ``, want: `{"include_usage":true}`, wantCreated: true},
 		{name: "created for a whitespace PUT", overrides: usage, method: "PUT", body: " \n", want: `{"include_usage":true}`, wantCreated: true},
 		{name: "an empty GET stays empty", overrides: usage, method: "GET", body: ``, want: ``},
+		{name: "a whitespace GET is forwarded as is", overrides: usage, method: "GET", body: " \t\r\n", want: " \t\r\n"},
+		{name: "a non-breaking space is not an empty body", overrides: usage, body: "\u00a0", wantErr: "must be a JSON object"},
+		{name: "spaces around a non-breaking space", overrides: usage, body: " \u00a0 \n", wantErr: "must be a JSON object"},
+		{name: "a form feed is not JSON whitespace", overrides: usage, body: "\f", wantErr: "must be a JSON object"},
+		{name: "a vertical tab is not JSON whitespace", overrides: usage, body: "\v", wantErr: "must be a JSON object"},
+		{name: "a line separator is not JSON whitespace", overrides: usage, body: "\u2028", wantErr: "must be a JSON object"},
+		{name: "an ideographic space is not JSON whitespace", overrides: usage, body: "\u3000", wantErr: "must be a JSON object"},
+		{name: "a GET of a non-breaking space is refused like any non-JSON body", overrides: usage, method: "GET", body: "\u00a0", wantErr: "must be a JSON object"},
+		{name: "a byte order mark is still refused", overrides: usage, body: "\ufeff{}", wantErr: "must be a JSON object"},
 		{name: "an empty DELETE stays empty", overrides: usage, method: "DELETE", body: ``, want: ``},
 		{name: "a DELETE with a JSON body is set", overrides: usage, method: "DELETE", body: `{"id":1}`, want: `{"id":1,"include_usage":true}`},
 		{name: "nested parent created", overrides: map[string]string{"options.depth": `"advanced"`}, body: `{"query":"x"}`, want: `{"query":"x","options":{"depth":"advanced"}}`},
@@ -157,4 +166,6 @@ func TestApplyBodyOverridesNeedsAJSONBody(t *testing.T) {
 	_, created, err := applyBodyOverrides(overrides, "POST", "application/x-www-form-urlencoded", nil)
 	require.NoError(t, err, "an empty body is created as JSON whatever the caller labelled it")
 	assert.True(t, created)
+	_, _, err = applyBodyOverrides(overrides, "POST", "application/x-www-form-urlencoded", []byte("\u00a0"))
+	require.ErrorContains(t, err, "sent as Content-Type: application/json", "a non-breaking space is a body, not an empty one")
 }

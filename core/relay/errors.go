@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"strings"
@@ -76,7 +77,7 @@ func stripQueryParam(raw, param, value string) string {
 }
 
 // transportError maps a failure to reach the upstream onto the error the caller sees.
-func transportError(err error, latency time.Duration) *schemas.BifrostError {
+func transportError(err error, latency time.Duration, limits relayTimeouts) *schemas.BifrostError {
 	err = redactTransportError(err)
 	var netErr net.Error
 	switch {
@@ -87,9 +88,31 @@ func transportError(err error, latency time.Duration) *schemas.BifrostError {
 	// A stream that goes quiet past the idle timeout is a timeout, as largeResponseReadError
 	// classifies the same stall on an LLM reply; the sentinel is a plain error, not a net.Error.
 	case errors.Is(err, providerUtils.ErrStreamIdleTimeout), errors.As(err, &netErr) && netErr.Timeout(), errors.Is(err, context.DeadlineExceeded):
-		return providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
+		return providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(limits.message(err), err), latency)
 	}
 	// Any other failure to reach the upstream is a connection failure, as on the LLM path: 502
 	// with provider_connection_failed, not an internal error.
 	return providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
+}
+
+// relayTimeouts are a relay's own timeouts, so a timeout error names the setting that fired rather
+// than the provider network config, which relays do not use.
+type relayTimeouts struct {
+	relay         string
+	wholeSeconds  int // timeout_seconds: a buffered reply's whole response
+	streamSeconds int // stream_idle_timeout_in_seconds: silence between stream chunks
+}
+
+func (t relayTimeouts) message(err error) string {
+	if errors.Is(err, providerUtils.ErrStreamIdleTimeout) {
+		return fmt.Sprintf("the upstream sent nothing for %s; raise stream_idle_timeout_in_seconds in relay %q's network settings", seconds(t.streamSeconds), t.relay)
+	}
+	return fmt.Sprintf("the upstream did not answer within %s; raise timeout_seconds in relay %q's network settings", seconds(t.wholeSeconds), t.relay)
+}
+
+func seconds(n int) string {
+	if n == 1 {
+		return "1 second"
+	}
+	return fmt.Sprintf("%d seconds", n)
 }
