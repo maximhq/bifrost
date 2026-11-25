@@ -5088,6 +5088,7 @@ func (provider *VertexProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	var servedModel string
+	var responseID string
 	var providerJob *schemas.BifrostPassthroughJob
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		switch PassthroughWireFormat(req.Path) {
@@ -5097,6 +5098,7 @@ func (provider *VertexProvider) Passthrough(
 			passthroughUsage = openai.ExtractOAIChatUsage(body)
 		case schemas.OpenAI:
 			passthroughUsage = openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
+			responseID = openai.ExtractOpenAIPassthroughResponseID(req.Method, req.Path, body)
 		default:
 			if gemini.IsInteractionsPassthroughPath(req.Path) {
 				passthroughUsage, servedModel, providerJob = gemini.InteractionsPassthroughResult(req, body)
@@ -5118,6 +5120,7 @@ func (provider *VertexProvider) Passthrough(
 		},
 		PassthroughUsage: passthroughUsage,
 		ServedModel:      servedModel,
+		ResponseID:       responseID,
 		ProviderJob:      providerJob,
 	}
 
@@ -5289,10 +5292,9 @@ func (provider *VertexProvider) PassthroughStream(
 			return openai.ExtractOAIChatUsage(event)
 		}
 	case schemas.OpenAI:
-		hasUsage = openai.HasOpenAIPassthroughUsage
-		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
-			return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
-		}
+		observer := openai.NewOpenAIPassthroughStreamObserver(req.Method, req.Path, req.Body)
+		observe, finalize = observer.Observe, observer.Finalize
+		hasUsage = observer.HasInfo
 	default:
 		if gemini.IsInteractionsPassthroughPath(req.Path) {
 			observer := gemini.NewInteractionsStreamObserver(req)

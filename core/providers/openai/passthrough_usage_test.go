@@ -439,3 +439,151 @@ func BenchmarkEndsOpenAIPassthroughStream(b *testing.B) {
 		})
 	}
 }
+
+func TestExtractOpenAIPassthroughResponseID(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		want   string
+	}{
+		{"chat unary", "POST", "/v1/chat/completions", `{"id":"chatcmpl-unary-1","object":"chat.completion","choices":[]}`, "chatcmpl-unary-1"},
+		{"chat stream chunk", "POST", "/v1/chat/completions", `{"id":"chatcmpl-stream-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}`, "chatcmpl-stream-1"},
+		{"text completion", "POST", "/v1/completions", `{"id":"cmpl-1","object":"text_completion","choices":[]}`, "cmpl-1"},
+		{"responses unary", "POST", "/v1/responses", `{"id":"resp_unary_1","object":"response","output":[]}`, "resp_unary_1"},
+		{"responses stream created", "POST", "/backend-api/codex/responses", `{"type":"response.created","response":{"id":"resp_stream_1","object":"response"}}`, "resp_stream_1"},
+		{"responses stream completed", "POST", "/v1/responses", `{"type":"response.completed","response":{"id":"resp_stream_1","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`, "resp_stream_1"},
+		// An item event's top-level id names the item, not the response.
+		{"responses stream item event", "POST", "/v1/responses", `{"type":"response.output_item.added","id":"evt_1","item":{"id":"msg_1"}}`, ""},
+		{"embeddings carry no response id", "POST", "/v1/embeddings", `{"id":"ignored","data":[]}`, ""},
+		{"GET is not a generation", "GET", "/v1/chat/completions", `{"id":"chatcmpl-1"}`, ""},
+		{"empty body", "POST", "/v1/responses", ``, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := openai.ExtractOpenAIPassthroughResponseID(tc.method, tc.path, []byte(tc.body)); got != tc.want {
+				t.Fatalf("ExtractOpenAIPassthroughResponseID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// observePassthroughStream feeds events through the observer the way StreamPassthrough does: an
+// event reaches Observe only when the gate passes it, and the last non-nil usage is kept.
+func observePassthroughStream(o *openai.OpenAIPassthroughStreamObserver, events []string) (*schemas.BifrostPassthroughResponse, int) {
+	final := &schemas.BifrostPassthroughResponse{}
+	observed := 0
+	for _, event := range events {
+		if !o.HasInfo([]byte(event)) {
+			continue
+		}
+		observed++
+		if usage := o.Observe([]byte(event)); usage != nil {
+			final.PassthroughUsage = usage
+		}
+	}
+	o.Finalize(final)
+	return final, observed
+}
+
+func TestOpenAIPassthroughStreamObserver(t *testing.T) {
+	t.Run("responses stream names the response and reports usage", func(t *testing.T) {
+		final, observed := observePassthroughStream(
+			openai.NewOpenAIPassthroughStreamObserver("POST", "/backend-api/codex/responses", nil),
+			[]string{
+				`{"type":"response.created","response":{"id":"resp_1","object":"response"}}`,
+				`{"type":"response.output_text.delta","delta":"hi"}`,
+				`{"type":"response.output_text.delta","delta":" there"}`,
+				`{"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`,
+			},
+		)
+		if final.ResponseID != "resp_1" {
+			t.Fatalf("ResponseID = %q, want resp_1", final.ResponseID)
+		}
+		if final.PassthroughUsage == nil || final.PassthroughUsage.LLMUsage == nil || final.PassthroughUsage.LLMUsage.TotalTokens != 15 {
+			t.Fatalf("usage = %+v, want total 15", final.PassthroughUsage)
+		}
+		// The ID is on the first event, so the deltas are skipped by the gate as before.
+		if observed != 2 {
+			t.Fatalf("observed %d events, want 2 (created and completed)", observed)
+		}
+	})
+
+	t.Run("chat stream without a usage frame still names the response", func(t *testing.T) {
+		final, _ := observePassthroughStream(
+			openai.NewOpenAIPassthroughStreamObserver("POST", "/v1/chat/completions", nil),
+			[]string{
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}`,
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			},
+		)
+		if final.ResponseID != "chatcmpl-1" {
+			t.Fatalf("ResponseID = %q, want chatcmpl-1", final.ResponseID)
+		}
+		if final.PassthroughUsage != nil {
+			t.Fatalf("usage = %+v, want none", final.PassthroughUsage)
+		}
+	})
+
+	t.Run("a stream that never names a response stops being probed", func(t *testing.T) {
+		events := make([]string, 0, 40)
+		for range 40 {
+			events = append(events, `{"type":"response.output_text.delta","delta":"x"}`)
+		}
+		final, observed := observePassthroughStream(
+			openai.NewOpenAIPassthroughStreamObserver("POST", "/v1/responses", nil), events,
+		)
+		if final.ResponseID != "" {
+			t.Fatalf("ResponseID = %q, want empty", final.ResponseID)
+		}
+		if observed != 8 {
+			t.Fatalf("observed %d events, want the 8 leading probes only", observed)
+		}
+	})
+
+	t.Run("routes with no response id are never probed", func(t *testing.T) {
+		_, observed := observePassthroughStream(
+			openai.NewOpenAIPassthroughStreamObserver("POST", "/v1/images/generations", nil),
+			[]string{`{"type":"image_generation.partial_image","b64_json":"AAAA"}`, `{"type":"image_generation.partial_image","b64_json":"BBBB"}`},
+		)
+		if observed != 0 {
+			t.Fatalf("observed %d events, want 0", observed)
+		}
+	})
+}
+
+// BenchmarkOpenAIPassthroughStreamObserver measures the per-stream cost of following a Responses
+// passthrough stream of 200 events for usage ("before": the gate and extractor the provider used
+// directly) against following it for usage and the response ID ("after": the observer).
+func BenchmarkOpenAIPassthroughStreamObserver(b *testing.B) {
+	events := make([][]byte, 0, 200)
+	events = append(events, []byte(`{"type":"response.created","response":{"id":"resp_1","object":"response"}}`))
+	for range 198 {
+		events = append(events, []byte(`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"token "}`))
+	}
+	events = append(events, []byte(`{"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":16466,"output_tokens":45,"total_tokens":16511}}}`))
+	const method, path = "POST", "/backend-api/codex/responses"
+
+	b.Run("before", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			for _, event := range events {
+				if openai.HasOpenAIPassthroughUsage(event) {
+					_ = openai.ExtractOpenAIPassthroughUsage(method, path, nil, event)
+				}
+			}
+		}
+	})
+	b.Run("after", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			o := openai.NewOpenAIPassthroughStreamObserver(method, path, nil)
+			for _, event := range events {
+				if o.HasInfo(event) {
+					_ = o.Observe(event)
+				}
+			}
+			o.Finalize(&schemas.BifrostPassthroughResponse{})
+		}
+	})
+}

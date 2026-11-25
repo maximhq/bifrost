@@ -208,6 +208,7 @@ type BifrostPassthroughResponse struct {
 	Path             string                   // stripped provider path, e.g. "/v1/chat/completions"
 	PassthroughUsage *BifrostPassthroughUsage // usage extracted by the provider for billing — set on the unary response (non-streaming) or the final streaming chunk; nil when no billable usage could be extracted
 	ServedModel      string                   // model or agent the upstream reports running, for requests that named none (an Interactions poll)
+	ResponseID       string                   // response identifier the upstream put on the response (a chat completion ID or a Responses ID), read by the provider without decoding the body; empty when the provider reads none
 	ProviderJob      *BifrostPassthroughJob   // provider-side run the response reports on; its usage is billed at settlement, not on this request
 }
 

@@ -430,6 +430,7 @@ func migrationClickHouseLogsTable(ctx context.Context, db *gorm.DB, cluster stri
 			"INDEX idx_logs_user_id user_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_logs_selected_key_id selected_key_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_logs_agent_correlation_id agent_correlation_id TYPE bloom_filter GRANULARITY 1",
+			"INDEX idx_logs_provider_response_id provider_response_id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_logs_id id TYPE bloom_filter GRANULARITY 1",
 			"INDEX idx_logs_parent_request_id parent_request_id TYPE bloom_filter GRANULARITY 1",
 		},

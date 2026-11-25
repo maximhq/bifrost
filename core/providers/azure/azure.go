@@ -3800,8 +3800,10 @@ func (provider *AzureProvider) Passthrough(
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
+	var responseID string
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, providerUtils.PassthroughUsageRequestBody(req), body, req.Model)
+		responseID = extractAzurePassthroughResponseID(req.Method, req.Path, body, req.Model)
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -3814,6 +3816,7 @@ func (provider *AzureProvider) Passthrough(
 			PassthroughPath:         req.Path,
 		},
 		PassthroughUsage: passthroughUsage,
+		ResponseID:       responseID,
 	}
 
 	return bifrostResponse, nil
@@ -3899,10 +3902,14 @@ func (provider *AzureProvider) PassthroughStream(
 		return nil, providerUtils.NewBifrostOperationError("provider returned an empty stream body", fmt.Errorf("provider returned an empty stream body"))
 	}
 
-	usageRequestBody := providerUtils.PassthroughUsageRequestBody(req)
+	// An OpenAI-shaped stream is followed by the OpenAI observer, for usage and the ID of the
+	// response it carries. An Azure-hosted Anthropic model streams Messages events instead.
 	var anthropicUsage *anthropic.AnthropicPassthroughStreamUsage
+	var openaiObserver *openai.OpenAIPassthroughStreamObserver
 	if schemas.IsAnthropicModelFamily(ctx, req.Model) {
 		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{RequestBody: req.Body}
+	} else {
+		openaiObserver = openai.NewOpenAIPassthroughStreamObserver(req.Method, req.Path, providerUtils.PassthroughUsageRequestBody(req))
 	}
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, rawBodyStream,
@@ -3918,13 +3925,18 @@ func (provider *AzureProvider) PassthroughStream(
 				if anthropicUsage != nil {
 					return anthropic.HasAnthropicPassthroughUsage(event)
 				}
-				return openai.HasOpenAIPassthroughUsage(event)
+				return openaiObserver.HasInfo(event)
 			},
 			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
 				if anthropicUsage != nil {
 					return anthropicUsage.ObserveEvent(event)
 				}
-				return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, usageRequestBody, event)
+				return openaiObserver.Observe(event)
+			},
+			Finalize: func(final *schemas.BifrostPassthroughResponse) {
+				if openaiObserver != nil {
+					openaiObserver.Finalize(final)
+				}
 			},
 		},
 	), nil
@@ -3984,4 +3996,14 @@ func extractAzurePassthroughUsage(method, path string, reqBody, body []byte, mod
 		return anthropic.ExtractAnthropicPassthroughUsage(path, reqBody, body)
 	}
 	return openai.ExtractOpenAIPassthroughUsage(method, path, reqBody, body)
+}
+
+// extractAzurePassthroughResponseID names the response a non-streaming passthrough body carries,
+// for the OpenAI-shaped routes. An Azure-hosted Anthropic model answers in the Messages shape,
+// which the OpenAI reader does not cover, so it names none.
+func extractAzurePassthroughResponseID(method, path string, body []byte, model string) string {
+	if schemas.IsAnthropicModel(model) {
+		return ""
+	}
+	return openai.ExtractOpenAIPassthroughResponseID(method, path, body)
 }

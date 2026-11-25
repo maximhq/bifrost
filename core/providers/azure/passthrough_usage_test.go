@@ -52,3 +52,26 @@ func TestExtractAzurePassthroughUsage(t *testing.T) {
 		})
 	}
 }
+
+// TestExtractAzurePassthroughResponseID verifies the response ID is read for OpenAI-shaped routes,
+// including the classic deployments path, and that an Azure-hosted Anthropic model names none:
+// its Messages body is not a shape the OpenAI reader covers.
+func TestExtractAzurePassthroughResponseID(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		path  string
+		body  string
+		model string
+		want  string
+	}{
+		{"chat on a deployment path", "/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21", `{"id":"chatcmpl-azure-1","choices":[]}`, "gpt-4o", "chatcmpl-azure-1"},
+		{"responses", "/openai/v1/responses", `{"id":"resp_azure_1","object":"response","output":[]}`, "gpt-4o", "resp_azure_1"},
+		{"anthropic model", "/v1/messages", `{"id":"msg_azure_1","type":"message"}`, "claude-sonnet-4-5", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractAzurePassthroughResponseID("POST", tc.path, []byte(tc.body), tc.model); got != tc.want {
+				t.Fatalf("extractAzurePassthroughResponseID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
