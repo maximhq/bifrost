@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	codemcp "github.com/maximhq/bifrost/core/mcp"
@@ -92,66 +93,44 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	// Find matching client
-	var matchedClientName string
 	var matchedTools []schemas.ChatTool
-	matchCount := 0
-
-	for clientName, tools := range availableToolsPerClient {
-		client := s.clientManager.GetClientByName(clientName)
-		if client == nil {
-			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
-			continue
+	matchedClientName, candidates := s.matchCodeModeServer(ctx, availableToolsPerClient, serverName)
+	if len(candidates) > 1 {
+		errorMsg := fmt.Sprintf("Multiple servers match filename '%s':\n", fileName)
+		for _, name := range candidates {
+			errorMsg += fmt.Sprintf("  - %s\n", name)
 		}
-		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
-			continue
-		}
+		errorMsg += "\nPlease use a more specific filename. Use the exact display name from listToolFiles to avoid ambiguity."
+		return createToolResponseMessage(toolCall, errorMsg, true), nil
+	}
+	if matchedClientName != "" {
+		clientName, tools := matchedClientName, availableToolsPerClient[matchedClientName]
+		if isToolLevel {
+			// Tool-level: filter to specific tool
+			var foundTool *schemas.ChatTool
+			if i := findToolReference(tools, toolName, clientName); i >= 0 {
+				foundTool = &tools[i]
+			}
 
-		clientNameLower := strings.ToLower(clientName)
-		serverNameLower := strings.ToLower(serverName)
-
-		if clientNameLower == serverNameLower {
-			matchCount++
-			if matchCount > 1 {
-				// Multiple matches found
-				errorMsg := fmt.Sprintf("Multiple servers match filename '%s':\n", fileName)
-				for name := range availableToolsPerClient {
-					if strings.ToLower(name) == serverNameLower {
-						errorMsg += fmt.Sprintf("  - %s\n", name)
+			if foundTool == nil {
+				names := callableChatToolNames(clientName, tools)
+				availableTools := make([]string, 0)
+				for _, tool := range tools {
+					if tool.Function != nil {
+						availableTools = append(availableTools, names[tool.Function.Name])
 					}
 				}
-				errorMsg += "\nPlease use a more specific filename. Use the exact display name from listToolFiles to avoid ambiguity."
+				errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools in this server are:\n", toolName, clientName)
+				for _, t := range availableTools {
+					errorMsg += fmt.Sprintf("  - servers/%s/%s.pyi\n", clientName, t)
+				}
 				return createToolResponseMessage(toolCall, errorMsg, true), nil
 			}
 
-			matchedClientName = clientName
-
-			if isToolLevel {
-				// Tool-level: filter to specific tool
-				var foundTool *schemas.ChatTool
-				if i := findToolReference(tools, toolName, clientName); i >= 0 {
-					foundTool = &tools[i]
-				}
-
-				if foundTool == nil {
-					names := callableChatToolNames(clientName, tools)
-					availableTools := make([]string, 0)
-					for _, tool := range tools {
-						if tool.Function != nil {
-							availableTools = append(availableTools, names[tool.Function.Name])
-						}
-					}
-					errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools in this server are:\n", toolName, clientName)
-					for _, t := range availableTools {
-						errorMsg += fmt.Sprintf("  - servers/%s/%s.pyi\n", clientName, t)
-					}
-					return createToolResponseMessage(toolCall, errorMsg, true), nil
-				}
-
-				matchedTools = []schemas.ChatTool{*foundTool}
-			} else {
-				// Server-level: use all tools
-				matchedTools = tools
-			}
+			matchedTools = []schemas.ChatTool{*foundTool}
+		} else {
+			// Server-level: use all tools
+			matchedTools = tools
 		}
 	}
 
@@ -242,6 +221,35 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	}
 
 	return createToolResponseMessage(toolCall, fileContent, false), nil
+}
+
+// matchCodeModeServer finds the code mode server a file path or getToolDocs
+// call names. Client names may differ only by case (crm and CRM), so a name
+// that matches one exactly wins, as it does in listToolFiles(query=...).
+// Otherwise it matches case-insensitively, and candidates lists every match
+// when that is ambiguous, in which case match is empty.
+func (s *StarlarkCodeMode) matchCodeModeServer(ctx context.Context, toolsPerClient map[string][]schemas.ChatTool, serverName string) (match string, candidates []string) {
+	for clientName, tools := range toolsPerClient {
+		client := s.clientManager.GetClientByName(clientName)
+		if client == nil {
+			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
+			continue
+		}
+		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
+			continue
+		}
+		if clientName == serverName {
+			return clientName, nil
+		}
+		if strings.EqualFold(clientName, serverName) {
+			candidates = append(candidates, clientName)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	sort.Strings(candidates)
+	return "", candidates
 }
 
 // parseVFSFilePath parses a VFS file path and extracts the server name and optional tool name.

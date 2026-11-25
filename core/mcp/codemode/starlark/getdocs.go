@@ -67,29 +67,20 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	// Find matching client
-	var matchedClientName string
 	var matchedTool *schemas.ChatTool
-
-	serverNameLower := strings.ToLower(serverName)
-	for clientName, tools := range availableToolsPerClient {
-		client := s.clientManager.GetClientByName(clientName)
-		if client == nil {
-			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
-			continue
+	matchedClientName, candidates := s.matchCodeModeServer(ctx, availableToolsPerClient, serverName)
+	if len(candidates) > 1 {
+		errorMsg := fmt.Sprintf("Multiple servers match '%s':\n", serverName)
+		for _, name := range candidates {
+			errorMsg += fmt.Sprintf("  - %s\n", name)
 		}
-		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
-			continue
-		}
-
-		clientNameLower := strings.ToLower(clientName)
-		if clientNameLower == serverNameLower {
-			matchedClientName = clientName
-
-			// Find the specific tool
-			if i := findToolReference(tools, toolName, clientName); i >= 0 {
-				matchedTool = &tools[i]
-			}
-			break
+		errorMsg += "\nUse the exact server name from listToolFiles."
+		return createToolResponseMessage(toolCall, errorMsg, true), nil
+	}
+	if matchedClientName != "" {
+		tools := availableToolsPerClient[matchedClientName]
+		if i := findToolReference(tools, toolName, matchedClientName); i >= 0 {
+			matchedTool = &tools[i]
 		}
 	}
 

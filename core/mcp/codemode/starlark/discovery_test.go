@@ -672,6 +672,40 @@ func TestExactRawIdentifierBindsItsOwnTool(t *testing.T) {
 	}
 }
 
+// Servers whose names differ only by case: the path or server name discovery
+// returns reads that exact server's file and docs, not an ambiguity error or
+// whichever server map iteration reaches first.
+func TestCaseDistinctServersReadExactServer(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	for _, name := range []string{"crm", "CRM"} {
+		manager.clients[name] = &schemas.MCPClientState{Name: name, ExecutionConfig: &schemas.MCPClientConfig{ID: name + "-id", Name: name, IsCodeModeClient: true}}
+	}
+	manager.tools["crm"] = []schemas.ChatTool{discoveryTestTool("crm-lookup", "Fetch a user by email", "email")}
+	manager.tools["CRM"] = []schemas.ChatTool{discoveryTestTool("CRM-lookup", "Look up a user record", "id")}
+	for server, description := range map[string]string{"crm": "Fetch a user by email", "CRM": "Look up a user record"} {
+		paths := shortlistPaths(listToolFiles(t, mode, fmt.Sprintf(`{"query":"servers/%s/lookup.pyi"}`, server)))
+		if len(paths) != 1 || paths[0] != "servers/"+server+"/lookup.pyi" {
+			t.Fatalf("discovery for %s returned %v", server, paths)
+		}
+		for range 20 {
+			if stub := readFileContent(t, mode, paths[0]); !strings.Contains(stub, description) {
+				t.Fatalf("readToolFile(%s) did not read %s's tool:\n%s", paths[0], server, stub)
+			}
+			if doc := getToolDocsContent(t, mode, server, "lookup"); !strings.Contains(doc, description) {
+				t.Fatalf("getToolDocs(%s, lookup) did not document %s's tool:\n%s", server, server, doc)
+			}
+		}
+	}
+	// A name that matches neither exactly is still ambiguous.
+	if stub := readFileContent(t, mode, "servers/Crm/lookup.pyi"); !strings.Contains(stub, "Multiple servers match") {
+		t.Fatalf("readToolFile(servers/Crm/lookup.pyi) was not reported as ambiguous:\n%s", stub)
+	}
+	if doc := getToolDocsContent(t, mode, "Crm", "lookup"); !strings.Contains(doc, "Multiple servers match") {
+		t.Fatalf("getToolDocs(Crm, lookup) was not reported as ambiguous:\n%s", doc)
+	}
+}
+
 func readFileContent(t *testing.T, mode *StarlarkCodeMode, fileName string) string {
 	t.Helper()
 	msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
