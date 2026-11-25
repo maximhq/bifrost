@@ -1102,6 +1102,64 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Sse(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_MCPClientConfig_ClientCredentialsTransports: client_credentials is a
+// shared credential, so SSE takes it like HTTP; a STDIO subprocess has nothing to send it to.
+func TestValidateConfigSchema_MCPClientConfig_ClientCredentialsTransports(t *testing.T) {
+	client := func(transport string) string {
+		target := `"connection_string": "https://mcp.example.com/mcp"`
+		if transport == "stdio" {
+			target = `"stdio_config": {"command": "npx", "args": []}`
+		}
+		return `{"mcp": {"client_configs": [{"name": "cc", "connection_type": "` + transport + `", ` + target +
+			`, "auth_type": "client_credentials", "client_credentials": {"client_id": "svc", "client_secret": "env.CC_SECRET"}}]}}`
+	}
+	for _, transport := range []string{"http", "sse"} {
+		if err := ValidateConfigSchema([]byte(client(transport)), loadLocalSchema(t)); err != nil {
+			t.Errorf("expected client_credentials on %s to pass validation, got error: %v", transport, err)
+		}
+	}
+	if err := ValidateConfigSchema([]byte(client("stdio")), loadLocalSchema(t)); err == nil {
+		t.Error("expected client_credentials on stdio to fail validation")
+	}
+}
+
+// TestValidateConfigSchema_MCPClientConfig_ClientCredentialsBlock: the schema refuses what
+// MCPClientCredentialsConfig.Validate refuses: no credential or both, auth_method without a
+// secret, and key_id, signing_algorithm or assertion_audience without a private key. Empty
+// optional settings stay valid.
+func TestValidateConfigSchema_MCPClientConfig_ClientCredentialsBlock(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		block string
+		valid bool
+	}{
+		{"secret only", `"client_id": "svc", "client_secret": "s"`, true},
+		{"key only", `"client_id": "svc", "private_key": "pem"`, true},
+		{"no credential", `"client_id": "svc"`, false},
+		{"both credentials", `"client_id": "svc", "client_secret": "s", "private_key": "pem"`, false},
+		{"secret with auth_method", `"client_id": "svc", "client_secret": "s", "auth_method": "client_secret_post"`, true},
+		{"key with signing_algorithm and key_id", `"client_id": "svc", "private_key": "pem", "signing_algorithm": "ES256", "key_id": "k1"`, true},
+		{"secret with an empty signing_algorithm", `"client_id": "svc", "client_secret": "s", "signing_algorithm": ""`, true},
+		{"key with an empty auth_method", `"client_id": "svc", "private_key": "pem", "auth_method": ""`, true},
+		{"secret with signing_algorithm", `"client_id": "svc", "client_secret": "s", "signing_algorithm": "RS256"`, false},
+		{"secret with key_id", `"client_id": "svc", "client_secret": "s", "key_id": "k1"`, false},
+		{"secret with assertion_audience", `"client_id": "svc", "client_secret": "s", "assertion_audience": "https://as.example.com"`, false},
+		{"key with auth_method", `"client_id": "svc", "private_key": "pem", "auth_method": "client_secret_post"`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := `{"mcp": {"client_configs": [{"name": "cc", "connection_type": "http", "connection_string": "https://mcp.example.com/mcp", ` +
+				`"auth_type": "client_credentials", "client_credentials": {` + tc.block + `}}]}}`
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tc.valid && err != nil {
+				t.Errorf("expected valid, got error: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Error("expected a validation error")
+			}
+		})
+	}
+}
+
 // TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument: oauth_config takes the
 // use_client_metadata_document toggle, and it reaches the client's pending OAuth config.
 func TestValidateConfigSchema_MCPClientOAuthUseClientMetadataDocument(t *testing.T) {

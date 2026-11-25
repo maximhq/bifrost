@@ -23,6 +23,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/maximhq/bifrost/core/mcp/credstore"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -143,6 +144,24 @@ func TestAcquireClientConn_DropsTheDiscoveryOfACallerWhoMustSignInAgain(t *testi
 // caller to sign in again, a refreshed token is used at once, and anything
 // else surfaces the upstream's rejection. A credential with nothing to refresh
 // is not dialed again.
+// TestRefreshesOnConnectRejection: a per-call connection rejected with 401 is
+// refreshed and redialed only for auth types with a credential a refresh can
+// replace, client_credentials included (a new token is minted).
+func TestRefreshesOnConnectRejection(t *testing.T) {
+	store := credstore.NewCredStore(nil, nil, nil)
+	for authType, want := range map[schemas.MCPAuthType]bool{
+		schemas.MCPAuthTypeOauth:             true,
+		schemas.MCPAuthTypePerUserOauth:      true,
+		schemas.MCPAuthTypeTokenExchange:     true,
+		schemas.MCPAuthTypeClientCredentials: true,
+		schemas.MCPAuthTypeHeaders:           false,
+		schemas.MCPAuthTypePerUserHeaders:    false,
+	} {
+		config := &schemas.MCPClientConfig{AuthType: authType, ConnectionType: schemas.MCPConnectionTypeHTTP}
+		assert.Equal(t, want, refreshesOnConnectRejection(store, config), "auth type %s", authType)
+	}
+}
+
 func TestAcquireClientConn_ATokenTheUpstreamRejectsIsRefreshedOnce(t *testing.T) {
 	grantEnded := func(tokens map[string]string, identity string) error {
 		delete(tokens, identity)

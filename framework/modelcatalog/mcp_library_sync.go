@@ -355,7 +355,7 @@ func ValidateMCPLibraryEntry(connectionType schemas.MCPConnectionType, connectio
 	switch authType {
 	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeOauth,
 		schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypePerUserHeaders,
-		schemas.MCPAuthTypeTokenExchange:
+		schemas.MCPAuthTypeTokenExchange, schemas.MCPAuthTypeClientCredentials:
 		return nil
 	default:
 		return errors.New("invalid auth_type")

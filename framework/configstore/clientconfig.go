@@ -2498,6 +2498,17 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		hash.Write(data)
 	}
 
+	// Same for the client_credentials block.
+	if m.ClientCredentialsJSON != nil && *m.ClientCredentialsJSON != "" {
+		hash.Write([]byte(*m.ClientCredentialsJSON))
+	} else if m.ClientCredentials != nil {
+		data, err := json.Marshal(m.ClientCredentials)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash openapi_config so a changed spec, upstream, credential set or option
 	// in config.json drifts the hash and triggers reconciliation. The spec is
 	// hashed by content (or by its file reference when the content was not

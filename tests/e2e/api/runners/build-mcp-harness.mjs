@@ -43,7 +43,7 @@ const ADM05 = folder("ADM-05 Create rejects a bad body, connection_type and auth
     })),
   request("ADM-05", "auth_type \"bogus\" is rejected", "POST", "/api/mcp/client", {
     body: clientBody({ name: "adm05_client", auth_type: "bogus" }),
-    asserts: [A.status(400), A.msgEquals("Invalid auth_type \"bogus\": must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange")],
+    asserts: [A.status(400), A.msgEquals("Invalid auth_type \"bogus\": must be one of none, headers, oauth, per_user_oauth, per_user_headers, token_exchange, client_credentials")],
   }),
   request("ADM-05", "no client was added", "GET", "/api/mcp/clients", {
     asserts: [A.status(200), A.custom("total_count is unchanged", [
@@ -12121,6 +12121,62 @@ const AUTH64 = folder("AUTH-64 One caller's code cannot finish another caller's 
   restoreConfig("AUTH-64"),
 ]);
 
+// ================================================================ AUTH-66 OAuth client credentials
+
+// AUTH-66: OAuth client credentials (MCP OAuth Client Credentials extension). The mock's authorization server knows C1
+// (secret S1) and K1 (an EC P-256 public key; AUTH66_KEY is its test-only private half).
+const AUTH66_KEY = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgyx0jlWdhbygG4oJv\nTT/0av7h+1sxqiXkf+ozz+RClxihRANCAAR7n0nv5s5a0YsfiFMjQ++qBtl+dkwa\n3810rpmAag8thuSDXY2ttYJikwX1Qh67tTiOJBhGF9feGDNalClC+zfP\n-----END PRIVATE KEY-----\n";
+const AUTH66_PUB = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEe59J7+bOWtGLH4hTI0PvqgbZfnZM\nGt/NdK6ZgGoPLYbkg12NrbWCYpMF9UIeu7U4jiQYRhfX3hgzWpQpQvs3zw==\n-----END PUBLIC KEY-----\n";
+const ccBody = (clientId, name, server, cc) => httpClient(clientId, name, server, { auth_type: "client_credentials", client_credentials: cc, tools_to_execute: ["*"] });
+// ccTokens checks clientId's client_credentials token requests sent with clientAuth: at least one, each 200, each
+// with resource the mock path resourcePath ("" for none).
+const ccTokens = (clientId, clientAuth, resourcePath) => A.custom(`${clientId}'s ${clientAuth} token requests succeeded, resource ${resourcePath === "" ? "omitted" : resourcePath}`, [
+  `var want = ${resourcePath === "" ? "''" : `pm.variables.get('chaos_url') + ${lit(resourcePath)}`};`,
+  `var r = pm.response.json().oauth.log.filter(function (e) { return e.endpoint === 'token' && e.grant_type === 'client_credentials' && e.client_id === ${lit(clientId)} && e.client_auth === ${lit(clientAuth)}; });`,
+  "pm.expect(r.length, 'log: ' + JSON.stringify(r)).to.be.at.least(1);",
+  "r.forEach(function (e) { pm.expect(e.status, JSON.stringify(e)).to.equal(200); pm.expect(e.resource || '', JSON.stringify(e)).to.equal(want); });",
+]);
+const saveCCTokens = (id, server, p) => mockGet(id, server, `setup: record ${server}'s client_credentials token count`, [], [
+  `pm.collectionVariables.set('${p}_cc', pm.response.json().oauth.counters.token_client_credentials);`,
+]);
+const AUTH66 = folder("AUTH-66 OAuth client credentials", `Setup: ${ALLOWLIST_TEXT}; fleet servers auth66 and auth66n (echo_tool, add_tool) as OAuth protected resources. auth66's authorization server accepts the client_credentials grant (private_key_jwt with ES256/RS256 advertised) and knows C1 (secret S1) and K1 (an EC P-256 public key); auth66n's knows C1 but does not offer the grant. Clients with auth_type client_credentials and no token_url are created on them.`, [
+  ...allowlistOn("AUTH-66"),
+  ...asServer("AUTH-66", "auth66", { client_credentials: true, clients: [{ client_id: "C1", client_secret: "S1" }, { client_id: "K1", public_key_pem: AUTH66_PUB }] }),
+  ...asServer("AUTH-66", "auth66n", { clients: [{ client_id: "C1", client_secret: "S1" }] }),
+  createExpect("AUTH-66", "create with a client secret: the token endpoint is discovered and one token is requested", ccBody("auth66-s", "auth66s", "auth66", { client_id: "C1", client_secret: "S1" }), [A.status(200)]),
+  getClient("AUTH-66", "auth66-s", "the discovered token endpoint is stored, Basic was chosen, and the secret is masked", [A.custom("token_url, auth_method and a masked client_secret", [
+    "var cc = pm.response.json().clients[0].config.client_credentials;",
+    "pm.expect(cc.token_url, 'body: ' + pm.response.text()).to.equal(pm.variables.get('chaos_url') + '/s/auth66/as/token');",
+    "pm.expect(cc.auth_method).to.equal('client_secret_basic');",
+    "pm.expect(cc.client_secret.value).to.not.equal('S1');",
+  ])]),
+  execTool("AUTH-66", "execute auth66s-echo_tool", "auth66s-echo_tool", [A.status(200)]),
+  mockGet("AUTH-66", "auth66", "the call ran as C1, on a token minted with HTTP Basic for the MCP server's resource", [identityCalls("C1", 1), ccTokens("C1", "client_secret_basic", "/s/auth66/mcp")]),
+  saveCCTokens("AUTH-66", "auth66", "auth66a"),
+  mockPost("AUTH-66", "auth66", "oauth/expire", "setup: expire C1's access token, which Bifrost still believes is good", { identity: "C1" }),
+  execTool("AUTH-66", "execute after the upstream rejects the cached token", "auth66s-echo_tool", [A.status(200)]),
+  mockGet("AUTH-66", "auth66", "a new token was minted for the rejected one", [A.custom("token_client_credentials grew", [
+    "pm.expect(pm.response.json().oauth.counters.token_client_credentials, 'body: ' + pm.response.text()).to.be.above(Number(pm.collectionVariables.get('auth66a_cc')));",
+  ])]),
+  clientPut("AUTH-66", "an update that drops token_url keeps a masked secret only if resent", "auth66-s", { client_credentials: { client_id: "C1", client_secret: "<redacted>" } }, [A.status(400), A.msgContains("must be resent explicitly")]),
+  clientPut("AUTH-66", "an update with the same token endpoint keeps the masked secret", "auth66-s", { client_credentials: { token_url: `${CHAOS}/s/auth66/as/token`, client_id: "C1", client_secret: "<redacted>", auth_method: "client_secret_basic" } }, [A.status(200)]),
+  execTool("AUTH-66", "execute after the update", "auth66s-echo_tool", [A.status(200)]),
+  createExpect("AUTH-66", "create with auth_method client_secret_post", ccBody("auth66-p", "auth66p", "auth66", { client_id: "C1", client_secret: "S1", auth_method: "client_secret_post", resource: "" }), [A.status(200)]),
+  execTool("AUTH-66", "execute auth66p-echo_tool", "auth66p-echo_tool", [A.status(200)]),
+  mockGet("AUTH-66", "auth66", "client_secret_post sends the secret in the body, and an empty resource is not sent", [ccTokens("C1", "client_secret_post", "")]),
+  createExpect("AUTH-66", "create with a private key: ES256 is chosen from the P-256 key", ccBody("auth66-k", "auth66k", "auth66", { client_id: "K1", private_key: AUTH66_KEY }), [A.status(200)]),
+  getClient("AUTH-66", "auth66-k", "signing_algorithm ES256 was stored", [A.custom("signing_algorithm is ES256", [
+    "pm.expect(pm.response.json().clients[0].config.client_credentials.signing_algorithm, 'body: ' + pm.response.text()).to.equal('ES256');",
+  ])]),
+  execTool("AUTH-66", "execute auth66k-echo_tool", "auth66k-echo_tool", [A.status(200)]),
+  mockGet("AUTH-66", "auth66", "the call ran as K1, authenticated with a verified private_key_jwt assertion", [identityCalls("K1", 1), ccTokens("K1", "private_key_jwt", "/s/auth66/mcp")]),
+  request("AUTH-66", "a secret the authorization server refuses fails the create", "POST", "/api/mcp/client", { body: ccBody("auth66-w", "auth66w", "auth66", { client_id: "C1", client_secret: "wrong" }), asserts: [A.status(400), A.msgContains("the token endpoint refused the client credentials: invalid_client")] }),
+  request("AUTH-66", "an authorization server that does not offer the grant fails the create", "POST", "/api/mcp/client", { body: ccBody("auth66-n", "auth66n", "auth66n", { client_id: "C1", client_secret: "S1" }), asserts: [A.status(400), A.msgContains("does not advertise the client_credentials grant")] }),
+  mockGet("AUTH-66", "auth66n", "no token was requested from the server without the grant", [oauthCountsAre({ token_client_credentials: 0 })]),
+  deleteClient("AUTH-66", "auth66-s"), deleteClient("AUTH-66", "auth66-p"), deleteClient("AUTH-66", "auth66-k"),
+  restoreConfig("AUTH-66"),
+]);
+
 // ================================================================ PUD on 2026-07-28, upstream failures, Bifrost tokens and injected tools
 
 // waitAcked polls driven clients, 250ms apart for up to 10s each, until each has its subscriptions/acknowledged.
@@ -13731,7 +13787,7 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM02, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM15, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM26, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM61, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83, ADM84, ADM85, ADM86, ADM87, ADM88]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH04, AUTH05, AUTH06, AUTH07, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH13, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH37, AUTH38, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH47, AUTH48, AUTH49, AUTH50, AUTH51, AUTH52, AUTH53, AUTH54, AUTH55, AUTH56, AUTH57, AUTH58, AUTH59, AUTH60, AUTH61, AUTH62, AUTH63, AUTH64, AUTH65, AUTH66]),
     section("CONN Connection types", "Connection type tests.", [CONN01, CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN08, CONN09, CONN10, CONN11, CONN12, CONN17, CONN18, CONN19, CONN20, CONN21, CONN22, GO18, CONN23, CONN24, CONN25, CONN27, CONN28, CONN29, GO34, GO36]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46, OAS47]),

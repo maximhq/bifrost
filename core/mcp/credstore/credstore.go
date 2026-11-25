@@ -46,12 +46,13 @@ type CredStore struct {
 func NewCredStore(oauth2Provider schemas.OAuth2Provider, headersProvider schemas.MCPHeadersProvider, logger schemas.Logger) *CredStore {
 	return &CredStore{
 		resolvers: map[schemas.MCPAuthType]resolver{
-			schemas.MCPAuthTypeNone:           &noneResolver{},
-			schemas.MCPAuthTypeHeaders:        &sharedHeadersResolver{},
-			schemas.MCPAuthTypeOauth:          &sharedOAuthResolver{provider: oauth2Provider},
-			schemas.MCPAuthTypePerUserOauth:   &perUserOAuthResolver{provider: oauth2Provider},
-			schemas.MCPAuthTypePerUserHeaders: &perUserHeadersResolver{provider: headersProvider},
-			schemas.MCPAuthTypeTokenExchange:  &tokenExchangeResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypeNone:              &noneResolver{},
+			schemas.MCPAuthTypeHeaders:           &sharedHeadersResolver{},
+			schemas.MCPAuthTypeOauth:             &sharedOAuthResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypePerUserOauth:      &perUserOAuthResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypePerUserHeaders:    &perUserHeadersResolver{provider: headersProvider},
+			schemas.MCPAuthTypeTokenExchange:     &tokenExchangeResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypeClientCredentials: &clientCredentialsResolver{provider: oauth2Provider},
 		},
 		logger: logger,
 	}

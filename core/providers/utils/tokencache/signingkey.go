@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -70,3 +71,31 @@ func KeyMatchesSigningAlgorithm(key crypto.PrivateKey, alg, field string) error 
 	}
 	return nil
 }
+
+// DefaultSigningAlgorithm picks the algorithm to sign with key when none is set. An EC
+// key gets the one ES algorithm defined for its curve. An RSA key gets the first RS* or
+// PS* algorithm in advertised (an authorization server's
+// token_endpoint_auth_signing_alg_values_supported), else RS256.
+func DefaultSigningAlgorithm(key crypto.PrivateKey, advertised []string) (string, error) {
+	switch k := key.(type) {
+	case *ecdsa.PrivateKey:
+		curve := k.Curve.Params().Name
+		for alg, c := range ecAlgorithmCurves {
+			if c == curve {
+				return alg, nil
+			}
+		}
+		return "", fmt.Errorf("private_key is on curve %s, which no supported algorithm signs with", curve)
+	case *rsa.PrivateKey:
+		for _, alg := range advertised {
+			if (strings.HasPrefix(alg, "RS") || strings.HasPrefix(alg, "PS")) && slices.Contains(rsaSigningAlgorithms, alg) {
+				return alg, nil
+			}
+		}
+		return "RS256", nil
+	}
+	return "", fmt.Errorf("private_key must be an RSA or EC key")
+}
+
+// rsaSigningAlgorithms lists the supported algorithms an RSA key signs with.
+var rsaSigningAlgorithms = []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512"}
