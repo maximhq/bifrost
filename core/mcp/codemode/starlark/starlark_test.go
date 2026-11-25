@@ -2487,10 +2487,16 @@ func (m *mediaClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, 
 
 func mediaMode(t testing.TB, result *mcp.CallToolResult) (*StarlarkCodeMode, *mediaClientManager) {
 	t.Helper()
+	return mediaModeFunc(t, func() *mcp.CallToolResult { return result })
+}
+
+// mediaModeFunc is mediaMode with a result per call, for tests that tell nested calls apart.
+func mediaModeFunc(t testing.TB, next func() *mcp.CallToolResult) (*StarlarkCodeMode, *mediaClientManager) {
+	t.Helper()
 	const clientName, toolName = "shots", "capture"
 	srv := server.NewMCPServer("media-test", "1.0.0", server.WithToolCapabilities(true))
 	srv.AddTool(mcp.NewTool(toolName), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return result, nil
+		return next(), nil
 	})
 	conn, err := client.NewInProcessClient(srv)
 	if err != nil {
@@ -2607,7 +2613,16 @@ func TestExecuteToolCodeForwardsNestedImages(t *testing.T) {
 	if strings.Contains(text, pngData) || strings.Contains(text, wavData) {
 		t.Fatal("encoded media leaked into the text projection")
 	}
-	if !strings.Contains(text, "Return value: ") || !strings.Contains(text, imageName) || !strings.Contains(text, audioName) {
+	returned := text
+	if at := strings.Index(returned, "Return value: "); at >= 0 {
+		returned = returned[at:]
+	} else {
+		t.Fatalf("reply has no return value: %s", text)
+	}
+	if end := strings.Index(returned, "\nAttached media:"); end >= 0 {
+		returned = returned[:end]
+	}
+	if !strings.Contains(returned, imageName) || !strings.Contains(returned, audioName) {
 		t.Fatalf("script value lost its media placeholders: %s", text)
 	}
 	if !strings.Contains(text, "Attached media: "+imageName+" "+audioName) {
@@ -2958,6 +2973,63 @@ func TestExecuteToolCodeWithholdsNestedErrorMedia(t *testing.T) {
 	}
 }
 
+// Eligibility is fixed before post-hooks: a hook that clears the error flags on both the
+// message and the native result can recover the text, but not the failed call's media.
+func TestExecuteToolCodeWithholdsNestedErrorMediaAfterHookClearsNativeFlag(t *testing.T) {
+	mode, manager := mediaMode(t, &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{
+			mcp.NewTextContent("camera offline"),
+			mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"},
+		},
+	})
+	manager.postHook = func(resp *schemas.BifrostMCPResponse) {
+		native := forwardedResult(resp.ChatMessage)
+		if native == nil || !native.IsError {
+			t.Fatal("nested native result lost its error flag before post-hooks")
+		}
+		resp.ChatMessage.IsError = schemas.Ptr(false)
+		native.IsError = false
+	}
+	msg := runMediaCode(t, mode, "result = shots.capture()")
+	if native := forwardedResult(msg); native != nil {
+		t.Fatalf("media from an upstream error was forwarded after a hook cleared its flags: %#v", native)
+	}
+	if text := mediaResponseText(t, msg); !strings.Contains(text, "camera offline") || strings.Contains(text, "Attached media") {
+		t.Fatalf("recovered text changed: %s", text)
+	}
+}
+
+// Media the projection could not name stays withheld when a post-hook clears the structured
+// value but leaves the text alone.
+func TestExecuteToolCodeWithholdsUnnamedMediaAfterHookClearsStructuredContent(t *testing.T) {
+	for name, structured := range map[string]any{
+		"non-object": []any{"a"},
+		"key taken":  map[string]any{"_media": "server value"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mode, manager := mediaMode(t, &mcp.CallToolResult{
+				Content:           []mcp.Content{mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"}},
+				StructuredContent: structured,
+			})
+			manager.postHook = func(resp *schemas.BifrostMCPResponse) {
+				native := forwardedResult(resp.ChatMessage)
+				if native == nil {
+					t.Fatal("nested native result was not registered before post-hooks")
+				}
+				native.StructuredContent = nil
+			}
+			msg := runMediaCode(t, mode, "result = shots.capture()")
+			if native := forwardedResult(msg); native != nil {
+				t.Fatalf("media the projection never named was forwarded: %#v", native)
+			}
+			if text := mediaResponseText(t, msg); !strings.Contains(text, "Note: 1 media block(s) from nested tool results were not attached") {
+				t.Fatalf("withheld media was not reported: %s", text)
+			}
+		})
+	}
+}
+
 func TestExecuteToolCodeBoundsForwardedMedia(t *testing.T) {
 	const blockLimit = 20
 	for _, multipleCalls := range []bool{false, true} {
@@ -3025,21 +3097,28 @@ func TestExecuteToolCodeBoundsForwardedMediaBytes(t *testing.T) {
 }
 
 func TestExecuteToolCodeForwardsMediaFromMultipleNestedCalls(t *testing.T) {
-	mode, _ := mediaMode(t, &mcp.CallToolResult{Content: []mcp.Content{
-		mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"},
-		&mcp.AudioContent{Type: "audio", Data: wavData, MIMEType: "audio/wav"},
-	}})
+	calls := []struct{ image, audio string }{{"Zmlyc3QtaW1hZ2U=", "Zmlyc3QtYXVkaW8="}, {"c2Vjb25kLWltYWdl", "c2Vjb25kLWF1ZGlv"}}
+	call := 0
+	mode, _ := mediaModeFunc(t, func() *mcp.CallToolResult {
+		payload := calls[call%len(calls)]
+		call++
+		return &mcp.CallToolResult{Content: []mcp.Content{
+			mcp.ImageContent{Type: "image", Data: payload.image, MIMEType: "image/png"},
+			&mcp.AudioContent{Type: "audio", Data: payload.audio, MIMEType: "audio/wav"},
+		}}
+	})
 	msg := runMediaCode(t, mode, "result = [shots.capture(), shots.capture()]")
 	native := forwardedResult(msg)
 	if native == nil || len(native.Content) != 5 {
 		t.Fatalf("forwarded %#v, want text plus both calls' image/audio blocks", native)
 	}
-	for _, index := range []int{1, 3} {
-		if image, ok := native.Content[index].(mcp.ImageContent); !ok || image.Data != pngData {
-			t.Fatalf("image block %d = %#v", index, native.Content[index])
+	for i, payload := range calls {
+		index := 1 + 2*i
+		if image, ok := native.Content[index].(mcp.ImageContent); !ok || image.Data != payload.image {
+			t.Fatalf("image block %d = %#v, want call %d's image", index, native.Content[index], i+1)
 		}
-		if audio, ok := native.Content[index+1].(mcp.AudioContent); !ok || audio.Data != wavData {
-			t.Fatalf("audio block %d = %#v", index+1, native.Content[index+1])
+		if audio, ok := native.Content[index+1].(mcp.AudioContent); !ok || audio.Data != payload.audio {
+			t.Fatalf("audio block %d = %#v, want call %d's audio", index+1, native.Content[index+1], i+1)
 		}
 	}
 }

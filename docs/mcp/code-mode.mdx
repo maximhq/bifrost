@@ -702,7 +702,7 @@ A nested tool call hands the script a value, not text:
 
 | The server returns | The script receives |
 |--------------------|---------------------|
-| `structuredContent` | That object, as a dict. The text blocks beside it are ignored; image/audio blocks are named by placeholders under `_media` when the object does not already use that key |
+| `structuredContent` | The decoded structured value: an object becomes a dict, and an array or scalar becomes a list or scalar. The text blocks beside it are ignored. Image/audio blocks are named by placeholders under `_media` only when the value is an object that does not already use that key; otherwise they are withheld (see below) |
 | One text block holding JSON | The decoded dict, list or scalar |
 | Several text blocks, each holding JSON | A list with one element per block |
 | JSON wrapped in a JSON string (`"{\"a\": 1}"`) | The decoded object or array. A wrapped scalar such as `"123"` stays a str |

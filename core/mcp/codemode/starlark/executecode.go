@@ -40,10 +40,12 @@ type mediaCollector struct {
 	bytes    int
 	dropped  int
 	withheld int
-	// pending is the media the current nested call's placeholders named before post-hooks.
-	// It lives here rather than in a local the pipeline closure assigns, so callMCPTool
-	// allocates nothing extra outside the gateway.
-	pending []mcp.Content
+	// pending is the media the current nested call's placeholders named before post-hooks,
+	// and pendingWithheld the media its projection could not name. They live here rather
+	// than in locals the pipeline closure assigns, so callMCPTool allocates nothing extra
+	// outside the gateway.
+	pending         []mcp.Content
+	pendingWithheld int
 }
 
 // mediaBlock normalizes image/audio blocks and returns their kind and encoded data.
@@ -87,12 +89,30 @@ func namedMedia(result *mcp.CallToolResult) []mcp.Content {
 	return named
 }
 
-// collect adds the pending media of a successful nested result, read after post-hooks, while
-// the post-hook content and native result still match it. Media beside structuredContent the
-// script's view cannot name it under is counted as withheld, so the reply can say it existed.
+// stage records, before post-hooks run, the media the script's view of a nested result
+// names. Eligibility is fixed here: a post-hook cannot make media from an upstream error,
+// or media the projection could not name, eligible by clearing a flag or the structured value.
+func (c *mediaCollector) stage(result *mcp.CallToolResult) {
+	c.pending, c.pendingWithheld = nil, 0
+	if result == nil || result.IsError {
+		return
+	}
+	named := namedMedia(result)
+	if result.StructuredContent != nil {
+		if _, ok := structuredMediaObject(result); !ok {
+			c.pendingWithheld = len(named)
+			return
+		}
+	}
+	c.pending = named
+}
+
+// collect adds the staged media of a successful nested result, read after post-hooks, while
+// the post-hook content and native result still match it. Media the script's view could not
+// name is counted as withheld, so the reply can say it existed.
 func (c *mediaCollector) collect(msg *schemas.ChatMessage) {
-	named := c.pending
-	c.pending = nil
+	named, withheld := c.pending, c.pendingWithheld
+	c.pending, c.pendingWithheld = nil, 0
 	if msg == nil || msg.ChatToolMessage == nil {
 		return
 	}
@@ -100,9 +120,13 @@ func (c *mediaCollector) collect(msg *schemas.ChatMessage) {
 	if result == nil || result.IsError {
 		return
 	}
+	if withheld > 0 {
+		c.withheld += withheld
+		return
+	}
 	if result.StructuredContent != nil {
 		if _, ok := structuredMediaObject(result); !ok {
-			c.withheld += len(namedMedia(result))
+			c.withheld += len(named)
 			return
 		}
 	}
@@ -517,7 +541,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	wireIsError := false
 	if media != nil {
 		// A pre-hook short circuit skips the op below; it must not inherit an earlier call's names.
-		media.pending = nil
+		media.stage(nil)
 	}
 	finalResp, finalErr := s.clientManager.RunWithPluginPipeline(nestedCtx, mcpRequest, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// Honor any pre-hook mutation of tool name + arguments before the wire
@@ -602,7 +626,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 
 		message := createToolResponseMessage(toolCallReq, rawResult, isErrorResult)
 		if media != nil {
-			media.pending = namedMedia(toolResponse)
+			media.stage(toolResponse)
 			message.SetMCPResult(toolResponse, message.Content)
 		}
 		return &schemas.BifrostMCPResponse{
