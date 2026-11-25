@@ -1448,6 +1448,64 @@ func Test_createBedrockInvokeRouteConfig_MarksAnthropicInvokeIngress(t *testing.
 	}
 }
 
+// Test_createBedrockInvokeRoutes_CarrySafeguards checks that both invoke routes hand a
+// top-level safeguards array (Claude Code's auto-mode classifier request in Bedrock mode)
+// to the provider and return the verdicts.
+func Test_createBedrockInvokeRoutes_CarrySafeguards(t *testing.T) {
+	body := `{"anthropic_version":"bedrock-2023-05-31","max_tokens":64,` +
+		`"anthropic_beta":["dangerous-tool-use-2026-09-03"],` +
+		`"safeguards":[{"type":"dangerous_tool_use","classifier_context":{}}],` +
+		`"messages":[{"role":"user","content":"hi"}]}`
+	verdicts := json.RawMessage(`[{"type":"dangerous_tool_use","status":{"type":"available","tool_uses":{}}}]`)
+
+	invoke := createBedrockInvokeRouteConfig("/bedrock", &mockHandlerStore{})
+	stream := createBedrockInvokeWithResponseStreamRouteConfig("/bedrock", &mockHandlerStore{})
+	for _, tc := range []struct {
+		name  string
+		route RouteConfig
+	}{
+		{name: "invoke", route: invoke},
+		{name: "invoke-with-response-stream", route: stream},
+	} {
+		t.Run(tc.name+" request keeps safeguards", func(t *testing.T) {
+			req := &bedrock.BedrockInvokeRequest{}
+			require.NoError(t, sonic.Unmarshal([]byte(body), req))
+			req.ModelID = "bedrock/global.anthropic.claude-sonnet-5"
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ResponsesRequest)
+
+			bifrostReq, err := tc.route.RequestConverter(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostReq.ResponsesRequest)
+			require.NotNil(t, bifrostReq.ResponsesRequest.Params)
+			assert.Contains(t, bifrostReq.ResponsesRequest.Params.ExtraParams, "safeguards", "safeguards must reach the provider")
+		})
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	t.Run("invoke response carries safeguard_results", func(t *testing.T) {
+		out, err := invoke.ResponsesResponseConverter(ctx, &schemas.BifrostResponsesResponse{
+			Model:            "global.anthropic.claude-sonnet-5",
+			SafeguardResults: verdicts,
+		})
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(out)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(verdicts), gjson.GetBytes(raw, "safeguard_results").Raw, "body=%s", raw)
+	})
+	t.Run("invoke-with-response-stream message_delta carries safeguard_results", func(t *testing.T) {
+		_, out, err := stream.StreamConfig.ResponsesStreamResponseConverter(ctx, &schemas.BifrostResponsesStreamResponse{
+			Type:     schemas.ResponsesStreamResponseTypeCompleted,
+			Response: &schemas.BifrostResponsesResponse{Model: "global.anthropic.claude-sonnet-5", SafeguardResults: verdicts},
+		})
+		require.NoError(t, err)
+		event, ok := out.(*bedrock.BedrockStreamEvent)
+		require.True(t, ok, "got %T", out)
+		require.NotEmpty(t, event.InvokeModelRawChunks)
+		assert.JSONEq(t, string(verdicts), gjson.GetBytes(event.InvokeModelRawChunks[0], "delta.safeguard_results").Raw, "chunk=%s", event.InvokeModelRawChunks[0])
+	})
+}
+
 // Test_bedrockPreCallback_ReadsInvokeGuardrailHeaders pins the InvokeModel ingress half of
 // #7696's follow-up: the X-Amzn-Bedrock-Guardrail* request headers, the AWS-native way to
 // name a guardrail on InvokeModel, reach the canonical guardrailConfig extra param.

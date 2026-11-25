@@ -131309,13 +131309,7 @@
         "additionalProperties": true,
         "properties": {
           "cyber": {
-            "type": "string",
-            "enum": [
-              "standard",
-              "daybreak_blue",
-              "daybreak_red"
-            ],
-            "description": "Cyber trusted-access program. Use the value OpenAI lists for the model."
+            "description": "Cyber trusted-access program. Known values are standard, daybreak_blue and daybreak_red; use the value OpenAI lists for the model. Any other value, including a non-string, is forwarded to OpenAI as sent, which validates it.\n"
           }
         }
       },

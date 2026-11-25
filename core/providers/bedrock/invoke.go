@@ -1753,6 +1753,11 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 		result.Model = model
 	}
 	result.GuardrailAction, result.Trace = bedrockInvokeGuardrailFields(resp)
+	// InvokeModel reports Claude Code's auto-mode verdicts top-level; without them the
+	// client marks the session ineligible and bills its own classifier call.
+	if len(resp.SafeguardResults) > 0 {
+		result.SafeguardResults = resp.SafeguardResults
+	}
 
 	// Convert output items to Anthropic content blocks
 	for _, item := range resp.Output {
@@ -2259,8 +2264,21 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 				}
 				msgStart["message"].(map[string]interface{})["usage"] = usageMap
 			}
+			if len(resp.Response.SafeguardResults) > 0 {
+				msgStart["message"].(map[string]interface{})["safeguard_results"] = resp.Response.SafeguardResults
+			}
 		}
 		event = msgStart
+
+	case schemas.ResponsesStreamResponseTypeSafeguardsUpdate:
+		// Intermediate Claude Code auto-mode verdicts; forwarded as the native event.
+		if len(resp.SafeguardResults) == 0 {
+			return nil, nil
+		}
+		event = map[string]interface{}{
+			"type":              "safeguards_update",
+			"safeguard_results": resp.SafeguardResults,
+		}
 
 	case schemas.ResponsesStreamResponseTypeInProgress:
 		// Skip — no Anthropic equivalent
@@ -2445,6 +2463,10 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 				"stop_reason":   stopReason,
 				"stop_sequence": nil,
 			},
+		}
+		// Final auto-mode verdicts ride on message_delta.delta, as InvokeModel streams them.
+		if resp.Response != nil && len(resp.Response.SafeguardResults) > 0 {
+			messageDelta["delta"].(map[string]interface{})["safeguard_results"] = resp.Response.SafeguardResults
 		}
 		if resp.Response != nil && resp.Response.Usage != nil {
 			// Bedrock Converse only reports usage on the terminal event (unlike native
