@@ -154,12 +154,12 @@ func TestVirtualKeysPageAndRecord(t *testing.T) {
 	rows, err := reads.ByID(ctx, db, []string{"vk-c", "missing"})
 	require.NoError(t, err)
 	require.Equal(t, []string{"vk-c"}, virtualKeyIDsOf(rows), "an ID with no row is left out")
-	rows, err = reads.ByTeams(ctx, db, []string{"team-1"})
+	keyIDs, err := VirtualKeyIDsByTeams(ctx, db, []string{"team-1"})
 	require.NoError(t, err)
-	require.Equal(t, []string{"vk-a"}, virtualKeyIDsOf(rows))
-	rows, err = reads.ByCustomers(ctx, db, []string{"cust-1"})
+	require.Equal(t, []string{"vk-a"}, keyIDs)
+	keyIDs, err = VirtualKeyIDsByCustomers(ctx, db, []string{"cust-1"})
 	require.NoError(t, err)
-	require.Equal(t, []string{"vk-b"}, virtualKeyIDsOf(rows))
+	require.Equal(t, []string{"vk-b"}, keyIDs)
 }
 
 // TestVirtualKeyUnresolvedValueIsNotIndexed checks that a key whose value is a reference that
