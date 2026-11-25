@@ -103,8 +103,9 @@ type Profile struct {
 	TLSCACert      string             `json:"tls_ca_cert,omitempty"`
 	Insecure       bool               `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
 
-	// ExportTimeout bounds a single trace export, in seconds (default 5, max 60).
-	// This is the only deadline on the export: the caller passes context.Background(),
+	// ExportTimeout bounds a single trace export, in seconds (default 5, max 60). When set,
+	// it also bounds a single HTTP metrics export, which otherwise defaults to 10 seconds.
+	// For traces it is the only deadline on the export: the caller passes context.Background(),
 	// and a gRPC export otherwise has no timeout at all, so an endpoint that completes
 	// a TCP handshake but never replies would block forever.
 	ExportTimeout int `json:"export_timeout,omitempty"`
@@ -695,6 +696,10 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 			TLSCACert:    profile.TLSCACert,
 			Insecure:     profile.Insecure,
 			PushInterval: pushInterval,
+		}
+		// exportTimeout falls back to the trace default; metrics keep their own when unset.
+		if profile.ExportTimeout > 0 {
+			metricsConfig.ExportTimeout = exportTimeout
 		}
 		target.metricsExporter, err = NewMetricsExporter(p.ctx, metricsConfig)
 		if err != nil {
