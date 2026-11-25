@@ -41,7 +41,7 @@ func (e *endpoint) stripCallerQueryCredential(rawQuery string) (string, error) {
 	param := e.authQuery()
 	// Cheap gate: the parameter name appears literally, or something is percent-encoded and may
 	// spell it. Everything else is left untouched without a scan.
-	if param == "" || rawQuery == "" || (!strings.Contains(rawQuery, param) && !strings.Contains(rawQuery, "%")) {
+	if param == "" || rawQuery == "" || (!containsFold(rawQuery, param) && !strings.Contains(rawQuery, "%")) {
 		return rawQuery, nil
 	}
 	if strings.Contains(rawQuery, ";") {
@@ -55,7 +55,8 @@ func (e *endpoint) stripCallerQueryCredential(rawQuery string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("query string cannot be parsed: %w", err)
 		}
-		if decoded == param {
+		// Any letter case: a caller's KEY= next to the relay's key= would forward its own credential.
+		if strings.EqualFold(decoded, param) {
 			dropped = true
 			continue
 		}
@@ -151,4 +152,14 @@ func bedrockKeyConfig(c *schemas.RelayAWSCredential) *schemas.BedrockKeyConfig {
 		cfg.SecretKey = *c.SecretKey
 	}
 	return cfg
+}
+
+// containsFold reports whether substr is in s ignoring ASCII letter case, without allocating.
+func containsFold(s, substr string) bool {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if strings.EqualFold(s[i:i+len(substr)], substr) {
+			return true
+		}
+	}
+	return false
 }
