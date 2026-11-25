@@ -186,3 +186,91 @@ func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalo
 	t.Cleanup(func() { _ = catalog.Cleanup() })
 	return catalog
 }
+
+// The response sweeper retrieves a background response through the Responses retrieve call, pinned
+// to the key that created it: a stored response belongs to the account of its creating key. A
+// provider error keeps its status so the settler can tell a deleted response from an outage, and a
+// provider with no retrieve at all is a final answer, not something to keep asking.
+func TestResponsePollerRetrievesTheResponseWithTheCreatingKey(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	var mu sync.Mutex
+	var seenKeys, seenPaths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seenKeys = append(seenKeys, r.Header.Get("Authorization"))
+		seenPaths = append(seenPaths, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v1/responses/resp_srv" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"Response with id 'resp_gone' not found.","type":"invalid_request_error","code":null}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp_srv","object":"response","background":true,"status":"completed","model":"gpt-4o-2024-08-06","output":[],"usage":{"input_tokens":1000,"output_tokens":50,"total_tokens":1050}}`))
+	}))
+	defer upstream.Close()
+
+	cfg := libtest.FileOnly(t, &lib.Config{
+		ModelCatalog: catalogForTest(t, nil),
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {
+			NetworkConfig: &schemas.NetworkConfig{
+				BaseURL:                        upstream.URL,
+				AllowPrivateNetwork:            true,
+				DefaultRequestTimeoutInSeconds: 5,
+			},
+		},
+		schemas.Anthropic: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {
+			{ID: "key-other", Value: *schemas.NewSecretVar("sk-other"), Models: schemas.WhiteList{"*"}, Weight: 1},
+			{ID: "key-creator", Value: *schemas.NewSecretVar("sk-creator"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		},
+		schemas.Anthropic: {{ID: "key-anthropic", Value: *schemas.NewSecretVar("sk-ant"), Models: schemas.WhiteList{"*"}, Weight: 1}},
+	})
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(cfg),
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	job := func(provider schemas.ModelProvider, id, keyID string) *cstables.TableProviderJob {
+		return &cstables.TableProviderJob{
+			Kind:          cstables.ProviderJobKindResponse,
+			Provider:      string(provider),
+			JobID:         id,
+			Model:         "gpt-4o",
+			SelectedKeyID: keyID,
+		}
+	}
+	poller := &bifrostResponsePoller{client: client}
+
+	// Several polls, so a key picked by weight rather than by the pin would show up.
+	for range 4 {
+		resp, err := poller.RetrieveResponse(context.Background(), job(schemas.OpenAI, "resp_srv", "key-creator"))
+		require.NoError(t, err)
+		require.NotNil(t, resp.ID)
+		assert.Equal(t, "resp_srv", *resp.ID)
+		require.NotNil(t, resp.Status)
+		assert.Equal(t, "completed", *resp.Status)
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 1050, resp.Usage.TotalTokens)
+	}
+	mu.Lock()
+	assert.Equal(t, []string{"Bearer sk-creator", "Bearer sk-creator", "Bearer sk-creator", "Bearer sk-creator"}, seenKeys, "every poll uses the key that created the response")
+	assert.Equal(t, "GET /v1/responses/resp_srv", seenPaths[0])
+	mu.Unlock()
+
+	_, err = poller.RetrieveResponse(context.Background(), job(schemas.OpenAI, "resp_gone", "key-creator"))
+	require.Error(t, err)
+	assert.Equal(t, http.StatusNotFound, jobaccounting.ProviderCallStatus(err))
+	assert.Equal(t, jobaccounting.ProviderCallGone, jobaccounting.ClassifyProviderCall(err))
+
+	_, err = poller.RetrieveResponse(context.Background(), job(schemas.Anthropic, "resp_elsewhere", "key-anthropic"))
+	require.Error(t, err)
+	assert.Equal(t, jobaccounting.ProviderCallRejected, jobaccounting.ClassifyProviderCall(err), "a provider with no retrieve is not asked again")
+}

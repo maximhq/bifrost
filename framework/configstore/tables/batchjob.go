@@ -17,6 +17,9 @@ const (
 	// ProviderJobKindInteraction is a stored run the provider reports on every read, such as a
 	// Gemini Interaction reached through passthrough.
 	ProviderJobKindInteraction = "interaction"
+	// ProviderJobKindResponse is a Responses API response created with background=true: the create
+	// answers before the model runs, and the usage appears on a later retrieve.
+	ProviderJobKindResponse = "response"
 )
 
 // Accounting lifecycle states for a TableProviderJob.

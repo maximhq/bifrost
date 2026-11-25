@@ -285,6 +285,17 @@ func pricingScopesForJob(scopes *modelcatalog.PricingLookupScopes, provider sche
 	if scopes.VirtualKeyID == "" && job.VirtualKeyID != nil {
 		scopes.VirtualKeyID = *job.VirtualKeyID
 	}
+	// Prices can be set for one user. The job is settled long after its create, by a sweeper
+	// or by whoever reads it, so the creator's user comes off the job like the keys do.
+	if scopes.UserID == "" && job.UserID != nil {
+		scopes.UserID = *job.UserID
+	}
+	// A model with peak and off-peak rates is billed at the rate in force when the request
+	// started. Settlement runs later, from a poll or a sweep, so the job's creation time is
+	// what pricing is given; left unset it would fall back to the clock at settlement.
+	if scopes.BilledAt.IsZero() && !job.CreatedAt.IsZero() {
+		scopes.BilledAt = job.CreatedAt
+	}
 	return scopes
 }
 

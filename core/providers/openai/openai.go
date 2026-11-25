@@ -2179,6 +2179,14 @@ func HandleOpenAIResponsesRequest(
 	response.Usage.PreserveTokenCountZeros(body, "usage.input_tokens", "usage.output_tokens")
 
 	recordResponsesServerToolUsage(response, jsonData)
+	// A background response has no usage yet. It is priced when a later read finds it finished,
+	// and that read carries no request, so the tool settings pricing reads are left for whoever
+	// records the response. They are a few hundred bytes and hold no message content.
+	if response.Background != nil && *response.Background {
+		if kept := ResponsesToolPricingContext(jsonData); kept != nil {
+			ctx.SetValue(schemas.BifrostContextKeyResponsesToolPricingContext, string(kept))
+		}
+	}
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders

@@ -340,3 +340,52 @@ func BenchmarkRecordImageGenToolModel_WithImages(b *testing.B) {
 		recordImageGenToolModel(u, req)
 	}
 }
+
+// A background response is priced from a later read, which carries no request. The create keeps
+// the part of its request that pricing reads, and that part prices the finished response exactly
+// as the whole request would. It holds tool settings and container ids, never the prompt.
+func TestResponsesToolPricingContext(t *testing.T) {
+	record := func(t *testing.T, responseBody string, reqBody []byte) *schemas.ToolUsage {
+		t.Helper()
+		var resp schemas.BifrostResponsesResponse
+		require.NoError(t, sonic.Unmarshal([]byte(responseBody), &resp))
+		RecordResponsesServerToolUsage(&resp, reqBody)
+		return resp.Usage.ToolUsage
+	}
+	replayed := `{"model":"gpt-6.1-sol","input":[{"role":"user","content":"a private prompt"},{"type":"code_interpreter_call","container_id":"cntr_new"}],"tools":[{"type":"code_interpreter","container":{"memory_limit":"1g","type":"auto"}}]}`
+	for name, tc := range map[string]struct{ request, response string }{
+		"auto container":             {autoContainerRequest, codeInterpreterResponse},
+		"image tool model":           {imageToolRequest, imageToolResponse},
+		"container already in input": {replayed, codeInterpreterResponse},
+		"stored context":             {`{"previous_response_id":"resp_0","input":"go on","tools":[{"type":"code_interpreter","container":{"type":"auto"}}]}`, codeInterpreterResponse},
+	} {
+		t.Run(name, func(t *testing.T) {
+			kept := ResponsesToolPricingContext([]byte(tc.request))
+			require.NotEmpty(t, kept)
+			assert.Equal(t, record(t, tc.response, []byte(tc.request)), record(t, tc.response, kept))
+			assert.NotContains(t, string(kept), "private prompt")
+			assert.NotContains(t, string(kept), "compute")
+			assert.NotContains(t, string(kept), "draw")
+		})
+	}
+	// A tool's settings can hold credentials and content: a shell environment carries domain
+	// secrets and inline skills, a code container names files. Only what pricing reads is kept,
+	// which is the container kind and its memory tier.
+	t.Run("only the fields pricing reads are kept", func(t *testing.T) {
+		request := `{"model":"gpt-6.1-sol","input":"run","tools":[` +
+			`{"type":"shell","environment":{"type":"container_auto","memory_limit":"4g","network_policy":{"type":"allowlist","domain_secrets":[{"domain":"api.example.com","name":"TOKEN","value":"sk-domain-secret"}]},"skills":[{"type":"inline","source":"a private skill body"}]}},` +
+			`{"type":"code_interpreter","container":{"type":"auto","memory_limit":"1g","file_ids":["file-private"]}},` +
+			`{"type":"image_generation","model":"gpt-image-1-mini","input_image_mask":{"image_url":"data:image/png;base64,PRIVATEMASK"}}]}`
+		kept := string(ResponsesToolPricingContext([]byte(request)))
+		for _, private := range []string{"sk-domain-secret", "api.example.com", "TOKEN", "a private skill body", "file-private", "PRIVATEMASK", "network_policy", "skills"} {
+			assert.NotContains(t, kept, private)
+		}
+		assert.JSONEq(t, `{"tools":[`+
+			`{"type":"shell","environment":{"type":"container_auto","memory_limit":"4g"}},`+
+			`{"type":"code_interpreter","container":{"type":"auto","memory_limit":"1g"}},`+
+			`{"type":"image_generation","model":"gpt-image-1-mini"}]}`, kept)
+	})
+	assert.Nil(t, ResponsesToolPricingContext([]byte(`{"model":"gpt-6.1-sol","input":"hello","tools":[{"type":"function","name":"f"}]}`)), "a request with no priced tool keeps nothing")
+	assert.Nil(t, ResponsesToolPricingContext([]byte(`{"model":"gpt-6.1-sol","input":"hello"}`)))
+	assert.Nil(t, ResponsesToolPricingContext([]byte(`not json`)))
+}

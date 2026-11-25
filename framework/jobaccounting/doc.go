@@ -101,6 +101,14 @@
 //     cache tokens — inclusive of the base input count or exclusive of it — are
 //     normalized apart in usageFromValue.
 //
+// # Kinds: response
+//
+// ResponseSettler is the Settler for ProviderJobKindResponse, a Responses API response created
+// with background=true. The create answers queued with no usage and records the job; the first
+// retrieve that returns the response finished, or the sweeper, settles it once from the usage on
+// that final object, at the model the create named. A create that returns finished is charged
+// from its own response and never gets a job row.
+//
 // # Entry points
 //
 //   - AccountJob settles one job: claim → price via the Settler → write the

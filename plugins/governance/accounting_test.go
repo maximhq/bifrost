@@ -787,6 +787,101 @@ func TestAccounting_InteractionRunIsChargedOnce(t *testing.T) {
 	assert.Equal(t, int64(1), rateLimit.RequestCurrentUsage, "a run is one request: its create, not its polls or its settlement")
 }
 
+// A Responses request with background=true is charged once over its whole life. The create names
+// the model, so it is a request, but it answers queued with no usage and spends no tokens. A
+// retrieve names no model, so no poll is charged either, however often it repeats the final usage.
+// The tokens arrive once, from the settlement report the logging plugin sends against the limits
+// the create was admitted under.
+func TestAccounting_BackgroundResponseIsChargedOnce(t *testing.T) {
+	logger := NewMockLogger()
+	rl := buildRateLimit("rl-vk", 1_000_000, 1_000_000)
+	budget := buildBudgetWithUsage("budget-vk", 1_000.0, 0.0, "1d")
+	vk := buildVirtualKeyWithRateLimit("vk-bg", "sk-bf-bg", "Background VK", rl)
+	vk.Budgets = []configstoreTables.TableBudget{*budget}
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("openai", []string{"*"}))
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rl},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: new(false)}, logger, store, nil, nil, nil, store.live)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	// This fixture has no config store, so there is no record of who created the response to check
+	// a retrieve against. Who may read a response is covered in providerjobs_test.go.
+	plugin.objectOwnershipEnforcedFn = func() bool { return false }
+
+	const model = "gpt-4o"
+	response := func(status string, tokens int, requestType schemas.RequestType, requestedModel string) *schemas.BifrostResponse {
+		id := "resp_gov"
+		resp := &schemas.BifrostResponsesResponse{
+			ID: &id, Status: &status, Model: model, Background: new(true),
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            requestType,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: requestedModel,
+				ResolvedModelUsed:      requestedModel,
+			},
+		}
+		if tokens > 0 {
+			resp.Usage = &schemas.ResponsesResponseUsage{InputTokens: tokens, TotalTokens: tokens}
+		}
+		return &schemas.BifrostResponse{ResponsesResponse: resp}
+	}
+	call := func(req *schemas.BifrostRequest, result *schemas.BifrostResponse) *schemas.BifrostContext {
+		ctx := presentCtx("sk-bf-bg")
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		_, _, err = plugin.PostLLMHook(ctx, result, nil)
+		require.NoError(t, err)
+		return ctx
+	}
+	retrieve := &schemas.BifrostRequest{
+		RequestType:              schemas.ResponsesRetrieveRequest,
+		ResponsesRetrieveRequest: &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_gov"},
+	}
+
+	createCtx := call(&schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI, Model: model,
+			Params: &schemas.ResponsesParameters{Background: new(true)},
+		},
+	}, response("queued", 0, schemas.ResponsesRequest, model))
+	// What the logging plugin copies onto the job row at the create.
+	budgetIDs, _ := createCtx.Value(schemas.BifrostContextKeyGovernanceBudgetIDs).([]string)
+	rateLimitIDs, _ := createCtx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string)
+	require.Contains(t, budgetIDs, "budget-vk", "the create records the budgets the settlement charges")
+	require.Contains(t, rateLimitIDs, "rl-vk", "the create records the limits the settlement charges")
+
+	call(retrieve, response("in_progress", 0, schemas.ResponsesRetrieveRequest, ""))
+	call(retrieve, response("completed", 51000, schemas.ResponsesRetrieveRequest, ""))
+	call(retrieve, response("completed", 51000, schemas.ResponsesRetrieveRequest, ""))
+
+	report := jobaccounting.UsageReport{
+		RequestID:    "response-settlement-resp_gov",
+		Provider:     schemas.OpenAI,
+		Model:        model,
+		Cost:         0.195,
+		TokensUsed:   51000,
+		BudgetIDs:    budgetIDs,
+		RateLimitIDs: rateLimitIDs,
+		VirtualKeyID: "vk-bg",
+		// What the response settler sets: the create already counted as the request.
+		SkipRequestCount: true,
+	}
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
+	require.NoError(t, plugin.ReportUsage(context.Background(), report))
+	settleAccounting(t, plugin)
+
+	data := store.GetGovernanceData(context.Background())
+	assert.Equal(t, int64(51000), data.RateLimits["rl-vk"].TokenCurrentUsage, "the tokens are charged once, at settlement, not on the create or any poll")
+	assert.Equal(t, int64(1), data.RateLimits["rl-vk"].RequestCurrentUsage, "a background response is one request: its create")
+	assert.InDelta(t, 0.195, data.Budgets["budget-vk"].CurrentUsage, 1e-9, "the budget takes the response's cost once")
+}
+
 // A passthrough call relays the upstream's status as a response, not an error, so a call the
 // provider refused reached the post hook looking like a success and counted against the key's
 // request allowance. A refused inference request does not count, and neither may a refused
