@@ -197,6 +197,10 @@ func TestStreamingResponsePluginChunkHookPanicIsRecovered(t *testing.T) {
 	if !strings.Contains(body, "event: error\n") || !strings.Contains(body, lib.StreamProducerPanicMessage) {
 		t.Errorf("a stream cut short by a panic must end with an error frame, got:\n%s", body)
 	}
+	// A cause on the error would be serialized as a second copy of the message.
+	if n := strings.Count(body, lib.StreamProducerPanicMessage); n != 1 {
+		t.Errorf("the panic error frame carries the message %d times, want once with no cause, got:\n%s", n, body)
+	}
 }
 
 // In headers mode every frame on this stream drops extra_fields, and the error frame a

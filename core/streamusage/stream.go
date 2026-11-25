@@ -29,15 +29,18 @@ func Estimate(ctx *schemas.BifrostContext, request *schemas.BifrostRequest, mode
 	estimate(ctx, ctx.GetAccumulatedResponse(), request, model, failure, idle)
 }
 
-// estimable reports whether failure is a cancellation, a timeout or a stream idle
-// timeout (idle), the only failures whose usage is estimated.
+// estimable reports whether failure is a cancellation, a timeout, a stream cancelled
+// by its failed consumer or a stream idle timeout (idle), the only failures whose
+// usage is estimated.
 func estimable(failure *schemas.BifrostError) (idle, ok bool) {
 	if failure == nil || failure.Error == nil {
 		return false, false
 	}
 	// A stream that goes silent mid-output fails untyped, wrapping ErrStreamIdleTimeout.
 	idle = failure.Error.Type == nil && errors.Is(failure.Error.Error, providerUtils.ErrStreamIdleTimeout)
-	if !idle && (failure.Error.Type == nil || (*failure.Error.Type != schemas.RequestCancelled && *failure.Error.Type != schemas.RequestTimedOut)) {
+	// A stream cancelled by its failed consumer is a server error wrapping ErrStreamConsumerFailed.
+	interrupted := idle || errors.Is(failure.Error.Error, providerUtils.ErrStreamConsumerFailed)
+	if !interrupted && (failure.Error.Type == nil || (*failure.Error.Type != schemas.RequestCancelled && *failure.Error.Type != schemas.RequestTimedOut)) {
 		return false, false
 	}
 	return idle, true

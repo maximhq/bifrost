@@ -2170,22 +2170,27 @@ func (r *terminalErrorRecorder) PostLLMHook(_ *schemas.BifrostContext, resp *sch
 
 // A stream cancelled mid-output by a consumer that failed itself ends as a server error in
 // the post-hooks, while a client that leaves still ends it as a cancellation. Both keep the
-// usage the provider reported so far.
+// usage the provider reported so far, and both estimate it when the provider reports it only
+// at the end.
 func TestStreamCancelledByFailedConsumerIsAServerError(t *testing.T) {
+	const reportedUsage = `,"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}`
 	cases := []struct {
 		name           string
 		consumerFailed bool
+		usage          string
 		wantStatus     int
 		wantType       string
 	}{
-		{name: "client left", wantStatus: 499, wantType: schemas.RequestCancelled},
-		{name: "consumer failed", consumerFailed: true, wantStatus: 500, wantType: "server_error"},
+		{name: "client left", usage: reportedUsage, wantStatus: 499, wantType: schemas.RequestCancelled},
+		{name: "consumer failed", consumerFailed: true, usage: reportedUsage, wantStatus: 500, wantType: "server_error"},
+		{name: "client left before usage", wantStatus: 499, wantType: schemas.RequestCancelled},
+		{name: "consumer failed before usage", consumerFailed: true, wantStatus: 500, wantType: "server_error"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
-				fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"he"}}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`+"\n\n")
+				fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"he"}}]`+tc.usage+`}`+"\n\n")
 				w.(http.Flusher).Flush()
 				select {
 				case <-r.Context().Done():
@@ -2201,9 +2206,24 @@ func TestStreamCancelledByFailedConsumerIsAServerError(t *testing.T) {
 				{ID: "cancel-key", Value: *schemas.NewSecretVar("sk-cancel"), Models: schemas.WhiteList{"*"}, Weight: 100},
 			})
 			recorder := &terminalErrorRecorder{}
-			client := newStreamTestClient(t, account, recorder)
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{recorder},
+				// Stands in for the logging plugin's accumulator, which the estimate reads.
+				Tracer: &snapshotTracer{snapshot: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+					Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: new("he")},
+					}}}},
+				}}},
+			})
+			if err != nil {
+				t.Fatalf("failed to initialize bifrost: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
 
 			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-consumer-failed")
 			stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
 				Provider: schemas.OpenAI,
 				Model:    "gpt-4o-mini",
@@ -2234,8 +2254,12 @@ func TestStreamCancelledByFailedConsumerIsAServerError(t *testing.T) {
 			if tc.consumerFailed && e.Error.Message != providerUtils.ErrStreamConsumerFailedMessage {
 				t.Errorf("message = %q, want %q", e.Error.Message, providerUtils.ErrStreamConsumerFailedMessage)
 			}
-			if e.ExtraFields.BilledUsage == nil || e.ExtraFields.BilledUsage.PromptTokens != 10 {
-				t.Errorf("billed usage = %+v, want the provider's running usage kept", e.ExtraFields.BilledUsage)
+			billed := e.ExtraFields.BilledUsage
+			if tc.usage != "" && (billed == nil || billed.PromptTokens != 10 || billed.Estimation != nil) {
+				t.Errorf("billed usage = %+v, want the provider's running usage kept", billed)
+			}
+			if tc.usage == "" && (billed == nil || billed.Estimation == nil || billed.CompletionTokens == 0) {
+				t.Errorf("billed usage = %+v, want the received output estimated", billed)
 			}
 		})
 	}

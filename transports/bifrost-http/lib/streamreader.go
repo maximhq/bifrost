@@ -328,19 +328,12 @@ func RecoverStreamProducer(ctx *schemas.BifrostContext, cancel context.CancelFun
 
 // StreamProducerPanicMessage is the message of the error frame a stream producer emits
 // after RecoverStreamProducer catches a panic.
-const StreamProducerPanicMessage = "internal error while streaming the response"
+const StreamProducerPanicMessage = providerUtils.ErrStreamConsumerFailedMessage
 
 // StreamProducerPanicError is the error a stream producer frames for the client after a
 // recovered panic. It carries no detail of the panic itself.
 func StreamProducerPanicError() *schemas.BifrostError {
-	return &schemas.BifrostError{
-		IsBifrostError: true,
-		StatusCode:     schemas.Ptr(500),
-		Error: &schemas.ErrorField{
-			Type:    schemas.Ptr("server_error"),
-			Message: StreamProducerPanicMessage,
-		},
-	}
+	return providerUtils.NewStreamConsumerFailedError()
 }
 
 // RunRecovered calls fn and contains a panic in it. A stream producer's deferred teardown
