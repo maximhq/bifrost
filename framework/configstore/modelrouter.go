@@ -502,7 +502,7 @@ func prepareModelRouter(router *ModelRouter) (ModelRouter, error) {
 // default routing when it has none: off, global, and last among the global
 // routers. A taken id or name is ErrAlreadyExists, and a priority another
 // router in the scope holds is ErrModelRouterPriorityTaken. Targets are left
-// for SetModelRouterTargets.
+// for SetModelRouterTargets. The stored routing is set on router.
 func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error {
 	r, err := prepareModelRouter(router)
 	if err != nil {
@@ -515,7 +515,7 @@ func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRou
 		}
 		r.Routing = &routing
 	}
-	return s.inModelRouterTx(ctx, tx, func(txDB *gorm.DB) error {
+	if err := s.inModelRouterTx(ctx, tx, func(txDB *gorm.DB) error {
 		db := txDB.WithContext(ctx)
 		var taken int64
 		if err := db.Model(&tables.TableModelRouter{}).Where("id = ? OR name = ?", r.ID, r.Name).Count(&taken).Error; err != nil {
@@ -546,7 +546,11 @@ func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRou
 			return err
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	router.Routing = r.Routing
+	return nil
 }
 
 // UpdateModelRouter replaces a router's name, description and config, leaving

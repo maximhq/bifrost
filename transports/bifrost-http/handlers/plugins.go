@@ -333,7 +333,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Create DB entry first to avoid orphaned in-memory state if DB write fails
-	if err := h.configStore.CreatePlugin(ctx, &configstoreTables.TablePlugin{
+	written := &configstoreTables.TablePlugin{
 		Name:      request.Name,
 		Enabled:   request.Enabled,
 		Config:    normalizedConfig,
@@ -341,7 +341,8 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		IsCustom:  !isBuiltin,
 		Placement: request.Placement,
 		Order:     request.Order,
-	}); err != nil {
+	}
+	if err := h.configStore.CreatePlugin(ctx, written); err != nil {
 		logger.Error("failed to create plugin: %v", err)
 		SendError(ctx, 500, "Failed to create plugin")
 		return
@@ -353,12 +354,14 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 			logger.Error("failed to load plugin: %v", err)
 			if rbErr := h.configStore.DeletePlugin(ctx, request.Name); rbErr != nil {
 				logger.Error("failed to rollback plugin creation: %v", rbErr)
+				lib.RecordAuditChange(ctx, "plugin.created", "plugin", request.Name, request.Name, nil, h.auditPlugin(written))
 			}
 			SendError(ctx, pluginLoadFailureStatus(err), fmt.Sprintf("Plugin was not created, it failed to load: %v", err))
 			return
 		}
 	}
 
+	rec := lib.RecordAuditChange(ctx, "plugin.created", "plugin", request.Name, request.Name, nil, h.auditPlugin(written))
 	plugin, err := h.configStore.GetPlugin(ctx, request.Name)
 	if err != nil {
 		logger.Error("failed to get plugin: %v", err)
@@ -366,7 +369,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	lib.RecordAuditChange(ctx, "plugin.created", "plugin", plugin.Name, plugin.Name, nil, h.auditPlugin(plugin))
+	rec.SetAfter(h.auditPlugin(plugin))
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, map[string]any{
 		"message": "Plugin created successfully",
@@ -505,7 +508,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	// Updating the plugin
-	if err := h.configStore.UpdatePlugin(ctx, &configstoreTables.TablePlugin{
+	written := &configstoreTables.TablePlugin{
 		Name:      name,
 		Enabled:   request.Enabled,
 		Config:    mergedConfig,
@@ -513,11 +516,21 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		IsCustom:  !isBuiltin,
 		Placement: request.Placement,
 		Order:     request.Order,
-	}); err != nil {
+	}
+	if err := h.configStore.UpdatePlugin(ctx, written); err != nil {
 		logger.Error("failed to update plugin: %v", err)
+		if missing {
+			// The placeholder row created above stays behind.
+			lib.RecordAuditChange(ctx, "plugin.created", "plugin", name, name, nil, h.auditPlugin(plugin))
+		}
 		SendError(ctx, 500, "Failed to update plugin")
 		return
 	}
+	auditEvent := "plugin.updated"
+	if missing {
+		auditEvent = "plugin.created"
+	}
+	rec := lib.RecordAuditChange(ctx, auditEvent, "plugin", name, name, before, h.auditPlugin(written))
 	plugin, err = h.configStore.GetPlugin(ctx, name)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -528,24 +541,22 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve plugin")
 		return
 	}
-	auditEvent := "plugin.updated"
-	if missing {
-		auditEvent = "plugin.created"
-	}
+	rec.SetAfter(h.auditPlugin(plugin))
 	// We reload the plugin if its enabled, otherwise we stop it
 	if request.Enabled {
 		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, mergedConfig, request.Placement, request.Order); err != nil {
 			logger.Error("failed to load plugin: %v", err)
-			h.restorePluginRow(ctx, name, existingPlugin, err)
+			if restoreErr := h.restorePluginRow(ctx, name, existingPlugin, err); restoreErr == nil {
+				rec.Discard()
+			}
 			SendError(ctx, pluginLoadFailureStatus(err), fmt.Sprintf("Plugin update was not applied, it failed to load and the previous configuration was kept: %v", err))
 			return
 		}
+		rec.SetAfter(h.auditPlugin(plugin)) // the config can be redacted only once the plugin is loaded
 	} else {
 		ctx.SetUserValue(PluginDisabledKey, true)
 		if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
 			if !errors.Is(err, plugins.ErrPluginNotFound) {
-				// The row is committed, so record the change even though the runtime stop failed.
-				lib.RecordAuditChange(ctx, auditEvent, "plugin", name, name, before, h.auditPlugin(plugin))
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to stop: %v", err))
 				return
 			}
@@ -553,7 +564,6 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	lib.RecordAuditChange(ctx, auditEvent, "plugin", name, name, before, h.auditPlugin(plugin))
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Plugin updated successfully",
 		"plugin":  h.buildPluginResponse(ctx, plugin),
@@ -575,7 +585,7 @@ func pluginLoadFailureStatus(err error) int {
 // leaves it in place). A row the update created itself is removed instead. When the restore fails
 // the saved config and the running plugin disagree until the next successful save, so it is
 // logged as an error naming the plugin and both failures.
-func (h *PluginsHandler) restorePluginRow(ctx context.Context, name string, previous *configstoreTables.TablePlugin, loadErr error) {
+func (h *PluginsHandler) restorePluginRow(ctx context.Context, name string, previous *configstoreTables.TablePlugin, loadErr error) error {
 	var err error
 	if previous == nil {
 		err = h.configStore.DeletePlugin(ctx, name)
@@ -593,6 +603,7 @@ func (h *PluginsHandler) restorePluginRow(ctx context.Context, name string, prev
 	if err != nil {
 		logger.Error("failed to restore plugin %s after a failed update, its saved config no longer matches the running instance: %v (update failed with: %v)", name, err, loadErr)
 	}
+	return err
 }
 
 // deletePlugin deletes an existing plugin

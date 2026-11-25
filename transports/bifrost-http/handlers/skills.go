@@ -631,6 +631,18 @@ func (h *SkillsHandler) shiftVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	shiftedName := id
+	if before != nil {
+		shiftedName = before.Name
+	}
+	// The shift also rewrites the per-version fields, which only the read-back knows, so the fallback covers just these on both sides.
+	var previous any
+	if before != nil {
+		previous = map[string]any{"id": id, "name": shiftedName, "latest_version": before.LatestVersion}
+	}
+	written := map[string]any{"id": id, "name": shiftedName, "latest_version": req.Version}
+	rec := lib.RecordAuditChange(ctx, "skill.version_shifted", "skill", id, shiftedName, previous, written)
+
 	skill, err := h.store.GetSkill(ctx, id)
 	if err != nil {
 		logger.Error("failed to reload skill after version shift: %v", err)
@@ -638,7 +650,9 @@ func (h *SkillsHandler) shiftVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	lib.RecordAuditChange(ctx, "skill.version_shifted", "skill", skill.ID, skill.Name, auditSkill(before), auditSkill(skill))
+	// The read-back has every field, so the full diff replaces the fallback.
+	rec.Discard()
+	lib.RecordAuditChange(ctx, "skill.version_shifted", "skill", id, shiftedName, auditSkill(before), auditSkill(skill))
 
 	SendJSON(ctx, map[string]any{
 		"skill": skill,
@@ -706,6 +720,7 @@ func (h *SkillsHandler) updateSkill(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	rec := lib.RecordAuditChange(ctx, "skill.updated", "skill", id, skill.Name, before, auditSkill(skill))
 	reloadedSkill, err := h.store.GetSkill(ctx, id)
 	if err != nil {
 		logger.Error("failed to reload skill after update: %v", err)
@@ -713,7 +728,7 @@ func (h *SkillsHandler) updateSkill(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	lib.RecordAuditChange(ctx, "skill.updated", "skill", reloadedSkill.ID, reloadedSkill.Name, before, auditSkill(reloadedSkill))
+	rec.SetAfter(auditSkill(reloadedSkill))
 
 	SendJSON(ctx, map[string]any{
 		"skill": reloadedSkill,

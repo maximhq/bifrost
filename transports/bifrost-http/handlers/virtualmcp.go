@@ -282,13 +282,14 @@ func (h *VirtualMCPHandler) updateVirtualMCP(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.refreshDefinition(ctx, def.ID)
+	rec := lib.RecordAuditChange(ctx, "virtual_mcp.updated", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, before, h.toResponse(def, nil))
 	resp, err := h.withVKs(ctx, def)
 	if err != nil {
 		h.logger.Error("failed to load VK assignments for virtual MCP %d: %v", def.ID, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-	lib.RecordAuditChange(ctx, "virtual_mcp.updated", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, before, h.toResponse(def, nil))
+	rec.SetAfter(h.toResponse(def, nil))
 	SendJSON(ctx, map[string]any{"virtual_mcp": resp})
 }
 
