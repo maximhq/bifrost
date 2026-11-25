@@ -127,6 +127,25 @@ func (mc *ModelCatalog) computeModelsForProvider(provider schemas.ModelProvider)
 	return out
 }
 
+// AliasNamesForProvider returns the sorted alias names the provider's enabled keys can serve, pattern aliases left out.
+func (mc *ModelCatalog) AliasNamesForProvider(provider schemas.ModelProvider) []string {
+	var names []string
+	for _, e := range mc.keyconf.EntriesFor(provider) {
+		if !e.Enabled {
+			continue
+		}
+		for alias := range e.Aliases {
+			// Key selection checks a key's own lists, so a wider one on another key does not count.
+			if schemas.IsRegexEntry(alias) || e.Blacklisted.IsBlocked(alias) || !e.Allowed.IsAllowed(alias) {
+				continue
+			}
+			names = append(names, alias)
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
 func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []string, allowed schemas.WhiteList, blacklisted schemas.BlackList) []string {
 	if len(models) == 0 {
 		return out
