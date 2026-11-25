@@ -191,8 +191,7 @@
 		"toggle": "Afficher/masquer la barre latérale"
 	},
 	"sheet": {
-		"collapse": "Réduire",
-		"expand": "Développer"
+		"resizeHandle": "Redimensionner le panneau"
 	},
 	"tabs": {
 		"showMore_one": "Afficher {{count}} onglet de plus",

@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -14,6 +15,10 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"gorm.io/gorm"
 )
+
+// ErrVirtualKeyRotatedReloadFailed means the rotation was saved but the in-memory
+// reload failed; RotateVirtualKey still returns the written key with its new value.
+var ErrVirtualKeyRotatedReloadFailed = errors.New("virtual key rotated in database but failed to reload in-memory state")
 
 // VirtualKeyRotator rotates a virtual key's value exactly the way
 // POST /api/governance/virtual-keys/{vk_id}/rotate does, so every producer
@@ -45,7 +50,9 @@ func (r *VirtualKeyRotator) VKRotationCooldown(ctx context.Context) time.Duratio
 // cooldown rules (the retired value stays valid until now+cooldown, or is
 // dropped immediately when no cooldown is configured), persists the change,
 // reloads in-memory governance and hydrates VK-scoped model-config governance
-// onto the returned row. Callers passing a background context run unscoped by
+// onto the returned row. When the reload fails after the commit it returns the
+// written key with an error wrapping ErrVirtualKeyRotatedReloadFailed, so the
+// caller can still hand out the new value. Callers passing a background context run unscoped by
 // DAC, which is intended for system-initiated rotation.
 func (r *VirtualKeyRotator) RotateVirtualKey(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, error) {
 	vk, err := r.configStore.GetVirtualKey(ctx, vkID)
@@ -54,6 +61,7 @@ func (r *VirtualKeyRotator) RotateVirtualKey(ctx context.Context, vkID string) (
 	}
 	oldValue := vk.Value.GetValue()
 	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
+	newValue := vk.Value
 	if vk.Value.GetValue() == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
 	}
@@ -95,7 +103,9 @@ func (r *VirtualKeyRotator) RotateVirtualKey(ctx context.Context, vkID string) (
 	}
 	preloadedVk, err := r.governanceManager.ReloadVirtualKey(ctx, vk.ID)
 	if err != nil {
-		return nil, fmt.Errorf("virtual key rotated in database but failed to reload in-memory state: %w", err)
+		vk.Value = newValue // saving encrypted the value in place
+		hydrateVKGovernanceFromStore(ctx, r.configStore, vk)
+		return vk, fmt.Errorf("%w: %w", ErrVirtualKeyRotatedReloadFailed, err)
 	}
 	hydrateVKGovernanceFromStore(ctx, r.configStore, preloadedVk)
 	return preloadedVk, nil

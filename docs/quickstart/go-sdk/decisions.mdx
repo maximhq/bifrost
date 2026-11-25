@@ -45,6 +45,9 @@ func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.Mod
 func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
 	return &schemas.ProviderConfig{}, nil
 }
+
+// An Account also serves its MCP clients: GetConfiguredMCPClients, GetConfigForMCPClient and
+// GetConfigForMCPClientByName, as in the setup guide (an app with none returns none).
 ```
 
 ```go

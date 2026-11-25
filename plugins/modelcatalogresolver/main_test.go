@@ -12,8 +12,9 @@ import (
 
 // testCatalog serves "shared-model" from anthropic, azure and openai, and "solo-model" from openai
 // alone, as the live cache holds them once each provider's list-models response has landed.
-func testCatalog() *modelcatalog.ModelCatalog {
-	catalog := modelcatalog.NewTestCatalog(nil)
+func testCatalog(t testing.TB) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive(schemas.OpenAI, "openai-key", false, []string{"shared-model", "solo-model"})
 	catalog.UpsertLive(schemas.Azure, "azure-key", false, []string{"shared-model"})
 	catalog.UpsertLive(schemas.Anthropic, "anthropic-key", false, []string{"shared-model"})
@@ -150,7 +151,7 @@ func TestResolveProviderFromCatalog(t *testing.T) {
 			if tc.allowed != nil {
 				ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, tc.allowed)
 			}
-			selected, candidates := ResolveProviderFromCatalog(ctx, testCatalog(), tc.model)
+			selected, candidates := ResolveProviderFromCatalog(ctx, testCatalog(t), tc.model)
 			if selected != tc.wantSelected {
 				t.Fatalf("selected %q, want %q", selected, tc.wantSelected)
 			}
@@ -164,7 +165,7 @@ func TestResolveProviderFromCatalog(t *testing.T) {
 	}
 
 	t.Run("the realtime paths resolve without a request context", func(t *testing.T) {
-		selected, candidates := ResolveProviderFromCatalog(nil, testCatalog(), "shared-model")
+		selected, candidates := ResolveProviderFromCatalog(nil, testCatalog(t), "shared-model")
 		if selected != schemas.Anthropic || !slices.Equal(candidates, everyCandidate) {
 			t.Fatalf("got %q from %v, want anthropic from %v", selected, candidates, everyCandidate)
 		}
@@ -254,7 +255,7 @@ func TestPreRequestHook(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			plugin, err := Init(testCatalog(), nil)
+			plugin, err := Init(testCatalog(t), nil)
 			if err != nil {
 				t.Fatalf("Init: %v", err)
 			}
@@ -464,7 +465,7 @@ func TestKeySelectionBypass(t *testing.T) {
 			if tc.allowed != nil {
 				ctx.SetValue(schemas.BifrostContextKeyRoutingAllowedProviders, tc.allowed)
 			}
-			selected, candidates := ResolveProviderFromCatalog(ctx, testCatalog(), tc.model)
+			selected, candidates := ResolveProviderFromCatalog(ctx, testCatalog(t), tc.model)
 			if selected != tc.wantSelected {
 				t.Fatalf("selected %q, want %q", selected, tc.wantSelected)
 			}
@@ -476,7 +477,7 @@ func TestKeySelectionBypass(t *testing.T) {
 
 	runHook := func(t *testing.T, model string) (*schemas.BifrostContext, *schemas.BifrostRequest) {
 		t.Helper()
-		plugin, err := Init(testCatalog(), nil)
+		plugin, err := Init(testCatalog(t), nil)
 		if err != nil {
 			t.Fatalf("Init: %v", err)
 		}
@@ -531,4 +532,16 @@ func TestKeySelectionBypass(t *testing.T) {
 			}
 		}
 	})
+}
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }

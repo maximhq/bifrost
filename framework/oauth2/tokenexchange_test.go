@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"github.com/golang-jwt/jwt/v5"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,11 +21,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"gorm.io/gorm"
 )
 
@@ -97,7 +100,7 @@ func exchangeTestClientConfig() *schemas.MCPClientConfig {
 // tokenURL, with fast retries so failure tests stay quick.
 func newExchangeProvider(t *testing.T, tokenURL string, shape schemas.TokenExchangeGrantShape) *OAuth2Provider {
 	t.Helper()
-	p := NewOAuth2Provider(nil, nil)
+	p := newCachingProvider(t, nil, nil)
 	p.retryBaseDelay = time.Millisecond
 	p.SetTokenExchangeIdPResolver(&fakeIdPResolver{
 		available: true,
@@ -312,7 +315,7 @@ func TestGetExchangedAccessTokenMissingSubject(t *testing.T) {
 }
 
 func TestGetExchangedAccessTokenUnavailable(t *testing.T) {
-	p := NewOAuth2Provider(nil, nil)
+	p := newCachingProvider(t, nil, nil)
 	config := exchangeTestClientConfig()
 	if _, err := p.GetExchangedAccessToken(userExchangeContext("subject-jwt"), config); !errors.Is(err, schemas.ErrTokenExchangeUnavailable) {
 		t.Fatalf("err = %v, want ErrTokenExchangeUnavailable (no resolver)", err)
@@ -342,7 +345,7 @@ func (v *validatingIdPResolver) ValidateTokenExchangeConfig(context.Context, *sc
 // no resolver or it does not validate, since there is nothing to check against.
 func TestValidateTokenExchangeConfig(t *testing.T) {
 	cfg := exchangeTestClientConfig().TokenExchange
-	p := NewOAuth2Provider(nil, nil)
+	p := newCachingProvider(t, nil, nil)
 	if err := p.ValidateTokenExchangeConfig(context.Background(), cfg); err != nil {
 		t.Fatalf("err = %v with no resolver, want nil", err)
 	}
@@ -612,7 +615,7 @@ func TestRetainAndRefreshExchangeAdminCredential(t *testing.T) {
 	config := exchangeTestClientConfig()
 	store.mcpClients = map[string]*schemas.MCPClientConfig{config.ID: config}
 
-	p := NewOAuth2Provider(store, nil)
+	p := newCachingProvider(t, store, nil)
 	p.retryBaseDelay = time.Millisecond
 	p.SetTokenExchangeIdPResolver(&fakeIdPResolver{
 		available: true,
@@ -720,7 +723,7 @@ func TestGetExchangedAccessTokenUseIdPCredentialsMissingClientID(t *testing.T) {
 	server := tokenEndpointStub(t, &hits, nil, "unused", 3600)
 	defer server.Close()
 
-	p := NewOAuth2Provider(nil, nil)
+	p := newCachingProvider(t, nil, nil)
 	p.retryBaseDelay = time.Millisecond
 	p.SetTokenExchangeIdPResolver(&fakeIdPResolver{
 		available: true,
@@ -752,7 +755,7 @@ func TestRefreshExchangeAdminTokenUseIdPCredentialsMissingClientID(t *testing.T)
 	config := useIdPCredentialsClientConfig()
 	store.mcpClients = map[string]*schemas.MCPClientConfig{config.ID: config}
 
-	p := NewOAuth2Provider(store, nil)
+	p := newCachingProvider(t, store, nil)
 	p.retryBaseDelay = time.Millisecond
 	p.SetTokenExchangeIdPResolver(&fakeIdPResolver{
 		available: true,
@@ -785,7 +788,7 @@ func TestRefreshExchangeAdminTokenUseIdPCredentialsMissingClientID(t *testing.T)
 // test can set what StoredSubjectToken answers.
 func newStoredSubjectProvider(t *testing.T, tokenURL string, resolver *fakeIdPResolver) *OAuth2Provider {
 	t.Helper()
-	p := NewOAuth2Provider(nil, nil)
+	p := newCachingProvider(t, nil, nil)
 	p.retryBaseDelay = time.Millisecond
 	resolver.available = true
 	resolver.idp = &schemas.TokenExchangeIdP{TokenEndpoint: tokenURL, GrantShape: schemas.TokenExchangeGrantRFC8693}
@@ -1205,7 +1208,7 @@ func TestGetExchangedAccessTokenStoredSignInExpired(t *testing.T) {
 // reads the stored sign-in.
 func TestGetExchangedAccessTokenStoredSubjectUnavailable(t *testing.T) {
 	resolver := &fakeIdPResolver{stored: "stored-access-token"}
-	p := NewOAuth2Provider(nil, nil)
+	p := newCachingProvider(t, nil, nil)
 	p.SetTokenExchangeIdPResolver(resolver) // available is false
 
 	_, err := p.GetExchangedAccessToken(storedSubjectContext(grant.CredentialEdgeSession), exchangeTestClientConfig())
@@ -1394,7 +1397,7 @@ func TestExchangeAdminCredentialStoredSubjectRetryTransient(t *testing.T) {
 // reports the exchange as unavailable and never reads the sign-in.
 func TestExchangeAdminCredentialStoredSubjectUnavailable(t *testing.T) {
 	resolver := &fakeIdPResolver{stored: "stored-access-token"}
-	p := NewOAuth2Provider(nil, nil)
+	p := newCachingProvider(t, nil, nil)
 	p.SetTokenExchangeIdPResolver(resolver) // available is false
 
 	_, err := p.ExchangeAdminCredential(storedSubjectContext(grant.CredentialSessionToken), exchangeTestClientConfig())
@@ -1588,14 +1591,16 @@ func (l *idjagLegs) idjagClientConfig(withOverride bool) *schemas.MCPClientConfi
 }
 
 // newIDJAGProvider wires a provider whose IdP is l.idp, with SSO app credentials.
-func (l *idjagLegs) newIDJAGProvider(resolver *idjagSubjectResolver) *OAuth2Provider {
-	return l.newIDJAGProviderWithStore(resolver, nil)
+func (l *idjagLegs) newIDJAGProvider(t testing.TB, resolver *idjagSubjectResolver) *OAuth2Provider {
+	t.Helper()
+	return l.newIDJAGProviderWithStore(t, resolver, nil)
 }
 
 // newIDJAGProviderWithStore is newIDJAGProvider over a config store, for the
 // retained admin credential paths.
-func (l *idjagLegs) newIDJAGProviderWithStore(resolver *idjagSubjectResolver, store configstore.ConfigStore) *OAuth2Provider {
-	p := NewOAuth2Provider(store, nil)
+func (l *idjagLegs) newIDJAGProviderWithStore(t testing.TB, resolver *idjagSubjectResolver, store configstore.ConfigStore) *OAuth2Provider {
+	t.Helper()
+	p := newCachingProvider(t, store, nil)
 	p.retryBaseDelay = time.Millisecond
 	resolver.available = true
 	resolver.idp = &schemas.TokenExchangeIdP{TokenEndpoint: l.idp.URL, GrantShape: schemas.TokenExchangeGrantRFC8693, IdPClientID: "sso-app", IdPClientSecret: "sso-secret"}
@@ -1620,7 +1625,7 @@ func subjectResolver(token, tokenType string) *idjagSubjectResolver {
 func TestIDJAGExchange_BothLegsAndCaching(t *testing.T) {
 	l := newIDJAGLegs(t)
 	resolver := subjectResolver("okta-refresh", schemas.TokenTypeRefreshToken)
-	p := l.newIDJAGProvider(resolver)
+	p := l.newIDJAGProvider(t, resolver)
 	cfg := l.idjagClientConfig(true)
 	ctx := idjagUserContext()
 
@@ -1673,7 +1678,7 @@ func TestIDJAGExchange_BothLegsAndCaching(t *testing.T) {
 func TestIDJAGExchange_ReusesGrantUntilExpiry(t *testing.T) {
 	l := newIDJAGLegs(t)
 	resolver := subjectResolver("okta-refresh", schemas.TokenTypeRefreshToken)
-	p := l.newIDJAGProvider(resolver)
+	p := l.newIDJAGProvider(t, resolver)
 	cfg := l.idjagClientConfig(true)
 	ctx := idjagUserContext()
 	key := idjagGrantKey{userID: "user-1", clientID: cfg.ID}
@@ -1724,7 +1729,7 @@ func TestIDJAGExchange_ReusesGrantUntilExpiry(t *testing.T) {
 
 func TestIDJAGExchange_RejectedGrantIsReplaced(t *testing.T) {
 	l := newIDJAGLegs(t)
-	p := l.newIDJAGProvider(subjectResolver("okta-refresh", schemas.TokenTypeRefreshToken))
+	p := l.newIDJAGProvider(t, subjectResolver("okta-refresh", schemas.TokenTypeRefreshToken))
 	cfg := l.idjagClientConfig(true)
 	ctx := idjagUserContext()
 	key := idjagGrantKey{userID: "user-1", clientID: cfg.ID}
@@ -1795,7 +1800,7 @@ func TestIDJAGExchange_ClientSecretPostWhenOnlyAdvertised(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			l := newIDJAGLegs(t)
 			l.asAuthMethods = tc.methods
-			p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+			p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 			cfg := l.idjagClientConfig(tc.configured)
 			cfg.TokenExchange.ResourceClientAuthMethod = tc.method
 			if _, err := p.GetExchangedAccessToken(idjagUserContext(), cfg); err != nil {
@@ -1814,10 +1819,10 @@ func TestIDJAGExchange_ClientSecretPostWhenOnlyAdvertised(t *testing.T) {
 	}
 }
 
-// TestIDJAGGrantCache_BoundedAndExpiring checks held ID-JAGs stay within the
-// cache capacity and an expired one is a miss.
-func TestIDJAGGrantCache_BoundedAndExpiring(t *testing.T) {
-	c := newIDJAGGrantCache(2)
+// TestIDJAGGrantCache_Expiring checks a held ID-JAG is reused until it expires, an expired one is a
+// miss, and evictWhere drops matching grants.
+func TestIDJAGGrantCache_Expiring(t *testing.T) {
+	c := newTestGrantCache(t)
 	live := time.Now().Add(time.Minute)
 	hold := func(key idjagGrantKey, grant *idjagGrant) {
 		t.Helper()
@@ -1828,11 +1833,8 @@ func TestIDJAGGrantCache_BoundedAndExpiring(t *testing.T) {
 	for _, user := range []string{"u1", "u2", "u3"} {
 		hold(idjagGrantKey{userID: user, clientID: "c"}, &idjagGrant{assertion: user, expiresAt: live})
 	}
-	if c.cache.Len() != 2 {
-		t.Fatalf("len = %d, want the capacity of 2", c.cache.Len())
-	}
-	if _, ok := c.load(idjagGrantKey{userID: "u1", clientID: "c"}); ok {
-		t.Fatal("the least recently used grant must be evicted")
+	if _, ok := c.load(idjagGrantKey{userID: "u1", clientID: "c"}); !ok {
+		t.Fatal("a live grant must be held")
 	}
 	hold(idjagGrantKey{userID: "old", clientID: "c"}, &idjagGrant{expiresAt: time.Now().Add(-time.Second)})
 	if _, ok := c.load(idjagGrantKey{userID: "old", clientID: "c"}); ok {
@@ -1846,7 +1848,7 @@ func TestIDJAGGrantCache_BoundedAndExpiring(t *testing.T) {
 
 func TestIDJAGExchange_SendsConfiguredResource(t *testing.T) {
 	l := newIDJAGLegs(t)
-	p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+	p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 	cfg := l.idjagClientConfig(true)
 	cfg.TokenExchange.Resource = "https://linear.app/mcp"
 	if _, err := p.GetExchangedAccessToken(idjagUserContext(), cfg); err != nil {
@@ -1863,7 +1865,7 @@ func TestIDJAGExchange_SendsConfiguredResource(t *testing.T) {
 // is required.
 func TestIDJAGExchange_AlwaysUsesSSOApplication(t *testing.T) {
 	l := newIDJAGLegs(t)
-	p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+	p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 	cfg := l.idjagClientConfig(true)
 	cfg.TokenExchange.UseIdPCredentials = false
 	cfg.TokenExchange.ClientID = nil
@@ -1875,7 +1877,7 @@ func TestIDJAGExchange_AlwaysUsesSSOApplication(t *testing.T) {
 	}
 
 	l = newIDJAGLegs(t)
-	p = l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+	p = l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 	cfg = l.idjagClientConfig(true)
 	cfg.TokenExchange.UseIdPCredentials = false
 	cfg.TokenExchange.ClientID = schemas.NewSecretVar("dedicated-app")
@@ -1889,7 +1891,7 @@ func TestIDJAGExchange_AlwaysUsesSSOApplication(t *testing.T) {
 
 func TestIDJAGExchange_DiscoversUpstreamTokenEndpoint(t *testing.T) {
 	l := newIDJAGLegs(t)
-	p := l.newIDJAGProvider(subjectResolver("okta-id-token", schemas.TokenTypeIDToken))
+	p := l.newIDJAGProvider(t, subjectResolver("okta-id-token", schemas.TokenTypeIDToken))
 	ctx := idjagUserContext()
 	if _, err := p.GetExchangedAccessToken(ctx, l.idjagClientConfig(false)); err != nil {
 		t.Fatalf("GetExchangedAccessToken: %v", err)
@@ -1906,14 +1908,14 @@ func TestIDJAGExchange_DiscoversUpstreamTokenEndpoint(t *testing.T) {
 		t.Fatalf("err = %v, want rediscovery after the client is evicted", err)
 	}
 
-	p2 := l.newIDJAGProvider(subjectResolver("okta-id-token", schemas.TokenTypeIDToken))
+	p2 := l.newIDJAGProvider(t, subjectResolver("okta-id-token", schemas.TokenTypeIDToken))
 	if _, err := p2.GetExchangedAccessToken(ctx, l.idjagClientConfig(false)); err == nil || !strings.Contains(err.Error(), "jwt-bearer") {
 		t.Fatalf("err = %v, want a jwt-bearer support error", err)
 	}
 
 	// No grant list at all means the default grants only (RFC 8414), not jwt-bearer.
 	l.asGrantTypes = nil
-	p3 := l.newIDJAGProvider(subjectResolver("okta-id-token", schemas.TokenTypeIDToken))
+	p3 := l.newIDJAGProvider(t, subjectResolver("okta-id-token", schemas.TokenTypeIDToken))
 	if _, err := p3.GetExchangedAccessToken(ctx, l.idjagClientConfig(false)); err == nil || !strings.Contains(err.Error(), "jwt-bearer") {
 		t.Fatalf("err = %v, want a jwt-bearer support error for metadata without grant_types_supported", err)
 	}
@@ -1942,7 +1944,7 @@ func TestIDJAGExchange_DiscoversFromTheAudience(t *testing.T) {
 	}))
 	t.Cleanup(evil.Close)
 	l.prmAuthServers = []string{evil.URL}
-	p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+	p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 	token, err := p.GetExchangedAccessToken(idjagUserContext(), l.idjagClientConfig(false))
 	if err != nil || token != "saas-token" {
 		t.Fatalf("token=%q err=%v, want the audience's own token endpoint used", token, err)
@@ -1958,7 +1960,7 @@ func TestIDJAGExchange_DiscoversFromTheAudience(t *testing.T) {
 func TestIDJAGExchange_DiscoversJWTBearerOnlyServer(t *testing.T) {
 	l := newIDJAGLegs(t)
 	l.asNoAuthorize = true
-	p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+	p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 	if token, err := p.GetExchangedAccessToken(idjagUserContext(), l.idjagClientConfig(false)); err != nil || token != "saas-token" {
 		t.Fatalf("token=%q err=%v, want the discovered token endpoint used", token, err)
 	}
@@ -1970,7 +1972,7 @@ func TestIDJAGExchange_DiscoversJWTBearerOnlyServer(t *testing.T) {
 func TestIDJAGExchange_RefusesIssuerMismatch(t *testing.T) {
 	l := newIDJAGLegs(t)
 	l.asIssuer = "https://elsewhere.example"
-	p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+	p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 	_, err := p.GetExchangedAccessToken(idjagUserContext(), l.idjagClientConfig(false))
 	if err == nil || !strings.Contains(err.Error(), "resource_token_endpoint") {
 		t.Fatalf("err = %v, want an issuer mismatch naming resource_token_endpoint", err)
@@ -1985,7 +1987,7 @@ func TestIDJAGExchange_RefusesIssuerMismatch(t *testing.T) {
 // removed, a forced refresh) keeps that grant from being held afterwards.
 func TestIDJAGExchange_EvictionDuringIssueWins(t *testing.T) {
 	l := newIDJAGLegs(t)
-	p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+	p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 	cfg := l.idjagClientConfig(true)
 	l.duringIdP = func() { p.EvictUserTokensByMCPClient(cfg.ID) }
 	if _, err := p.GetExchangedAccessToken(idjagUserContext(), cfg); err != nil {
@@ -2001,7 +2003,7 @@ func TestIDJAGExchange_EvictionDuringIssueWins(t *testing.T) {
 // itself, so it reflects the policy at the time it was run.
 func TestIDJAGAdminCredential_VerificationAsksTheIdP(t *testing.T) {
 	l := newIDJAGLegs(t)
-	p := l.newIDJAGProvider(subjectResolver("admin-id", schemas.TokenTypeIDToken))
+	p := l.newIDJAGProvider(t, subjectResolver("admin-id", schemas.TokenTypeIDToken))
 	cfg := l.idjagClientConfig(true)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var first atomic.Bool
@@ -2044,7 +2046,7 @@ func TestIDJAGAdminCredential_VerificationAsksTheIdP(t *testing.T) {
 func TestIDJAGExchange_RejectsPlainHTTPDiscoveredEndpoint(t *testing.T) {
 	l := newIDJAGLegs(t)
 	l.asTokenEndpoint = "http://saas.example.com/token"
-	p := l.newIDJAGProvider(subjectResolver("okta-id-token", schemas.TokenTypeIDToken))
+	p := l.newIDJAGProvider(t, subjectResolver("okta-id-token", schemas.TokenTypeIDToken))
 	_, err := p.GetExchangedAccessToken(idjagUserContext(), l.idjagClientConfig(false))
 	if err == nil || !strings.Contains(err.Error(), "not https") {
 		t.Fatalf("err = %v, want a non-https token endpoint refusal", err)
@@ -2057,7 +2059,7 @@ func TestIDJAGExchange_RejectsPlainHTTPDiscoveredEndpoint(t *testing.T) {
 func TestIDJAGExchange_SubjectResolution(t *testing.T) {
 	l := newIDJAGLegs(t)
 	resolver := subjectResolver("stored-refresh", schemas.TokenTypeRefreshToken)
-	p := l.newIDJAGProvider(resolver)
+	p := l.newIDJAGProvider(t, resolver)
 	if _, err := p.GetExchangedAccessToken(idjagUserContext(), l.idjagClientConfig(true)); err != nil {
 		t.Fatalf("stored-session exchange: %v", err)
 	}
@@ -2065,7 +2067,7 @@ func TestIDJAGExchange_SubjectResolution(t *testing.T) {
 		t.Fatalf("stored session subject was not used")
 	}
 
-	empty := l.newIDJAGProvider(&idjagSubjectResolver{})
+	empty := l.newIDJAGProvider(t, &idjagSubjectResolver{})
 	if _, err := empty.GetExchangedAccessToken(idjagUserContext(), l.idjagClientConfig(true)); !errors.Is(err, schemas.ErrExchangeSubjectTokenMissing) {
 		t.Fatalf("err = %v, want ErrExchangeSubjectTokenMissing", err)
 	}
@@ -2081,7 +2083,7 @@ func TestIDJAGExchange_Rejections(t *testing.T) {
 	t.Run("identity provider issues the wrong token type", func(t *testing.T) {
 		l := newIDJAGLegs(t)
 		l.issuedTokenType = "urn:ietf:params:oauth:token-type:access_token"
-		p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+		p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 		_, err := p.GetExchangedAccessToken(idjagUserContext(), l.idjagClientConfig(true))
 		if err == nil || l.asHits.Load() != 0 {
 			t.Fatalf("err=%v as hits=%d, want refusal before leg 2", err, l.asHits.Load())
@@ -2090,7 +2092,7 @@ func TestIDJAGExchange_Rejections(t *testing.T) {
 	t.Run("upstream refuses the ID-JAG", func(t *testing.T) {
 		l := newIDJAGLegs(t)
 		l.asStatus = http.StatusBadRequest
-		p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+		p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 		_, err := p.GetExchangedAccessToken(idjagUserContext(), l.idjagClientConfig(true))
 		var rejected *schemas.TokenExchangeRejectedError
 		if !errors.As(err, &rejected) || !strings.Contains(rejected.Detail, "user not linked") {
@@ -2102,7 +2104,7 @@ func TestIDJAGExchange_Rejections(t *testing.T) {
 func TestIDJAGAdminCredential_RetainsRefreshSubject(t *testing.T) {
 	l := newIDJAGLegs(t)
 	resolver := subjectResolver("admin-refresh", schemas.TokenTypeRefreshToken)
-	p := l.newIDJAGProvider(resolver)
+	p := l.newIDJAGProvider(t, resolver)
 	response, err := p.ExchangeAdminCredential(idjagUserContext(), l.idjagClientConfig(true))
 	if err != nil {
 		t.Fatalf("ExchangeAdminCredential: %v", err)
@@ -2132,7 +2134,7 @@ func TestIDJAGAdminCredential_RenewsFromLiveSession(t *testing.T) {
 	cfg := l.idjagClientConfig(true)
 	store.mcpClients = map[string]*schemas.MCPClientConfig{cfg.ID: cfg}
 	resolver := subjectResolver("admin-refresh", schemas.TokenTypeRefreshToken)
-	p := l.newIDJAGProviderWithStore(resolver, store)
+	p := l.newIDJAGProviderWithStore(t, resolver, store)
 	ctx := idjagUserContext()
 
 	response, err := p.ExchangeAdminCredential(ctx, cfg)
@@ -2248,7 +2250,7 @@ func TestIDJAGExchange_PrivateKeyJWTClientAuth(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			l := newIDJAGLegs(t)
-			p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+			p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 			cfg := l.idjagClientConfig(true)
 			cfg.TokenExchange.ResourceClientSecret = nil
 			cfg.TokenExchange.ResourcePrivateKey = schemas.NewSecretVar(tc.pem)
@@ -2279,7 +2281,7 @@ func TestIDJAGExchange_PrivateKeyJWTClientAuth(t *testing.T) {
 
 	t.Run("unparseable key", func(t *testing.T) {
 		l := newIDJAGLegs(t)
-		p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+		p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 		cfg := l.idjagClientConfig(true)
 		cfg.TokenExchange.ResourceClientSecret = nil
 		cfg.TokenExchange.ResourcePrivateKey = schemas.NewSecretVar("not a pem")
@@ -2298,7 +2300,7 @@ func TestIDJAGExchange_PrivateKeyJWTClientAuth(t *testing.T) {
 // a request that merely names the user.
 func TestIDJAGExchange_CallerSignedInAsThemselves(t *testing.T) {
 	l := newIDJAGLegs(t)
-	p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+	p := l.newIDJAGProvider(t, subjectResolver("t", schemas.TokenTypeIDToken))
 	cfg := l.idjagClientConfig(true)
 	if _, err := p.GetExchangedAccessToken(userExchangeContext(""), cfg); !errors.Is(err, schemas.ErrExchangeSubjectTokenMissing) {
 		t.Fatalf("err = %v, want ErrExchangeSubjectTokenMissing for a request not signed in as the user", err)
@@ -2316,7 +2318,7 @@ func TestIDJAGExchange_CallerSignedInAsThemselves(t *testing.T) {
 // the identity provider for another: only a refused grant is worth a new one.
 func TestIDJAGExchange_ClientRefusalKeepsGrant(t *testing.T) {
 	l := newIDJAGLegs(t)
-	p := l.newIDJAGProvider(subjectResolver("okta-refresh", schemas.TokenTypeRefreshToken))
+	p := l.newIDJAGProvider(t, subjectResolver("okta-refresh", schemas.TokenTypeRefreshToken))
 	cfg := l.idjagClientConfig(true)
 	ctx := idjagUserContext()
 	key := idjagGrantKey{userID: "user-1", clientID: cfg.ID}
@@ -2438,5 +2440,29 @@ func TestValidateProfile(t *testing.T) {
 	}
 	if (&schemas.MCPTokenExchangeConfig{Audience: "a"}).ValidateProfile() != nil {
 		t.Fatal("the direct profile needs no id_jag fields")
+	}
+}
+
+// TestResourceEndpointGoesWithItsMCPClient checks that a discovered upstream token endpoint is
+// state of its MCP client: removing the client from the live store drops the endpoint.
+func TestResourceEndpointGoesWithItsMCPClient(t *testing.T) {
+	live := testLiveStore(t)
+	p, err := NewOAuth2Provider(nil, live, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &registry.MCPClient{Config: schemas.MCPClientConfig{ID: "client-1", Name: "one"}}
+	if err := live.LoadRecords(context.Background(), []livestore.Record{livestore.Rec(live.Collections.MCPClients, client)}); err != nil {
+		t.Fatal(err)
+	}
+	p.resourceEndpoints.Put("client-1", &resourceEndpoint{issuer: "https://as.example", endpoint: "https://as.example/token", fetchedAt: time.Now()})
+	if _, ok := p.resourceEndpoints.Get("client-1"); !ok {
+		t.Fatal("test setup: the endpoint must be cached")
+	}
+	if err := live.Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindMCPClient, ID: "client-1", Remove: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p.resourceEndpoints.Get("client-1"); ok {
+		t.Fatal("removing the MCP client must drop its cached endpoint")
 	}
 }

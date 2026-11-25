@@ -39,7 +39,7 @@ export function EndpointView({ endpoint, onRequestDelete }: { endpoint: Relay; o
 		<div className="flex w-full flex-col gap-6 pb-6 md:min-h-0 md:flex-1 md:pb-0" data-testid="relay-view">
 			<EndpointConfigSheet show={showConfigSheet} onCancel={() => setShowConfigSheet(false)} endpoint={endpoint} />
 			<Sheet open={showTestSheet} onOpenChange={setShowTestSheet}>
-				<SheetContent className="p-0 pt-4 sm:max-w-[50%]" data-testid="relay-preview-sheet">
+				<SheetContent resizeKey="relay-endpoint-preview" className="p-0 pt-4 sm:max-w-[50%]" data-testid="relay-preview-sheet">
 					<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 						<SheetTitle>{t("relays.view.testSheetTitle")}</SheetTitle>
 						<SheetDescription>{t("relays.view.testSheetDescription", { name: endpoint.name })}</SheetDescription>

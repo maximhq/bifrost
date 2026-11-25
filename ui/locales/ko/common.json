@@ -191,8 +191,7 @@
 		"toggle": "사이드바 전환"
 	},
 	"sheet": {
-		"collapse": "접기",
-		"expand": "펼치기"
+		"resizeHandle": "패널 크기 조정"
 	},
 	"tabs": {
 		"showMore_one": "탭 {{count}}개 더 보기",

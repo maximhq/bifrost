@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -22,20 +23,21 @@ import (
 // named alpha by name was saved, granted nothing, and its endpoint listed nothing.
 func TestValidateToolSpecs_NamesAClientByID(t *testing.T) {
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
-		Account: lib.NewBaseAccount(&lib.Config{}),
+		Account: lib.NewBaseAccount(&lib.Config{LiveStore: liveStoreForTest(t)}),
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
 	})
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
 	// A disabled client registers without connecting to anything.
-	manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &mockLogger{}, nil)
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+	alpha := &schemas.MCPClientConfig{
 		ID:               "client-alpha",
 		Name:             "alpha",
 		ConnectionType:   schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:0/mcp"),
 		Disabled:         true,
-	}))
+	}
+	manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, mcpClientsAccount{clients: []*schemas.MCPClientConfig{alpha}}, nil, &mockLogger{}, nil)
+	require.NoError(t, manager.AddClient(context.Background(), alpha.ID))
 	client.SetMCPManager(manager)
 	h := &VirtualMCPHandler{client: client, logger: &mockLogger{}}
 
@@ -101,4 +103,59 @@ func TestListVirtualMCPs_FiltersByMCPClientID(t *testing.T) {
 
 	body = list("limit=2")
 	assert.Equal(t, float64(4), body["total_count"], "without the parameter every Virtual MCP is listed")
+}
+
+// failingAssignmentGovernanceManager is a governance manager whose Virtual MCP assignment reload
+// fails. It records whether each reload it was asked for was an attach or a detach.
+type failingAssignmentGovernanceManager struct {
+	GovernanceManager
+	reloads []bool
+}
+
+// ReloadVirtualMCPAssignment records the reload and fails it.
+func (m *failingAssignmentGovernanceManager) ReloadVirtualMCPAssignment(_ context.Context, _ string, _ uint, attached bool) error {
+	m.reloads = append(m.reloads, attached)
+	return errors.New("reload failed")
+}
+
+// TestVirtualMCPAssignmentReloadFailureAnswers500 checks that attaching or detaching a Virtual MCP
+// answers 500 when the key's in-memory state fails to reload, as other writes do, rather than
+// reporting success while the key keeps its previous assignment. The write itself stands.
+func TestVirtualMCPAssignmentReloadFailureAnswers500(t *testing.T) {
+	store := setupPricingOverrideHandlerStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateVirtualKey(ctx, &configstoreTables.TableVirtualKey{
+		ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: new(true),
+	}))
+	def := &configstoreTables.TableVirtualMCP{
+		Name: "Bundle", Enabled: true, ParsedTools: []configstoreTables.MCPToolSpec{{MCPClientID: "client", ToolNames: []string{"*"}}},
+	}
+	require.NoError(t, store.CreateVirtualMCP(ctx, def))
+	manager := &failingAssignmentGovernanceManager{}
+	h := &VirtualMCPHandler{store: &lib.Config{ConfigStore: store}, governanceManager: manager, logger: &mockLogger{}}
+
+	call := func(handle func(*fasthttp.RequestCtx)) *fasthttp.RequestCtx {
+		t.Helper()
+		reqCtx := newTestRequestCtx("")
+		reqCtx.SetUserValue("id", strconv.FormatUint(uint64(def.ID), 10))
+		reqCtx.SetUserValue("vkId", "vk-1")
+		handle(reqCtx)
+		return reqCtx
+	}
+
+	attach := call(h.attachVirtualKey)
+	assert.Equal(t, fasthttp.StatusInternalServerError, attach.Response.StatusCode(), string(attach.Response.Body()))
+	assert.Contains(t, string(attach.Response.Body()), "Virtual MCP assignment attached in database but failed to reload in-memory state")
+	ids, err := store.GetVirtualMCPIDsForVirtualKey(ctx, "vk-1")
+	require.NoError(t, err)
+	assert.Equal(t, []uint{def.ID}, ids, "the attachment stands")
+
+	detach := call(h.detachVirtualKey)
+	assert.Equal(t, fasthttp.StatusInternalServerError, detach.Response.StatusCode(), string(detach.Response.Body()))
+	assert.Contains(t, string(detach.Response.Body()), "Virtual MCP assignment detached in database but failed to reload in-memory state")
+	ids, err = store.GetVirtualMCPIDsForVirtualKey(ctx, "vk-1")
+	require.NoError(t, err)
+	assert.Empty(t, ids, "the detachment stands")
+
+	assert.Equal(t, []bool{true, false}, manager.reloads)
 }

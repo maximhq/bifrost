@@ -19,16 +19,278 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestDocumentCitationsMockProvider(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		doc := gjson.GetBytes(body, "messages.0.content.0.document")
+		assert.True(t, doc.Get("citations.enabled").Bool(), "%s", body)
+		assert.Equal(t, "Budget: $4.2M.", doc.Get("source.content.0.text").Str, "%s", body)
+		assert.False(t, doc.Get("format").Exists(), "%s", body)
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		encoder := eventstream.NewEncoder()
+		for _, event := range []struct{ kind, payload string }{
+			{"messageStart", `{"role":"assistant"}`},
+			{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}}`},
+			{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"$4.2M."}}`},
+			{"contentBlockStop", `{"contentBlockIndex":0}`},
+			{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}}`},
+			{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"text":" Approved."}}`},
+			{"contentBlockStop", `{"contentBlockIndex":1}`},
+			{"messageStop", `{"stopReason":"end_turn"}`},
+			{"metadata", `{"usage":{"inputTokens":8,"outputTokens":4,"totalTokens":12}}`},
+		} {
+			assert.NoError(t, encoder.Encode(w, eventstream.Message{
+				Headers: eventstream.Headers{
+					{Name: ":message-type", Value: eventstream.StringValue("event")},
+					{Name: ":event-type", Value: eventstream.StringValue(event.kind)},
+					{Name: ":content-type", Value: eventstream.StringValue("application/json")},
+				}, Payload: []byte(event.payload),
+			}))
+		}
+	}))
+	defer server.Close()
+	provider := newTestProviderWithServer(t, server)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	var ingress BedrockConverseRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"name":"pack","source":{"content":[{"text":"Budget: $4.2M."}]},"citations":{"enabled":true}}},{"text":"Cite the budget."}]}]}`), &ingress))
+	ingress.ModelID = "global.anthropic.claude-haiku-5-5"
+	req, err := ingress.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	req.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")}
+	req.Params.MaxOutputTokens = schemas.Ptr(128)
+	stream, bErr := provider.ResponsesStream(ctx, noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bErr)
+	var text string
+	annotations, completed := 0, false
+	closedBlocks := 0
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError)
+		ev := chunk.BifrostResponsesStreamResponse
+		if ev == nil {
+			continue
+		}
+		switch ev.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+			if ev.OutputIndex != nil && *ev.OutputIndex == 1 {
+				require.Equal(t, 1, closedBlocks, "native contentBlockStop must close the first item before the next delta")
+			}
+			require.Zero(t, *ev.ContentIndex)
+			text += *ev.Delta
+		case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+			annotations++
+			require.Equal(t, "content_block_location", ev.Annotation.Type)
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			closedBlocks++
+		case schemas.ResponsesStreamResponseTypeCompleted:
+			completed = true
+			require.Len(t, ev.Response.Output, 2)
+			require.Len(t, ev.Response.Output[0].Content.ContentBlocks[0].Annotations, 1)
+			require.Len(t, ev.Response.Output[1].Content.ContentBlocks[0].Annotations, 1)
+		}
+	}
+	require.True(t, completed)
+	require.Equal(t, "$4.2M. Approved.", text)
+	require.Equal(t, 2, annotations)
+	require.Equal(t, 2, closedBlocks)
+	require.Equal(t, int32(1), calls.Load())
+	// Invalid combinations must fail locally, before dispatching to AWS.
+	req.Input[0].Content.ContentBlocks[0].Citations.Enabled = schemas.Ptr(false)
+	invalidCtx, cancelInvalid := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancelInvalid()
+	invalidStream, bErr := provider.ResponsesStream(invalidCtx, noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, invalidStream)
+	require.NotNil(t, bErr)
+	require.Equal(t, 400, *bErr.StatusCode)
+	require.Equal(t, int32(1), calls.Load())
+	require.Contains(t, bErr.Error.Message, "citations.enabled")
+}
+
+func TestDocumentCitationsPooledStateReset(t *testing.T) {
+	state := acquireBedrockResponsesStreamState()
+	state.TextAnnotations = map[int][]schemas.ResponsesOutputMessageContentTextAnnotation{0: {{Type: "char_location"}}}
+	state.flush()
+	require.Empty(t, state.TextAnnotations, "pool reset must not retain previous citations")
+	releaseBedrockResponsesStreamState(state)
+}
+
+func TestDocumentCitationsCustomToolResult(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		input := toolResultDocumentInput(&schemas.ResponsesInputMessageContentBlockFile{
+			Filename: schemas.Ptr("pack"), FileContent: []byte(`[{"type":"text","text":"Budget: $4.2M."}]`),
+		})
+		input[0].Output.ResponsesFunctionToolCallOutputBlocks[0].Citations = &schemas.Citations{Enabled: &enabled}
+		out, err := ToBedrockResponsesRequest(testBedrockCtx(), &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock, Model: "global.anthropic.claude-haiku-5-5", Input: input,
+		})
+		if !enabled {
+			bad, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "tool-document errors must not be swallowed: %v", err)
+			require.Equal(t, 400, *bad.StatusCode)
+			continue
+		}
+		require.NoError(t, err)
+		document := requireBedrockToolResult(t, out.Messages).Content[0].Document
+		require.Empty(t, document.Format)
+		require.True(t, document.Citations.Enabled)
+		require.Equal(t, "Budget: $4.2M.", *document.Source.Content[0].Text)
+	}
+}
+
+func TestDocumentCitationsInvalidSources(t *testing.T) {
+	for _, tc := range []struct{ name, fields, message string }{
+		{"missing citations", `"file_content":"Budget."`, "citations.enabled"},
+		{"disabled citations", `"file_content":"Budget.","citations":{"enabled":false}`, "citations.enabled"},
+		{"empty blocks", `"file_content":[],"citations":{"enabled":true}`, "non-empty array"},
+		{"non-text block", `"file_content":[{"type":"input_image"}],"citations":{"enabled":true}`, "only text blocks"},
+		{"missing text", `"file_content":[{"type":"text"}],"citations":{"enabled":true}`, "only text blocks"},
+		{"conflicting data", `"file_content":"Budget.","file_data":"QnVkZ2V0Lg==","citations":{"enabled":true}`, "cannot be combined"},
+		{"conflicting URL", `"file_content":"Budget.","file_url":"https://example.test/pack.txt","citations":{"enabled":true}`, "cannot be combined"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var req schemas.BifrostResponsesRequest
+			require.NoError(t, json.Unmarshal([]byte(`{"provider":"bedrock","model":"global.anthropic.claude-haiku-5-5","input":[{"role":"user","content":[{"type":"input_file","filename":"pack",`+tc.fields+`}]}]}`), &req))
+			_, err := ToBedrockResponsesRequest(testBedrockCtx(), &req)
+			bad, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "got %v", err)
+			require.Equal(t, 400, *bad.StatusCode)
+			require.Contains(t, bad.Error.Message, tc.message)
+		})
+	}
+}
+
+func TestDocumentCitationsCustomContentForms(t *testing.T) {
+	for _, content := range []string{
+		`"Budget: $4.2M.\nAudit: \"March\"."`,
+		`[{"type":"text","text":"Budget: $4.2M.\nAudit: \"March\"."}]`,
+	} {
+		document, err := materializeBedrockDocument(context.Background(), "global.anthropic.claude-haiku-5-5",
+			nil, nil, nil, nil, json.RawMessage(content), &schemas.Citations{Enabled: schemas.Ptr(true)}, bedrockDocumentSourceRequired)
+		require.NoError(t, err)
+		require.Empty(t, document.Format)
+		require.Len(t, document.Source.Content, 1)
+		require.Equal(t, "Budget: $4.2M.\nAudit: \"March\".", *document.Source.Content[0].Text)
+	}
+}
+
+// Custom document content is rendered without a marshal step that could fail and drop the
+// document; the bytes must decode to the same chunks MarshalSorted would produce.
+func TestBedrockDocumentContentJSON(t *testing.T) {
+	type chunk struct {
+		Text *string `json:"text,omitempty"`
+		Type string  `json:"type"`
+	}
+	texts := []string{"Budget: $4.2M.", "quote \" back\\slash", "line\nbreak\ttab\rcr", "ctrl \x00\x01\x1f", "日本語 <b>&</b> \u2028", "bad \xff utf8"}
+	parts := make([]BedrockDocumentContentBlock, 0, len(texts)+1)
+	want := make([]chunk, 0, len(texts)+1)
+	for i := range texts {
+		parts = append(parts, BedrockDocumentContentBlock{Text: &texts[i]})
+		want = append(want, chunk{Text: &texts[i], Type: "text"})
+	}
+	parts = append(parts, BedrockDocumentContentBlock{})
+	want = append(want, chunk{Type: "text"})
+
+	raw := bedrockDocumentContentJSON(parts)
+	require.True(t, json.Valid(raw), "invalid JSON: %s", raw)
+	var got []chunk
+	require.NoError(t, json.Unmarshal(raw, &got))
+	expected, err := providerUtils.MarshalSorted(want)
+	require.NoError(t, err)
+	var wantDecoded []chunk
+	require.NoError(t, json.Unmarshal(expected, &wantDecoded))
+	require.Equal(t, wantDecoded, got)
+
+	simple := bedrockDocumentContentJSON(parts[:1])
+	expectedSimple, err := providerUtils.MarshalSorted(want[:1])
+	require.NoError(t, err)
+	require.Equal(t, string(expectedSimple), string(simple), "key order must stay byte-stable")
+}
+
+func BenchmarkDocumentCitationsConversion(b *testing.B) {
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "global.anthropic.claude-haiku-5-5",
+		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+					Filename: schemas.Ptr("pack"), FileContent: json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."}]`),
+				}, Citations: &schemas.Citations{Enabled: schemas.Ptr(true)},
+			}}},
+		}},
+	}
+	ctx := testBedrockCtx()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToBedrockResponsesRequest(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkOrdinaryConverseStream(b *testing.B) {
+	benchmarkConverseStream(b, "global.anthropic.claude-haiku-5-5", []BedrockStreamEvent{
+		{Role: schemas.Ptr("assistant")},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}},
+		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
+	})
+}
+
+func BenchmarkDocumentCitationsStream(b *testing.B) {
+	var citation BedrockCitation
+	if err := json.Unmarshal([]byte(`{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}`), &citation); err != nil {
+		b.Fatal(err)
+	}
+	benchmarkConverseStream(b, "global.anthropic.claude-haiku-5-5", []BedrockStreamEvent{
+		{Role: schemas.Ptr("assistant")},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Citation: &citation}},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}},
+		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
+	})
+}
+
+func BenchmarkConverseGroundingStream(b *testing.B) {
+	benchmarkConverseStream(b, "us.amazon.nova-2-lite-v1:0", []BedrockStreamEvent{
+		{Role: schemas.Ptr("assistant")},
+		{ContentBlockIndex: schemas.Ptr(0), Start: &BedrockContentBlockStart{ToolUse: &BedrockToolUseStart{ToolUseID: "grounding", Name: string(BedrockSystemToolNovaGrounding)}}},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Citation: &BedrockCitation{Location: BedrockCitationLocation{Web: &BedrockWebCitationLocation{URL: "https://example.com", Domain: "example.com"}}}}},
+		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
+	})
+}
+
+func benchmarkConverseStream(b *testing.B, model string, chunks []BedrockStreamEvent) {
+	b.Helper()
+	b.ReportAllocs()
+	for b.Loop() {
+		state := acquireBedrockResponsesStreamState()
+		state.Model = &model
+		sequence := 0
+		for i := range chunks {
+			events, err, _ := chunks[i].ToBifrostResponsesStream(sequence, state)
+			if err != nil {
+				b.Fatal(err)
+			}
+			sequence += len(events)
+		}
+		FinalizeBedrockStream(state, sequence, &schemas.ResponsesResponseUsage{}, nil)
+		releaseBedrockResponsesStreamState(state)
+	}
+}
 
 // redirectTransport is an http.RoundTripper that rewrites every request's
 // host/scheme to a fixed target URL, used to redirect provider requests to a
@@ -1560,6 +1822,72 @@ func TestConverseSyntheticStructuredOutput_StreamCallerToolAfterSyntheticTool(t 
 		assert.Equal(t, `{"city":"Canberra"}`, text.String(), "caller tool arguments leaked into output_text")
 		assert.Contains(t, args.String(), "Australia")
 	})
+}
+
+// Unary twin of the stream case: prose beside the synthetic tool, cited or not, must not replace
+// the tool's JSON in choices[].message.content.
+func TestConverseSyntheticStructuredOutput_UnaryChatKeepsJSONOverCitedProse(t *testing.T) {
+	var resp BedrockConverseResponse
+	require.NoError(t, json.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[`+
+		`{"text":"Per the pack, "},`+
+		`{"citationsContent":{"content":[{"text":"the budget is $4.2M."}],"citations":[{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}]}},`+
+		`{"toolUse":{"toolUseId":"t0","name":"bf_so_budget","input":{"budget":"$4.2M"}}}]}},"stopReason":"tool_use"}`), &resp))
+	ctx := testBedrockCtx()
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, "bf_so_budget")
+	chat, err := resp.ToBifrostChatResponse(ctx, testConverseStreamModel)
+	require.NoError(t, err)
+	content := chat.Choices[0].Message.Content
+	require.NotNil(t, content.ContentStr, "content blocks: %+v", content.ContentBlocks)
+	assert.JSONEq(t, `{"budget":"$4.2M"}`, *content.ContentStr)
+	assert.Empty(t, content.ContentBlocks)
+}
+
+// A citation on the prose block beside the synthetic tool is prose too: it is held and dropped
+// with that block's text, so no annotation or extra message item reaches the structured output.
+func TestConverseSyntheticStructuredOutput_StreamDropsCitedProse(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}, "required": []string{"city"}}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+		writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"citation":{"title":"pack","sourceContent":[{"text":"Canberra."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}},"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"text":"Per the pack, "},"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"t0","name":"bf_so_capital"}},"contentBlockIndex":1}`))
+		writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"city\":\"Canberra\"}"}},"contentBlockIndex":1}`))
+		writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":1}`))
+		writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"tool_use"}`))
+		writeEventStreamEvent(t, w, "metadata", []byte(`{"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":1}}`))
+	}))
+	defer ts.Close()
+	req := testResponsesRequest()
+	req.Model = testConverseStreamModel
+	req.Params = &schemas.ResponsesParameters{Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{
+		Type: "json_schema", Name: schemas.Ptr("capital"), JSONSchema: schemas.JSONSchemaFromMap(schema),
+	}}}
+	stream, bifrostErr := newTestProviderWithServer(t, ts).ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bifrostErr)
+	var text strings.Builder
+	annotations, messages := 0, 0
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError)
+		resp := chunk.BifrostResponsesStreamResponse
+		if resp == nil {
+			continue
+		}
+		switch resp.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+			text.WriteString(*resp.Delta)
+		case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+			annotations++
+		case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+			if resp.Item != nil && resp.Item.Type != nil && *resp.Item.Type == schemas.ResponsesMessageTypeMessage {
+				messages++
+			}
+		}
+	}
+	assert.Equal(t, `{"city":"Canberra"}`, text.String())
+	assert.Zero(t, annotations, "a citation on dropped prose leaked into the structured output")
+	assert.Equal(t, 1, messages, "only the structured-output text item may open")
 }
 
 // TestGrammarLimitRejectionMarksContext pins the trigger for the one tool-path retry: a 400 naming a
