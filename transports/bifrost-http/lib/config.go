@@ -787,6 +787,9 @@ type Config struct {
 	// boot holds the configuration LoadConfig assembles, until loadLiveStore has loaded the live
 	// store and drops it.
 	boot *bootConfig
+	// mcpHeaderAllowlist is the MCP header allowlist view: every MCP client's allowed extra headers
+	// combined, rebuilt when a client changes (see AttachLiveStore). Read-only.
+	mcpHeaderAllowlist atomic.Pointer[schemas.WhiteList]
 
 	// In-memory storage
 	ServerConfig     *ServerConfig
@@ -1402,6 +1405,16 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := loadLiveStore(ctx, config); err != nil {
 		return nil, err
 	}
+	// Shared clients' tools, written to their rows in the background: a state table of the live
+	// store, filled from the rows, since the clients' records carry no tools.
+	sharedDiscoveries, err := mcpdiscovery.NewSharedStore(config.ConfigStore, config.LiveStore, logger)
+	if err != nil {
+		return nil, err
+	}
+	if err := sharedDiscoveries.Load(ctx); err != nil {
+		return nil, err
+	}
+	config.MCPSharedDiscoveryStore = sharedDiscoveries
 	return config, nil
 }
 
@@ -7705,10 +7718,9 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	// Initialize per-user-headers credential provider. Storage parallel of
 	// OAuthProvider for MCPAuthTypePerUserHeaders clients.
 	config.MCPHeadersProvider = mcp_headers.NewProvider(config.ConfigStore, logger)
-	// Discovery stores: shared clients' tools, written to their rows in the
-	// background, and per_user_discovery clients' tools, one set per caller
-	// read through a bounded cache.
-	config.MCPSharedDiscoveryStore = mcpdiscovery.NewSharedStore(config.ConfigStore, logger)
+	// Discovery store for per_user_discovery clients' tools, one set per caller
+	// read through a bounded cache. The shared clients' store keeps its tools in
+	// the live store, so it is built once that has loaded (see LoadConfig).
 	config.MCPPerUserDiscoveryStore = mcpdiscovery.NewPerUserStore(config.ConfigStore, logger)
 
 	// Construct the OAuth token refresh worker, but don't start it here: Start
@@ -8680,6 +8692,17 @@ func (c *Config) removeMCPClient(ctx context.Context, id string) error {
 	return c.refreshRef(ctx, "MCP client", livestore.Ref{Kind: livestore.KindMCPClient, ID: id, Remove: true})
 }
 
+// restoreMCPDiscovery gives the discovery store the discovery an MCP client's row holds, when the
+// store holds none for the client, before the runtime connects the client: its record carries no
+// tools, so this is how a client verified when it was written, or written by another process over
+// the same database, serves the tools its row holds instead of discovering them again. A failed
+// read is only logged: the runtime then discovers the tools itself.
+func (c *Config) restoreMCPDiscovery(ctx context.Context, id string) {
+	if err := c.MCPSharedDiscoveryStore.LoadClient(ctx, id); err != nil {
+		logger.Warn("MCP client %s is discovered again: its stored discovery could not be read: %v", id, err)
+	}
+}
+
 // mcpClientRegistered reports whether the runtime holds the MCP client.
 func (c *Config) mcpClientRegistered(id string) bool {
 	clients, err := c.client.GetMCPClients()
@@ -8944,12 +8967,19 @@ func (c *Config) SetHeaderMatcher(m *HeaderMatcher) {
 }
 
 // GetMCPHeaderCombinedAllowlist returns the combined allowlist for MCP headers across all MCP
-// clients. It reads the live store, so it is safe for concurrent access from hot paths.
+// clients: the view rebuilt whenever a client changes, so a request reads one pointer. The list is
+// shared; callers must not change it.
 func (c *Config) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
-	allowlist := schemas.WhiteList{}
-	if c.LiveStore == nil {
-		return allowlist
+	if allowlist := c.mcpHeaderAllowlist.Load(); allowlist != nil {
+		return *allowlist
 	}
+	return schemas.WhiteList{}
+}
+
+// rebuildMCPHeaderAllowlist recomputes the MCP header allowlist view from the live store's MCP
+// clients: a client allowing every header allows every header, otherwise the clients' lists join.
+func (c *Config) rebuildMCPHeaderAllowlist() {
+	allowlist := schemas.WhiteList{}
 	unrestricted := false
 	c.LiveStore.Collections.MCPClients.Range(func(client *registry.MCPClient) bool {
 		if client.Config.AllowedExtraHeaders.IsUnrestricted() {
@@ -8960,9 +8990,9 @@ func (c *Config) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 		return true
 	})
 	if unrestricted {
-		return schemas.WhiteList{"*"}
+		allowlist = schemas.WhiteList{"*"}
 	}
-	return allowlist
+	c.mcpHeaderAllowlist.Store(&allowlist)
 }
 
 // ReplaceEnabledAgents atomically replaces enabled registration policy state.
@@ -9898,9 +9928,10 @@ func (c *Config) SetBifrostClient(client *bifrost.Bifrost) {
 }
 
 // AddMCPClient connects the MCP client whose row the caller has written: it loads the row into the
-// live store, then the runtime connects the client from it, and its tool prices go into the MCP
-// catalog. When connecting fails the client is dropped from the live store again and the error is
-// returned as is, so the caller can report a failed connect and delete the row.
+// live store and the discovery the row holds into the discovery store, then the runtime connects
+// the client from them, and its tool prices go into the MCP catalog. When connecting fails the
+// client is dropped from the live store again and the error is returned as is, so the caller can
+// report a failed connect and delete the row.
 //
 // A client the live store held before the call is never dropped: the runtime refuses an ID it
 // already has and keeps serving that client, so the live store keeps it too.
@@ -9915,6 +9946,7 @@ func (c *Config) AddMCPClient(ctx context.Context, id string) error {
 	if err := c.refreshMCPClient(ctx, id); err != nil {
 		return err
 	}
+	c.restoreMCPDiscovery(ctx, id)
 	if err := c.client.AddMCPClient(ctx, id); err != nil {
 		if !held {
 			if removeErr := c.removeMCPClient(ctx, id); removeErr != nil {
@@ -10001,7 +10033,8 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string) error {
 }
 
 // UpdateMCPClientCredentials reconnects an existing MCP client with the credentials the caller
-// has written to its row: the live store re-reads the row, then the runtime reconnects from it.
+// has written to its row: the live store re-reads the row, the discovery store takes the discovery
+// the row holds when it has none for the client, then the runtime reconnects from them.
 func (c *Config) UpdateMCPClientCredentials(ctx context.Context, id string) error {
 	if c.client == nil {
 		return fmt.Errorf("bifrost client not set")
@@ -10015,6 +10048,7 @@ func (c *Config) UpdateMCPClientCredentials(ctx context.Context, id string) erro
 	if err := c.refreshMCPClient(ctx, id); err != nil {
 		return err
 	}
+	c.restoreMCPDiscovery(ctx, id)
 	if err := c.client.UpdateMCPClientCredentials(id); err != nil {
 		return fmt.Errorf("failed to update MCP client credentials: %w", err)
 	}

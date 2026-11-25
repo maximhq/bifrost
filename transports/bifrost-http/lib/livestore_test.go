@@ -16,10 +16,12 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
+	"github.com/maximhq/bifrost/framework/mcpdiscovery"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -592,6 +594,101 @@ func TestAddMCPClientAgainKeepsTheHeldClient(t *testing.T) {
 	require.Equal(t, "docs", served.Name)
 }
 
+// newDiscoveryRestoreConfig returns a Config with a database, a discovery store and a runtime
+// keeping shared discoveries in that store. The runtime has no credential store, so a client whose
+// tools are not restored from its row is left without them: the admin credential a discovery
+// needs cannot be resolved.
+func newDiscoveryRestoreConfig(t *testing.T) (*Config, *bifrost.Bifrost) {
+	t.Helper()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	c := providerStore(t, nil)
+	shared, err := mcpdiscovery.NewSharedStore(c.ConfigStore, c.LiveStore, logger)
+	require.NoError(t, err)
+	c.MCPSharedDiscoveryStore = shared
+	client := newNoopProviderClient(t, c)
+	client.SetMCPManager(coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+		SharedDiscoveryStore:  shared,
+		PerUserDiscoveryStore: mcpdiscovery.NewPerUserStore(c.ConfigStore, logger),
+	}, NewBaseAccount(c), nil, logger, nil))
+	c.SetBifrostClient(client)
+	return c, client
+}
+
+// tokenExchangeClient is a token_exchange client, which connects per call and discovers its tools
+// with a retained admin credential.
+func tokenExchangeClient() *schemas.MCPClientConfig {
+	return &schemas.MCPClientConfig{
+		ID: "tx-id", Name: "tx", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1/mcp"), AuthType: schemas.MCPAuthTypeTokenExchange,
+		TokenExchange:  &schemas.MCPTokenExchangeConfig{Audience: "api://saas", ClientID: schemas.NewSecretVar("exchange-app")},
+		ToolsToExecute: schemas.WhiteList{"*"},
+	}
+}
+
+// tokenExchangeTools is the discovery a verification of tokenExchangeClient found: the tool lookup.
+func tokenExchangeTools() map[string]schemas.ChatTool {
+	return map[string]schemas.ChatTool{
+		"tx-lookup": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "tx-lookup"}},
+	}
+}
+
+// requireServesTheRowsTools checks that the runtime serves the MCP client with this ID as healthy,
+// with the one tool tokenExchangeTools holds.
+func requireServesTheRowsTools(t *testing.T, client *bifrost.Bifrost, id string) {
+	t.Helper()
+	clients, err := client.GetMCPClients()
+	require.NoError(t, err)
+	for _, got := range clients {
+		if got.Config.ID != id {
+			continue
+		}
+		names := make([]string, 0, len(got.Tools))
+		for _, tool := range got.Tools {
+			names = append(names, tool.Name)
+		}
+		require.Equal(t, schemas.MCPConnectionStateHealthy, got.State, "last failure: %+v", got.LastFailure)
+		require.Equal(t, []string{"lookup"}, names, "the client serves the tools its row holds")
+		return
+	}
+	require.FailNow(t, "the runtime does not hold the client", id)
+}
+
+// TestAddMCPClientServesTheDiscoveryItsRowHolds checks a client connected while Bifrost runs whose
+// row already holds its discovery: one verified when it was created, or created by another process
+// over the same database. It serves the row's tools at once, as after a restart, without
+// discovering them again, though no admin credential could discover them yet.
+func TestAddMCPClientServesTheDiscoveryItsRowHolds(t *testing.T) {
+	ctx := context.Background()
+	c, client := newDiscoveryRestoreConfig(t)
+	stored := tokenExchangeClient()
+	stored.DiscoveredTools = tokenExchangeTools()
+	require.NoError(t, c.ConfigStore.CreateMCPClientConfig(ctx, stored))
+
+	require.NoError(t, c.AddMCPClient(ctx, stored.ID))
+	requireServesTheRowsTools(t, client, stored.ID)
+}
+
+// TestUpdateMCPClientCredentialsServesTheDiscoveryItsRowHolds checks a per-call client that waited
+// for its admin step and completes it through a credential update once its row holds the
+// discovery: it serves the row's tools at once, without discovering them again.
+func TestUpdateMCPClientCredentialsServesTheDiscoveryItsRowHolds(t *testing.T) {
+	ctx := context.Background()
+	c, client := newDiscoveryRestoreConfig(t)
+	stored := tokenExchangeClient()
+	stored.PendingVerification = true
+	require.NoError(t, c.ConfigStore.CreateMCPClientConfig(ctx, stored))
+	require.NoError(t, c.AddMCPClient(ctx, stored.ID))
+	clients, err := client.GetMCPClients()
+	require.NoError(t, err)
+	require.Len(t, clients, 1)
+	require.Equal(t, schemas.MCPConnectionStatePendingVerification, clients[0].State, "fixture check: the client waits for its admin step")
+
+	require.NoError(t, c.ConfigStore.UpdateMCPClientDiscovery(ctx, stored.ID, &schemas.MCPDiscovery{Tools: tokenExchangeTools()}))
+	require.NoError(t, c.ConfigStore.ClearMCPClientPendingVerification(ctx, stored.ID))
+	require.NoError(t, c.UpdateMCPClientCredentials(ctx, stored.ID))
+	requireServesTheRowsTools(t, client, stored.ID)
+}
+
 // TestMCPClientWritesReachMemoryThroughTheDatabase checks the MCP client write path: the caller
 // writes the row, the runtime takes the client, and only then does the live store load the row,
 // which the Account serves from there. An edit and a removal reach memory the same way.
@@ -636,4 +733,33 @@ func TestMCPClientWritesReachMemoryThroughTheDatabase(t *testing.T) {
 	require.NoError(t, c.RemoveMCPClient(ctx, client.ID))
 	_, err = account.GetConfigForMCPClient(client.ID)
 	require.ErrorIs(t, err, ErrNotFound, "a removed client leaves memory")
+}
+
+// TestMCPHeaderAllowlistFollowsTheClients checks the MCP header allowlist view: it combines every
+// client's allowed extra headers, follows a client's row as it is written and refreshed, and becomes
+// unrestricted while any client allows every header.
+func TestMCPHeaderAllowlistFollowsTheClients(t *testing.T) {
+	ctx := context.Background()
+	c := providerStore(t, nil)
+	client := func(id string, headers ...string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID: id, Name: id, ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("https://" + id + ".example/mcp"),
+			AuthType: schemas.MCPAuthTypeNone, ToolsToExecute: schemas.WhiteList{"*"}, AllowedExtraHeaders: headers,
+		}
+	}
+	require.Empty(t, c.GetMCPHeaderCombinedAllowlist(), "no clients, no headers")
+
+	require.NoError(t, c.ConfigStore.CreateMCPClientConfig(ctx, client("docs", "x-docs")))
+	require.NoError(t, c.ConfigStore.CreateMCPClientConfig(ctx, client("search", "x-search")))
+	require.NoError(t, c.refreshMCPClient(ctx, "docs"))
+	require.NoError(t, c.refreshMCPClient(ctx, "search"))
+	require.ElementsMatch(t, schemas.WhiteList{"x-docs", "x-search"}, c.GetMCPHeaderCombinedAllowlist())
+
+	storeMCPClientEdit(t, c, client("docs", "*"))
+	require.NoError(t, c.refreshMCPClient(ctx, "docs"))
+	require.Equal(t, schemas.WhiteList{"*"}, c.GetMCPHeaderCombinedAllowlist(), "one client allowing every header allows every header")
+
+	require.NoError(t, c.ConfigStore.DeleteMCPClientConfig(ctx, "docs"))
+	require.NoError(t, c.refreshMCPClient(ctx, "docs"))
+	require.Equal(t, schemas.WhiteList{"x-search"}, c.GetMCPHeaderCombinedAllowlist(), "a deleted client's headers go with it")
 }

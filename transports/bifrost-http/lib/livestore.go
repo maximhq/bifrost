@@ -62,17 +62,19 @@ func loadLiveStore(ctx context.Context, config *Config) error {
 		return fmt.Errorf("failed to load live store: %w", err)
 	}
 	config.boot = nil
+	config.rebuildMCPHeaderAllowlist()
 	return nil
 }
 
-// AttachLiveStore makes live the config's live store and keeps the routing view derived from it
-// current: a provider's "name/model" prefix is registered when its record is published and
-// unregistered when it is removed. A refresh calls its subscribers before it returns, so a created
-// provider routes by its prefix once AddProvider returns, before any reload or model discovery, and
-// a provider written elsewhere routes once its refresh returns. Provider keys are served from
-// live.Views.ProviderKeyLists, which the store itself keeps current. Call it once per live store,
-// before live loads, so the configured providers are registered at boot too; a test that builds
-// its own live store calls it the same way. It fails when live is nil.
+// AttachLiveStore makes live the config's live store and keeps the views derived from it current: a
+// provider's "name/model" prefix is registered when its record is published and unregistered when
+// it is removed, and the MCP header allowlist is rebuilt whenever a client changes. A refresh calls
+// its subscribers before it returns, so a created provider routes by its prefix once AddProvider
+// returns, before any reload or model discovery, and a provider written elsewhere routes once its
+// refresh returns. Provider keys are served from live.Views.ProviderKeyLists, which the store itself
+// keeps current. Call it once per live store, before live loads, so the configured providers are
+// registered at boot too; a test that builds its own live store calls it the same way. It fails
+// when live is nil.
 func (c *Config) AttachLiveStore(live *livestore.Store) error {
 	if live == nil {
 		return fmt.Errorf("failed to attach live store: %w", livestore.ErrNoLiveStore)
@@ -87,6 +89,10 @@ func (c *Config) AttachLiveStore(live *livestore.Store) error {
 			}
 		}
 	})
+	live.Collections.MCPClients.Subscribe(func(context.Context, []livestore.Change[registry.MCPClient]) {
+		c.rebuildMCPHeaderAllowlist()
+	})
+	c.rebuildMCPHeaderAllowlist()
 	return nil
 }
 

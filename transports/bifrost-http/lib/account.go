@@ -109,10 +109,10 @@ func (baseAccount *BaseAccount) GetConfigForMCPClient(clientID string) (*schemas
 // GetConfigForMCPClientByName returns the configuration of the MCP client with this name as the
 // live store holds it, so the caller must not change it. Implements the Account interface.
 func (baseAccount *BaseAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
-	if baseAccount.store == nil {
+	if baseAccount.config == nil {
 		return nil, fmt.Errorf("store not initialized")
 	}
-	client, ok := baseAccount.store.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientByName, name)
+	client, ok := baseAccount.config.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientByName, name)
 	if !ok {
 		return nil, ErrNotFound
 	}

@@ -103,6 +103,7 @@ func MCPClients(t testing.TB, c *lib.Config, clients ...*schemas.MCPClientConfig
 		t.Fatalf("libtest: live store: %v", err)
 	}
 	t.Cleanup(live.Close)
+	c.AttachLiveStore(live)
 	records := make([]livestore.Record, 0, len(clients))
 	for _, client := range clients {
 		records = append(records, livestore.Rec(live.Collections.MCPClients, &registry.MCPClient{Config: *client}))
@@ -110,7 +111,6 @@ func MCPClients(t testing.TB, c *lib.Config, clients ...*schemas.MCPClientConfig
 	if err := live.LoadRecords(context.Background(), records); err != nil {
 		t.Fatalf("libtest: loading live store: %v", err)
 	}
-	c.LiveStore = live
 	return c
 }
 
@@ -126,10 +126,10 @@ func FromStore(t testing.TB, c *lib.Config) *lib.Config {
 		t.Fatalf("libtest: live store: %v", err)
 	}
 	t.Cleanup(live.Close)
+	c.AttachLiveStore(live)
 	if err := live.LoadAll(context.Background(), c.ConfigStore.DB()); err != nil {
 		t.Fatalf("libtest: loading live store: %v", err)
 	}
-	c.LiveStore = live
 	return c
 }
 
