@@ -19765,7 +19765,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "var body = pm.response.text();",
-                      "pm.test('gemini TTS rows carry architecture.output_modalities [audio]; plain chat rows carry none', function () {",
+                      "pm.test('gemini TTS rows carry architecture.output_modalities [audio]; plain chat rows are listed and not marked audio-only', function () {",
                       "  pm.expect(pm.response.code, 'list models failed: ' + body.slice(0, 500)).to.equal(200);",
                       "  var data = pm.response.json().data || [];",
                       "  var tts = data.filter(function (m) { return typeof m.id === 'string' && /^gemini\\/.*-tts$/.test(m.id); });",
@@ -19774,11 +19774,12 @@
                       "    pm.expect(m.architecture, m.id + ' has no architecture').to.be.an('object');",
                       "    pm.expect(m.architecture.output_modalities, m.id).to.deep.equal(['audio']);",
                       "  });",
-                      "  // Before the change TTS rows had no architecture. Chat rows stay unset so the catalog datasheet fills them.",
+                      "  // Before the change TTS rows had no architecture. The converter leaves chat rows unset and /v1/models may fill them from the catalog datasheet, so only check they are not marked audio-only.",
                       "  var chat = data.filter(function (m) { return m.id === 'gemini/gemini-2.5-flash' || m.id === 'gemini/gemini-2.5-pro'; });",
                       "  pm.expect(chat, 'no plain gemini chat row: ' + body.slice(0, 500)).to.not.be.empty;",
                       "  chat.forEach(function (m) {",
-                      "    pm.expect(m.architecture, m.id + ' chat row should carry no architecture').to.be.oneOf([undefined, null]);",
+                      "    var out = m.architecture && m.architecture.output_modalities;",
+                      "    if (out) { pm.expect(out, m.id + ' chat row output modalities').to.include('text'); }",
                       "  });",
                       "});"
                     ]
