@@ -12,6 +12,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -565,11 +566,18 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 		entry.ErrorDetailsParsed = &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(e.verdict.reason), Message: message}}
 		entry.JobDebugParsed.LastError = message
 	}
+	// The start call's row is the richest source. A job a caller's check settles within moments of its
+	// start can beat that row to the store (logs are written in batches), and retention can remove
+	// it, so the details stored with the job at start fill in when it is not found.
+	copied := false
 	if job.SourceLogID != nil {
-		// The start call's row is gone only if a user or retention removed it; the job row stands alone then.
 		if start, err := e.logs.FindRelayLog(ctx, *job.SourceLogID); err == nil {
 			copyStartAttribution(entry, start)
+			copied = true
 		}
+	}
+	if !copied {
+		relayJobStartOf(job).applyTo(entry)
 	}
 	_, err := e.logs.BatchCreateRelayLogsIfNotExists(ctx, []*logstore.RelayLog{entry})
 	return err
@@ -578,18 +586,99 @@ func (e *relayLogsRecord) Write(ctx context.Context) error {
 // copyStartAttribution gives a job row what its start call's row resolved at request time, as an
 // LLM job row copies its source log: the model, the route and the display names behind the ids.
 func copyStartAttribution(entry, start *logstore.RelayLog) {
-	entry.Model = start.Model
-	entry.RoutePath = start.RoutePath
-	entry.UserName, entry.UserEmail = start.UserName, start.UserEmail
-	entry.VirtualKeyName = start.VirtualKeyName
-	entry.TeamName, entry.CustomerName = start.TeamName, start.CustomerName
-	entry.BusinessUnitID, entry.BusinessUnitName = start.BusinessUnitID, start.BusinessUnitName
-	entry.ProjectID, entry.ProjectName = start.ProjectID, start.ProjectName
-	entry.SessionID, entry.AgentCorrelationID, entry.ParentRequestID = start.SessionID, start.AgentCorrelationID, start.ParentRequestID
-	entry.UserAgent, entry.App = start.UserAgent, start.App
-	entry.TeamIDsParsed, entry.TeamNamesParsed = start.TeamIDsParsed, start.TeamNamesParsed
-	entry.CustomerIDsParsed, entry.CustomerNamesParsed = start.CustomerIDsParsed, start.CustomerNamesParsed
-	entry.BusinessUnitIDsParsed, entry.BusinessUnitNamesParsed = start.BusinessUnitIDsParsed, start.BusinessUnitNamesParsed
+	RelayJobStartOf(start).applyTo(entry)
+}
+
+// relayJobStartKey is where a job's params carry its RelayJobStart, beside the relay's snapshot.
+const relayJobStartKey = "start"
+
+// RelayJobStart is what a job row copies from its start call. It is stored with the job when the job
+// starts, so a job settled before the start call's row is written still shows its route, app and names.
+type RelayJobStart struct {
+	Model              string   `json:"model,omitempty"`
+	RoutePath          string   `json:"route_path,omitempty"`
+	UserName           *string  `json:"user_name,omitempty"`
+	UserEmail          *string  `json:"user_email,omitempty"`
+	VirtualKeyName     *string  `json:"virtual_key_name,omitempty"`
+	TeamName           *string  `json:"team_name,omitempty"`
+	CustomerName       *string  `json:"customer_name,omitempty"`
+	BusinessUnitID     *string  `json:"business_unit_id,omitempty"`
+	BusinessUnitName   *string  `json:"business_unit_name,omitempty"`
+	ProjectID          *string  `json:"project_id,omitempty"`
+	ProjectName        *string  `json:"project_name,omitempty"`
+	SessionID          *string  `json:"session_id,omitempty"`
+	AgentCorrelationID *string  `json:"agent_correlation_id,omitempty"`
+	ParentRequestID    *string  `json:"parent_request_id,omitempty"`
+	UserAgent          *string  `json:"user_agent,omitempty"`
+	App                *string  `json:"app,omitempty"`
+	TeamIDs            []string `json:"team_ids,omitempty"`
+	TeamNames          []string `json:"team_names,omitempty"`
+	CustomerIDs        []string `json:"customer_ids,omitempty"`
+	CustomerNames      []string `json:"customer_names,omitempty"`
+	BusinessUnitIDs    []string `json:"business_unit_ids,omitempty"`
+	BusinessUnitNames  []string `json:"business_unit_names,omitempty"`
+}
+
+// RelayJobStartOf reads what a job row copies from its start call's row.
+func RelayJobStartOf(start *logstore.RelayLog) RelayJobStart {
+	return RelayJobStart{
+		Model: start.Model, RoutePath: start.RoutePath,
+		UserName: start.UserName, UserEmail: start.UserEmail, VirtualKeyName: start.VirtualKeyName,
+		TeamName: start.TeamName, CustomerName: start.CustomerName,
+		BusinessUnitID: start.BusinessUnitID, BusinessUnitName: start.BusinessUnitName,
+		ProjectID: start.ProjectID, ProjectName: start.ProjectName,
+		SessionID: start.SessionID, AgentCorrelationID: start.AgentCorrelationID, ParentRequestID: start.ParentRequestID,
+		UserAgent: start.UserAgent, App: start.App,
+		TeamIDs: start.TeamIDsParsed, TeamNames: start.TeamNamesParsed,
+		CustomerIDs: start.CustomerIDsParsed, CustomerNames: start.CustomerNamesParsed,
+		BusinessUnitIDs: start.BusinessUnitIDsParsed, BusinessUnitNames: start.BusinessUnitNamesParsed,
+	}
+}
+
+func (s RelayJobStart) applyTo(entry *logstore.RelayLog) {
+	entry.Model, entry.RoutePath = s.Model, s.RoutePath
+	entry.UserName, entry.UserEmail = s.UserName, s.UserEmail
+	entry.VirtualKeyName = s.VirtualKeyName
+	entry.TeamName, entry.CustomerName = s.TeamName, s.CustomerName
+	entry.BusinessUnitID, entry.BusinessUnitName = s.BusinessUnitID, s.BusinessUnitName
+	entry.ProjectID, entry.ProjectName = s.ProjectID, s.ProjectName
+	entry.SessionID, entry.AgentCorrelationID, entry.ParentRequestID = s.SessionID, s.AgentCorrelationID, s.ParentRequestID
+	entry.UserAgent, entry.App = s.UserAgent, s.App
+	entry.TeamIDsParsed, entry.TeamNamesParsed = s.TeamIDs, s.TeamNames
+	entry.CustomerIDsParsed, entry.CustomerNamesParsed = s.CustomerIDs, s.CustomerNames
+	entry.BusinessUnitIDsParsed, entry.BusinessUnitNamesParsed = s.BusinessUnitIDs, s.BusinessUnitNames
+}
+
+// WithRelayJobStart returns a job's params with its start call's details added beside the relay's
+// snapshot; the snapshot reader ignores the extra key. On failure the params are returned unchanged.
+func WithRelayJobStart(params string, start *logstore.RelayLog) string {
+	if start == nil {
+		return params
+	}
+	details, err := sonic.Marshal(RelayJobStartOf(start))
+	if err != nil {
+		return params
+	}
+	out, err := providerUtils.SetRawJSONField([]byte(params), relayJobStartKey, details)
+	if err != nil {
+		return params
+	}
+	return string(out)
+}
+
+// relayJobStartOf reads the details stored with a job at its start. A job recorded before they were
+// stored has none, so its route falls back to the endpoint the job row keeps.
+func relayJobStartOf(job *cstables.TableProviderJob) RelayJobStart {
+	var start RelayJobStart
+	if job.Params != nil {
+		if raw := providerUtils.GetJSONField([]byte(*job.Params), relayJobStartKey); raw.IsObject() {
+			_ = sonic.UnmarshalString(raw.Raw, &start)
+		}
+	}
+	if start.RoutePath == "" {
+		start.RoutePath = job.Endpoint
+	}
+	return start
 }
 
 func (e *relayLogsRecord) Emit(context.Context) {}
