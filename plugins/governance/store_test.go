@@ -3102,3 +3102,394 @@ func TestGovernanceStore_ResetDoesNotRevertAConcurrentTeamEdit(t *testing.T) {
 	assert.Equal(t, "customer-b", *final.CustomerID, "the edit is kept")
 	assert.Zero(t, final.Budgets[0].CurrentUsage, "and the reset still applies")
 }
+
+// TestModelConfigRefreshPreservesRateLimitResetEvidence checks that a stale
+// config refresh preserves both live accounting tuples and applies new limits.
+func TestModelConfigRefreshPreservesRateLimitResetEvidence(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	rate := buildRateLimit("rate", 1000, 1000)
+	rate.TokenLastReset = time.Now().UTC().Truncate(time.Hour)
+	rate.RequestLastReset = rate.TokenLastReset.Add(-time.Hour)
+	rate.TokenUsageResetEpoch = rate.TokenLastReset.UnixNano()
+	rate.RequestUsageResetEpoch = rate.RequestLastReset.UnixNano()
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+
+	incoming := buildRateLimit(rate.ID, 2000, 3000)
+	model := &configstoreTables.TableModelConfig{ID: "model", RateLimit: incoming}
+	updated := store.UpdateModelConfigInMemory(ctx, model)
+	live := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, live, updated.RateLimit)
+	require.Equal(t, incoming.TokenMaxLimit, live.TokenMaxLimit)
+	require.Equal(t, incoming.RequestMaxLimit, live.RequestMaxLimit)
+	require.Equal(t, rate.TokenCurrentUsage, live.TokenCurrentUsage)
+	require.Equal(t, rate.RequestCurrentUsage, live.RequestCurrentUsage)
+	require.Equal(t, rate.TokenLastReset, live.TokenLastReset)
+	require.Equal(t, rate.RequestLastReset, live.RequestLastReset)
+	require.Equal(t, rate.TokenUsageResetEpoch, live.TokenUsageResetEpoch)
+	require.Equal(t, rate.RequestUsageResetEpoch, live.RequestUsageResetEpoch)
+}
+
+// TestConfigRefreshPreservesBudgetAndProviderAccounting checks that stale
+// persisted settings can change limits without changing the live accounting tuple.
+func TestConfigRefreshPreservesBudgetAndProviderAccounting(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	boundary := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	modelBudget := buildBudgetWithUsage("model-budget", 100, 7, "1M")
+	modelBudget.LastReset, modelBudget.UsageResetEpoch = boundary, boundary.UnixNano()
+	store.UpsertBudgetConfig(ctx, modelBudget.ID, modelBudget)
+	staleModelBudget := buildBudgetWithUsage(modelBudget.ID, 200, 42, "1M")
+	model := &configstoreTables.TableModelConfig{
+		ID: "model", CalendarAligned: true, Budgets: []configstoreTables.TableBudget{*staleModelBudget},
+	}
+	updatedModel := store.UpdateModelConfigInMemory(ctx, model)
+	expectedModelBudget := *modelBudget
+	expectedModelBudget.MaxLimit = staleModelBudget.MaxLimit
+	expectedModelBudget.IsCalendarAligned = true
+	require.Equal(t, expectedModelBudget, *store.LoadBudget(ctx, modelBudget.ID))
+	require.Equal(t, expectedModelBudget, updatedModel.Budgets[0])
+	require.Equal(t, *staleModelBudget, model.Budgets[0])
+
+	providerBudget := buildBudgetWithUsage("provider-budget", 100, 9, "1M")
+	providerBudget.LastReset, providerBudget.UsageResetEpoch = boundary, boundary.UnixNano()
+	store.UpsertBudgetConfig(ctx, providerBudget.ID, providerBudget)
+	rate := buildRateLimit("provider-rate", 1000, 1000)
+	rate.TokenLastReset = boundary
+	rate.RequestLastReset = boundary.Add(-time.Hour)
+	rate.TokenUsageResetEpoch, rate.RequestUsageResetEpoch = rate.TokenLastReset.UnixNano(), rate.RequestLastReset.UnixNano()
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+
+	provider := &configstoreTables.TableProvider{
+		Name: "provider", Budget: buildBudgetWithUsage(providerBudget.ID, 200, 42, "1M"),
+		RateLimit: buildRateLimit(rate.ID, 2000, 3000),
+	}
+	staleBudget, staleRate := *provider.Budget, *provider.RateLimit
+	updatedProvider := store.UpdateProviderInMemory(ctx, provider)
+	expectedProviderBudget := *providerBudget
+	expectedProviderBudget.MaxLimit = staleBudget.MaxLimit
+	expectedRate := *rate
+	expectedRate.TokenMaxLimit, expectedRate.RequestMaxLimit = staleRate.TokenMaxLimit, staleRate.RequestMaxLimit
+	require.Equal(t, expectedProviderBudget, *store.LoadBudget(ctx, providerBudget.ID))
+	require.Equal(t, expectedProviderBudget, *updatedProvider.Budget)
+	require.Equal(t, expectedRate, *store.LoadRateLimit(ctx, rate.ID))
+	require.Equal(t, expectedRate, *updatedProvider.RateLimit)
+	require.Equal(t, staleBudget, *provider.Budget)
+	require.Equal(t, staleRate, *provider.RateLimit)
+}
+
+// TestUsageResetEpochsIgnoreAdoption verifies retained usage never produces reset
+// evidence, while actual resets publish evidence before hooks run.
+func TestUsageResetEpochsIgnoreAdoption(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	now := time.Date(2026, 2, 5, 12, 0, 0, 0, time.UTC)
+	old := time.Date(2026, 1, 10, 9, 0, 0, 0, time.UTC)
+	budget := buildBudgetWithUsage("budget", 100, 42, "1M")
+	budget.LastReset, budget.CreatedAt = old, old
+	store.budgets.Store(budget.ID, budget)
+	rate := buildRateLimit("rate", 1000, 1000)
+	month := "1M"
+	rate.TokenResetDuration, rate.RequestResetDuration = &month, &month
+	rate.TokenLastReset, rate.RequestLastReset, rate.CreatedAt = old, old, old
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	store.rateLimits.Store(rate.ID, rate)
+	if !store.AdoptCalendarAlignmentInMemory(ctx, budget.ID, now) || !store.AdoptRateLimitCalendarAlignmentInMemory(ctx, rate.ID, now) {
+		t.Fatal("expected calendar adoption")
+	}
+	adoptedBudget := store.LoadBudget(ctx, budget.ID)
+	if adoptedBudget.CurrentUsage != 42 || adoptedBudget.UsageResetEpoch != 0 {
+		t.Fatalf("after adoption, budget usage = %v and reset epoch = %v", adoptedBudget.CurrentUsage, adoptedBudget.UsageResetEpoch)
+	}
+	adoptedRate := store.LoadRateLimit(ctx, rate.ID)
+	if adoptedRate.TokenCurrentUsage != 17 || adoptedRate.RequestCurrentUsage != 19 {
+		t.Fatalf("after adoption, token usage = %v and request usage = %v", adoptedRate.TokenCurrentUsage, adoptedRate.RequestCurrentUsage)
+	}
+	if adoptedRate.TokenUsageResetEpoch != 0 || adoptedRate.RequestUsageResetEpoch != 0 {
+		t.Fatalf("after adoption, token reset epoch = %v and request reset epoch = %v", adoptedRate.TokenUsageResetEpoch, adoptedRate.RequestUsageResetEpoch)
+	}
+	target := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	reset, ok := store.ResetRateLimitAt(ctx, rate.ID, &target, nil)
+	if !ok || reset.TokenCurrentUsage != 0 || reset.RequestCurrentUsage != 19 {
+		t.Fatal("token reset changed retained requests")
+	}
+	// Immutable snapshots remain readable under archive baseline locks.
+	store.LastDBUsagesRateLimitsRequestsMu.Lock()
+	store.LastDBUsagesRateLimitsTokensMu.Lock()
+	tokens, requests := store.LoadRateLimit(ctx, rate.ID).TokenUsageResetEpoch, store.LoadRateLimit(ctx, rate.ID).RequestUsageResetEpoch
+	store.LastDBUsagesRateLimitsTokensMu.Unlock()
+	store.LastDBUsagesRateLimitsRequestsMu.Unlock()
+	if tokens != target.UnixNano() || requests != 0 {
+		t.Fatalf("independent evidence = %v, %v", tokens, requests)
+	}
+	if _, ok := store.ResetBudgetAt(ctx, budget.ID, target); !ok {
+		t.Fatal("expected budget reset")
+	}
+	store.LastDBUsagesBudgetsMu.Lock()
+	epoch := store.LoadBudget(ctx, budget.ID).UsageResetEpoch
+	store.LastDBUsagesBudgetsMu.Unlock()
+	if epoch != target.UnixNano() {
+		t.Fatalf("budget evidence = %v", epoch)
+	}
+	store.UpsertBudgetConfig(ctx, budget.ID, budget)
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate)
+	if store.LoadBudget(ctx, budget.ID).UsageResetEpoch != target.UnixNano() {
+		t.Fatal("config replacement lost evidence")
+	}
+	tokens, requests = store.LoadRateLimit(ctx, rate.ID).TokenUsageResetEpoch, store.LoadRateLimit(ctx, rate.ID).RequestUsageResetEpoch
+	if tokens != target.UnixNano() || requests != 0 {
+		t.Fatal("config replacement changed rate evidence")
+	}
+	store.DeleteBudget(ctx, budget.ID)
+	store.DeleteRateLimit(ctx, rate.ID)
+	if store.LoadBudget(ctx, budget.ID) != nil {
+		t.Fatal("deleted budget retained evidence")
+	}
+	if store.LoadRateLimit(ctx, rate.ID) != nil {
+		t.Fatal("deleted rate retained evidence")
+	}
+}
+
+// TestUsageResetEpochsPublishedBeforeHooks covers normal expiry commits and
+// verifies a rate hook cannot mistake an untouched request boundary for a reset.
+func TestUsageResetEpochsPublishedBeforeHooks(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	old := time.Now().Add(-2 * time.Hour)
+	budget := buildBudgetWithUsage("budget", 100, 42, "1h")
+	budget.LastReset = old
+	store.budgets.Store(budget.ID, budget)
+	rate := buildRateLimit("rate", 1000, 1000)
+	rate.TokenLastReset = old
+	rate.RequestLastReset = time.Now()
+	store.rateLimits.Store(rate.ID, rate)
+	budgetHook, rateHook := false, false
+	store.SetResetHooks(func(rows []*configstoreTables.TableBudget) {
+		budgetHook = true
+		if store.LoadBudget(ctx, rows[0].ID).UsageResetEpoch != rows[0].LastReset.UnixNano() {
+			t.Fatal("hook preceded evidence")
+		}
+	}, func(rows []*configstoreTables.TableRateLimit) {
+		rateHook = true
+		tokens, requests := store.LoadRateLimit(ctx, rows[0].ID).TokenUsageResetEpoch, store.LoadRateLimit(ctx, rows[0].ID).RequestUsageResetEpoch
+		if tokens != rows[0].TokenLastReset.UnixNano() || requests != 0 {
+			t.Fatal("hook has incorrect dimension evidence")
+		}
+	})
+	store.ResetExpiredBudgetsInMemory(ctx, false, budget.ID)
+	store.ResetExpiredRateLimitsInMemory(ctx, false, rate.ID)
+	if !budgetHook || !rateHook {
+		t.Fatal("expected reset hooks")
+	}
+}
+
+// TestUsageResetEpochsReloadAndOperatorReset checks evidence follows resource
+// lifetime through full reloads. Operator clears preserve window reset evidence.
+func TestUsageResetEpochsReloadAndOperatorReset(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	old := time.Now().Add(-time.Hour)
+	target := old.Add(time.Minute)
+	budget := buildBudgetWithUsage("budget", 100, 42, "1h")
+	budget.LastReset = old
+	rate := buildRateLimit("rate", 100, 100)
+	rate.TokenLastReset, rate.RequestLastReset = old, old
+	store.budgets.Store(budget.ID, budget)
+	store.rateLimits.Store(rate.ID, rate)
+	reset, ok := store.ResetBudgetAt(ctx, budget.ID, target)
+	if !ok || store.LoadBudget(ctx, budget.ID).UsageResetEpoch != target.UnixNano() {
+		t.Fatal("window reset must publish evidence")
+	}
+	if err := store.BumpBudgetUsageBy(ctx, budget.ID, 9); err != nil {
+		t.Fatal(err)
+	}
+	reset, ok = store.ResetBudgetUsageInMemory(ctx, budget.ID)
+	if !ok || reset.CurrentUsage != 0 || !reset.LastReset.Equal(target) || store.LoadBudget(ctx, budget.ID).UsageResetEpoch != target.UnixNano() {
+		t.Fatal("operator clear must preserve the window and its reset evidence")
+	}
+	if _, ok := store.ResetRateLimitAt(ctx, rate.ID, nil, &target); !ok {
+		t.Fatal("expected request reset")
+	}
+	tokens, requests := store.LoadRateLimit(ctx, rate.ID).TokenUsageResetEpoch, store.LoadRateLimit(ctx, rate.ID).RequestUsageResetEpoch
+	if tokens != 0 || requests != target.UnixNano() {
+		t.Fatal("request-only reset changed token evidence")
+	}
+	if _, ok := store.ResetRateLimitAt(ctx, rate.ID, nil, &old); ok {
+		t.Fatal("stale reset succeeded")
+	}
+	store.rebuildInMemoryStructures(ctx, nil, nil, nil, []configstoreTables.TableBudget{*reset}, []configstoreTables.TableRateLimit{*store.LoadRateLimit(ctx, rate.ID)}, nil, nil)
+	if store.LoadBudget(ctx, budget.ID).UsageResetEpoch != target.UnixNano() {
+		t.Fatal("reload lost budget evidence")
+	}
+	tokens, requests = store.LoadRateLimit(ctx, rate.ID).TokenUsageResetEpoch, store.LoadRateLimit(ctx, rate.ID).RequestUsageResetEpoch
+	if tokens != 0 || requests != target.UnixNano() {
+		t.Fatal("reload changed rate evidence")
+	}
+	store.rebuildInMemoryStructures(ctx, nil, nil, nil, nil, nil, nil, nil)
+	if store.LoadBudget(ctx, budget.ID) != nil {
+		t.Fatal("reload retained removed budget evidence")
+	}
+	if store.LoadRateLimit(ctx, rate.ID) != nil {
+		t.Fatal("reload retained removed rate evidence")
+	}
+}
+
+// calendarOwner reloads one kind of owner holding the given limits.
+type calendarOwner func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit)
+
+// calendarOwners lists every OSS owner whose reload stamps calendar alignment.
+func calendarOwners() map[string]calendarOwner {
+	return map[string]calendarOwner{
+		"team": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateTeamInMemory(ctx, &configstoreTables.TableTeam{ID: "owner", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil)
+		},
+		"customer": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateCustomerInMemory(ctx, &configstoreTables.TableCustomer{ID: "owner", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil)
+		},
+		"virtual key": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil, nil, nil)
+		},
+		"provider config": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: aligned, ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{{ID: 1, Provider: "openai", Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}}}, nil, nil, nil)
+		},
+		"model config": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateModelConfigInMemory(ctx, &configstoreTables.TableModelConfig{ID: "owner", ModelName: "gpt-4o", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate})
+		},
+	}
+}
+
+// openWindow returns limits with usage in a window opened before this month's boundary.
+func openWindow() (time.Time, configstoreTables.TableBudget, configstoreTables.TableRateLimit) {
+	month, day := "1M", "1d"
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	opened := monthStart.Add(-10 * 24 * time.Hour)
+	budget := configstoreTables.TableBudget{ID: "budget", MaxLimit: 100, CurrentUsage: 7, ResetDuration: month, CreatedAt: opened, LastReset: opened}
+	rate := *buildRateLimit("rate", 100, 100)
+	rate.TokenResetDuration, rate.RequestResetDuration = &month, &day
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	rate.TokenLastReset, rate.RequestLastReset = opened, opened
+	return monthStart, budget, rate
+}
+
+// TestReloadAdoptsCalendarBeforeSweep checks that a sweep running right after the
+// reload that switches alignment on finds every window current and keeps its usage.
+func TestReloadAdoptsCalendarBeforeSweep(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			reload(ctx, store, false, budget, rate)
+			reload(ctx, store, true, budget, rate)
+
+			require.Empty(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID))
+			require.Empty(t, store.ResetExpiredRateLimitsInMemory(ctx, true, rate.ID))
+			liveBudget, liveRate := store.LoadBudget(ctx, budget.ID), store.LoadRateLimit(ctx, rate.ID)
+			require.Equal(t, 7.0, liveBudget.CurrentUsage)
+			require.True(t, liveBudget.LastReset.Equal(monthStart))
+			require.Zero(t, liveBudget.UsageResetEpoch)
+			require.Equal(t, int64(17), liveRate.TokenCurrentUsage)
+			require.Equal(t, int64(19), liveRate.RequestCurrentUsage)
+			require.True(t, liveRate.TokenLastReset.Equal(monthStart))
+			require.Zero(t, liveRate.TokenUsageResetEpoch)
+			require.Zero(t, liveRate.RequestUsageResetEpoch)
+		})
+	}
+}
+
+// TestReloadAdoptsCalendarWithNewDuration checks that adoption uses the duration
+// installed by the same edit, not the one it replaces.
+func TestReloadAdoptsCalendarWithNewDuration(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			hourly := budget
+			hourly.ResetDuration = "1h"
+			reload(ctx, store, false, hourly, rate)
+			reload(ctx, store, true, budget, rate)
+
+			require.Empty(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID))
+			live := store.LoadBudget(ctx, budget.ID)
+			require.Equal(t, 7.0, live.CurrentUsage)
+			require.True(t, live.LastReset.Equal(monthStart))
+		})
+	}
+}
+
+// TestReloadKeepsDueCalendarReset checks that reloading an owner that was already
+// aligned does not adopt, even when its rows were loaded without the flag, as
+// startup does. The overdue window must still reset.
+func TestReloadKeepsDueCalendarReset(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			reload(ctx, store, true, budget, rate)
+			unstampedBudget, unstampedRate := budget, rate
+			store.budgets.Store(budget.ID, &unstampedBudget)
+			store.rateLimits.Store(rate.ID, &unstampedRate)
+			reload(ctx, store, true, budget, rate)
+
+			require.True(t, store.LoadBudget(ctx, budget.ID).LastReset.Before(monthStart))
+			require.Len(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID), 1)
+			require.Len(t, store.ResetExpiredRateLimitsInMemory(ctx, true, rate.ID), 1)
+			require.Zero(t, store.LoadBudget(ctx, budget.ID).CurrentUsage)
+			require.Zero(t, store.LoadRateLimit(ctx, rate.ID).TokenCurrentUsage)
+		})
+	}
+}
+
+// TestLaterBoundaryKeepsUnfoldedUsageWithoutReset checks that a baseline from a later
+// boundary keeps local charges when its known reset epoch is not newer than the local
+// one. A newer reset, or unknown evidence, replaces the old window's usage.
+func TestLaterBoundaryKeepsUnfoldedUsageWithoutReset(t *testing.T) {
+	ctx := context.Background()
+	for name, test := range map[string]struct {
+		local, incoming int64
+		keeps           bool
+	}{
+		"same known epoch":      {10, 10, true},
+		"sender reset":          {10, 20, false},
+		"unknown sender":        {10, 0, false},
+		"unknown on both sides": {0, 0, false},
+		"local reset is newer":  {20, 10, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newStandaloneStore(t)
+			opened := time.Now().UTC().Truncate(time.Hour).Add(-48 * time.Hour)
+			boundary := opened.Add(24 * time.Hour)
+			budget := buildBudgetWithUsage("budget", 1000, 100, "1M")
+			budget.LastReset, budget.UsageResetEpoch = opened, test.local
+			rate := buildRateLimit("rate", 1000, 1000)
+			rate.TokenCurrentUsage, rate.RequestCurrentUsage = 100, 100
+			rate.TokenLastReset, rate.RequestLastReset = opened, opened
+			rate.TokenUsageResetEpoch, rate.RequestUsageResetEpoch = test.local, test.local
+			store.SeedBudgetConfig(ctx, budget.ID, budget)
+			store.SeedRateLimitConfig(ctx, rate.ID, rate)
+			require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 7))
+			require.NoError(t, store.BumpRateLimitUsageBy(ctx, rate.ID, 7, 7))
+
+			require.True(t, store.ApplyBudgetBaselineWithResetEpoch(ctx, budget.ID, 100, boundary, test.incoming))
+			tokens, requests := store.ApplyRateLimitBaselinesWithResetEpochs(ctx, rate.ID, 100, 100, boundary, boundary, test.incoming, test.incoming)
+			require.True(t, tokens && requests)
+			want := int64(100)
+			if test.keeps {
+				want = 107
+			}
+			liveBudget, liveRate := store.LoadBudget(ctx, budget.ID), store.LoadRateLimit(ctx, rate.ID)
+			require.Equal(t, float64(want), liveBudget.CurrentUsage)
+			require.True(t, liveBudget.LastReset.Equal(boundary))
+			require.Equal(t, want, liveRate.TokenCurrentUsage)
+			require.Equal(t, want, liveRate.RequestCurrentUsage)
+			require.True(t, liveRate.TokenLastReset.Equal(boundary))
+			require.True(t, liveRate.RequestLastReset.Equal(boundary))
+		})
+	}
+}

@@ -1010,8 +1010,9 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]Cos
 // for a specific cluster node after a stable cursor. The first scan uses the
 // timestamp/log-id lower bound for the ghost's detection point. Once DB-assigned
 // inc_number values are observed, subsequent scans use inc_number so rows flushed
-// late by the async log writer are not skipped.
-func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
+// late by the async log writer are not skipped. Actual-reset windows filter each
+// resource and dimension before aggregation; excluded rows still advance the cursor.
+func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor, windows NodeUsageWindows) (*NodeUsageAggregate, error) {
 	type logRow struct {
 		ID           string    `gorm:"column:id"`
 		Timestamp    time.Time `gorm:"column:timestamp"`
@@ -1085,7 +1086,9 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 				for _, id := range budgetIDs {
 					if _, dup := seen[id]; !dup {
 						seen[id] = struct{}{}
-						budgetCosts[id] += row.Cost
+						if cutoff := windows.Budgets[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							budgetCosts[id] += row.Cost
+						}
 					}
 				}
 			}
@@ -1102,8 +1105,12 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 				for _, id := range rateLimitIDs {
 					if _, dup := seen[id]; !dup {
 						seen[id] = struct{}{}
-						rateLimitRequests[id]++
-						rateLimitTokens[id] += row.TotalTokens
+						if cutoff := windows.Requests[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							rateLimitRequests[id]++
+						}
+						if cutoff := windows.Tokens[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							rateLimitTokens[id] += row.TotalTokens
+						}
 					}
 				}
 			}

@@ -4125,9 +4125,103 @@ func entityIDSet[T any](existing []T, id func(T) string, toAdd []T) map[string]b
 	return set
 }
 
+// reconcileFileResetEpochs keeps runtime reset evidence by limit ID. A limit
+// with no stored row starts with no evidence, including inline associations.
+func reconcileFileResetEpochs(file, stored *configstore.GovernanceConfig) {
+	budgetEpochs := make(map[string]int64, len(stored.Budgets))
+	for _, budget := range stored.Budgets {
+		budgetEpochs[budget.ID] = budget.UsageResetEpoch
+	}
+	type rateLimitEpochs struct {
+		token, request int64
+	}
+	rateEpochs := make(map[string]rateLimitEpochs, len(stored.RateLimits))
+	for _, rate := range stored.RateLimits {
+		rateEpochs[rate.ID] = rateLimitEpochs{rate.TokenUsageResetEpoch, rate.RequestUsageResetEpoch}
+	}
+	reconcileBudget := func(budget *configstoreTables.TableBudget) {
+		if budget != nil {
+			budget.UsageResetEpoch = budgetEpochs[budget.ID]
+		}
+	}
+	reconcileBudgets := func(budgets []configstoreTables.TableBudget) {
+		for i := range budgets {
+			reconcileBudget(&budgets[i])
+		}
+	}
+	reconcileRate := func(rate *configstoreTables.TableRateLimit) {
+		if rate != nil {
+			epochs := rateEpochs[rate.ID]
+			rate.TokenUsageResetEpoch = epochs.token
+			rate.RequestUsageResetEpoch = epochs.request
+		}
+	}
+	// Association creates can also reach budgets through embedded owners.
+	var reconcileTeam func(*configstoreTables.TableTeam)
+	var reconcileCustomer func(*configstoreTables.TableCustomer)
+	var reconcileKey func(*configstoreTables.TableVirtualKey)
+	reconcileTeam = func(team *configstoreTables.TableTeam) {
+		if team == nil {
+			return
+		}
+		reconcileBudgets(team.Budgets)
+		reconcileRate(team.RateLimit)
+		reconcileCustomer(team.Customer)
+		for i := range team.VirtualKeys {
+			reconcileKey(&team.VirtualKeys[i])
+		}
+	}
+	reconcileCustomer = func(customer *configstoreTables.TableCustomer) {
+		if customer == nil {
+			return
+		}
+		reconcileBudgets(customer.Budgets)
+		reconcileRate(customer.RateLimit)
+		for i := range customer.Teams {
+			reconcileTeam(&customer.Teams[i])
+		}
+		for i := range customer.VirtualKeys {
+			reconcileKey(&customer.VirtualKeys[i])
+		}
+	}
+	reconcileKey = func(key *configstoreTables.TableVirtualKey) {
+		reconcileBudgets(key.Budgets)
+		reconcileRate(key.RateLimit)
+		for _, provider := range key.ProviderConfigs {
+			reconcileBudgets(provider.Budgets)
+			reconcileRate(provider.RateLimit)
+		}
+		reconcileTeam(key.Team)
+		reconcileCustomer(key.Customer)
+	}
+	reconcileBudgets(file.Budgets)
+	for i := range file.RateLimits {
+		reconcileRate(&file.RateLimits[i])
+	}
+	for _, provider := range file.Providers {
+		reconcileBudget(provider.Budget)
+		reconcileRate(provider.RateLimit)
+	}
+	for i := range file.Teams {
+		reconcileTeam(&file.Teams[i])
+	}
+	for i := range file.Customers {
+		reconcileCustomer(&file.Customers[i])
+	}
+	for _, model := range file.ModelConfigs {
+		reconcileBudget(model.Budget)
+		reconcileBudgets(model.Budgets)
+		reconcileRate(model.RateLimit)
+	}
+	for i := range file.VirtualKeys {
+		reconcileKey(&file.VirtualKeys[i])
+	}
+}
+
 // mergeGovernanceConfig merges governance config from file with store
 func mergeGovernanceConfig(ctx context.Context, config *Config, configData *ConfigData, governanceConfig *configstore.GovernanceConfig) {
 	logger.Debug("merging governance config from config file with store")
+	reconcileFileResetEpochs(configData.Governance, governanceConfig)
 	// When config.json is the source of truth, file-present entities must be
 	// re-synced even when the stored ConfigHash still matches the file. The stored
 	// hash is not updated on UI/API edits, so a hash match cannot prove the DB row
