@@ -251,12 +251,6 @@ type GovernanceStore interface {
 	// Dump operations capture counters and return a writer to invoke after releasing accounting locks.
 	GetRateLimitDumper(ctx context.Context, tokenBaselines map[string]int64, requestBaselines map[string]int64) func(context.Context) error
 	GetBudgetDumper(ctx context.Context, baselines map[string]float64) func(context.Context) error
-	// User governance in-memory operations (enterprise-only, but interface defined here for compatibility)
-	GetUserGovernance(ctx context.Context, userID string) (*UserGovernance, bool)
-	CreateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit)
-	UpdateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit)
-	DeleteUserGovernanceInMemory(ctx context.Context, userID string)
-	CreateUserNameInMemory(ctx context.Context, userID string, userName string)
 	// Budget and rate limit status queries for routing with baseline support
 	// GetBudgetAndRateLimitStatus reports how close the request is to what it answers to for a
 	// provider and model pair, read from the access on its grant. Routing asks this before an attempt's
@@ -3775,36 +3769,6 @@ func collectExtraScopedIDs(ctx context.Context, virtualKeyID, userID string) []S
 }
 
 // PUBLIC API METHODS
-
-// GetUserGovernance retrieves user governance data by user ID (enterprise-only, lock-free)
-func (gs *LocalGovernanceStore) GetUserGovernance(ctx context.Context, userID string) (*UserGovernance, bool) {
-	// User governance is part of enterprise
-	return nil, false
-}
-
-// CreateUserGovernanceInMemory adds user governance data to the in-memory store (enterprise-only)
-func (gs *LocalGovernanceStore) CreateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) {
-	// NoOp
-	// Available in enterprise
-}
-
-// CreateUserNameInMemory records a user's display name; this store keeps no users, so it does nothing.
-func (gs *LocalGovernanceStore) CreateUserNameInMemory(ctx context.Context, userID string, userName string) {
-	// NoOp
-	// Available in enterprise
-}
-
-// UpdateUserGovernanceInMemory updates user governance data in the in-memory store (enterprise-only)
-func (gs *LocalGovernanceStore) UpdateUserGovernanceInMemory(ctx context.Context, userID string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) {
-	// NoOp
-	// Available in enterprise
-}
-
-// DeleteUserGovernanceInMemory removes user governance data from the in-memory store (enterprise-only)
-func (gs *LocalGovernanceStore) DeleteUserGovernanceInMemory(ctx context.Context, userID string) {
-	// NoOp
-	// Available in enterprise
-}
 
 // ScopedModelConfigs returns the model configs of one scope and scope ID, in ID order. The records
 // are shared and must be treated as read-only.
