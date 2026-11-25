@@ -393,10 +393,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "enforce_vk_object_ownership must be true or false")
 		return
 	}
-	// The access-profile user key settings are plain bools that default to false, so a JSON null would
-	// decode as false and silently hand user key creation or deletion back to access profiles. Refuse
-	// it; omit the field to keep the stored value.
-	for _, field := range []string{"skip_access_profile_user_virtual_key_creation", "skip_access_profile_user_virtual_key_deletion"} {
+	// The access-profile user key settings and send_back_cost are plain bools that default to false, so
+	// a JSON null would decode as false and silently hand user key creation or deletion back to access
+	// profiles, or turn the cost off. Refuse it; omit the field to keep the stored value.
+	for _, field := range []string{"skip_access_profile_user_virtual_key_creation", "skip_access_profile_user_virtual_key_deletion", "send_back_cost"} {
 		if raw, present := clientConfigFields[field]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 			SendError(ctx, fasthttp.StatusBadRequest, field+" must be true or false")
 			return
@@ -984,6 +984,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 	// Toggle allowing direct key bypass via x-bf-direct-key header
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
+	// Copied only when sent, so a partial save from an older client keeps the setting. Core picks
+	// it up through ReloadClientConfigFromConfigStore below, which cluster peers also run.
+	if _, present := clientConfigFields["send_back_cost"]; present {
+		updatedConfig.SendBackCost = payload.ClientConfig.SendBackCost
+	}
 	// Read by the daily expired-key cleanup job from the store, so no restart is needed.
 	updatedConfig.DeleteExpiredVirtualKeys = payload.ClientConfig.DeleteExpiredVirtualKeys
 	// Copied only when sent: an omitted field unmarshals as the default (true), which would
