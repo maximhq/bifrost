@@ -1,7 +1,6 @@
 package datasheet
 
 import (
-	"maps"
 	"math"
 	"slices"
 	"testing"
@@ -14,13 +13,13 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 	const model = "deepseek-ai/DeepSeek-V4-Flash-0731"
 	inputCost := 0.00000014
 	provider := schemas.ModelProvider("together")
-	s := NewTestStore(nil)
-	s.pricingData[makeKeyNormalized(model, "together_ai", "chat")] = configstoreTables.TableModelPricing{
+	s := testStore(t, nil)
+	s.pricingData.Put(makeKeyNormalized(model, "together_ai", "chat"), configstoreTables.TableModelPricing{
 		Model:             model,
 		Provider:          "together_ai",
 		Mode:              "chat",
 		InputCostPerToken: &inputCost,
-	}
+	})
 
 	row := s.Get(model, provider, schemas.ChatCompletionRequest)
 	if row == nil || row.InputCostPerToken == nil || *row.InputCostPerToken != inputCost {
@@ -38,7 +37,7 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 	}
 
 	s.mu.Lock()
-	s.rebuildDatasheetViewUnsafe(slices.Collect(maps.Values(s.pricingData)))
+	s.rebuildDatasheetViewUnsafe(tableValues(s.pricingData))
 	s.mu.Unlock()
 	if got := s.DatasheetModelsForProvider(provider); !slices.Equal(got, []string{model}) {
 		t.Fatalf("DatasheetModelsForProvider() = %v, want [%s]", got, model)
@@ -49,38 +48,38 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 }
 
 func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
-	s := NewTestStore(nil)
+	s := testStore(t, nil)
 	s.mu.Lock()
-	s.pricingData[makeKeyNormalized("deprecated-b", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s.pricingData.Put(makeKeyNormalized("deprecated-b", "openai", "chat"), configstoreTables.TableModelPricing{
 		Model:        "deprecated-b",
 		Provider:     "openai",
 		Mode:         "chat",
 		IsDeprecated: true,
-	}
-	s.pricingData[makeKeyNormalized("deprecated-a", "openai", "chat")] = configstoreTables.TableModelPricing{
+	})
+	s.pricingData.Put(makeKeyNormalized("deprecated-a", "openai", "chat"), configstoreTables.TableModelPricing{
 		Model:        "deprecated-a",
 		Provider:     "openai",
 		Mode:         "chat",
 		IsDeprecated: true,
-	}
-	s.pricingData[makeKeyNormalized("deprecated-a", "openai", "responses")] = configstoreTables.TableModelPricing{
+	})
+	s.pricingData.Put(makeKeyNormalized("deprecated-a", "openai", "responses"), configstoreTables.TableModelPricing{
 		Model:        "deprecated-a",
 		Provider:     "openai",
 		Mode:         "responses",
 		IsDeprecated: true,
-	}
-	s.pricingData[makeKeyNormalized("active", "openai", "chat")] = configstoreTables.TableModelPricing{
+	})
+	s.pricingData.Put(makeKeyNormalized("active", "openai", "chat"), configstoreTables.TableModelPricing{
 		Model:    "active",
 		Provider: "openai",
 		Mode:     "chat",
-	}
-	s.pricingData[makeKeyNormalized("deprecated-vertex", "vertex_ai", "chat")] = configstoreTables.TableModelPricing{
+	})
+	s.pricingData.Put(makeKeyNormalized("deprecated-vertex", "vertex_ai", "chat"), configstoreTables.TableModelPricing{
 		Model:        "deprecated-vertex",
 		Provider:     "vertex_ai",
 		Mode:         "chat",
 		IsDeprecated: true,
-	}
-	s.rebuildDatasheetViewUnsafe(slices.Collect(maps.Values(s.pricingData)))
+	})
+	s.rebuildDatasheetViewUnsafe(tableValues(s.pricingData))
 	s.mu.Unlock()
 
 	got := s.DeprecatedDatasheetModelsForProvider(schemas.OpenAI)
@@ -104,7 +103,7 @@ func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
 
 func TestGithubCopilotDatasheetRowsPriceRuntimeProvider(t *testing.T) {
 	inputCost, outputCost := 0.000002, 0.000008
-	s := NewTestStore(nil)
+	s := testStore(t, nil)
 	entry := Entry{Provider: "github_copilot", Mode: "chat"}
 	entry.InputCostPerToken = &inputCost
 	entry.OutputCostPerToken = &outputCost
@@ -142,7 +141,7 @@ func TestGithubCopilotDatasheetRowsPriceRuntimeProvider(t *testing.T) {
 // through makeKeyNormalized, so they match a row in any casing.
 func TestPricingReadsMatchModelCaseInsensitively(t *testing.T) {
 	inputCost := 0.0000015
-	s := NewTestStore(nil)
+	s := testStore(t, nil)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{{
 		Model:             "GPT-3.5-Turbo-Instruct",
 		Provider:          "openai",
@@ -166,7 +165,7 @@ func TestPricingReadsMatchModelCaseInsensitively(t *testing.T) {
 // Rows that lose the lowercase key are not priced from, but the datasheet view
 // still lists every spelling and indexes its base model.
 func TestSetPricingRowsKeepsEverySpellingInDatasheetView(t *testing.T) {
-	s := NewTestStore(nil)
+	s := testStore(t, nil)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "DeepSeek-V4-Pro", BaseModel: "deepseek-v4-pro", Provider: "azure", Mode: "chat", IsDeprecated: true},
 		{Model: "deepseek-v4-pro", BaseModel: "deepseek-v4-pro", Provider: "azure", Mode: "chat", IsDeprecated: true},

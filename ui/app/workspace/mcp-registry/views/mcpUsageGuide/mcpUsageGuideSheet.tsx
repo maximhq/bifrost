@@ -207,7 +207,7 @@ export function MCPUsageGuideSheet() {
 			</Button>
 
 			<Sheet open={open} onOpenChange={setOpen}>
-				<SheetContent className="flex w-full flex-col overflow-y-auto p-0 pt-4 sm:max-w-2xl">
+				<SheetContent resizeKey="mcp-usage-guide" className="flex w-full flex-col overflow-y-auto p-0 pt-4 sm:max-w-2xl">
 					<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-4 md:px-8 -top-4 bg-card z-10">
 						<div className="flex items-center gap-2">
 							<div>

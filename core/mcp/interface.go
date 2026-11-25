@@ -106,25 +106,27 @@ type MCPManagerInterface interface {
 	// schemas.MCPConfig.InProcessServerFactory). Applies on the next connect.
 	SetInProcessServerFactory(factory schemas.InProcessServerFactory)
 
-	// AddClient adds a new MCP client with the given configuration
-	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
+	// AddClient connects the MCP client with this ID, whose configuration it reads
+	// from the Account
+	AddClient(ctx context.Context, id string) error
 
-	// ConnectConfiguredClients dials all clients supplied at construction time.
-	// Construction no longer connects; call this once all plugins are registered so
-	// PreMCPConnectionHook sees the full plugin set. It returns once every client
-	// has been attempted; onClientDone, when not nil, is called as each attempt
-	// finishes, one call at a time.
+	// ConnectConfiguredClients dials the clients the Account lists. Construction
+	// never connects; call this once all
+	// plugins are registered so PreMCPConnectionHook sees the full plugin set. It
+	// returns once every client has been attempted; onClientDone, when not nil, is
+	// called as each attempt finishes, one call at a time.
 	ConnectConfiguredClients(ctx context.Context, onClientDone func(clientID string))
 
 	// RemoveClient removes an MCP client by ID
 	RemoveClient(id string) error
 
-	// UpdateClient updates an existing MCP client configuration
-	UpdateClient(id string, updatedConfig *schemas.MCPClientConfig) error
+	// UpdateClient applies an edit to an existing MCP client, whose new configuration
+	// it reads from the Account
+	UpdateClient(id string) error
 
 	// UpdateClientCredentials reconnects an existing MCP client using updated
 	// auth-related connection fields (for example, headers and OAuth config).
-	UpdateClientCredentials(id string, newConfig *schemas.MCPClientConfig) error
+	UpdateClientCredentials(id string) error
 
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
@@ -139,12 +141,6 @@ type MCPManagerInterface interface {
 	// connection and flips it to needs_reauth, without attempting a new
 	// dial. Used after OAuth credential rotation.
 	CloseAndMarkNeedsReauth(id string) error
-
-	// DisableClient shuts down a client's connection and workers without removing it
-	DisableClient(id string) error
-
-	// EnableClient reconnects a disabled client and restarts its workers
-	EnableClient(id string) error
 
 	// VerifyHeadersConnection creates a temporary MCP connection using a set of
 	// caller-supplied header values to verify connectivity and discover tools.

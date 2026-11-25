@@ -46,7 +46,7 @@ func (stubConfigManager) ReloadHeaderFilterConfig(context.Context, *configtables
 func TestUpdateConfig_PersistsVKRotationCooldown(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
 
 	save := func(t *testing.T, cooldownJSON string) {
@@ -93,7 +93,7 @@ func TestUpdateConfig_PersistsVKRotationCooldown(t *testing.T) {
 func TestUpdateConfig_MCPMaxProtocolVersion(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
 	save := func(t *testing.T, body string) int {
 		t.Helper()
@@ -175,7 +175,7 @@ func (r *tokenizerRecorder) ReloadClientConfigFromConfigStore(context.Context) e
 func TestUpdateConfig_UsageEstimationTokenizers(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	recorder := &tokenizerRecorder{}
 	h := &ConfigHandler{store: cfg, configManager: recorder}
 	recorder.stored = func() []string {

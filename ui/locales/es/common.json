@@ -191,8 +191,7 @@
 		"toggle": "Mostrar u ocultar la barra lateral"
 	},
 	"sheet": {
-		"collapse": "Contraer",
-		"expand": "Expandir"
+		"resizeHandle": "Cambiar el tamaño del panel"
 	},
 	"tabs": {
 		"showMore_one": "Mostrar {{count}} pestaña más",

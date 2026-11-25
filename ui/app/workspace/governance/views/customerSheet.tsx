@@ -342,7 +342,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="max-w-[900px] p-0 pt-4 sm:max-w-2xl" data-testid="customer-dialog-content">
+			<SheetContent resizeKey="customer" className="max-w-[900px] p-0 pt-4 sm:max-w-2xl" data-testid="customer-dialog-content">
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle className="flex items-center gap-2">
 						{isEditing ? t("customers.sheet.editTitle") : t("customers.sheet.createTitle")}

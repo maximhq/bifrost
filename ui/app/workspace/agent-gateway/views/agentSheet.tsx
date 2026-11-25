@@ -376,6 +376,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 	return (
 		<Sheet open onOpenChange={(open) => !open && onClose()}>
 			<SheetContent
+				resizeKey="agent"
 				className="flex w-full flex-col gap-0 overflow-x-hidden p-0 pt-4 sm:max-w-[40rem]"
 				onInteractOutside={(event) => event.preventDefault()}
 				onEscapeKeyDown={onClose}

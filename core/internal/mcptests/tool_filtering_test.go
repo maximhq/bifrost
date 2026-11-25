@@ -345,7 +345,7 @@ func TestFilteringChangesAfterClientEdit(t *testing.T) {
 
 	// Edit client to only allow second tool
 	clientConfig.ToolsToExecute = []string{"hash"}
-	err := manager.UpdateClient(clientConfig.ID, &clientConfig)
+	err := updateClient(manager, clientConfig.ID, &clientConfig)
 	require.NoError(t, err, "edit should succeed")
 
 	// Verify configuration changed

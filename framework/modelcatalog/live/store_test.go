@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 const (
@@ -22,7 +23,7 @@ func upsertUnfiltered(s *Store, p schemas.ModelProvider, keyID string, models []
 }
 
 func TestUpsertAndReadFiltered(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, openai, "k1", []string{"gpt-4o", "gpt-4o-mini"})
 
 	got := s.ModelsForProvider(openai)
@@ -33,7 +34,7 @@ func TestUpsertAndReadFiltered(t *testing.T) {
 }
 
 func TestFilteredAndUnfilteredDoNotMix(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
 	upsertUnfiltered(s, openai, "k1", []string{"gpt-4o", "gpt-4o-mini", "o1"})
 
@@ -46,7 +47,7 @@ func TestFilteredAndUnfilteredDoNotMix(t *testing.T) {
 }
 
 func TestUnionAcrossKeys(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, openai, "k1", []string{"gpt-4o", "gpt-4o-mini"})
 	upsertFiltered(s, openai, "k2", []string{"gpt-4o-mini", "o1"})
 
@@ -58,7 +59,7 @@ func TestUnionAcrossKeys(t *testing.T) {
 }
 
 func TestInvalidateOneKeyPreservesOthers(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
 	upsertFiltered(s, openai, "k2", []string{"o1"})
 	upsertUnfiltered(s, openai, "k1", []string{"gpt-4o", "extra"})
@@ -74,7 +75,7 @@ func TestInvalidateOneKeyPreservesOthers(t *testing.T) {
 }
 
 func TestInvalidateProviderDropsEverything(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
 	upsertFiltered(s, openai, "k2", []string{"o1"})
 	upsertFiltered(s, anthropic, "k3", []string{"claude-3-5-sonnet"})
@@ -90,7 +91,7 @@ func TestInvalidateProviderDropsEverything(t *testing.T) {
 }
 
 func TestRetainKeysDropsOnlyMissingKeys(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
 	upsertUnfiltered(s, openai, "k1", []string{"gpt-4o", "gpt-4o-mini"})
 	upsertFiltered(s, openai, "k2", []string{"o1"})
@@ -121,7 +122,7 @@ func TestRetainKeysEmptyKeepSetDropsAll(t *testing.T) {
 		{"empty keep set", map[string]struct{}{}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			s := New(nil)
+			s := newTestStore(t)
 			upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
 			upsertFiltered(s, anthropic, "k9", []string{"claude-3-5-sonnet"})
 
@@ -141,7 +142,7 @@ func TestRetainKeysEmptyKeepSetDropsAll(t *testing.T) {
 // such as Vertex and Bedrock) as an ordinary retainable member of the keep
 // set, not a wildcard or an absent entry.
 func TestRetainKeysKeylessSentinel(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, schemas.Vertex, "", []string{"gemini-2.0-flash"})
 	upsertFiltered(s, schemas.Vertex, "stale-key", []string{"gemini-1.0-pro"})
 
@@ -156,7 +157,7 @@ func TestRetainKeysKeylessSentinel(t *testing.T) {
 // key is in the config but was never successfully fetched: naming it in the
 // keep set must not fabricate an entry or disturb the others.
 func TestRetainKeysUnknownKeepEntriesAreHarmless(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
 
 	s.RetainKeys(openai, map[string]struct{}{"k1": {}, "never-fetched": {}})
@@ -177,7 +178,7 @@ func TestRetainKeysUnknownKeepEntriesAreHarmless(t *testing.T) {
 // under -race to catch the unsynchronized case even when the scheduler happens
 // not to interleave them.
 func TestRetainKeysIsRaceFreeUnderConcurrentAccess(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	const goroutines = 8
 	const iterations = 200
 
@@ -231,7 +232,7 @@ func TestRetainKeysIsRaceFreeUnderConcurrentAccess(t *testing.T) {
 // keep map, or a caller reusing or mutating that map after the call would be
 // racing the store's internals.
 func TestRetainKeysDoesNotRetainCallerMap(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
 	upsertFiltered(s, openai, "k2", []string{"o1"})
 
@@ -249,7 +250,7 @@ func TestRetainKeysDoesNotRetainCallerMap(t *testing.T) {
 }
 
 func TestKeylessProviderUsesEmptyKeyID(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, schemas.Vertex, "", []string{"gemini-2.0-flash"})
 
 	if got := s.ModelsForProvider(schemas.Vertex); !slices.Equal(got, []string{"gemini-2.0-flash"}) {
@@ -258,7 +259,7 @@ func TestKeylessProviderUsesEmptyKeyID(t *testing.T) {
 }
 
 func TestSnapshotIsDefensiveCopy(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
 
 	snap := s.Snapshot()
@@ -272,7 +273,7 @@ func TestSnapshotIsDefensiveCopy(t *testing.T) {
 }
 
 func TestUpsertCopiesInputSlice(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	input := []string{"gpt-4o"}
 	s.Upsert(openai, "k1", false, input, nil)
 
@@ -284,14 +285,14 @@ func TestUpsertCopiesInputSlice(t *testing.T) {
 }
 
 func TestModelsForProviderUnknownProviderReturnsEmpty(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	if got := s.ModelsForProvider(openai); len(got) != 0 {
 		t.Errorf("unknown provider = %v, want empty", got)
 	}
 }
 
 func TestUpsertOverwritesSameKey(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
 	upsertFiltered(s, openai, "k1", []string{"o1"})
 
@@ -304,7 +305,7 @@ func TestUpsertOverwritesSameKey(t *testing.T) {
 // invalidating the provider in between, a guarded commit behaves exactly like
 // a plain Upsert.
 func TestUpsertIfCurrentAcceptsUnchangedGeneration(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	gen := s.Generation(openai)
 
 	if !s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, nil, gen) {
@@ -322,7 +323,7 @@ func TestUpsertIfCurrentAcceptsUnchangedGeneration(t *testing.T) {
 // just dropped, because nothing ever re-prunes a key that is no longer
 // configured.
 func TestUpsertIfCurrentDropsWriteAfterInvalidate(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
 
 	gen := s.Generation(openai) // refresh pass starts here
@@ -342,7 +343,7 @@ func TestUpsertIfCurrentDropsWriteAfterInvalidate(t *testing.T) {
 // deletes nothing: the fetch it has to cancel has not written yet. Bumping only
 // when an entry existed would leave that write unguarded.
 func TestInvalidateBumpsGenerationWithNoCachedEntry(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	gen := s.Generation(openai)
 
 	s.Invalidate(openai, "k1") // nothing cached for k1 yet
@@ -365,7 +366,7 @@ func TestInvalidateProviderAndRetainKeysBumpGeneration(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := New(nil)
+			s := newTestStore(t)
 			gen := s.Generation(openai)
 
 			tt.invalidate(s)
@@ -382,7 +383,7 @@ func TestInvalidateProviderAndRetainKeysBumpGeneration(t *testing.T) {
 // refresh for another. Providers refresh concurrently, so a shared counter
 // would make every key edit anywhere cost a whole refresh cycle.
 func TestGenerationIsPerProvider(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	gen := s.Generation(anthropic)
 
 	s.Invalidate(openai, "k1")
@@ -400,7 +401,7 @@ func TestGenerationIsPerProvider(t *testing.T) {
 // captured 0 before the removal look current again once the provider was
 // re-added, which is the exact write the guard exists to stop.
 func TestGenerationSurvivesProviderRemoval(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	gen := s.Generation(openai) // fetch starts against the original provider
 
 	s.InvalidateProvider(openai) // provider deleted...
@@ -415,7 +416,7 @@ func TestGenerationSurvivesProviderRemoval(t *testing.T) {
 // TestUpsertIfCurrentCopiesInputSlice mirrors TestUpsertCopiesInputSlice: the
 // guarded path must not retain the caller's backing array either.
 func TestUpsertIfCurrentCopiesInputSlice(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	input := []string{"gpt-4o"}
 	s.UpsertIfCurrent(openai, "k1", false, input, nil, s.Generation(openai))
 
@@ -431,7 +432,7 @@ func TestUpsertIfCurrentCopiesInputSlice(t *testing.T) {
 // writes land but that the store stays consistent and no commit outlives the
 // invalidation that followed its Generation read.
 func TestConcurrentInvalidateAndGuardedUpsertAreRaceFree(t *testing.T) {
-	s := New(nil)
+	s := newTestStore(t)
 	const workers = 8
 	const iterations = 100
 
@@ -452,4 +453,19 @@ func TestConcurrentInvalidateAndGuardedUpsertAreRaceFree(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// newTestStore returns a store over a new live store closed when the test ends.
+func newTestStore(t testing.TB) *Store {
+	t.Helper()
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(live.Close)
+	s, err := New(live, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }

@@ -162,7 +162,7 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && onClose()}>
-			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4">
+			<SheetContent resizeKey="mcp-library-add-server" className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4">
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-4 md:px-8 -top-4 bg-card z-10">
 					<SheetTitle>{t("library.add.title")}</SheetTitle>
 					<SheetDescription>{t("library.add.description")}</SheetDescription>
