@@ -27,7 +27,13 @@ func toGeminiModelResourceName(modelID string) string {
 // modalities from its datasheet.
 func geminiModelArchitecture(modelName string, methods []string) *schemas.Architecture {
 	name := strings.ToLower(strings.TrimPrefix(modelName, "models/"))
-	tokens := strings.Split(name, "-")
+	// Collect the tokens on the stack: plain chat rows, the common case, return nil
+	// below and must not allocate.
+	var buf [16]string
+	tokens := buf[:0]
+	for tok := range strings.SplitSeq(name, "-") {
+		tokens = append(tokens, tok)
+	}
 	var inputs, outputs []string
 	switch {
 	case slices.Contains(tokens, "tts"):
@@ -46,9 +52,10 @@ func geminiModelArchitecture(modelName string, methods []string) *schemas.Archit
 	case slices.Contains(tokens, "veo"):
 		inputs, outputs = []string{"image", "text"}, []string{"video"}
 	case slices.Contains(tokens, "omni"):
-		// Omni 1.1 and the earlier preview return video only; 1.2 also returns text.
+		// Omni 1.1 and the shut-down gemini-omni-flash-preview return video only;
+		// 1.2 and later also return text.
 		inputs, outputs = []string{"image", "text", "video"}, []string{"text", "video"}
-		if slices.Contains(tokens, "1.1") || slices.Contains(tokens, "preview") {
+		if slices.Contains(tokens, "1.1") || name == "gemini-omni-flash-preview" {
 			outputs = []string{"video"}
 		}
 	case slices.Contains(tokens, "lyria") && slices.Contains(tokens, "realtime"):

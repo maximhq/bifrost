@@ -19755,6 +19755,56 @@
                   ]
                 }
               }
+            },
+            {
+              "name": "Gemini: /v1/models?provider=gemini reports TTS output modalities (gemini list modalities) - #10263",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var body = pm.response.text();",
+                      "pm.test('gemini TTS rows carry architecture.output_modalities [audio]; plain chat rows carry none', function () {",
+                      "  pm.expect(pm.response.code, 'list models failed: ' + body.slice(0, 500)).to.equal(200);",
+                      "  var data = pm.response.json().data || [];",
+                      "  var tts = data.filter(function (m) { return typeof m.id === 'string' && /^gemini\\/.*-tts$/.test(m.id); });",
+                      "  pm.expect(tts, 'no gemini/*-tts row: ' + body.slice(0, 500)).to.not.be.empty;",
+                      "  tts.forEach(function (m) {",
+                      "    pm.expect(m.architecture, m.id + ' has no architecture').to.be.an('object');",
+                      "    pm.expect(m.architecture.output_modalities, m.id).to.deep.equal(['audio']);",
+                      "  });",
+                      "  // Before the change TTS rows had no architecture. Chat rows stay unset so the catalog datasheet fills them.",
+                      "  var chat = data.filter(function (m) { return m.id === 'gemini/gemini-2.5-flash' || m.id === 'gemini/gemini-2.5-pro'; });",
+                      "  pm.expect(chat, 'no plain gemini chat row: ' + body.slice(0, 500)).to.not.be.empty;",
+                      "  chat.forEach(function (m) {",
+                      "    pm.expect(m.architecture, m.id + ' chat row should carry no architecture').to.be.oneOf([undefined, null]);",
+                      "  });",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/v1/models?provider=gemini",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "models"
+                  ],
+                  "query": [
+                    {
+                      "key": "provider",
+                      "value": "gemini"
+                    }
+                  ]
+                }
+              }
             }
           ]
         },
