@@ -12,7 +12,6 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -25,8 +24,8 @@ type gatewayToolIndex struct {
 	aliases       map[string][]gatewayToolAlias // server-given name -> the tools it can stand for
 	refusal       map[string]struct{}           // server-given names installed as hidden tools so a refusal can explain itself
 
-	serverTypesOnSlug  map[string]lib.MCPClientCodeModes // clients whose own /mcp/<slug> overrides code mode, by name
-	codeModeOnlyOnSlug bool                              // the code-mode tools are installed only for a slug override
+	serverTypesOnSlug  map[string]mcpClientCodeModes // clients whose own /mcp/<slug> overrides code mode, by name
+	codeModeOnlyOnSlug bool                          // the code-mode tools are installed only for a slug override
 }
 
 // gatewayToolAlias is a tool a server-given (unprefixed) name can stand for. MCP Apps call tools by the

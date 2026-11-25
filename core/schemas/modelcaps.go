@@ -463,6 +463,16 @@ func (c ModelCaps) SupportsNativeStructuredOutput(fallback bool) bool {
 	return fallback
 }
 
+// SupportsVision reports whether the model accepts image inputs in user
+// content. Prefers the datasheet's supports_vision boolean, falling back to the
+// caller's default when no record is registered.
+func (c ModelCaps) SupportsVision(fallback bool) bool {
+	if c.record != nil && c.record.SupportsVision != nil {
+		return *c.record.SupportsVision
+	}
+	return fallback
+}
+
 // SupportsResponseSchemaWithTools reports whether the model accepts a JSON
 // response format alongside function declarations. Models without it reject the
 // pairing, so the response-format hint is dropped to keep tool calling working.

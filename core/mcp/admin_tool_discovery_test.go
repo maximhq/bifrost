@@ -390,7 +390,7 @@ func TestVerifyHeadersConnection_DialsAnSSEClientOverSSE(t *testing.T) {
 		sse.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	discovery, err := m.VerifyHeadersConnection(context.Background(), &schemas.MCPClientConfig{

@@ -63,8 +63,9 @@ func TestUpstreamToolsListChanged_RefreshesTools(t *testing.T) {
 			config.NeedsSessionStickiness = schemas.Ptr(true)
 			config.ToolsToExecute = []string{"*"}
 
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
+			accountOf(m).set(config)
 			require.NoError(t, m.connectToMCPClient(context.Background(), config))
 			state, ok := snapshotClientState(m, config.ID)
 			require.True(t, ok)
@@ -91,12 +92,13 @@ func TestUpstreamToolsListChanged_ListensOnlyWhenAnnounced(t *testing.T) {
 			ts := httptest.NewServer(counter.wrap(server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))))
 			t.Cleanup(ts.Close)
 
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
 			config := &schemas.MCPClientConfig{
 				ID: "listen-only-when-announced", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
 				ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
 			}
+			accountOf(m).set(config)
 			require.NoError(t, m.connectToMCPClient(context.Background(), config))
 
 			if announces {
@@ -115,12 +117,13 @@ func TestUpstreamToolsListChanged_CoalescesBursts(t *testing.T) {
 	counter := newWireCounter()
 	ts := httptest.NewServer(counter.wrap(server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID: "coalesce", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
 	}
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	state, ok := snapshotClientState(m, config.ID)
 	require.True(t, ok)
@@ -155,12 +158,13 @@ func TestUpstreamToolsListChanged_AckAfterConnectReachesChecker(t *testing.T) {
 			ts := httptest.NewServer(server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20260728)))
 			t.Cleanup(ts.Close)
 
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
 			config := &schemas.MCPClientConfig{
 				ID: "ack-after-connect", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
 				ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
 			}
+			accountOf(m).set(config)
 			require.NoError(t, m.connectToMCPClient(context.Background(), config))
 			require.Eventually(t, func() bool {
 				state, ok := snapshotClientState(m, config.ID)
@@ -186,7 +190,7 @@ func TestUpstreamToolsListChanged_WatcherEndsWithItsConnection(t *testing.T) {
 	t.Cleanup(ts.Close)
 	callerCtx, cancelCaller := context.WithCancel(context.Background())
 	t.Cleanup(cancelCaller)
-	m := NewMCPManager(callerCtx, schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(callerCtx, schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID: "watcher-bound", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
@@ -194,6 +198,7 @@ func TestUpstreamToolsListChanged_WatcherEndsWithItsConnection(t *testing.T) {
 	}
 	connect := func() (clientSnapshot, bool) {
 		t.Helper()
+		accountOf(m).set(config)
 		require.NoError(t, m.connectToMCPClient(context.Background(), config))
 		return snapshotClientState(m, config.ID)
 	}
@@ -204,7 +209,7 @@ func TestUpstreamToolsListChanged_WatcherEndsWithItsConnection(t *testing.T) {
 	require.Eventually(t, func() bool { return activeStreams.Load() == 1 }, time.Second, 10*time.Millisecond)
 
 	t.Run("disabled", func(t *testing.T) {
-		require.NoError(t, m.DisableClient(config.ID))
+		require.NoError(t, editClient(m, config.ID, func(c *schemas.MCPClientConfig) { c.Disabled = true }))
 		assert.False(t, m.isCurrentConn(config.ID, first.Conn, first.ConnGeneration), "a closed connection's watcher must stop")
 		require.Eventually(t, func() bool { return activeStreams.Load() == 0 }, time.Second, 10*time.Millisecond, "disable must end the subscription request")
 	})
@@ -234,7 +239,7 @@ func TestUpstreamToolsListChanged_WatcherEndsWithItsConnection(t *testing.T) {
 		assert.NoError(t, callerCtx.Err(), "cleanup must not cancel a shared caller context")
 		require.Eventually(t, func() bool { return activeStreams.Load() == 0 }, time.Second, 10*time.Millisecond, "cleanup must end the subscription request")
 		require.ErrorIs(t, m.connectToMCPClient(context.Background(), config), context.Canceled)
-		require.ErrorIs(t, m.AddClient(context.Background(), config), context.Canceled)
+		require.ErrorIs(t, m.AddClient(context.Background(), config.ID), context.Canceled)
 	})
 }
 
@@ -264,7 +269,7 @@ func TestCleanupCancelsPendingMCPConnection(t *testing.T) {
 				ID: "pending-cleanup", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeHeaders,
 				ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(mode != "per-call"), ToolsToExecute: []string{"*"},
 			}
-			m := NewMCPManager(callerCtx, schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{config}}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(callerCtx, schemas.MCPConfig{}, newTestAccount(config), nil, &MockLogger{}, nil)
 			require.Equal(t, mode == "per-call", m.credStore.RequiresPerCallConnection(config), "fixture must take the intended connection path")
 			connected, done := make(chan error, 1), make(chan struct{})
 			t.Cleanup(func() {
@@ -280,7 +285,7 @@ func TestCleanupCancelsPendingMCPConnection(t *testing.T) {
 					connected <- nil
 					return
 				}
-				connected <- m.AddClient(requestCtx, config)
+				connected <- m.AddClient(requestCtx, config.ID)
 			}()
 			select {
 			case <-listed:
@@ -322,7 +327,7 @@ func TestCleanupCancelsPendingSSEConnection(t *testing.T) {
 	t.Cleanup(ts.Close)
 	callerCtx, cancelCaller := context.WithCancel(context.Background())
 	t.Cleanup(cancelCaller)
-	m := NewMCPManager(callerCtx, schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(callerCtx, schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	t.Cleanup(func() { close(release) })
 	config := &schemas.MCPClientConfig{
@@ -384,9 +389,10 @@ func TestUpstreamToolsListChanged_ChangeDuringDiscoveryIsNotMissed(t *testing.T)
 		ID: "list-changed-during-discovery", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
 	}
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	connected := make(chan error, 1)
+	accountOf(m).set(config)
 	go func() { connected <- m.connectToMCPClient(context.Background(), config) }()
 	select {
 	case <-listed:

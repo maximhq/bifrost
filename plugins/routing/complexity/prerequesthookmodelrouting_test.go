@@ -15,7 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	governancePlugin "github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
@@ -80,7 +80,7 @@ func serveGeneralRouter(t *testing.T, plugin *routing.RoutingPlugin, targets ...
 	t.Helper()
 	router := decisionModelRouter("general", "General", targets...)
 	router.Routing = globalRouting(0, "")
-	require.NoError(t, plugin.ReloadModelRouter(&router))
+	require.NoError(t, reloadRouter(plugin, &router))
 }
 
 // modelRoutingTestPlugin builds a routing plugin whose routers, and the
@@ -98,7 +98,7 @@ func modelRoutingTestPlugin(
 }
 
 // modelRoutingTestPluginWithConfig is modelRoutingTestPlugin with a plugin
-// config, for the KV store session tiers and tool continuations need, any
+// config, for the session store session tiers and tool continuations need, any
 // governance, and any decision executor.
 func modelRoutingTestPluginWithConfig(
 	t testing.TB,
@@ -111,18 +111,21 @@ func modelRoutingTestPluginWithConfig(
 	t.Helper()
 	ctx := context.Background()
 	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewLocalStore(ctx, logger, nil)
+	ruleStore, err := rules.NewTestRules(ctx, t.TempDir(), logger)
 	require.NoError(t, err)
+	t.Cleanup(ruleStore.Close)
 	for i := range routingRules {
-		require.NoError(t, ruleStore.UpsertRule(ctx, &routingRules[i]))
+		require.NoError(t, ruleStore.Put(ctx, &routingRules[i]))
 	}
-	plugin, err := routing.InitFromStore(ctx, config, logger, nil, ruleStore, governance)
+	plugin, err := routing.InitFromStore(ctx, config, logger, nil, ruleStore.Store, governance)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	testRuleStores.Store(plugin, ruleStore)
+	t.Cleanup(func() { testRuleStores.Delete(plugin) })
 	plugin.SetDecisionRequestExecutor(decide)
 	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(decisionAnalyzerTestConfig()))
 	for i := range routers {
-		require.NoError(t, plugin.ReloadModelRouter(&routers[i]))
+		require.NoError(t, reloadRouter(plugin, &routers[i]))
 	}
 	return plugin
 }
@@ -198,7 +201,7 @@ func TestModelRoutersMatchInOrder(t *testing.T) {
 	assert.Equal(t, "claude-haiku", model)
 	assert.Equal(t, "catch-all", ctx.Value(schemas.BifrostContextKeyModelRouterID))
 
-	require.NoError(t, plugin.SetModelRouterTargets("catch-all", []configstoreTables.TableModelRouterTarget{
+	require.NoError(t, testRulesOf(plugin).SaveModelRouterTargets(context.Background(), "catch-all", []configstoreTables.TableModelRouterTarget{
 		tierTarget(complexity.TierSimple, "anthropic", "claude-sonnet"),
 	}))
 	_, model = run("gpt-4o")
@@ -412,7 +415,7 @@ func TestModelRouterReloadAndRemove(t *testing.T) {
 	plugin := modelRoutingTestPlugin(t, routing.NewMockGovernance(), modelRoutingDecision(), nil, []configstore.ModelRouter{supportRouter("Support")})
 
 	renamed := supportRouter("Customer support")
-	require.NoError(t, plugin.ReloadModelRouter(&renamed))
+	require.NoError(t, reloadRouter(plugin, &renamed))
 	ctx := newRequestContext()
 	runPreRequest(t, plugin, ctx, complexText)
 	assert.Equal(t, "Customer support", ctx.Value(schemas.BifrostContextKeyModelRouterName))
@@ -590,14 +593,25 @@ func sessionRouterConfig() complexity.AnalyzerConfig {
 	return *config
 }
 
-// newTestKVStore returns the in-memory KV store session tiers and tool
-// continuations are kept in.
-func newTestKVStore(t *testing.T) *kvstore.Store {
+// sessionConfigForTest returns a routing config over new session and warm tables, as
+// the host wires them, and the session table session tiers and tool continuations are kept in.
+func sessionConfigForTest(t *testing.T) (*routing.Config, *livestore.Table[string, string]) {
 	t.Helper()
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
+	live, err := livestore.New()
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	return store
+	t.Cleanup(live.Close)
+	sessions, err := live.NewTable[string, string](context.Background(), "session_state", livestore.WithWriteTimes())
+	require.NoError(t, err)
+	warm, err := live.NewTable[string, string](context.Background(), routing.ComplexityWarmTable, livestore.WithWriteTimes())
+	require.NoError(t, err)
+	return &routing.Config{Sessions: sessions, Warm: warm}, sessions
+}
+
+// newTestKVStore returns a routing config over new session and warm tables.
+func newTestKVStore(t *testing.T) *routing.Config {
+	t.Helper()
+	config, _ := sessionConfigForTest(t)
+	return config
 }
 
 // quietGovernance is a governance stand-in that records nothing, so requests
@@ -619,19 +633,17 @@ func newQuietGovernance() quietGovernance {
 	return quietGovernance{MockGovernanceStore: rules.NewMockGovernanceStore()}
 }
 
-// flakyKVStore is a KV store whose writes can be made to fail, standing in
-// for a state store outage in the middle of a session.
-type flakyKVStore struct {
-	schemas.KVStore
-	failWrites atomic.Bool
-}
-
-// SetWithTTL fails while the outage is on.
-func (s *flakyKVStore) SetWithTTL(key string, value any, ttl time.Duration) error {
-	if s.failWrites.Load() {
-		return errors.New("state store unavailable")
+// corruptSessions overwrites every entry the session table holds with a tier no version writes,
+// standing in for session state the router cannot use in the middle of a session.
+func corruptSessions(sessions *livestore.Table[string, string]) {
+	var keys []string
+	sessions.Range(func(key, _ string) bool {
+		keys = append(keys, key)
+		return true
+	})
+	for _, key := range keys {
+		sessions.PutWithTTL(key, "UNREADABLE", time.Hour)
 	}
-	return s.KVStore.SetWithTTL(key, value, ttl)
 }
 
 // ---------------------------------------------------------------------------
@@ -901,7 +913,7 @@ func TestRoutingRuleTierAndRouterTierAreSeparate(t *testing.T) {
 		llmCalls.Add(1)
 		return llmClassifierChatResponse(`{"tier": "SIMPLE"}`), nil
 	})
-	require.NoError(t, plugin.ReloadModelRouter(&byLLM))
+	require.NoError(t, reloadRouter(plugin, &byLLM))
 
 	ctx := newRequestContext()
 	req := runPreRequest(t, plugin, ctx, complexText)
@@ -1218,7 +1230,7 @@ func TestModelRoutersClassifyWithTheirOwnClassifier(t *testing.T) {
 	bySemantic := configstore.ModelRouter{ID: "by-semantic", Name: "By semantic", ComplexityAnalyzerConfig: *semanticConfig, Targets: everyTierTargets("by-semantic")}
 	bySemantic.Routing = appRouting(2, "semantic")
 	for _, router := range []*configstore.ModelRouter{&byDecision, &byLLM, &bySemantic} {
-		require.NoError(t, plugin.ReloadModelRouter(router))
+		require.NoError(t, reloadRouter(plugin, router))
 	}
 	require.Eventually(t, func() bool {
 		status, ok := plugin.ModelRouterSemanticStatus("by-semantic")
@@ -1251,7 +1263,8 @@ func TestModelRoutersClassifyWithTheirOwnClassifier(t *testing.T) {
 // TestModelRouterChangesApplyToTheNextRequest walks the edits an operator
 // makes to live routers and pins that each one decides the very next request:
 // reordering two routers, turning one off and on, moving one to a narrower
-// scope, saving one without routing, and changing a router's classifier.
+// scope, saving one again without routing, which keeps its saved routing, and
+// changing a router's classifier.
 func TestModelRouterChangesApplyToTheNextRequest(t *testing.T) {
 	first := decisionModelRouter("first", "First", everyTierTargets("first")...)
 	first.Routing = globalRouting(0, "")
@@ -1278,15 +1291,15 @@ func TestModelRouterChangesApplyToTheNextRequest(t *testing.T) {
 
 	withoutRouting := first
 	withoutRouting.Routing = nil
-	require.NoError(t, plugin.ReloadModelRouter(&withoutRouting))
-	assert.Equal(t, "gpt-4o", next(), "a router saved without routing takes nothing")
+	require.NoError(t, reloadRouter(plugin, &withoutRouting))
+	assert.Equal(t, "first-complex", next(), "a router saved again without routing keeps its saved routing")
 
 	plugin.SetChatRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 		return llmClassifierChatResponse(`{"tier": "SIMPLE"}`), nil
 	})
 	asLLM := configstore.ModelRouter{ID: "first", Name: "First", ComplexityAnalyzerConfig: llmRouterConfig(), Targets: everyTierTargets("first")}
 	asLLM.Routing = globalRouting(0, "")
-	require.NoError(t, plugin.ReloadModelRouter(&asLLM))
+	require.NoError(t, reloadRouter(plugin, &asLLM))
 	ctx := newRequestContext()
 	req := runPreRequest(t, plugin, ctx, complexText)
 	assert.Equal(t, "first-simple", routedModel(req), "a router saved with another classifier classifies with it")
@@ -1305,7 +1318,7 @@ func TestModelRouterSessionsStayApart(t *testing.T) {
 		return router
 	}
 	pageRule := ruleFor("page-complex", `headers["x-app"] == "page" && complexity_tier == "COMPLEX"`, ruleTarget("", "page-complex"))
-	plugin := modelRoutingTestPluginWithConfig(t, &routing.Config{KVStore: newTestKVStore(t)}, routing.NewMockGovernance(), decision.execute,
+	plugin := modelRoutingTestPluginWithConfig(t, newTestKVStore(t), routing.NewMockGovernance(), decision.execute,
 		[]configstoreTables.TableRoutingRule{pageRule}, []configstore.ModelRouter{sessionRouter("a", 0), sessionRouter("b", 1)})
 	pageConfig := sessionRouterConfig()
 	require.NoError(t, plugin.ReloadComplexityAnalyzerConfig(&pageConfig))
@@ -1353,7 +1366,7 @@ func TestModelRouterToolContinuation(t *testing.T) {
 		a.Routing = appRouting(0, "a")
 		b := decisionModelRouter("b", "B", everyTierTargets("b")...)
 		b.Routing = appRouting(1, "b")
-		plugin := modelRoutingTestPluginWithConfig(t, &routing.Config{KVStore: newTestKVStore(t)}, routing.NewMockGovernance(), decision.execute,
+		plugin := modelRoutingTestPluginWithConfig(t, newTestKVStore(t), routing.NewMockGovernance(), decision.execute,
 			nil, []configstore.ModelRouter{a, b})
 
 		turn := appSessionContext("s1", "a")
@@ -1383,14 +1396,14 @@ func TestModelRouterToolContinuation(t *testing.T) {
 		mediumRule := ruleFor("medium", `complexity_tier == "MEDIUM"`, ruleTarget("", "rule-medium"))
 		byLLM := configstore.ModelRouter{ID: "by-llm", Name: "By llm", ComplexityAnalyzerConfig: llmRouterConfig(), Targets: everyTierTargets("by-llm")}
 		byLLM.Routing = globalRouting(0, `model == "rule-medium"`)
-		plugin := modelRoutingTestPluginWithConfig(t, &routing.Config{KVStore: newTestKVStore(t)}, routing.NewMockGovernance(), decision.execute,
+		plugin := modelRoutingTestPluginWithConfig(t, newTestKVStore(t), routing.NewMockGovernance(), decision.execute,
 			[]configstoreTables.TableRoutingRule{mediumRule}, nil)
 		var llmCalls atomic.Int32
 		plugin.SetChatRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 			llmCalls.Add(1)
 			return llmClassifierChatResponse(`{"tier": "SIMPLE"}`), nil
 		})
-		require.NoError(t, plugin.ReloadModelRouter(&byLLM))
+		require.NoError(t, reloadRouter(plugin, &byLLM))
 
 		turn := complexitySessionContext("s1")
 		req := runPreRequest(t, plugin, turn, mediumText)
@@ -1573,7 +1586,7 @@ func TestModelRoutersChangeUnderTraffic(t *testing.T) {
 		if i%2 == 1 {
 			model = "a-model-2"
 		}
-		_ = plugin.SetModelRouterTargets("a", []configstoreTables.TableModelRouterTarget{tierTarget(complexity.TierComplex, "", model)})
+		_ = testRulesOf(plugin).SaveModelRouterTargets(context.Background(), "a", []configstoreTables.TableModelRouterTarget{tierTarget(complexity.TierComplex, "", model)})
 	})
 	edit(func(i int) {
 		_ = plugin.SetModelRouterRouting("a", configstore.ModelRouterRouting{Enabled: i%2 == 0, Scope: "global"})
@@ -1584,7 +1597,7 @@ func TestModelRoutersChangeUnderTraffic(t *testing.T) {
 			return
 		}
 		served := b
-		_ = plugin.ReloadModelRouter(&served)
+		_ = reloadRouter(plugin, &served)
 	})
 
 	for range 8 {
@@ -1615,23 +1628,23 @@ func TestModelRoutersChangeUnderTraffic(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestModelRouterSessionStoreOutageLogsAsModelRouter pins which engine a
-// router's classification is logged under when the session state store fails
-// in the middle of a session. The router still routes the request on what
+// router's classification is logged under when the session state cannot be
+// used in the middle of a session. The router still routes the request on what
 // its classifier just answered, and that decision is the router's: a request
 // no routing rule matched must not show a routing-rule decision in its trail
 // (see TestModelRouterClassificationLogEngine for the same rule without an
 // outage).
 func TestModelRouterSessionStoreOutageLogsAsModelRouter(t *testing.T) {
-	store := &flakyKVStore{KVStore: newTestKVStore(t)}
+	config, sessions := sessionConfigForTest(t)
 	router := configstore.ModelRouter{ID: "support", Name: "Support", ComplexityAnalyzerConfig: sessionRouterConfig(), Targets: everyTierTargets("support")}
 	router.Routing = globalRouting(0, "")
-	plugin := modelRoutingTestPluginWithConfig(t, &routing.Config{KVStore: store}, routing.NewMockGovernance(), modelRoutingDecision().execute,
+	plugin := modelRoutingTestPluginWithConfig(t, config, routing.NewMockGovernance(), modelRoutingDecision().execute,
 		nil, []configstore.ModelRouter{router})
 
 	req := runPreRequest(t, plugin, complexitySessionContext("s1"), simpleText)
 	require.Equal(t, "support-simple", routedModel(req))
 
-	store.failWrites.Store(true)
+	corruptSessions(sessions)
 	ctx := complexitySessionContext("s1")
 	req = runPreRequest(t, plugin, ctx, complexText)
 	assert.Equal(t, "support-complex", routedModel(req), "the classifier's answer still routes the request")
@@ -1759,4 +1772,28 @@ func BenchmarkPreRequestHookModelRouters(b *testing.B) {
 			}
 		})
 	}
+}
+
+// testRuleStores maps each plugin modelRoutingTestPluginWithConfig built to the rule store its
+// routers are saved in.
+var testRuleStores sync.Map // *routing.RoutingPlugin -> *rules.TestRules
+
+// testRulesOf returns the rule store plugin's routers are saved in.
+func testRulesOf(plugin *routing.RoutingPlugin) *rules.TestRules {
+	store, _ := testRuleStores.Load(plugin)
+	return store.(*rules.TestRules)
+}
+
+// reloadRouter saves router and serves the record the save left, as the HTTP server does after a
+// save, so a save without routing serves the routing the router was saved with.
+func reloadRouter(plugin *routing.RoutingPlugin, router *configstore.ModelRouter) error {
+	store := testRulesOf(plugin)
+	if err := store.SaveModelRouter(context.Background(), router); err != nil {
+		return err
+	}
+	record, ok := store.Live().Collections.ModelRouters.Get(router.ID)
+	if !ok {
+		return configstore.ErrNotFound
+	}
+	return plugin.ReloadModelRouter(&record.Router)
 }

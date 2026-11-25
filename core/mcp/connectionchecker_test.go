@@ -40,10 +40,11 @@ func newSyncTestClientState(clientID, clientName string, authType schemas.MCPAut
 	return state, config
 }
 
-// installSyncTestClient registers state in the manager and seeds its
-// discovery in the store (live entries no longer carry tool maps).
+// installSyncTestClient registers state in the manager, with config as the
+// client's record, and seeds its discovery in the store (live entries no longer
+// carry tool maps). It takes the manager lock itself.
 func installSyncTestClient(manager *MCPManager, state *schemas.MCPClientState, config *schemas.MCPClientConfig, tools map[string]schemas.ChatTool) {
-	manager.clientMap[config.ID] = state
+	putClient(manager, state)
 	if tools != nil {
 		manager.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{
 			Tools: tools,
@@ -67,7 +68,8 @@ func TestPerformCheck_NilConn_PerUserOAuth_AttemptsAdminDiscovery(t *testing.T) 
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      cred,
 		logger:         &MockLogger{},
-		clientMap:      map[string]*schemas.MCPClientState{},
+		account:        newTestAccount(),
+		clientMap:      map[string]*clientConn{},
 	}
 
 	existingTools := map[string]schemas.ChatTool{"oauth-client-existing": {}}
@@ -96,7 +98,8 @@ func TestPerformCheck_NilConn_PerUserHeaders_AttemptsAdminDiscovery(t *testing.T
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      cred,
 		logger:         &MockLogger{},
-		clientMap:      map[string]*schemas.MCPClientState{},
+		account:        newTestAccount(),
+		clientMap:      map[string]*clientConn{},
 	}
 
 	existingTools := map[string]schemas.ChatTool{"headers-client-existing": {}}
@@ -124,16 +127,14 @@ func TestPerformCheck_NilConn_PerUserHeaders_AttemptsAdminDiscovery(t *testing.T
 func TestPerformCheck_NilConn_SharedAuthType_Sticky_NeverAttemptsAdminDiscovery(t *testing.T) {
 	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone, schemas.MCPAuthTypeOauth} {
 		t.Run(string(authType), func(t *testing.T) {
-			manager := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			manager := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 
 			existingTools := map[string]schemas.ChatTool{"shared-client-existing": {}}
 			state, config := newSyncTestClientState("client-3", "shared-client", authType)
 			config.ConnectionType = schemas.MCPConnectionTypeHTTP
 			config.NeedsSessionStickiness = schemas.Ptr(true)
 			config.ConnectionString = schemas.NewSecretVar("http://127.0.0.1:0/mcp") // unreachable — the reconnect attempt fails fast, which is fine
-			manager.mu.Lock()
 			installSyncTestClient(manager, state, config, existingTools)
-			manager.mu.Unlock()
 
 			checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
 			checker.performCheck()
@@ -168,7 +169,8 @@ func TestPerformCheck_NilConn_SharedAuthType_PerCall_SuccessUpdatesToolMap(t *te
 				discoveryStore: NewDiscoveryStore(nil, nil),
 				credStore:      cred,
 				logger:         &MockLogger{},
-				clientMap:      map[string]*schemas.MCPClientState{},
+				account:        newTestAccount(),
+				clientMap:      map[string]*clientConn{},
 			}
 
 			state, config := newSyncTestClientState("client-shared-percall", "shared-client", authType)
@@ -199,7 +201,7 @@ func TestPerformCheck_NilConn_SharedAuthType_PerCall_SuccessUpdatesToolMap(t *te
 // ConnectionString — fails fast, which is fine: only that it was attempted
 // matters here.
 func TestPerformCheck_NilConn_SharedAuthType_TriggersReconnect(t *testing.T) {
-	manager := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	manager := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 
 	config := &schemas.MCPClientConfig{
 		ID:                     "client-reconnect-trigger",
@@ -209,14 +211,12 @@ func TestPerformCheck_NilConn_SharedAuthType_TriggersReconnect(t *testing.T) {
 		ConnectionString:       schemas.NewSecretVar("http://127.0.0.1:0/mcp"), // unreachable — attempt must still be made
 		NeedsSessionStickiness: schemas.Ptr(true),                              // sticky: routes through the reconnect-on-nil-conn branch under test, not checkPerCall
 	}
-	manager.mu.Lock()
-	manager.clientMap[config.ID] = &schemas.MCPClientState{
+	putClient(manager, &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateUnstable,
 		Conn:            nil,
-	}
-	manager.mu.Unlock()
+	})
 
 	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
 	checker.performCheck()
@@ -241,7 +241,8 @@ func TestPerformCheck_NilConn_PerUserOAuth_SuccessUpdatesToolMap(t *testing.T) {
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      cred,
 		logger:         &MockLogger{},
-		clientMap:      map[string]*schemas.MCPClientState{},
+		account:        newTestAccount(),
+		clientMap:      map[string]*clientConn{},
 	}
 
 	state, config := newSyncTestClientState("client-4", "oauth-client", schemas.MCPAuthTypePerUserOauth)
@@ -272,7 +273,8 @@ func TestSetState_StaleGeneration_DoesNotOverwriteState(t *testing.T) {
 	manager := &MCPManager{
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		logger:         &MockLogger{},
-		clientMap:      map[string]*schemas.MCPClientState{},
+		account:        newTestAccount(),
+		clientMap:      map[string]*clientConn{},
 	}
 	state, config := newSyncTestClientState("client-gen", "gen-client", schemas.MCPAuthTypeHeaders)
 	state.State = schemas.MCPConnectionStateHealthy
@@ -302,7 +304,7 @@ func TestSetState_StaleGeneration_DoesNotOverwriteState(t *testing.T) {
 // correct old/new states, and not at all when the target state matches the
 // current one.
 func TestSetState_FiresStateChangeCallbackOnGenuineTransition(t *testing.T) {
-	manager := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	manager := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "client-checker-callback", Name: "checker-callback-client"}
 
 	type call struct {
@@ -314,13 +316,11 @@ func TestSetState_FiresStateChangeCallbackOnGenuineTransition(t *testing.T) {
 		calls = append(calls, call{clientID, name, oldState, newState})
 	})
 
-	manager.mu.Lock()
-	manager.clientMap[config.ID] = &schemas.MCPClientState{
+	putClient(manager, &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
-	}
-	manager.mu.Unlock()
+	})
 
 	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
 
@@ -350,12 +350,13 @@ func TestClientConnectionChecker_KickChecksAheadOfTheTimer(t *testing.T) {
 	counter := newWireCounter()
 	ts := httptest.NewServer(counter.wrap(server.NewStreamableHTTPServer(newMatrixUpstream())))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID: "kick", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
 	}
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	// Settle any re-list the connect itself triggers (the 2026-07-28 listen stream's acknowledgement).
 	time.Sleep(200 * time.Millisecond)
@@ -390,17 +391,15 @@ func TestClientConnectionCheckerStart_DoesNotDeadlockAgainstAStop(t *testing.T) 
 		{"disabled", func(m *MCPManager, id string) { m.clientMap[id].State = schemas.MCPConnectionStateDisabled }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			defer m.checkerManager.StopAll()
 			config := newVerifiedClientConfig("client", schemas.MCPAuthTypePerUserHeaders, map[string]schemas.ChatTool{})
-			m.mu.Lock()
-			m.clientMap[config.ID] = &schemas.MCPClientState{
+			putClient(m, &schemas.MCPClientState{
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStateHealthy,
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
-			}
-			m.mu.Unlock()
+			})
 			checker := NewClientConnectionChecker(m, config.ID, time.Hour, true, m.logger)
 
 			m.mu.Lock()
@@ -444,7 +443,7 @@ func TestUpdateClient_PingEditReachesTheRunningChecker(t *testing.T) {
 		upstream.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID:                     "ping-edit",
@@ -455,7 +454,7 @@ func TestUpdateClient_PingEditReachesTheRunningChecker(t *testing.T) {
 		NeedsSessionStickiness: schemas.Ptr(true),
 		MaxProtocolVersion:     "2025-06-18",
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 
 	// checkNow kicks one check and reports how many pings it sent.
 	checkNow := func() int32 {
@@ -466,9 +465,7 @@ func TestUpdateClient_PingEditReachesTheRunningChecker(t *testing.T) {
 	}
 	require.Equal(t, int32(1), checkNow(), "a check pings while is_ping_available is on")
 
-	edited := *config
-	edited.IsPingAvailable = schemas.Ptr(false)
-	require.NoError(t, m.UpdateClient(config.ID, &edited))
+	require.NoError(t, editClient(m, config.ID, func(c *schemas.MCPClientConfig) { c.IsPingAvailable = schemas.Ptr(false) }))
 	assert.Equal(t, int32(0), checkNow(), "the next check sends no ping")
 }
 
@@ -491,7 +488,7 @@ func TestReconnectClient_FailedReconnectChecksAgainSoon(t *testing.T) {
 		upstream.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID:                     "failed-reconnect",
@@ -502,7 +499,7 @@ func TestReconnectClient_FailedReconnectChecksAgainSoon(t *testing.T) {
 		NeedsSessionStickiness: schemas.Ptr(true),
 		MaxProtocolVersion:     "2025-06-18",
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 
 	refuseNewConnections.Store(true)
 	require.Error(t, m.ReconnectClient(config.ID))
@@ -525,7 +522,7 @@ func TestReconnectClient_FailedReconnectChecksAgainSoon(t *testing.T) {
 func TestHandleSSEConnectionLost_MovesTheCheckerOntoTheUnstableCadence(t *testing.T) {
 	ts := httptest.NewServer(server.NewSSEServer(server.NewMCPServer("sse-lost", "1.0.0", server.WithToolCapabilities(true))))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID:               "sse-lost",
@@ -534,7 +531,7 @@ func TestHandleSSEConnectionLost_MovesTheCheckerOntoTheUnstableCadence(t *testin
 		ConnectionString: schemas.NewSecretVar(ts.URL + "/sse"),
 		AuthType:         schemas.MCPAuthTypeNone,
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	m.checkerManager.mu.RLock()
 	checker := m.checkerManager.checkers[config.ID]
 	m.checkerManager.mu.RUnlock()
@@ -560,7 +557,7 @@ func TestConnectConfiguredClientsAfterCleanupDoesNotRecover(t *testing.T) {
 		ID: "cleaned-up-boot", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:1"), NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{config}}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(config), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	require.NoError(t, m.Cleanup())
 
@@ -576,10 +573,10 @@ func TestConnectConfiguredClientsAfterCleanupDoesNotRecover(t *testing.T) {
 func TestClientConnectionCheckerDoesNotStartAfterCleanup(t *testing.T) {
 	for _, mode := range []string{"registration", "start after StopAll"} {
 		t.Run(mode, func(t *testing.T) {
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
 			state, config := newSyncTestClientState("cleaned-up-checker", "matrix", schemas.MCPAuthTypeHeaders)
-			m.clientMap[config.ID] = state
+			putClient(m, state)
 			checker := NewClientConnectionChecker(m, config.ID, time.Hour, false, &MockLogger{})
 			t.Cleanup(checker.Stop)
 			if mode == "start after StopAll" {
