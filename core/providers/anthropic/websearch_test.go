@@ -430,6 +430,48 @@ func TestWebSearch_PendingCallKeepsNoResultOnRequestRoundTrip(t *testing.T) {
 	}
 }
 
+// interleavedSearchTurn is an assistant turn where the model thought, searched, thought,
+// searched again, thought once more and then called a client tool, as Claude does with
+// adaptive thinking and web_search declared together.
+const interleavedSearchTurn = `[{"type":"thinking","thinking":"th0 search the advisory","signature":"sig0"},
+{"type":"server_tool_use","id":"srvtoolu_01","name":"web_search","input":{"query":"VMSA-2025-0013"}},
+{"type":"web_search_tool_result","tool_use_id":"srvtoolu_01","content":[{"type":"web_search_result","url":"https://example.com/a","title":"A","encrypted_content":"enc"}]},
+{"type":"thinking","thinking":"th3 search the fixed build","signature":"sig3"},
+{"type":"server_tool_use","id":"srvtoolu_02","name":"web_search","input":{"query":"ESXi 8.0 U3f build"}},
+{"type":"web_search_tool_result","tool_use_id":"srvtoolu_02","content":[{"type":"web_search_result","url":"https://example.com/b","title":"B","encrypted_content":"enc"}]},
+{"type":"thinking","thinking":"th6 check the hosts","signature":"sig6"},
+{"type":"tool_use","id":"toolu_01Qn","name":"kubectl","input":{"args":"get nodes"}}]`
+
+const interleavedSearchFollowUp = `{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01Qn","content":"8 nodes Ready"}]}`
+
+// A replayed turn with several searches must leave in the order the client sent it. A
+// thinking block's signature binds to the content before it, so a turn rebuilt with its
+// thinking hoisted ahead of an earlier search is rejected by Anthropic with "thinking
+// blocks in the latest assistant message cannot be modified" (#10451). The web_search
+// egress branch prepended the pending reasoning before every tool block already queued,
+// which with one search per turn was the same as appending and went unnoticed.
+func TestWebSearch_InterleavedThinkingKeepsOrderOnRequestRoundTrip(t *testing.T) {
+	want := "thinking:th0 search the advisory,server_tool_use,web_search_tool_result," +
+		"thinking:th3 search the fixed build,server_tool_use,web_search_tool_result," +
+		"thinking:th6 check the hosts,tool_use"
+	for _, model := range []string{"claude-sonnet-4-6", "anthropic/claude-sonnet-4-6", "vertex/claude-sonnet-4-6", "azure/claude-sonnet-4-6"} {
+		t.Run(model, func(t *testing.T) {
+			_, blocks := webSearchRequestRoundTrip(t, webSearchTurnBody(model, interleavedSearchTurn, interleavedSearchFollowUp))
+			got := make([]string, 0, len(blocks))
+			for _, b := range blocks {
+				s := string(b.Type)
+				if b.Thinking != nil {
+					s += ":" + *b.Thinking
+				}
+				got = append(got, s)
+			}
+			if strings.Join(got, ",") != want {
+				t.Fatalf("assistant turn reordered on egress\n got: %s\nwant: %s", strings.Join(got, ","), want)
+			}
+		})
+	}
+}
+
 // A search that did return keeps its web_search_tool_result, including one that found
 // nothing: an empty result is a finished search, not a pending one. The error case records
 // current behavior, not the contract: the error code is not kept in the neutral item, so
@@ -994,8 +1036,9 @@ func TestWebSearchStream_QuerylessDoneAfterOpenBlockStaysBalanced(t *testing.T) 
 }
 
 // BenchmarkWebSearchRequestRoundTrip measures the request path for a turn that holds a
-// finished search (the common case), for one that holds a pending search, and for the
-// history after a deferred search continued (its result in the next assistant message).
+// finished search (the common case), for one that holds a pending search, for the
+// history after a deferred search continued (its result in the next assistant message),
+// and for a turn that interleaves thinking with two searches.
 func BenchmarkWebSearchRequestRoundTrip(b *testing.B) {
 	const use = `{"type":"server_tool_use","id":"srvtoolu_01Js","name":"web_search","input":{"query":"pod crashloop"}}`
 	bodies := map[string]string{
@@ -1005,9 +1048,10 @@ func BenchmarkWebSearchRequestRoundTrip(b *testing.B) {
 		"pending": webSearchTurnBody("claude-sonnet-4-6",
 			`[{"type":"tool_use","id":"toolu_01Qn","name":"kubectl","input":{"args":"get pods"}},`+use+"]",
 			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01Qn","content":"CrashLoopBackOff"}]}`),
-		"continued": deferredConversationBody("claude-sonnet-4-6"),
+		"continued":   deferredConversationBody("claude-sonnet-4-6"),
+		"interleaved": webSearchTurnBody("claude-sonnet-4-6", interleavedSearchTurn, interleavedSearchFollowUp),
 	}
-	for _, name := range []string{"finished", "pending", "continued"} {
+	for _, name := range []string{"finished", "pending", "continued", "interleaved"} {
 		b.Run(name, func(b *testing.B) {
 			var req AnthropicMessageRequest
 			if err := json.Unmarshal([]byte(bodies[name]), &req); err != nil {
