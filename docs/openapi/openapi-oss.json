@@ -88456,6 +88456,14 @@
             }
           },
           {
+            "name": "unpriced",
+            "in": "query",
+            "description": "`true` returns only job rows that ended without a price (a blank cost).",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "session_id",
             "in": "query",
             "description": "Exact session ID resolved at ingress (x-bf-session-id), as on /api/logs.",
@@ -127792,7 +127800,7 @@
           },
           "job": {
             "type": "object",
-            "description": "The matched call starts an upstream job that is billed once, when it finishes, instead of on every status check. The job id is read from the start reply, Bifrost polls the upstream with the relay's credential until the status is terminal, prices the terminal reply with the job's usage mapping and charges the start call's budgets. The start call is counted as usual and carries the route's fee. A route that starts a job is buffered and billable, and a caller's own status checks (the poll request) must not match a billable route.\n",
+            "description": "The matched call starts an upstream job that is billed once, when it finishes, instead of on every status check. The job id is read from the start reply, Bifrost polls the upstream with the relay's credential until the status is terminal, prices the terminal reply with the job's usage mapping and charges the start call's budgets. The start call is counted as usual and carries the route's fee. A route that starts a job is buffered and billable, and a caller's own status check for a job Bifrost started (a call matching the poll request) is relayed free, with no route of its own.\n",
             "properties": {
               "id_path": {
                 "type": "string",
@@ -128540,6 +128548,45 @@
           "parent_log_id": {
             "type": "string",
             "description": "On a job row, the id of the start call's log."
+          },
+          "job_debug": {
+            "type": "object",
+            "description": "On a job row, how Bifrost followed the job. Poll replies are not stored.",
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "succeeded",
+                  "failed",
+                  "unpriced"
+                ],
+                "description": "How the job ended. `failed` is a $0 settlement; `unpriced` has a blank cost."
+              },
+              "polls": {
+                "type": "integer",
+                "description": "Status checks Bifrost sent."
+              },
+              "last_status": {
+                "type": "string",
+                "description": "The job status last read from a reply."
+              },
+              "last_http_status": {
+                "type": "integer",
+                "description": "HTTP status of the poll that ended the job."
+              },
+              "last_error": {
+                "type": "string",
+                "description": "Why the job ended unpriced."
+              },
+              "settled_by_request_id": {
+                "type": "string",
+                "description": "The caller's status check that found the job finished; Bifrost's own poll then priced it."
+              },
+              "settled_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
           },
           "user_id": {
             "type": "string"
