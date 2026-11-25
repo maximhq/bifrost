@@ -3139,16 +3139,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		}
 		s.GovernanceHandler = governanceHandler
 	}
-	// Routing rules and the complexity analyzer config live in the config store, so these
-	// endpoints have nothing to serve when persistence is disabled (initStores leaves
-	// ConfigStore nil for config_store.enabled=false). Skip them rather than failing, which
-	// would abort registration for every other API route too.
-	var routingHandler *handlers.RoutingHandler
-	if s.Config.ConfigStore != nil {
-		routingHandler, err = handlers.NewRoutingHandler(callbacks, s.Config.ConfigStore)
-		if err != nil {
-			return fmt.Errorf("failed to initialize routing handler: %v", err)
-		}
+	// Routing rules and the complexity analyzer config live in the config store. With the store
+	// disabled the handler is still built, and its routes answer 503 like every configuration route.
+	routingHandler, err := handlers.NewRoutingHandler(callbacks, s.Config.ConfigStore)
+	if err != nil {
+		return fmt.Errorf("failed to initialize routing handler: %v", err)
 	}
 	// Resolve the semantic_cache plugin per request so plugin reloads via
 	// /api/plugins are honored — the previous boot-time capture left stale
@@ -3230,12 +3225,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config, callbacks)
 	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler, callbacks)
-	// Virtual MCP routes read the config store on every call; skip them when persistence is disabled
-	// (nil ConfigStore) rather than nil-deref, like routingHandler below.
-	var virtualMCPHandler *handlers.VirtualMCPHandler
-	if s.Config.ConfigStore != nil {
-		virtualMCPHandler = handlers.NewVirtualMCPHandler(s.Config, s.Client, callbacks, logger)
-	}
+	virtualMCPHandler := handlers.NewVirtualMCPHandler(s.Config, s.Client, callbacks, logger)
 	mcpPerUserHeadersHandler := handlers.NewMCPPerUserHeadersHandler(callbacks, callbacks, s.Config, s.TempTokens)
 	// The per-user discovery store evicts a discovery it writes only from this
 	// process's cache. Forward those evictions to callbacks so a deployment
@@ -3290,56 +3280,49 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	oauth2SessionsHandler := handlers.NewOAuth2SessionsHandler(s.Config)
 	oauth2ConsentHandler := handlers.NewOAuth2ConsentHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
 
+	// Configuration handlers register with configRoutes: middlewares plus
+	// RequireConfigStoreMiddleware, so with the config store disabled their routes answer 503,
+	// reads included. Health, session, logs, cache, websocket, metrics and dev routes stay open
+	// and take middlewares alone. The config, logging and skill-serving handlers mix both kinds
+	// and guard their configuration routes themselves. The agent gateway and relays are built only
+	// with a config store, so their routes never exist without one.
+	configRoutes := append(slices.Clip(middlewares), handlers.RequireConfigStoreMiddleware(s.Config.ConfigStore))
+
 	oauth2DiscoveryHandler.RegisterRoutes(s.Router, middlewares...)
 	// No middleware needed for mcp issuance routes, they should be open
 	oauth2IssuanceHandler.RegisterRoutes(s.Router)
-	oauth2SessionsHandler.RegisterRoutes(s.Router, middlewares...)
-	oauth2ConsentHandler.RegisterRoutes(s.Router, middlewares...)
+	oauth2SessionsHandler.RegisterRoutes(s.Router, configRoutes...)
+	oauth2ConsentHandler.RegisterRoutes(s.Router, configRoutes...)
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
-	providerHandler.RegisterRoutes(s.Router, middlewares...)
-	handlers.NewGithubCopilotSignInHandler().RegisterRoutes(s.Router, middlewares...)
-	mcpHandler.RegisterRoutes(s.Router, middlewares...)
-	if virtualMCPHandler != nil {
-		virtualMCPHandler.RegisterRoutes(s.Router, middlewares...)
-	}
-	mcpPerUserHeadersHandler.RegisterRoutes(s.Router, middlewares...)
-	mcpSessionsHandler.RegisterRoutes(s.Router, middlewares...)
+	providerHandler.RegisterRoutes(s.Router, configRoutes...)
+	handlers.NewGithubCopilotSignInHandler().RegisterRoutes(s.Router, configRoutes...)
+	mcpHandler.RegisterRoutes(s.Router, configRoutes...)
+	virtualMCPHandler.RegisterRoutes(s.Router, configRoutes...)
+	mcpPerUserHeadersHandler.RegisterRoutes(s.Router, configRoutes...)
+	mcpSessionsHandler.RegisterRoutes(s.Router, configRoutes...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
-	oauthHandler.RegisterRoutes(s.Router, middlewares...)
-	if pluginsHandler != nil {
-		pluginsHandler.RegisterRoutes(s.Router, middlewares...)
-	}
-	if sessionHandler != nil {
-		sessionHandler.RegisterRoutes(s.Router, middlewares...)
-	}
-	if promptsHandler != nil {
-		promptsHandler.RegisterRoutes(s.Router, middlewares...)
-	}
-	skillsHandler := handlers.NewSkillsHandler(s.Config.ConfigStore, s.Config.ObjectStore)
-	if skillsHandler != nil {
-		skillsHandler.RegisterRoutes(s.Router, middlewares...)
-	}
+	oauthHandler.RegisterRoutes(s.Router, configRoutes...)
+	pluginsHandler.RegisterRoutes(s.Router, configRoutes...)
+	sessionHandler.RegisterRoutes(s.Router, middlewares...)
+	promptsHandler.RegisterRoutes(s.Router, configRoutes...)
+	handlers.NewSkillsHandler(s.Config.ConfigStore, s.Config.ObjectStore).RegisterRoutes(s.Router, configRoutes...)
 	webhookHandler := handlers.NewWebhookHandler(callbacks, s.Config, s.WebhookDispatcher)
-	webhookHandler.RegisterRoutes(s.Router, middlewares...)
+	webhookHandler.RegisterRoutes(s.Router, configRoutes...)
 	skillsServingHandler := handlers.NewSkillsServingHandler(s.Config.ConfigStore, s.Config.ObjectStore, s.Config)
 	if skillsServingHandler != nil {
 		skillsServingHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	s.skillsServingHandler = skillsServingHandler
 	cacheHandler.RegisterRoutes(s.Router, middlewares...)
-	if featureFlagsHandler != nil {
-		featureFlagsHandler.RegisterRoutes(s.Router, middlewares...)
-	}
+	featureFlagsHandler.RegisterRoutes(s.Router, configRoutes...)
 	if governanceHandler != nil {
 		var overrides handlers.GovernanceRouteOverrides
 		if provider, ok := callbacks.(GovernanceRouteOverridesProvider); ok {
 			overrides = provider.GetGovernanceRouteOverrides(ctx)
 		}
-		governanceHandler.RegisterRoutesWithOverrides(s.Router, overrides, middlewares...)
+		governanceHandler.RegisterRoutesWithOverrides(s.Router, overrides, configRoutes...)
 	}
-	if routingHandler != nil {
-		routingHandler.RegisterRoutes(s.Router, middlewares...)
-	}
+	routingHandler.RegisterRoutes(s.Router, configRoutes...)
 	if loggingHandler != nil {
 		loggingHandler.RegisterRoutes(s.Router, middlewares...)
 		if s.RelaysHandler != nil {
@@ -3350,19 +3333,23 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.WebSocketHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if s.NotificationService != nil {
-		s.NotificationService.RegisterRoutes(s.Router, middlewares...)
+		s.NotificationService.RegisterRoutes(s.Router, configRoutes...)
 	}
 	if s.RSSFeedsHandler != nil {
-		s.RSSFeedsHandler.RegisterRoutes(s.Router, middlewares...)
+		s.RSSFeedsHandler.RegisterRoutes(s.Router, configRoutes...)
 	}
 	if s.WarpHandler != nil {
-		s.WarpHandler.RegisterRoutes(s.Router, middlewares...)
+		s.WarpHandler.RegisterRoutes(s.Router, configRoutes...)
 	}
 	s.registerUserLimitsRoutes(middlewares...)
 	handlers.NewCallerHandler(s.WarpCallerRestrictionResolver).RegisterRoutes(s.Router, middlewares...)
-	if s.Config.ConfigStore != nil && s.SidekiqRunner != nil {
-		handlers.NewSidekiqHandler(s.Config.ConfigStore, s.SidekiqRunner).RegisterRoutes(s.Router, middlewares...)
+	// Without a runner the handler answers 503 itself. The runner is passed only when set, so a
+	// nil *sidekiq.Runner never reaches the handler as a non-nil interface.
+	var sidekiqRunner handlers.SidekiqJobsRunner
+	if s.SidekiqRunner != nil {
+		sidekiqRunner = s.SidekiqRunner
 	}
+	handlers.NewSidekiqHandler(s.Config.ConfigStore, sidekiqRunner).RegisterRoutes(s.Router, configRoutes...)
 	// Register dev pprof handler only in dev mode
 	if handlers.IsDevMode() {
 		logger.Info("dev mode enabled, registering pprof endpoints")

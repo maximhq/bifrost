@@ -444,8 +444,15 @@ func (h *LoggingHandler) shouldHideDeletedVirtualKeysInFilters() bool {
 	return h.config.ClientConfig.HideDeletedVirtualKeysInFilters
 }
 
-// RegisterRoutes registers all logging-related routes
+// RegisterRoutes registers all logging-related routes. Log routes read the log store and stay
+// open with the config store disabled; cost recalculation runs as a background job kept in the
+// config store, so its routes answer 503 from RequireConfigStoreMiddleware.
 func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	var configStore configstore.ConfigStore
+	if h.config != nil {
+		configStore = h.config.ConfigStore
+	}
+	configRoutes := append(slices.Clip(middlewares), RequireConfigStoreMiddleware(configStore))
 	// LLM Log retrieval with filtering, search, and pagination
 	r.GET("/api/logs", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogs), middlewares...))
 	r.GET("/api/logs/sessions/{session_id}/summary", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogSessionSummaryByID), middlewares...))
@@ -478,9 +485,9 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	// Consolidated, public-facing dashboard payload (all of the above in one call)
 	r.GET("/api/logs/dashboard", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getDashboard), middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
-	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
-	r.GET("/api/logs/recalculate-cost/status", lib.ChainMiddlewares(h.getRecalculateCostStatus, middlewares...))
-	r.POST("/api/logs/recalculate-cost/cancel", lib.ChainMiddlewares(h.cancelRecalculateCost, middlewares...))
+	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, configRoutes...))
+	r.GET("/api/logs/recalculate-cost/status", lib.ChainMiddlewares(h.getRecalculateCostStatus, configRoutes...))
+	r.POST("/api/logs/recalculate-cost/cancel", lib.ChainMiddlewares(h.cancelRecalculateCost, configRoutes...))
 
 	// MCP Tool Log retrieval with filtering, search, and pagination
 	r.GET("/api/mcp-logs", lib.ChainMiddlewares(h.getMCPLogs, middlewares...))

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/rssfeed"
@@ -444,11 +445,35 @@ func TestRSSFeedWriteStoreFailureIs500(t *testing.T) {
 	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 }
 
-func TestRSSFeedsUnavailableWithoutStore(t *testing.T) {
-	h := NewRSSFeedsHandler(nil, nil)
-	ctx := rssRequest("", 0)
-	h.listItems(ctx)
-	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
+// TestRSSFeedRoutesAnswer503WhenTheConfigStoreLacksFeedStorage pins that every feed route answers
+// 503 instead of panicking when the config store is set but does not provide RSS feed storage. The
+// store embeds the ConfigStore interface, as a store that wraps another does, so the optional
+// RSSFeedStore methods are not promoted and the handler's store is nil, while
+// RequireConfigStoreMiddleware lets the request through. The items route comes first: the
+// dashboard's notification tray polls it from every signed-in page.
+func TestRSSFeedRoutesAnswer503WhenTheConfigStoreLacksFeedStorage(t *testing.T) {
+	var store configstore.ConfigStore = struct{ configstore.ConfigStore }{}
+	r := router.New()
+	NewRSSFeedsHandler(store, nil).RegisterRoutes(r, RequireConfigStoreMiddleware(store))
+	for _, route := range []struct{ method, uri, body string }{
+		{fasthttp.MethodGet, "/api/rss/items?limit=50", ""},
+		{fasthttp.MethodGet, "/api/rss/feeds", ""},
+		{fasthttp.MethodPost, "/api/rss/feeds", "{}"},
+		{fasthttp.MethodPut, "/api/rss/feeds/1", `{"enabled":false}`},
+		{fasthttp.MethodDelete, "/api/rss/feeds/1", ""},
+		{fasthttp.MethodGet, "/api/rss/settings", ""},
+		{fasthttp.MethodPut, "/api/rss/settings", `{"enabled":false}`},
+	} {
+		t.Run(route.method+" "+route.uri, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(route.method)
+			ctx.Request.SetRequestURI(route.uri)
+			ctx.Request.SetBodyString(route.body)
+			r.Handler(ctx)
+			require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Contains(t, string(ctx.Response.Body()), "rss feed storage is unavailable")
+		})
+	}
 }
 
 func TestRSSNewsSwitchStopsFetching(t *testing.T) {

@@ -256,10 +256,6 @@ func (h *MCPHandler) reregisterMCPClient(ctx *fasthttp.RequestCtx) {
 // reauthorize, optionally register a replacement OAuth client, then open an
 // admin-mode flow and hand back the upstream authorize URL.
 func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, reregisterClient bool) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid mcp client id: %v", err))
@@ -458,11 +454,6 @@ func (h *MCPHandler) startAdminSignIn(ctx *fasthttp.RequestCtx, clientConfig *sc
 // inert (its status can never become authorized), and the OAuth sweep
 // worker removes it (DeleteAbandonedOauthConfigs).
 func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
-
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid mcp client id: %v", err))
@@ -691,10 +682,6 @@ func (h *MCPHandler) getMCPClientRuntimeState(id string) (schemas.MCPConnectionS
 }
 
 func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
 	defer cancel()
 
@@ -949,10 +936,6 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 // transitions to connected. On failure the stored state is untouched and
 // the admin can retry.
 func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
 	defer cancel()
 
@@ -1339,18 +1322,6 @@ type MCPClusterStateAggregator interface {
 
 // getMCPClients handles GET /api/mcp/clients - Get all MCP clients
 func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
-	emptyResponse := map[string]interface{}{
-		"clients":     []MCPClientResponse{},
-		"count":       0,
-		"total_count": 0,
-		"limit":       0,
-		"offset":      0,
-	}
-	if h.store.ConfigStore == nil {
-		SendJSON(ctx, emptyResponse)
-		return
-	}
-
 	params := configstore.MCPClientsQueryParams{
 		Search:          string(ctx.QueryArgs().Peek("search")),
 		ClientID:        string(ctx.QueryArgs().Peek("server")),
@@ -1443,18 +1414,6 @@ func parseBoolQueryArg(ctx *fasthttp.RequestCtx, key string) (bool, bool, error)
 // getMCPLibrary handles GET /api/mcp/library — paginated, searchable, filterable
 // listing of the synced MCP server catalog. All query parameters are optional.
 func (h *MCPHandler) getMCPLibrary(ctx *fasthttp.RequestCtx) {
-	emptyResponse := map[string]interface{}{
-		"servers":     []configstoreTables.TableMCPLibrary{},
-		"count":       0,
-		"total_count": 0,
-		"limit":       0,
-		"offset":      0,
-	}
-	if h.store.ConfigStore == nil {
-		SendJSON(ctx, emptyResponse)
-		return
-	}
-
 	params := configstore.MCPLibraryQueryParams{
 		Search:          string(ctx.QueryArgs().Peek("search")),
 		Categories:      parseCommaSeparated(string(ctx.QueryArgs().Peek("category"))),
@@ -1623,17 +1582,6 @@ func isMCPLibraryEntryInstalled(entry *configstoreTables.TableMCPLibrary, client
 // distinct facet values (categories, connection types, auth types, tags) that
 // drive the MCP library filter sidebar.
 func (h *MCPHandler) getMCPLibraryFilterData(ctx *fasthttp.RequestCtx) {
-	emptyResponse := configstore.MCPLibraryFilterData{
-		Categories:      []string{},
-		ConnectionTypes: []string{},
-		AuthTypes:       []string{},
-		Tags:            []string{},
-	}
-	if h.store.ConfigStore == nil {
-		SendJSON(ctx, emptyResponse)
-		return
-	}
-
 	data, err := h.store.ConfigStore.GetMCPLibraryFilterData(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve MCP library filter data: %v", err)
@@ -1647,11 +1595,6 @@ func (h *MCPHandler) getMCPLibraryFilterData(ctx *fasthttp.RequestCtx) {
 // immediate sync of the MCP server library catalog from the configured source.
 // Mirrors ConfigHandler.forceSyncPricing → ForceReloadPricing.
 func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return
-	}
-
 	var count int
 	var err error
 	if h.store.ModelCatalog != nil {
@@ -2086,10 +2029,6 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 
 // reconnectMCPClient handles POST /api/mcp/client/{id}/reconnect - Reconnect an MCP client
 func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
@@ -2146,10 +2085,6 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 // reach for. Unlike reconnect, this applies to per-call clients as well, which
 // hold no persistent connection and previously had no refresh path at all.
 func (h *MCPHandler) refreshMCPClientTools(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
@@ -2564,10 +2499,6 @@ func endpointSlugDerivable(endpointSlug, name string) bool {
 }
 
 func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
 	defer cancel()
 
@@ -3351,10 +3282,6 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 // updateMCPClient handles PUT /api/mcp/client/{id} - Edit MCP client
 func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
@@ -4427,10 +4354,6 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 
 // deleteMCPClient handles DELETE /api/mcp/client/{id} - Remove an MCP client
 func (h *MCPHandler) deleteMCPClient(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid id: %v", err))
@@ -4842,10 +4765,6 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 // completeMCPClientOAuth handles POST /api/mcp/client/{id}/complete-oauth - Complete MCP client creation after OAuth authorization
 // The {id} parameter is the oauth_config_id returned from the initial addMCPClient call
 func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
 	defer cancel()
 
@@ -5400,11 +5319,6 @@ type CreateMCPLibraryEntryRequest struct {
 // in SyncMCPLibrary). A duplicate of a listed entry's name (same generated slug)
 // returns 409; a deleted entry's name can be published again.
 func (h *MCPHandler) createMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
-
 	var req CreateMCPLibraryEntryRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
@@ -5476,10 +5390,6 @@ func (h *MCPHandler) createMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 // listings and the remote sync respects the tombstone, so a hidden remote entry
 // is never resurrected. Also the escape hatch for a duplicate-name lockout.
 func (h *MCPHandler) deleteMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
-		return
-	}
 	idStr, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))

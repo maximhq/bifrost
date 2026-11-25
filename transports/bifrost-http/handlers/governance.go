@@ -323,39 +323,40 @@ type GovernanceRouteOverrides struct {
 // key read paths use it to fill in each key's assigned user.
 // virtualKeyBusinessUnitResolver is optional (may be nil); when supplied the same
 // read paths use it to name each key's owning business unit.
-// Side effect: ensures the default virtual_key scope-name resolver is
-// registered against the supplied configStore, so resolveModelConfigScopeName
-// can render VK names for OSS-only builds without further wiring.
+// configStore is nil when the config store is disabled; the handler's routes then answer 503
+// from RequireConfigStoreMiddleware.
+// Side effect: with a config store, ensures the default virtual_key scope-name resolver is
+// registered against it, so resolveModelConfigScopeName can render VK names for OSS-only
+// builds without further wiring.
 func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, logManager logging.LogManager, externalQuotaBudgetResolver ExternalQuotaBudgetResolver, virtualKeyAssigneeResolver VirtualKeyAssigneeResolver, virtualKeyBusinessUnitResolver VirtualKeyBusinessUnitResolver) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
-	if configStore == nil {
-		return nil, fmt.Errorf("config store is required")
+	if configStore != nil {
+		RegisterScopeNameResolver(configstoreTables.ModelConfigScopeVirtualKey, func(ctx context.Context, scopeID string) (string, bool) {
+			vk, err := configStore.GetVirtualKey(ctx, scopeID)
+			if err != nil || vk == nil {
+				return "", false
+			}
+			return vk.Name, true
+		})
+		// Batch form: one id+name read for every VK on a page. GetRedactedVirtualKeys
+		// returns ALL keys for an empty id list, so the empty case never reaches it.
+		RegisterScopeNameBatchResolver(configstoreTables.ModelConfigScopeVirtualKey, func(ctx context.Context, scopeIDs []string) (map[string]string, bool) {
+			if len(scopeIDs) == 0 {
+				return map[string]string{}, true
+			}
+			vks, err := configStore.GetRedactedVirtualKeys(ctx, scopeIDs)
+			if err != nil {
+				return nil, false
+			}
+			names := make(map[string]string, len(vks))
+			for i := range vks {
+				names[vks[i].ID] = vks[i].Name
+			}
+			return names, true
+		})
 	}
-	RegisterScopeNameResolver(configstoreTables.ModelConfigScopeVirtualKey, func(ctx context.Context, scopeID string) (string, bool) {
-		vk, err := configStore.GetVirtualKey(ctx, scopeID)
-		if err != nil || vk == nil {
-			return "", false
-		}
-		return vk.Name, true
-	})
-	// Batch form: one id+name read for every VK on a page. GetRedactedVirtualKeys
-	// returns ALL keys for an empty id list, so the empty case never reaches it.
-	RegisterScopeNameBatchResolver(configstoreTables.ModelConfigScopeVirtualKey, func(ctx context.Context, scopeIDs []string) (map[string]string, bool) {
-		if len(scopeIDs) == 0 {
-			return map[string]string{}, true
-		}
-		vks, err := configStore.GetRedactedVirtualKeys(ctx, scopeIDs)
-		if err != nil {
-			return nil, false
-		}
-		names := make(map[string]string, len(vks))
-		for i := range vks {
-			names[vks[i].ID] = vks[i].Name
-		}
-		return names, true
-	})
 	return &GovernanceHandler{
 		governanceManager:           manager,
 		configStore:                 configStore,
@@ -1943,8 +1944,9 @@ func (h *GovernanceHandler) RegisterRoutesWithOverrides(r *router.Router, overri
 	r.DELETE("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.deletePricingOverride, middlewares...))
 
 	// Self-service endpoint — no admin auth, VK in header is the credential.
-	// Registered without admin middlewares; only common middlewares (telemetry) are applied.
-	r.GET("/api/governance/virtual-keys/quota", h.getVirtualKeyQuota)
+	// Registered without admin middlewares; only common middlewares (telemetry) are applied. It
+	// reads the key's quota from the config store, so it is refused without one.
+	r.GET("/api/governance/virtual-keys/quota", lib.ChainMiddlewares(h.getVirtualKeyQuota, RequireConfigStoreMiddleware(h.configStore)))
 }
 
 // registerTeamRoutes registers Team CRUD with optional edition-specific handlers.
