@@ -177,7 +177,7 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 
 	return (
 		<Sheet open onOpenChange={(open) => !open && onClose()}>
-			<SheetContent className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]">
+			<SheetContent resizeKey="virtual-mcp" className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]">
 				<SheetHeader headerClassName="mb-0 px-4 py-4 md:px-8" showCloseButton={false}>
 					<div className="flex w-full items-center justify-between gap-2">
 						<div className="space-y-2">

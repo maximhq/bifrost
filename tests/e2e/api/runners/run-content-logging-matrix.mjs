@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // Content-logging permutation check against a live gateway, for LLM rows and relay rows alike.
 //
-// Drives every combination in lib/content-logging-matrix.mjs (virtual key inherit/on/off, client
-// flag on/off, OTel connector flag on/off, per-request overrides allowed/blocked, request header
-// absent/on/off). Each case sends an LLM request and a relay request on the same key and header and
-// checks, per request, whether its content reached the log store, and for the LLM request whether it
-// reached the OTel collector. Relay rows follow the same log-store decision as LLM rows, so a relay
-// row that keeps or drops content differently from its LLM twin fails the case.
+// Drives every combination in lib/content-logging-matrix.mjs (team, virtual key and provider key
+// each inherit/on/off, client flag on/off, OTel connector flag on/off, per-request overrides
+// allowed/blocked, request header absent/on/off). Each case sends an LLM request and a relay request
+// on the same virtual key and header and checks, per request, whether its content reached the log
+// store, and for the LLM request whether it reached the OTel collector. A relay picks no provider
+// key, so a relay row follows the decision its LLM twin would get with the provider key layer at
+// inherit (team and virtual key still apply); a relay row that keeps or drops content differently
+// from that fails the case. A last group sends requests that fail on a provider key set to off and
+// retry onto one set to on, which must stay off.
 //
 // Everything upstream is local: one echo server answers the LLM provider's chat completions and the
 // relay's calls with a per-request marker, and a mock OTLP/HTTP collector takes the exports. No
@@ -25,26 +28,28 @@
 // BIFROST_E2E_CALLBACK_HOST to an address it can reach the runner on (e.g. host.docker.internal);
 // the mocks then listen on every interface.
 //
-// The gateway's client config and OTel plugin are restored afterwards, and the provider, relay and
-// virtual keys this run creates are deleted.
+// The gateway's client config and OTel plugin are restored afterwards, and the providers, relay,
+// teams and virtual keys this run creates are deleted.
 //
 //   node tests/e2e/api/runners/run-content-logging-matrix.mjs   (also runs inside make run-e2e-api / run-newman-api-tests.sh)
 //   BIFROST_E2E_BASE_URL=http://localhost:8080 BIFROST_E2E_AUTH_HEADER="Bearer ..." node ...
 
 import http from "node:http";
 import { randomBytes } from "node:crypto";
+import { Readable } from "node:stream";
 import {
 	allCases,
 	callbackEndpoints,
+	expectedOutcome,
 	groupByConfig,
 	headerValue,
+	LAYER_MODES,
+	layerDisableValue,
 	logRowFailures,
 	normaliseRetentionDays,
 	relayRowFailures,
-	vkDisableValue,
-	VK_MODES,
 } from "./lib/content-logging-matrix.mjs";
-import { addEchoProvider, addEchoRelay, createEchoUpstream, ECHO_MODEL } from "./lib/echo-upstream.mjs";
+import { addEchoRelay, createEchoUpstream, ECHO_MODEL } from "./lib/echo-upstream.mjs";
 import { closeServer, gatewayClient, listen, poll, readBody } from "./lib/gateway-api.mjs";
 import { openLogsDb } from "./lib/logs-db.mjs";
 
@@ -61,6 +66,16 @@ const runTag = `clmx${process.pid}${Date.now().toString(36)}`;
 const providerName = `clmx-provider-${runTag}`;
 const relayName = `clmx-relay-${runTag}`;
 const requestedModel = `${providerName}/${ECHO_MODEL}`;
+const retryProviderName = `clmx-retry-${runTag}`;
+const retryModel = `${retryProviderName}/${ECHO_MODEL}`;
+// Requests sent through the retry provider. Its "off" key is weighted to be picked first most of the
+// time and always fails, so nearly every request retries onto the "on" key; enough are sent that
+// the off-then-on path is all but certain to run, and the run fails if it never did.
+const RETRY_REQUESTS = 6;
+
+// Provider key values by mode. The echo upstream sees the one each attempt used in Authorization.
+const providerKeyValue = (mode) => `sk-${runTag}-${mode}`;
+const retryKeyValue = (mode) => `sk-${runTag}-retry-${mode}`;
 
 const otelTraceBodies = [];
 
@@ -79,6 +94,42 @@ function createOtelReceiver() {
 		res.writeHead(req.url === "/v1/traces" || req.url === "/v1/metrics" ? 200 : 404, { "content-type": "application/x-protobuf" });
 		res.end("");
 	});
+}
+
+// createKeyedEchoUpstream wraps the shared echo upstream with what the provider-key axis needs: it
+// records the provider key each chat attempt arrived with, per marker, and answers 401 to any attempt
+// whose key is in failingKeyValues, to drive a retry onto another key. It must be a per-key status: a
+// 5xx is transient and Bifrost retries it on the same key, so the request would never reach another.
+// Every other request (and every chat attempt it lets through) is replayed into the shared upstream
+// unchanged, so relay calls and chat replies keep the shared shape.
+function createKeyedEchoUpstream({ failingKeyValues = new Set() } = {}) {
+	const echo = createEchoUpstream();
+	const keysSeenByMarker = new Map();
+	const server = http.createServer(async (req, res) => {
+		const body = await readBody(req);
+		if (req.method === "POST" && new URL(req.url || "/", "http://echo").pathname === "/v1/chat/completions") {
+			let prompt = "";
+			try {
+				const parsed = JSON.parse(body.toString("utf8"));
+				const last = [...(parsed.messages || [])].reverse().find((m) => m.role === "user");
+				prompt = typeof last?.content === "string" ? last.content : "";
+			} catch {
+				prompt = "";
+			}
+			const echoed = prompt.startsWith("prompt-") ? prompt.slice("prompt-".length) : "none";
+			const keyValue = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+			if (!keysSeenByMarker.has(echoed)) keysSeenByMarker.set(echoed, []);
+			keysSeenByMarker.get(echoed).push(keyValue);
+			if (failingKeyValues.has(keyValue)) {
+				res.writeHead(401, { "content-type": "application/json" });
+				res.end(JSON.stringify({ error: { message: "echo upstream refuses this key", type: "authentication_error" } }));
+				return;
+			}
+		}
+		const replay = Object.assign(Readable.from(body.length ? [body] : []), { method: req.method, url: req.url, headers: req.headers });
+		echo.emit("request", replay, res);
+	});
+	return { server, keysSeenByMarker };
 }
 
 function exportsContain(value) {
@@ -123,34 +174,101 @@ async function setOtel(collectorURL, connectorDisablesContent) {
 	});
 }
 
-async function createVirtualKey(vkMode) {
-	// Pinned to the echo provider alone rather than allow_all_providers. A provider added through the
+// applyGroup puts the gateway into one matrix group's configuration. Object-storage retention would
+// keep disabled content as hidden rows, so it is pinned off: a disabled request always leaves a
+// content-free row.
+async function applyGroup(configSnapshot, group, collectorURL) {
+	await api.putClientConfig(configSnapshot, {
+		disable_content_logging: group.global === "off",
+		allow_per_request_content_storage_override: group.override === "allowed",
+		retain_content_in_object_storage: false,
+	});
+	await setOtel(collectorURL, group.connector === "off");
+}
+
+// addKeyedEchoProvider registers the echo upstream as an OpenAI-compatible custom provider that
+// takes keys, unlike the shared keyless addEchoProvider: the provider-key axis needs real keys that
+// carry a content-logging mode, and the retry group needs retries.
+async function addKeyedEchoProvider(name, providerBaseURL, maxRetries) {
+	await mustRequest("POST", "/api/providers", {
+		provider: name,
+		custom_provider_config: { base_provider_type: "openai", is_key_less: false, allowed_requests: { chat_completion: true } },
+		network_config: {
+			base_url: providerBaseURL,
+			allow_private_network: true,
+			default_request_timeout_in_seconds: 10,
+			max_retries: maxRetries,
+			retry_backoff_initial: 100,
+			retry_backoff_max: 500,
+		},
+		concurrency_and_buffer_size: { concurrency: 20, buffer_size: 200 },
+		keys: [],
+	});
+}
+
+// checkStored fails when a created entity did not store the decision it was created with.
+function checkStored(what, stored, decision) {
+	if ((decision === undefined && stored != null) || (decision !== undefined && stored !== decision)) {
+		throw new Error(`${what} stored disable_content_logging=${JSON.stringify(stored)}, want ${JSON.stringify(decision)}`);
+	}
+}
+
+// addProviderKey adds a key carrying a content-logging mode and checks the stored decision.
+async function addProviderKey(provider, name, value, mode, weight) {
+	const body = { name, value, models: ["*"], weight };
+	const decision = layerDisableValue(mode);
+	if (decision !== undefined) body.disable_content_logging = decision;
+	const res = await mustRequest("POST", `/api/providers/${encodeURIComponent(provider)}/keys`, body);
+	const key = res.json?.key ?? res.json;
+	if (!key?.id) throw new Error(`provider key create returned no id: ${res.text}`);
+	checkStored(`provider key ${name}`, key.disable_content_logging, decision);
+	return key.id;
+}
+
+// createTeam and createVirtualKey record the new id on the caller's cleanup list before they check
+// the stored decision, so a run that fails that check still deletes what it created.
+async function createTeam(teamMode, createdTeams) {
+	const body = { name: `${runTag}-team-${teamMode}` };
+	const decision = layerDisableValue(teamMode);
+	if (decision !== undefined) body.disable_content_logging = decision;
+	const res = await mustRequest("POST", "/api/governance/teams", body);
+	const team = res.json?.team;
+	if (!team?.id) throw new Error(`team create returned no id: ${res.text}`);
+	createdTeams.push(team.id);
+	checkStored(`team ${teamMode}`, team.disable_content_logging, decision);
+	return team.id;
+}
+
+async function createVirtualKey(vkMode, { teamMode, teamID, provider = providerName }, createdKeys) {
+	// Pinned to one echo provider alone rather than allow_all_providers. A provider added through the
 	// management API only becomes a parseable model prefix once its first request reaches it, so until
 	// then "<provider>/echo-model" is load-balanced as a bare model across every provider the key may
 	// use, and any provider whose key claims all models could take it. One candidate removes that.
 	// The key is granted the run's relay, so the same key drives both kinds of request.
 	const body = {
-		name: `${runTag}-vk-${vkMode}`,
+		name: `${runTag}-vk-${teamMode ?? "noteam"}-${vkMode}-${provider === providerName ? "matrix" : "retry"}`,
 		is_active: true,
-		provider_configs: [{ provider: providerName, weight: 1, allowed_models: ["*"], key_ids: ["*"] }],
+		provider_configs: [{ provider, weight: 1, allowed_models: ["*"], key_ids: ["*"] }],
 		relay_grants: [{ relay_name: relayName }],
 	};
-	const decision = vkDisableValue(vkMode);
+	if (teamID) body.team_id = teamID;
+	const decision = layerDisableValue(vkMode);
 	if (decision !== undefined) body.disable_content_logging = decision;
 	const res = await mustRequest("POST", "/api/governance/virtual-keys", body);
 	const vk = res.json?.virtual_key ?? res.json;
 	if (!vk?.id || !vk?.value) throw new Error(`virtual key create returned no id/value: ${res.text}`);
-	const stored = vk.disable_content_logging;
-	if ((decision === undefined && stored != null) || (decision !== undefined && stored !== decision)) {
-		throw new Error(`virtual key ${vkMode} stored disable_content_logging=${JSON.stringify(stored)}, want ${JSON.stringify(decision)}`);
-	}
+	createdKeys.push(vk.id);
+	checkStored(`virtual key ${vkMode}`, vk.disable_content_logging, decision);
 	return { id: vk.id, value: vk.value };
 }
 
-async function chat(requestID, vkValue, promptMarker, header) {
+// chat sends one chat completion carrying a marker and checks the echo came back. providerKeyID pins
+// the provider key the request is served by, so its decision is the one under test.
+async function chat(requestID, { vkValue, promptMarker, header, providerKeyID, model = requestedModel }) {
 	const headers = { "x-request-id": requestID, "x-bf-vk": vkValue };
 	if (header !== undefined) headers["x-bf-disable-content-logging"] = header;
-	const res = await request("POST", "/v1/chat/completions", { model: requestedModel, messages: [{ role: "user", content: `prompt-${promptMarker}` }] }, headers);
+	if (providerKeyID) headers["x-bf-api-key-id"] = providerKeyID;
+	const res = await request("POST", "/v1/chat/completions", { model, messages: [{ role: "user", content: `prompt-${promptMarker}` }] }, headers);
 	if (res.status !== 200) throw new Error(`chat ${requestID} returned ${res.status}: ${res.text}`);
 	const content = res.json?.choices?.[0]?.message?.content;
 	if (content !== `reply-${promptMarker}`) throw new Error(`chat ${requestID} got ${JSON.stringify(content)} from the echo provider: ${res.text.slice(0, 400)}`);
@@ -184,76 +302,126 @@ async function readRelayLog(requestID) {
 	return res.json;
 }
 
+// checkLLM judges one LLM request against its expected outcome: through the logs API, straight from
+// the logs database row, and in the OTel export.
+async function checkLLM(logsDb, requestID, promptMarker, expected) {
+	const failures = [];
+	const want = expected.logStoresContent;
+	const log = await readLog(requestID);
+	const logInput = JSON.stringify(log.input_history ?? null);
+	const logOutput = JSON.stringify(log.output_message ?? null);
+	const logHasContent = logInput.includes(promptMarker) || logOutput.includes(promptMarker);
+	if (logHasContent !== want) {
+		failures.push(`log store ${logHasContent ? "kept" : "dropped"} content, want ${want ? "kept" : "dropped"}`);
+	}
+	if (log.content_hidden !== !want) {
+		failures.push(`content_hidden=${JSON.stringify(log.content_hidden)}, want ${!want}`);
+	}
+	const rawRow = await poll(`raw log row ${requestID}`, 30000, () => logsDb.read("logs", "id", requestID));
+	failures.push(...logRowFailures(rawRow, promptMarker, want));
+	await poll(`OTel export of ${requestID}`, 30000, () => exportsContain(requestID));
+	const exported = exportsContain(promptMarker) || exportsContain(`reply-${promptMarker}`);
+	if (exported !== expected.connectorExportsContent) {
+		failures.push(`OTel ${exported ? "exported" : "stripped"} content, want ${expected.connectorExportsContent ? "exported" : "stripped"}`);
+	}
+	return failures;
+}
+
+// checkRelay judges one relay request against the relay's expected outcome: through the relay logs
+// API, straight from the relay_logs row, and (when content must be stripped) in the OTel export.
+async function checkRelay(logsDb, relayRequestID, relayMarker, expected) {
+	const failures = [];
+	const want = expected.logStoresContent;
+	const relayLog = await readRelayLog(relayRequestID);
+	const relayHasContent = String(relayLog.request_body ?? "").includes(relayMarker) && String(relayLog.response_body ?? "").includes(relayMarker);
+	const relayLeaked = JSON.stringify(relayLog).includes(relayMarker);
+	if (want ? !relayHasContent : relayLeaked) {
+		failures.push(`relay row ${want ? "dropped" : "kept"} content, want ${want ? "kept" : "dropped"}`);
+	}
+	if (relayLog.content_hidden !== !want) {
+		failures.push(`relay content_hidden=${JSON.stringify(relayLog.content_hidden)}, want ${!want}`);
+	}
+	const rawRelayRow = await poll(`raw relay row ${relayRequestID}`, 30000, () => logsDb.read("relay_logs", "request_id", relayRequestID));
+	failures.push(...relayRowFailures(rawRelayRow, relayMarker, want));
+	// A connector that disables content, or an admin layer that does, must keep relay bodies out of
+	// the export too. Wait for the relay's own export first: absence is only proof once the export
+	// has arrived, and nothing else here waits for it.
+	if (!expected.connectorExportsContent) {
+		await poll(`OTel export of ${relayRequestID}`, 30000, () => exportsContain(relayRequestID));
+	}
+	if (!expected.connectorExportsContent && exportsContain(relayMarker)) {
+		failures.push("OTel exported relay content, want stripped");
+	}
+	return failures;
+}
+
+// relayExpectedOutcome is the decision a case's relay twin must follow. A relay call picks no
+// provider key, so the provider-key layer cannot apply to it: the relay gets what its LLM twin would
+// get with providerKey at inherit, which still resolves the team and virtual key layers.
+function relayExpectedOutcome(c) {
+	return expectedOutcome({ ...c, providerKey: "inherit" });
+}
+
 // waitForConfig proves a reconfiguration is live before the group's cases run: a probe through the
 // inheriting key must export (or not) exactly as the new connector flag says. The plugin reload and
 // the exporter both run asynchronously, so this retries a fresh probe until the new state answers.
-async function waitForConfig(group, inheritKey) {
+async function waitForConfig(group, inheritKey, inheritProviderKeyID) {
 	const wantExported = group.connector === "on";
 	await poll(`config ${group.global}/${group.connector}/${group.override} to take effect`, 45000, async () => {
 		const probeID = `${runTag}-probe-${randomBytes(4).toString("hex")}`;
 		const probeMarker = marker();
-		await chat(probeID, inheritKey.value, probeMarker, undefined);
+		await chat(probeID, { vkValue: inheritKey.value, promptMarker: probeMarker, providerKeyID: inheritProviderKeyID });
 		await poll(`probe ${probeID} export`, 10000, () => exportsContain(probeID));
 		return exportsContain(probeMarker) === wantExported;
 	});
 }
 
 function describe(c) {
-	return `vk=${c.vk.padEnd(7)} global=${c.global.padEnd(3)} connector=${c.connector.padEnd(3)} override=${c.override.padEnd(7)} header=${c.header}`;
+	return `team=${c.team.padEnd(7)} vk=${c.vk.padEnd(7)} providerKey=${c.providerKey.padEnd(7)} global=${c.global.padEnd(3)} connector=${c.connector.padEnd(3)} override=${c.override.padEnd(7)} header=${c.header}`;
 }
 
-async function runGroup(group, keys, logsDb) {
-	const results = [];
+async function runGroup(group, virtualKeys, providerKeyIDs, logsDb) {
 	const sent = [];
 	for (const c of group.cases) {
 		const requestID = `${runTag}-${c.id}`;
 		const relayRequestID = `${requestID}-relay`;
 		const promptMarker = marker();
 		const relayMarker = marker();
-		await chat(requestID, keys[c.vk].value, promptMarker, headerValue(c.header));
-		await relayCall(relayRequestID, keys[c.vk].value, relayMarker, headerValue(c.header));
+		const vkValue = virtualKeys[c.team][c.vk].value;
+		const header = headerValue(c.header);
+		await chat(requestID, { vkValue, promptMarker, header, providerKeyID: providerKeyIDs[c.providerKey] });
+		await relayCall(relayRequestID, vkValue, relayMarker, header);
 		sent.push({ c, requestID, relayRequestID, promptMarker, relayMarker });
 	}
+	const results = [];
 	for (const { c, requestID, relayRequestID, promptMarker, relayMarker } of sent) {
-		const failures = [];
-		const want = c.expected.logStoresContent;
-		const log = await readLog(requestID);
-		const logInput = JSON.stringify(log.input_history ?? null);
-		const logOutput = JSON.stringify(log.output_message ?? null);
-		const logHasContent = logInput.includes(promptMarker) || logOutput.includes(promptMarker);
-		if (logHasContent !== want) {
-			failures.push(`log store ${logHasContent ? "kept" : "dropped"} content, want ${want ? "kept" : "dropped"}`);
-		}
-		if (log.content_hidden !== !want) {
-			failures.push(`content_hidden=${JSON.stringify(log.content_hidden)}, want ${!want}`);
-		}
-		const rawRow = await poll(`raw log row ${requestID}`, 30000, () => logsDb.read("logs", "id", requestID));
-		failures.push(...logRowFailures(rawRow, promptMarker, want));
+		const failures = await checkLLM(logsDb, requestID, promptMarker, c.expected);
+		failures.push(...(await checkRelay(logsDb, relayRequestID, relayMarker, relayExpectedOutcome(c))));
+		results.push({ label: describe(c), failures });
+	}
+	return results;
+}
 
-		// The relay twin: same key, same header, same decision.
-		const relayLog = await readRelayLog(relayRequestID);
-		const relayHasContent = String(relayLog.request_body ?? "").includes(relayMarker) && String(relayLog.response_body ?? "").includes(relayMarker);
-		const relayLeaked = JSON.stringify(relayLog).includes(relayMarker);
-		if (want ? !relayHasContent : relayLeaked) {
-			failures.push(`relay row ${want ? "dropped" : "kept"} content, want ${want ? "kept" : "dropped"} like its LLM twin`);
-		}
-		if (relayLog.content_hidden !== !want) {
-			failures.push(`relay content_hidden=${JSON.stringify(relayLog.content_hidden)}, want ${!want} like its LLM twin`);
-		}
-		const rawRelayRow = await poll(`raw relay row ${relayRequestID}`, 30000, () => logsDb.read("relay_logs", "request_id", relayRequestID));
-		failures.push(...relayRowFailures(rawRelayRow, relayMarker, want));
-
-		await poll(`OTel export of ${requestID}`, 30000, () => exportsContain(requestID));
-		const exported = exportsContain(promptMarker) || exportsContain(`reply-${promptMarker}`);
-		if (exported !== c.expected.connectorExportsContent) {
-			failures.push(`OTel ${exported ? "exported" : "stripped"} content, want ${c.expected.connectorExportsContent ? "exported" : "stripped"}`);
-		}
-		// A connector that disables content, or a key that does, must keep relay bodies out of the
-		// export too.
-		if (!c.expected.connectorExportsContent && exportsContain(relayMarker)) {
-			failures.push("OTel exported relay content, want stripped");
-		}
-		results.push({ c, failures });
+// runRetryGroup sends requests through the retry provider, whose "off" key always fails. Each
+// request is checked against the keys it actually reached: once one of its attempts went out on the
+// "off" key, content stays off even though the "on" key served the response. No relay twin: a relay
+// picks no provider key, so the retry path does not exist for it.
+async function runRetryGroup(retryVirtualKey, keysSeenByMarker, logsDb) {
+	const results = [];
+	let retriedFromOff = 0;
+	for (let i = 0; i < RETRY_REQUESTS; i++) {
+		const requestID = `${runTag}-retry-${i}`;
+		const promptMarker = marker();
+		await chat(requestID, { vkValue: retryVirtualKey.value, promptMarker, model: retryModel });
+		const seen = keysSeenByMarker.get(promptMarker) ?? [];
+		const sentOnOff = seen.includes(retryKeyValue("off"));
+		if (sentOnOff && seen.at(-1) === retryKeyValue("on")) retriedFromOff++;
+		const expected = { logStoresContent: !sentOnOff, connectorExportsContent: !sentOnOff };
+		const failures = await checkLLM(logsDb, requestID, promptMarker, expected);
+		results.push({ label: `retry #${i} keys=${seen.map((k) => (k === retryKeyValue("off") ? "off" : "on")).join(">")}`, failures });
+	}
+	if (retriedFromOff === 0) {
+		results.push({ label: "retry path", failures: [`none of ${RETRY_REQUESTS} requests retried from the off key onto the on key`] });
 	}
 	return results;
 }
@@ -268,59 +436,79 @@ async function main() {
 	console.log(`  Logs DB: ${logsDb.label}`);
 
 	const otelReceiver = createOtelReceiver();
-	const echo = createEchoUpstream();
+	const echo = createKeyedEchoUpstream({ failingKeyValues: new Set([retryKeyValue("off")]) });
 	const callbackHost = process.env.BIFROST_E2E_CALLBACK_HOST || "";
 	const { listenHost } = callbackEndpoints({ callbackHost, providerPort: 0, collectorPort: 0 });
 	const otelPort = await listen(otelReceiver, listenHost);
-	const mockPort = await listen(echo, listenHost);
+	const mockPort = await listen(echo.server, listenHost);
 	const endpoints = callbackEndpoints({ callbackHost, providerPort: mockPort, collectorPort: otelPort });
 	console.log(`  Echo upstream: ${endpoints.providerBaseURL} (listening on ${listenHost})`);
 	console.log(`  OTel collector: ${endpoints.collectorURL}`);
 	const createdKeys = [];
-	let providerAdded = false;
+	const createdTeams = [];
+	const addedProviders = [];
 	let relayAdded = false;
 	const results = [];
 
 	try {
-		await addEchoProvider(api, providerName, endpoints.providerBaseURL);
-		providerAdded = true;
+		await addKeyedEchoProvider(providerName, endpoints.providerBaseURL, 0);
+		addedProviders.push(providerName);
 		await addEchoRelay(api, relayName, endpoints.providerBaseURL);
 		relayAdded = true;
-		const keys = {};
-		for (const vkMode of VK_MODES) {
-			keys[vkMode] = await createVirtualKey(vkMode);
-			createdKeys.push(keys[vkMode].id);
+		const providerKeyIDs = {};
+		for (const mode of LAYER_MODES) {
+			providerKeyIDs[mode] = await addProviderKey(providerName, `${runTag}-key-${mode}`, providerKeyValue(mode), mode, 1);
+		}
+		const virtualKeys = {};
+		for (const teamMode of LAYER_MODES) {
+			const teamID = await createTeam(teamMode, createdTeams);
+			virtualKeys[teamMode] = {};
+			for (const vkMode of LAYER_MODES) {
+				virtualKeys[teamMode][vkMode] = await createVirtualKey(vkMode, { teamMode, teamID }, createdKeys);
+			}
 		}
 
-		for (const group of groupByConfig(allCases())) {
-			await api.putClientConfig(configSnapshot, {
-				disable_content_logging: group.global === "off",
-				allow_per_request_content_storage_override: group.override === "allowed",
-				// Object-storage retention would keep disabled content as hidden rows; pin it off so a
-				// disabled request always leaves a content-free row.
-				retain_content_in_object_storage: false,
-			});
-			await setOtel(endpoints.collectorURL, group.connector === "off");
-			await waitForConfig(group, keys.inherit);
-			const groupResults = await runGroup(group, keys, logsDb);
+		const report = (groupResults) => {
 			for (const r of groupResults) {
-				console.log(`  ${r.failures.length === 0 ? "ok  " : "FAIL"} ${describe(r.c)}${r.failures.length ? ` -> ${r.failures.join("; ")}` : ""}`);
+				console.log(`  ${r.failures.length === 0 ? "ok  " : "FAIL"} ${r.label}${r.failures.length ? ` -> ${r.failures.join("; ")}` : ""}`);
 			}
 			results.push(...groupResults);
+		};
+
+		for (const group of groupByConfig(allCases())) {
+			await applyGroup(configSnapshot, group, endpoints.collectorURL);
+			await waitForConfig(group, virtualKeys.inherit.inherit, providerKeyIDs.inherit);
+			report(await runGroup(group, virtualKeys, providerKeyIDs, logsDb));
 		}
+
+		// Sticky off across a retry onto another key: content on everywhere else, so only the provider
+		// key the request was sent on can turn it off.
+		await addKeyedEchoProvider(retryProviderName, endpoints.providerBaseURL, 2);
+		addedProviders.push(retryProviderName);
+		await addProviderKey(retryProviderName, `${runTag}-retry-key-off`, retryKeyValue("off"), "off", 1);
+		await addProviderKey(retryProviderName, `${runTag}-retry-key-on`, retryKeyValue("on"), "on", 0.1);
+		const retryVirtualKey = await createVirtualKey("inherit", { provider: retryProviderName }, createdKeys);
+		const openGroup = { global: "on", connector: "on", override: "blocked" };
+		await applyGroup(configSnapshot, openGroup, endpoints.collectorURL);
+		await waitForConfig(openGroup, virtualKeys.inherit.inherit, providerKeyIDs.inherit);
+		report(await runRetryGroup(retryVirtualKey, echo.keysSeenByMarker, logsDb));
 	} finally {
 		const cleanupErrors = [];
 		for (const id of createdKeys) {
 			const res = await request("DELETE", `/api/governance/virtual-keys/${encodeURIComponent(id)}`).catch((e) => ({ ok: false, text: e.message }));
 			if (!res.ok) cleanupErrors.push(`delete virtual key ${id}: ${res.text}`);
 		}
+		for (const id of createdTeams) {
+			const res = await request("DELETE", `/api/governance/teams/${encodeURIComponent(id)}`).catch((e) => ({ ok: false, text: e.message }));
+			if (!res.ok) cleanupErrors.push(`delete team ${id}: ${res.text}`);
+		}
 		if (relayAdded) {
 			const res = await request("DELETE", `/api/relays/${encodeURIComponent(relayName)}`).catch((e) => ({ ok: false, text: e.message }));
 			if (!res.ok) cleanupErrors.push(`delete relay: ${res.text}`);
 		}
-		if (providerAdded) {
-			const res = await request("DELETE", `/api/providers/${encodeURIComponent(providerName)}`).catch((e) => ({ ok: false, text: e.message }));
-			if (!res.ok) cleanupErrors.push(`delete provider: ${res.text}`);
+		for (const name of addedProviders) {
+			const res = await request("DELETE", `/api/providers/${encodeURIComponent(name)}`).catch((e) => ({ ok: false, text: e.message }));
+			if (!res.ok) cleanupErrors.push(`delete provider ${name}: ${res.text}`);
 		}
 		const otelRes = originalOtel
 			? await request("PUT", "/api/plugins/otel", pluginUpdatePayload(originalOtel)).catch((e) => ({ ok: false, text: e.message }))
@@ -331,7 +519,7 @@ async function main() {
 		} catch (err) {
 			cleanupErrors.push(`restore client config: ${err.message}`);
 		}
-		await Promise.all([closeServer(otelReceiver), closeServer(echo), logsDb.close().catch(() => {})]);
+		await Promise.all([closeServer(otelReceiver), closeServer(echo.server), logsDb.close().catch(() => {})]);
 		for (const e of cleanupErrors) console.warn(`WARNING: cleanup: ${e}`);
 		const originalRetention = configSnapshot.client_config.log_retention_days;
 		if (!(originalRetention >= 1)) {
@@ -344,7 +532,7 @@ async function main() {
 
 	const failed = results.filter((r) => r.failures.length > 0);
 	console.log(`Content-logging matrix: ${results.length - failed.length}/${results.length} cases passed.`);
-	if (failed.length > 0 || results.length !== allCases().length) {
+	if (failed.length > 0 || results.length < allCases().length + RETRY_REQUESTS) {
 		process.exit(1);
 	}
 }

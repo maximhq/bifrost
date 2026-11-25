@@ -2,7 +2,6 @@ package bifrost
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -38,7 +37,7 @@ func TestSessionKeyRejectedOutrightMovesToItsSibling(t *testing.T) {
 		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 	})
 	kv := newMockKVStore()
-	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), SessionAffinity: storeAffinity(kv)})
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -114,10 +113,10 @@ func threeKeySessionClient(t *testing.T, status map[string][]int, filter schemas
 	}
 	account.SetKeysForProvider(schemas.OpenAI, keys)
 	client, err := Init(context.Background(), schemas.BifrostConfig{
-		Account:       account,
-		Logger:        NewDefaultLogger(schemas.LogLevelError),
-		KVStore:       newMockKVStore(),
-		KeyPoolFilter: filter,
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: storeAffinity(newMockKVStore()),
+		KeyPoolFilter:   filter,
 		KeySelector: func(_ *schemas.BifrostContext, keys []schemas.Key, _ schemas.ModelProvider, _ string) (schemas.Key, error) {
 			return keys[0], nil
 		},
@@ -191,7 +190,7 @@ func TestFixedKeyRetriesTheSameKeyAfterATransientFailure(t *testing.T) {
 					{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
 					{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
 				})
-				client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: newMockKVStore()})
+				client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), SessionAffinity: storeAffinity(newMockKVStore())})
 				if err != nil {
 					t.Fatalf("Init: %v", err)
 				}
@@ -376,7 +375,13 @@ func servedBy(route schemas.Route, keyID string, fallback bool) schemas.RouteOut
 	return schemas.RouteOutcome{Served: &route, KeyID: keyID, Fallback: fallback}
 }
 
-func testAffinity(kv schemas.KVStore) *sessionAffinity {
+// storeAffinity returns the shipped affinity over kv, as a deployment that keeps session state
+// passes it in BifrostConfig.SessionAffinity.
+func storeAffinity(kv SessionAffinityStore) schemas.SessionAffinity {
+	return NewSessionAffinity(kv, NewDefaultLogger(schemas.LogLevelError))
+}
+
+func testAffinity(kv SessionAffinityStore) *sessionAffinity {
 	return NewSessionAffinity(kv, NewDefaultLogger(schemas.LogLevelError)).(*sessionAffinity)
 }
 
@@ -513,32 +518,18 @@ func TestIsSessionAffinityActive(t *testing.T) {
 	}
 }
 
-func TestSessionAffinityResolveKeyReadsReplicatedBindings(t *testing.T) {
-	cases := []struct {
-		name  string
-		value any
-		want  string
-	}{
-		{"plain string", "key-b", "key-b"},
-		{"json bytes", []byte(`"key-c"`), "key-c"},
-		{"raw bytes", []byte("key-b"), "key-b"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			kv := newMockKVStore()
-			ctx := sessionCtx("session-1")
-			_ = kv.SetWithTTL(SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o"), tc.value, time.Minute)
-			key, ok := testAffinity(kv).ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool)
-			if !ok || key.ID != tc.want {
-				t.Fatalf("got %q ok=%v, want the stored binding %q", key.ID, ok, tc.want)
-			}
-		})
+func TestSessionAffinityResolveKeyReadsStoredBindings(t *testing.T) {
+	kv := newMockKVStore()
+	ctx := sessionCtx("session-1")
+	kv.PutWithTTL(SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o"), "key-b", time.Minute)
+	key, ok := testAffinity(kv).ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool)
+	if !ok || key.ID != "key-b" {
+		t.Fatalf("got %q ok=%v, want the stored binding key-b", key.ID, ok)
 	}
 
 	// An empty stored value is no binding.
-	kv := newMockKVStore()
-	ctx := sessionCtx("session-1")
-	_ = kv.SetWithTTL(SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o"), "", time.Minute)
+	kv = newMockKVStore()
+	kv.PutWithTTL(SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o"), "", time.Minute)
 	if _, ok := testAffinity(kv).ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool); ok {
 		t.Fatal("empty binding produced a key")
 	}
@@ -612,9 +603,9 @@ func TestSessionAffinityFallbackReplacesAnOlderKeyBindingOnItsProvider(t *testin
 	openaiKey := SessionStateKey(seed, SessionStateKindKey, "openai", "gpt-4o")
 	azureKey := SessionStateKey(seed, SessionStateKindKey, "azure", "gpt-4o")
 	routeKey := SessionStateKey(seed, SessionStateKindRoute, "", "gpt-4o")
-	_ = kv.SetWithTTL(openaiKey, "key-a", time.Hour)
-	_ = kv.SetWithTTL(azureKey, "key-b", time.Hour)
-	_ = kv.SetWithTTL(routeKey, "azure/gpt-4o", time.Hour)
+	kv.PutWithTTL(openaiKey, "key-a", time.Hour)
+	kv.PutWithTTL(azureKey, "key-b", time.Hour)
+	kv.PutWithTTL(routeKey, "azure/gpt-4o", time.Hour)
 
 	// This turn follows azure and its key, azure fails on that key, and the openai fallback serves
 	// on key-c, picked freely because a fallback attempt gets no key from the session.
@@ -648,7 +639,7 @@ func TestSessionAffinityRebindsWhenBoundKeyLeavesThePool(t *testing.T) {
 	kv := newMockKVStore()
 	ctx := sessionCtx("session-1")
 	stateKey := SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o")
-	_ = kv.SetWithTTL(stateKey, "key-gone", time.Minute)
+	kv.PutWithTTL(stateKey, "key-gone", time.Minute)
 
 	if _, ok := testAffinity(kv).ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool); ok {
 		t.Fatal("a binding to a key outside the pool produced a key")
@@ -665,7 +656,7 @@ func TestSessionAffinityResolveRoute(t *testing.T) {
 	chain := []schemas.Route{routeOf(schemas.Groq, "openai/gpt-4o"), routeOf(schemas.OpenAI, "gpt-4o"), routeOf(schemas.Azure, "gpt-4o")}
 	requested := routeOf("", "gpt-4o")
 	bind := func(kv *mockKVStore, ctx *schemas.BifrostContext, value string) {
-		_ = kv.SetWithTTL(SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o"), value, time.Minute)
+		kv.PutWithTTL(SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o"), value, time.Minute)
 	}
 
 	t.Run("no binding leaves the chain", func(t *testing.T) {
@@ -827,7 +818,7 @@ func TestSessionAffinityObserveRoute(t *testing.T) {
 		kv := newMockKVStore()
 		a := testAffinity(kv)
 		ctx := sessionCtx("session-1")
-		_ = kv.SetWithTTL(routeKeyOf(ctx), "azure/gpt-4o", time.Minute)
+		kv.PutWithTTL(routeKeyOf(ctx), "azure/gpt-4o", time.Minute)
 		ctx.SetValue(schemas.BifrostContextKeySessionTTL, 9*time.Minute)
 		a.ResolveRoute(ctx, requested, chain)
 		a.Observe(ctx, requested, servedBy(routeOf(schemas.Azure, "gpt-4o"), "az-1", false))
@@ -840,7 +831,7 @@ func TestSessionAffinityObserveRoute(t *testing.T) {
 		kv := newMockKVStore()
 		a := testAffinity(kv)
 		ctx := sessionCtx("session-1")
-		_ = kv.SetWithTTL(routeKeyOf(ctx), "azure/gpt-4o", time.Minute)
+		kv.PutWithTTL(routeKeyOf(ctx), "azure/gpt-4o", time.Minute)
 		a.ResolveRoute(ctx, requested, chain)
 		a.Observe(ctx, requested, servedBy(routeOf(schemas.OpenAI, "gpt-4o"), "oa-1", true))
 		if entry := kv.data[routeKeyOf(ctx)]; entry.value != "openai/gpt-4o" {
@@ -852,7 +843,7 @@ func TestSessionAffinityObserveRoute(t *testing.T) {
 		kv := newMockKVStore()
 		a := testAffinity(kv)
 		ctx := sessionCtx("session-1")
-		_ = kv.SetWithTTL(routeKeyOf(ctx), "azure/gpt-4o", time.Minute)
+		kv.PutWithTTL(routeKeyOf(ctx), "azure/gpt-4o", time.Minute)
 		a.Observe(ctx, requested, servedBy(routeOf(schemas.OpenAI, "gpt-4o"), "oa-1", false))
 		if entry := kv.data[routeKeyOf(ctx)]; entry.value != "azure/gpt-4o" {
 			t.Fatalf("route binding overwritten: %+v", entry)
@@ -908,7 +899,7 @@ func TestSessionAffinityObserveRoute(t *testing.T) {
 		kv := newMockKVStore()
 		a := testAffinity(kv)
 		ctx := sessionCtx("session-1")
-		_ = kv.SetWithTTL(routeKeyOf(ctx), "azure/gpt-4o", time.Minute)
+		kv.PutWithTTL(routeKeyOf(ctx), "azure/gpt-4o", time.Minute)
 		a.ResolveRoute(ctx, requested, chain)
 		a.Observe(ctx, requested, directKeyServedBy(routeOf(schemas.OpenAI, "gpt-4o"), "oa-1", true))
 		if entry, bound := kv.data[routeKeyOf(ctx)]; bound {
@@ -944,9 +935,9 @@ func TestSessionAffinityFailureDropsWhatTheRequestFollowed(t *testing.T) {
 		a := testAffinity(kv)
 		ctx := sessionCtx("session-1")
 		route, openaiKey, azureKey := keys(ctx)
-		_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
-		_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
-		_ = kv.SetWithTTL(azureKey, "az-1", time.Minute)
+		kv.PutWithTTL(route, "openai/gpt-4o", time.Minute)
+		kv.PutWithTTL(openaiKey, "key-b", time.Minute)
+		kv.PutWithTTL(azureKey, "az-1", time.Minute)
 		a.ResolveRoute(ctx, requested, chain)
 		if key, ok := a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool); !ok || key.ID != "key-b" {
 			t.Fatalf("setup: the session did not follow key-b: %q ok=%v", key.ID, ok)
@@ -977,8 +968,8 @@ func TestSessionAffinityFailureDropsWhatTheRequestFollowed(t *testing.T) {
 			a := testAffinity(kv)
 			ctx := sessionCtx("session-1")
 			route, openaiKey, _ := keys(ctx)
-			_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
-			_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
+			kv.PutWithTTL(route, "openai/gpt-4o", time.Minute)
+			kv.PutWithTTL(openaiKey, "key-b", time.Minute)
 			a.ResolveRoute(ctx, requested, chain)
 			a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool)
 			errType := tc.errType
@@ -996,8 +987,8 @@ func TestSessionAffinityFailureDropsWhatTheRequestFollowed(t *testing.T) {
 		a := testAffinity(kv)
 		ctx := sessionCtx("session-1")
 		route, openaiKey, _ := keys(ctx)
-		_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
-		_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
+		kv.PutWithTTL(route, "openai/gpt-4o", time.Minute)
+		kv.PutWithTTL(openaiKey, "key-b", time.Minute)
 		// The caller named its provider, so the route binding was never consulted, and the key
 		// pool had one key, the bound one, so the key binding was not followed either.
 		named := routeOf(schemas.OpenAI, "gpt-4o")
@@ -1017,8 +1008,8 @@ func TestSessionAffinityFailureDropsWhatTheRequestFollowed(t *testing.T) {
 		a := testAffinity(kv)
 		ctx := sessionCtx("session-1")
 		route, openaiKey, azureKey := keys(ctx)
-		_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
-		_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
+		kv.PutWithTTL(route, "openai/gpt-4o", time.Minute)
+		kv.PutWithTTL(openaiKey, "key-b", time.Minute)
 		a.ResolveRoute(ctx, requested, chain)
 		a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool)
 		a.Observe(ctx, requested, servedBy(routeOf(schemas.Azure, "gpt-4o"), "az-1", true))
@@ -1038,8 +1029,8 @@ func TestSessionAffinityFailureDropsWhatTheRequestFollowed(t *testing.T) {
 		a := testAffinity(kv)
 		ctx := sessionCtx("session-1")
 		route, openaiKey, _ := keys(ctx)
-		_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
-		_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
+		kv.PutWithTTL(route, "openai/gpt-4o", time.Minute)
+		kv.PutWithTTL(openaiKey, "key-b", time.Minute)
 		// The route was followed; the key was decided by a pin, so ResolveKey was never asked.
 		a.ResolveRoute(ctx, requested, chain)
 		a.Observe(ctx, requested, failed)
@@ -1056,7 +1047,7 @@ func TestSessionAffinityResolveKeyDeclines(t *testing.T) {
 	kv := newMockKVStore()
 	a := testAffinity(kv)
 	bound := sessionCtx("session-1")
-	_ = kv.SetWithTTL(SessionStateKey(bound, SessionStateKindKey, "openai", "gpt-4o"), "key-a", time.Minute)
+	kv.PutWithTTL(SessionStateKey(bound, SessionStateKindKey, "openai", "gpt-4o"), "key-a", time.Minute)
 
 	if _, ok := a.ResolveKey(nil, schemas.OpenAI, "gpt-4o", sessionTestPool); ok {
 		t.Fatal("nil context got a key")
@@ -1106,7 +1097,7 @@ func TestSessionAffinityConcurrentFirstRequestsConverge(t *testing.T) {
 	}
 	wg.Wait()
 
-	bound, _ := kv.data[SessionStateKey(sessionCtx("session-1"), SessionStateKindKey, "openai", "gpt-4o")].value.(string)
+	bound := kv.data[SessionStateKey(sessionCtx("session-1"), SessionStateKindKey, "openai", "gpt-4o")].value
 	if bound == "" {
 		t.Fatal("no key binding after eight served requests")
 	}
@@ -1606,9 +1597,9 @@ func TestSessionAffinityKeepsADirectKeyOffTheFallbackThatServed(t *testing.T) {
 			account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{ID: "anthropic-key", Value: *schemas.NewSecretVar(anthropicKey), Models: schemas.WhiteList{"*"}, Weight: 1}})
 			kv := newMockKVStore()
 			client, err := Init(context.Background(), schemas.BifrostConfig{
-				Account: account,
-				Logger:  NewDefaultLogger(schemas.LogLevelError),
-				KVStore: kv,
+				Account:         account,
+				Logger:          NewDefaultLogger(schemas.LogLevelError),
+				SessionAffinity: storeAffinity(kv),
 				LLMPlugins: []schemas.LLMPlugin{&bareModelRouter{
 					primary:   schemas.OpenAI,
 					fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-3-5-haiku-20241022"}},
@@ -1679,10 +1670,10 @@ func TestSessionAffinityBindsNoKeyForADirectKeyThatServed(t *testing.T) {
 	})
 	kv := newMockKVStore()
 	client, err := Init(context.Background(), schemas.BifrostConfig{
-		Account:    account,
-		Logger:     NewDefaultLogger(schemas.LogLevelError),
-		KVStore:    kv,
-		LLMPlugins: []schemas.LLMPlugin{&bareModelRouter{primary: schemas.OpenAI}},
+		Account:         account,
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		SessionAffinity: storeAffinity(kv),
+		LLMPlugins:      []schemas.LLMPlugin{&bareModelRouter{primary: schemas.OpenAI}},
 	})
 	if err != nil {
 		t.Fatalf("Init: %v", err)
@@ -1730,7 +1721,6 @@ func TestKeyPoolAsksAffinityOnlyForRequestsThatTakePart(t *testing.T) {
 	client, err := Init(context.Background(), schemas.BifrostConfig{
 		Account:         account,
 		Logger:          NewDefaultLogger(schemas.LogLevelError),
-		KVStore:         newMockKVStore(),
 		SessionAffinity: fake,
 	})
 	if err != nil {
@@ -1781,7 +1771,6 @@ func TestKeyPoolIgnoresAnAffinityKeyOutsideThePool(t *testing.T) {
 	client, err := Init(context.Background(), schemas.BifrostConfig{
 		Account:         account,
 		Logger:          NewDefaultLogger(schemas.LogLevelError),
-		KVStore:         newMockKVStore(),
 		SessionAffinity: foreignKeyAffinity{},
 	})
 	if err != nil {
@@ -1803,9 +1792,63 @@ func TestKeyPoolIgnoresAnAffinityKeyOutsideThePool(t *testing.T) {
 	}
 }
 
+// warnRecordingLogger records the warnings logged through it and passes everything to Logger.
+type warnRecordingLogger struct {
+	schemas.Logger
+	mu    sync.Mutex
+	warns []string
+}
+
+// Warn records msg and logs it.
+func (l *warnRecordingLogger) Warn(msg string, args ...any) {
+	l.mu.Lock()
+	l.warns = append(l.warns, fmt.Sprintf(msg, args...))
+	l.mu.Unlock()
+	l.Logger.Warn(msg, args...)
+}
+
+// warned reports whether a recorded warning contains part.
+func (l *warnRecordingLogger) warned(part string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, w := range l.warns {
+		if strings.Contains(w, part) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestInitWithoutSessionAffinityLeavesItOff pins that a configuration with no session affinity
+// leaves it off with a warning, and that a request carrying a session id is then routed as if
+// it carried none: its chain stays as routing built it and its outcome records nothing.
+func TestInitWithoutSessionAffinityLeavesItOff(t *testing.T) {
+	logger := &warnRecordingLogger{Logger: NewDefaultLogger(schemas.LogLevelError)}
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: logger})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	if client.sessionAffinity != nil {
+		t.Fatalf("session affinity = %T, want none when the configuration registers none", client.sessionAffinity)
+	}
+	if !logger.warned("session affinity is not configured") {
+		t.Fatalf("Init logged no warning about the missing session affinity: %q", logger.warns)
+	}
+	requested := routeOf("", "gpt-4o")
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+	req.SetFallbacks([]schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o"}})
+	ctx := sessionCtx("session-1")
+	client.resolveSessionRoute(ctx, requested, req)
+	if provider, model, fallbacks := req.GetRequestFields(); provider != schemas.OpenAI || model != "gpt-4o" || len(fallbacks) != 1 || fallbacks[0].Provider != schemas.Azure {
+		t.Fatalf("chain changed without a session affinity: %s/%s then %+v", provider, model, fallbacks)
+	}
+	client.observeSessionOutcome(ctx, requested, nil, false, false, nil)
+}
+
 func TestSessionAffinityForgetsWhatAnEarlierRequestFollowed(t *testing.T) {
 	kv := newMockKVStore()
-	client, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewDefaultLogger(schemas.LogLevelError), SessionAffinity: storeAffinity(kv)})
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -1820,14 +1863,14 @@ func TestSessionAffinityForgetsWhatAnEarlierRequestFollowed(t *testing.T) {
 	routeKey := SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
 
 	// An earlier request on this context followed a binding to azure.
-	_ = kv.SetWithTTL(routeKey, "azure/gpt-4o", time.Minute)
+	kv.PutWithTTL(routeKey, "azure/gpt-4o", time.Minute)
 	client.resolveSessionRoute(ctx, requested, newRequest())
 
 	// The binding expires. The next request on the same context finds none, and while it is
 	// in flight another request of the session binds openai first.
-	_, _ = kv.Delete(routeKey)
+	kv.Delete(routeKey)
 	client.resolveSessionRoute(ctx, requested, newRequest())
-	_ = kv.SetWithTTL(routeKey, "openai/gpt-4o", time.Minute)
+	kv.PutWithTTL(routeKey, "openai/gpt-4o", time.Minute)
 
 	client.sessionAffinity.Observe(ctx, requested, servedBy(routeOf(schemas.Azure, "gpt-4o"), "az-1", false))
 	if entry := kv.data[routeKey]; entry.value != "openai/gpt-4o" {
@@ -1846,7 +1889,7 @@ func TestCallerPinOnAReusedContextLeavesTheSessionsBindings(t *testing.T) {
 	})
 	account.SetKeysForProvider(schemas.Azure, []schemas.Key{{ID: "az-caller", Name: "Azure caller", Value: *schemas.NewSecretVar("sk-az"), Models: schemas.WhiteList{"*"}, Weight: 1}})
 	kv := newMockKVStore()
-	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: kv})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), SessionAffinity: storeAffinity(kv)})
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -1856,8 +1899,8 @@ func TestCallerPinOnAReusedContextLeavesTheSessionsBindings(t *testing.T) {
 	requested := routeOf("", "gpt-4o")
 	routeKey := SessionStateKey(ctx, SessionStateKindRoute, "", "gpt-4o")
 	keyKey := SessionStateKey(ctx, SessionStateKindKey, string(schemas.OpenAI), "gpt-4o")
-	_ = kv.SetWithTTL(routeKey, "openai/gpt-4o", time.Minute)
-	_ = kv.SetWithTTL(keyKey, "key-a", time.Minute)
+	kv.PutWithTTL(routeKey, "openai/gpt-4o", time.Minute)
+	kv.PutWithTTL(keyKey, "key-a", time.Minute)
 	chat := func(provider, fallback schemas.ModelProvider) *schemas.BifrostRequest {
 		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: provider, Model: "gpt-4o"}}
 		req.SetFallbacks([]schemas.Fallback{{Provider: fallback, Model: "gpt-4o"}})
@@ -1907,7 +1950,7 @@ func TestSessionAffinityLeavesAnExplicitProviderAlone(t *testing.T) {
 	}
 
 	// Even with a binding in the store, a request that named its provider is not reordered.
-	_ = kv.SetWithTTL(routeKey, "azure/gpt-4o", time.Minute)
+	kv.PutWithTTL(routeKey, "azure/gpt-4o", time.Minute)
 	if got := a.ResolveRoute(ctx, requested, chain); !slices.Equal(got, chain) {
 		t.Fatalf("a request that named openai was sent to %v", got)
 	}
@@ -2030,7 +2073,7 @@ func TestSessionAffinitySingleKeyBindingIsRefreshedOnlyByAFallback(t *testing.T)
 			a := testAffinity(kv)
 			ctx := sessionCtx("session-1")
 			key := SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o")
-			_ = kv.SetWithTTL(key, "key-a", seedTTL)
+			kv.PutWithTTL(key, "key-a", seedTTL)
 			if tc.fallback {
 				ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
 			}
@@ -2049,7 +2092,7 @@ func TestSessionAffinitySingleKeyBindingIsRefreshedOnlyByAFallback(t *testing.T)
 		a := testAffinity(kv)
 		ctx := sessionCtx("session-1")
 		key := SessionStateKey(ctx, SessionStateKindKey, "openai", "gpt-4o")
-		_ = kv.SetWithTTL(key, "key-a", seedTTL)
+		kv.PutWithTTL(key, "key-a", seedTTL)
 		pool := []schemas.Key{{ID: "key-a", Name: "Key A"}, {ID: "key-b", Name: "Key B"}}
 		if got, ok := a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", pool); !ok || got.ID != "key-a" {
 			t.Fatalf("the session did not follow its binding: %q %v", got.ID, ok)
@@ -2077,7 +2120,7 @@ type clockKVStore struct {
 
 // clockKVEntry is one stored value and the moment it expires.
 type clockKVEntry struct {
-	value   any
+	value   string
 	expires time.Time
 }
 
@@ -2099,42 +2142,37 @@ func (s *clockKVStore) live(key string) (clockKVEntry, bool) {
 	return entry, ok && s.now.Before(entry.expires)
 }
 
-// Get implements schemas.KVStore.
-func (s *clockKVStore) Get(key string) (any, error) {
+// Get implements SessionAffinityStore.
+func (s *clockKVStore) Get(key string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if entry, ok := s.live(key); ok {
-		return entry.value, nil
-	}
-	return nil, errors.New("key not found")
+	entry, ok := s.live(key)
+	return entry.value, ok
 }
 
-// SetWithTTL implements schemas.KVStore.
-func (s *clockKVStore) SetWithTTL(key string, value any, ttl time.Duration) error {
+// PutWithTTL implements SessionAffinityStore.
+func (s *clockKVStore) PutWithTTL(key, value string, ttl time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data[key] = clockKVEntry{value: value, expires: s.now.Add(ttl)}
-	return nil
 }
 
-// SetNXWithTTL implements schemas.KVStore: an expired entry counts as absent.
-func (s *clockKVStore) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, error) {
+// PutIfAbsent implements SessionAffinityStore: an expired entry counts as absent.
+func (s *clockKVStore) PutIfAbsent(key, value string, ttl time.Duration) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.live(key); ok {
-		return false, nil
+		return false
 	}
 	s.data[key] = clockKVEntry{value: value, expires: s.now.Add(ttl)}
-	return true, nil
+	return true
 }
 
-// Delete implements schemas.KVStore.
-func (s *clockKVStore) Delete(key string) (bool, error) {
+// Delete implements SessionAffinityStore.
+func (s *clockKVStore) Delete(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.live(key)
 	delete(s.data, key)
-	return ok, nil
 }
 
 // deleteScenarioProvider deletes a provider from Bifrost as the gateway does: from the account that

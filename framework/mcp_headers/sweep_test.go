@@ -6,11 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // sweepCountingStore counts the per-user headers sweep's deletes.
@@ -37,7 +38,7 @@ func TestCredentialSweepWorker_GateDecidesEverySweep(t *testing.T) {
 	newWorker := func(t *testing.T) (*CredentialSweepWorker, *sweepCountingStore) {
 		t.Helper()
 		store := &sweepCountingStore{testConfigStore: newTestConfigStore()}
-		w := NewCredentialSweepWorker(NewProvider(store, bifrost.NewDefaultLogger(schemas.LogLevelError)), time.Hour, nil)
+		w := NewCredentialSweepWorker(newSweepProvider(t, store), time.Hour, nil)
 		require.NotNil(t, w)
 		return w, store
 	}
@@ -82,4 +83,16 @@ func TestCredentialSweepWorker_GateDecidesEverySweep(t *testing.T) {
 		assert.EqualValues(t, 2, store.flowSweeps.Load(), "no gate")
 		assert.EqualValues(t, 2, store.orphanSweeps.Load(), "no gate")
 	})
+}
+
+// newSweepProvider returns a provider over store, with its credential cache in a new live store; the
+// sweep reads rows only.
+func newSweepProvider(t *testing.T, store configstore.ConfigStore) *Provider {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	p, err := NewProvider(store, live, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	return p
 }

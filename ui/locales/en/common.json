@@ -600,8 +600,7 @@
 		"toggle": "Toggle Sidebar"
 	},
 	"sheet": {
-		"collapse": "Collapse",
-		"expand": "Expand"
+		"resizeHandle": "Resize panel"
 	},
 	"tabs": {
 		"showMore_one": "Show {{count}} more tab",

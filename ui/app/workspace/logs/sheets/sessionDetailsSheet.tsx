@@ -193,7 +193,7 @@ export function SessionDetailsSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
+			<SheetContent resizeKey="session-details" className="flex w-full flex-col gap-4 overflow-x-hidden p-4 sm:max-w-[60%] md:p-8">
 				<div className="flex items-center justify-between gap-4">
 					<div>
 						<div className="text-lg font-medium">{t("labels.session")}</div>

@@ -20,7 +20,11 @@ export interface TeamConfig {
     requestMaxLimit?: number
     requestResetDuration?: string
   }
+  /** The team's content-logging choice; omit to leave the sheet's current choice. */
+  contentLogging?: ContentLoggingChoice
 }
+
+export type ContentLoggingChoice = 'inherit' | 'disabled' | 'enabled'
 
 export interface CustomerConfig {
   name: string
@@ -126,6 +130,10 @@ export class GovernancePage extends BasePage {
       await this.teamDialog.getByTestId('budget-max-limit-input-0').fill(String(config.budget.maxLimit))
     }
 
+    if (config.contentLogging && config.contentLogging !== 'inherit') {
+      await this.setTeamContentLogging(config.contentLogging)
+    }
+
     const saveBtn = this.teamDialog.getByRole('button', { name: /Create Team/i })
     await expect(saveBtn).toBeEnabled()
     await saveBtn.click()
@@ -216,6 +224,10 @@ export class GovernancePage extends BasePage {
       await budgetInput.fill(String(updates.budget.maxLimit))
     }
 
+    if (updates.contentLogging) {
+      await this.setTeamContentLogging(updates.contentLogging)
+    }
+
     const saveBtn = this.teamDialog.getByRole('button', { name: /Save|Update/i })
     await expect(saveBtn).toBeEnabled()
     await saveBtn.click()
@@ -227,6 +239,33 @@ export class GovernancePage extends BasePage {
     }
     await this.waitForSuccessToast()
     await expect(this.teamDialog).not.toBeVisible({ timeout: 10000 })
+  }
+
+  /**
+   * Pick the team's content-logging choice in the open sheet
+   */
+  async setTeamContentLogging(choice: ContentLoggingChoice): Promise<void> {
+    await this.page.getByTestId('team-content-logging-select').click()
+    await this.page.getByTestId(`team-content-logging-option-${choice}`).click()
+  }
+
+  /**
+   * Open the team's editor, read its content-logging choice by the label it shows, and close it
+   */
+  async getTeamContentLogging(name: string): Promise<ContentLoggingChoice> {
+    // The edit item lives inside the team's actions menu, so open the menu first, as editTeam does.
+    await this.page.getByTestId(`team-actions-btn-${name}`).click()
+    await this.page.getByTestId(`team-edit-btn-${name}`).click()
+    await expect(this.teamDialog).toBeVisible({ timeout: 5000 })
+    await this.waitForSheetAnimation()
+    const text = (await this.page.getByTestId('team-content-logging-select').textContent()) ?? ''
+    await this.closeTeamDialog()
+    // Map only the exact labels: an empty or unexpected label must fail, not read as inherit.
+    const label = text.trim()
+    if (label === 'Inherit') return 'inherit'
+    if (label === 'Off for this team') return 'disabled'
+    if (label === 'On for this team') return 'enabled'
+    throw new Error(`unexpected team content-logging label: ${JSON.stringify(label)}`)
   }
 
   async editCustomer(name: string, updates: Partial<CustomerConfig>): Promise<void> {

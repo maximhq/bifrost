@@ -81,11 +81,12 @@ func TestMaxProtocolVersion_CapsNegotiation(t *testing.T) {
 			url := newAllVersionsUpstream(t)
 
 			t.Run("shared", func(t *testing.T) {
-				m := NewMCPManager(context.Background(), schemas.MCPConfig{MaxProtocolVersion: tc.global}, nil, &MockLogger{}, nil)
+				m := NewMCPManager(context.Background(), schemas.MCPConfig{MaxProtocolVersion: tc.global}, newTestAccount(), nil, &MockLogger{}, nil)
 				config := &schemas.MCPClientConfig{
 					ID: "cap-shared", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP,
 					ConnectionString: schemas.NewSecretVar(url), ToolsToExecute: []string{"*"}, MaxProtocolVersion: tc.client,
 				}
+				accountOf(m).set(config)
 				require.NoError(t, m.connectToMCPClient(context.Background(), config))
 				t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 				state, ok := snapshotClientState(m, config.ID)
@@ -95,12 +96,12 @@ func TestMaxProtocolVersion_CapsNegotiation(t *testing.T) {
 			})
 
 			t.Run("per-call", func(t *testing.T) {
-				m := NewMCPManager(context.Background(), schemas.MCPConfig{MaxProtocolVersion: tc.global}, nil, &MockLogger{}, nil)
+				m := NewMCPManager(context.Background(), schemas.MCPConfig{MaxProtocolVersion: tc.global}, newTestAccount(), nil, &MockLogger{}, nil)
 				config := &schemas.MCPClientConfig{
 					ID: "cap-percall", Name: "matrix", AuthType: schemas.MCPAuthTypeHeaders, ConnectionType: schemas.MCPConnectionTypeHTTP,
 					ConnectionString: schemas.NewSecretVar(url), ToolsToExecute: []string{"*"}, MaxProtocolVersion: tc.client,
 				}
-				require.NoError(t, m.AddClient(context.Background(), config))
+				require.NoError(t, addClient(context.Background(), m, config))
 				t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 				callMatrixEcho(t, m)
 				shared, ok := m.perCallConns.Load(config.ID)
@@ -127,11 +128,12 @@ func TestMaxProtocolVersion_UpstreamAnswersAboveCap(t *testing.T) {
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"pushy","version":"1"}}}`))
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{MaxProtocolVersion: mcpgo.ProtocolVersion20250618}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{MaxProtocolVersion: mcpgo.ProtocolVersion20250618}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "cap-refused", Name: "pushy", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"},
 	}
+	accountOf(m).set(config)
 	err := m.connectToMCPClient(context.Background(), config)
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 	require.Error(t, err)
@@ -142,7 +144,7 @@ func TestMaxProtocolVersion_UpstreamAnswersAboveCap(t *testing.T) {
 // connection, and a global change reconnects the clients that follow it.
 func TestMaxProtocolVersion_ChangeRenegotiates(t *testing.T) {
 	url := newAllVersionsUpstream(t)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	newConfig := func(id, max string) *schemas.MCPClientConfig {
 		return &schemas.MCPClientConfig{
 			ID: id, Name: id, ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(url),
@@ -158,15 +160,15 @@ func TestMaxProtocolVersion_ChangeRenegotiates(t *testing.T) {
 	}
 	following, pinned := newConfig("follows_global", ""), newConfig("own_cap", mcpgo.ProtocolVersion20250618)
 	for _, config := range []*schemas.MCPClientConfig{following, pinned} {
-		require.NoError(t, m.AddClient(context.Background(), config))
+		require.NoError(t, addClient(context.Background(), m, config))
 		t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 	}
 	require.Equal(t, mcpgo.ProtocolVersion20260728, negotiated(following.ID))
 	require.Equal(t, mcpgo.ProtocolVersion20250618, negotiated(pinned.ID))
 
 	t.Run("per-client edit", func(t *testing.T) {
-		edited := newConfig(pinned.ID, mcpgo.ProtocolVersion20251125)
-		require.NoError(t, m.UpdateClient(pinned.ID, edited))
+		accountOf(m).set(newConfig(pinned.ID, mcpgo.ProtocolVersion20251125))
+		require.NoError(t, m.UpdateClient(pinned.ID))
 		assert.Equal(t, mcpgo.ProtocolVersion20251125, negotiated(pinned.ID))
 	})
 
@@ -213,7 +215,7 @@ func TestMaxProtocolVersion_ChangedDuringConnect(t *testing.T) {
 			// After ts.Close, so it runs first: a blocked handler is released before the server waits on it.
 			t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{MaxProtocolVersion: tc.initial}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{MaxProtocolVersion: tc.initial}, newTestAccount(), nil, &MockLogger{}, nil)
 			config := &schemas.MCPClientConfig{
 				ID: "cap-changed", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(ts.URL),
 				ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
@@ -221,7 +223,7 @@ func TestMaxProtocolVersion_ChangedDuringConnect(t *testing.T) {
 			t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 			holdNext.Store(!tc.reconnect)
 			connected := make(chan error, 1)
-			go func() { connected <- m.AddClient(context.Background(), config) }()
+			go func() { connected <- addClient(context.Background(), m, config) }()
 			if tc.reconnect {
 				require.NoError(t, <-connected)
 				holdNext.Store(true)
@@ -260,12 +262,12 @@ func TestMaxProtocolVersion_CheckerEnforcesCapAfterFailedRenegotiation(t *testin
 		upstream.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "cap-enforced", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(ts.URL),
 		ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 	negotiated := func() string {
 		state, ok := snapshotClientState(m, config.ID)
@@ -306,12 +308,12 @@ func TestMaxProtocolVersion_CheckerRetriesFailedUpgrade(t *testing.T) {
 		upstream.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{MaxProtocolVersion: mcpgo.ProtocolVersion20250618}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{MaxProtocolVersion: mcpgo.ProtocolVersion20250618}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID: "cap-upgrade", Name: "matrix", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(ts.URL),
 		ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
 	negotiated := func() string {
 		state, ok := snapshotClientState(m, config.ID)

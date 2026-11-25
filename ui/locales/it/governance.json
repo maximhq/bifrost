@@ -494,7 +494,12 @@
 		"maximumSpend": "Spesa massima (USD)",
 		"noBudgetLimits": "Nessun limite di budget configurato.",
 		"removeBudgetAria": "Rimuovi budget {{number}}",
-		"duplicateResetPeriod": "Periodo di ripristino duplicato; ogni riga di budget deve usare un intervallo diverso."
+		"duplicateResetPeriod": "Periodo di ripristino duplicato; ogni riga di budget deve usare un intervallo diverso.",
+		"contentLogging": "Log dei contenuti",
+		"contentLoggingInherit": "Eredita",
+		"contentLoggingOff": "Disattivato per questo team",
+		"contentLoggingOn": "Attivato per questo team",
+		"contentLoggingHelp": "Se il contenuto di richiesta e risposta viene salvato nei log del traffico di questo team. Il team prevale sulle sue chiavi virtuali e chiavi provider, quindi una chiave non può riattivare il contenuto che il team ha disattivato. «Disattivato» toglie il contenuto anche dagli export dei connettori. L'header per richiesta resta valido quando le sostituzioni per richiesta sono consentite."
 	},
 	"filters": {
 		"filters": "Filtri",

@@ -111,7 +111,7 @@ When a target is set, only metrics for that specific budget are used. The budget
 
 ## Cooldowns
 
-The cooldown prevents alert storms by suppressing repeat notifications after a rule fires. The cooldown window is measured from the latest successful send for the same rule, scope, and target. Live checks use Bifrost's shared key-value store; alert history is the durable source used to rebuild that state after startup or leadership changes.
+The cooldown prevents alert storms by suppressing repeat notifications after a rule fires. The cooldown window is measured from the latest successful send for the same rule, scope, and target. Live checks use compact state that every gateway instance shares; alert history is the durable source used to rebuild that state after startup or leadership changes.
 
 - Default cooldown is 60 seconds. Set to `0` to disable suppression (every match produces a notification).
 - The API accepts `cooldown_milliseconds`, which must be a whole-second value (multiple of 1000).

@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/temptoken"
 )
 
@@ -118,8 +119,15 @@ func (s *testConfigStore) CreateTempToken(_ context.Context, token *tables.TempT
 	return nil
 }
 
-func newTestProvider(store *testConfigStore) *Provider {
-	return NewProvider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+// newTestProvider returns a provider over store with its credential cache in a live store of its own.
+func newTestProvider(t *testing.T, store *testConfigStore) *Provider {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	p, err := NewProvider(store, live, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	return p
 }
 
 // newTempTokenService wires a temptoken.Service with the mcp_headers_auth scope
@@ -143,7 +151,7 @@ func newTempTokenService(t *testing.T, store *testConfigStore) *temptoken.Servic
 
 func TestMCPTempTokenAuthEnabled(t *testing.T) {
 	store := newTestConfigStore()
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 
 	assert.False(t, provider.mcpTempTokenAuthEnabled(context.Background()))
 
@@ -168,7 +176,7 @@ func TestInitiateUserSubmissionFlow_TempTokenGatedByClientConfig(t *testing.T) {
 	t.Run("toggle disabled: URL has no fragment", func(t *testing.T) {
 		store := newTestConfigStore()
 		store.clientConfig = &configstore.ClientConfig{MCPEnableTempTokenAuth: false}
-		provider := newTestProvider(store)
+		provider := newTestProvider(t, store)
 		provider.SetTempTokenService(newTempTokenService(t, store))
 
 		initiation, err := provider.InitiateUserSubmissionFlow(context.Background(), schemas.MCPAuthModeUser, identity, mcpClientID, baseURL)
@@ -182,7 +190,7 @@ func TestInitiateUserSubmissionFlow_TempTokenGatedByClientConfig(t *testing.T) {
 		// when the toggle is on; user-mode is gated separately (see subtest below).
 		store := newTestConfigStore()
 		store.clientConfig = &configstore.ClientConfig{MCPEnableTempTokenAuth: true}
-		provider := newTestProvider(store)
+		provider := newTestProvider(t, store)
 		provider.SetTempTokenService(newTempTokenService(t, store))
 
 		initiation, err := provider.InitiateUserSubmissionFlow(context.Background(), schemas.MCPAuthModeVK, identity, mcpClientID, baseURL)
@@ -202,7 +210,7 @@ func TestInitiateUserSubmissionFlow_TempTokenGatedByClientConfig(t *testing.T) {
 		// which would 403 even legitimate users.
 		store := newTestConfigStore()
 		store.clientConfig = &configstore.ClientConfig{MCPEnableTempTokenAuth: true}
-		provider := newTestProvider(store)
+		provider := newTestProvider(t, store)
 		provider.SetTempTokenService(newTempTokenService(t, store))
 
 		initiation, err := provider.InitiateUserSubmissionFlow(context.Background(), schemas.MCPAuthModeUser, identity, mcpClientID, baseURL)
@@ -214,7 +222,7 @@ func TestInitiateUserSubmissionFlow_TempTokenGatedByClientConfig(t *testing.T) {
 	t.Run("no temp-token service installed: URL has no fragment", func(t *testing.T) {
 		store := newTestConfigStore()
 		store.clientConfig = &configstore.ClientConfig{MCPEnableTempTokenAuth: true}
-		provider := newTestProvider(store) // SetTempTokenService not called
+		provider := newTestProvider(t, store) // SetTempTokenService not called
 
 		initiation, err := provider.InitiateUserSubmissionFlow(context.Background(), schemas.MCPAuthModeUser, identity, mcpClientID, baseURL)
 		require.NoError(t, err)
@@ -225,7 +233,7 @@ func TestInitiateUserSubmissionFlow_TempTokenGatedByClientConfig(t *testing.T) {
 		// Same shape as oauth2.mcpTempTokenAuthEnabled: a configstore error is
 		// treated as 'disabled' (fail-closed) rather than panicking the flow.
 		store := &errClientConfigStore{testConfigStore: newTestConfigStore()}
-		provider := newTestProvider(store.testConfigStore)
+		provider := newTestProvider(t, store.testConfigStore)
 		provider.configStore = store // swap in the wrapper so GetClientConfig errors
 		provider.SetTempTokenService(newTempTokenService(t, store.testConfigStore))
 
@@ -255,7 +263,7 @@ func (e assertErr) Error() string { return string(e) }
 // regressions that would break the dashboard auth landing page.
 func TestInitiateUserSubmissionFlow_URLShape(t *testing.T) {
 	store := newTestConfigStore()
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 
 	initiation, err := provider.InitiateUserSubmissionFlow(context.Background(), schemas.MCPAuthModeUser, "u", "client", "http://localhost:8080/")
 	require.NoError(t, err)
