@@ -185,6 +185,15 @@ func (s *Service) NewTurn(ctx context.Context, request *ChatRequest, bodyBytes i
 // Release returns the turn's lease on its management catalog. RunTurn calls it
 // when the turn ends; a caller that gets a turn and does not run it calls it
 // itself. Safe to call more than once.
+// VirtualKeyID is the virtual key Warp's settings name for a caller with no
+// identity of their own (schemas.WarpConfig.VirtualKeyID), or "".
+func (t *Turn) VirtualKeyID() string {
+	if t == nil || t.config == nil {
+		return ""
+	}
+	return t.config.VirtualKeyID
+}
+
 func (t *Turn) Release() {
 	if t == nil {
 		return

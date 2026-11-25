@@ -135,11 +135,11 @@ func (r decisionRule) servesOnlyDecisions() bool {
 // customProviderConfig returns the provider's custom configuration, or nil for
 // a built-in provider or one that is not configured.
 func customProviderConfig(config *lib.Config, provider schemas.ModelProvider) *schemas.CustomProviderConfig {
-	providerConfig, err := config.GetProviderConfigRaw(provider)
-	if err != nil {
+	stored, ok := config.LiveStore.Collections.Providers.Get(string(provider))
+	if !ok {
 		return nil
 	}
-	return providerConfig.CustomProviderConfig
+	return stored.Config.CustomProviderConfig
 }
 
 // keyAliasTarget returns the model a key alias points at, in the order the

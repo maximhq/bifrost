@@ -28,6 +28,10 @@ That distinction matters at startup. Bifrost uses `source_of_truth` and per-sect
 
 `source_of_truth` only affects DB-backed reconciliation. In file-only mode there is no config store to reconcile against, so `config.json` is naturally the runtime source.
 
+<Note>
+Without a config store, every configuration API route answers `503 config store not available`, reads included: providers and keys, MCP clients and the MCP library, plugins, prompts, skills, webhooks, feature flags, governance, routing, notifications and the rest. The Web UI therefore cannot show or edit configuration. Inference, `GET /api/config`, `GET /api/version`, `/health`, logs, metrics, sign-in and OAuth2 discovery keep working.
+</Note>
+
 ---
 
 ## Default Split Mode

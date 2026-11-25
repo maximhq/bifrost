@@ -165,6 +165,7 @@ export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }:
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent
+				resizeKey="prompt-commit-version"
 				className="flex h-full flex-col p-4 md:p-8"
 				onOpenAutoFocus={(e) => {
 					e.preventDefault();
