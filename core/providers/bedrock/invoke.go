@@ -1531,7 +1531,7 @@ func bedrockInvokeGuardrailFields(resp *schemas.BifrostResponsesResponse) (strin
 			rawTrace = raw
 		}
 	}
-	intervened := resp.StopReason != nil && *resp.StopReason == "guardrail_intervened"
+	intervened := invokeGuardrailIntervened(resp)
 	switch {
 	case intervened:
 		return "INTERVENED", rawTrace
@@ -1894,20 +1894,14 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 		}
 	}
 
-	// Stop reason
-	stopReason := "end_turn"
-	if resp.IncompleteDetails != nil {
-		stopReason = resp.IncompleteDetails.Reason
-	} else {
-		// Check for tool_use
-		for _, block := range result.Content {
-			if block.Type == "tool_use" {
-				stopReason = "tool_use"
-				break
-			}
+	hasToolUse := false
+	for _, block := range result.Content {
+		if block.Type == "tool_use" {
+			hasToolUse = true
+			break
 		}
 	}
-	result.StopReason = stopReason
+	result.StopReason = anthropicInvokeTerminalStopReason(resp, hasToolUse)
 
 	// Usage
 	if resp.Usage != nil {
@@ -2067,13 +2061,16 @@ var bedrockInvokeStreamStateKey = bedrockInvokeStreamStateKeyType{}
 // index after it. Copying each event's ContentIndex straight through therefore opens
 // block N and closes block N+1, leaving N open for the rest of the stream. The Anthropic
 // egress keeps the same bookkeeping for the same reason (blockIndexFor / allocBlockIndex
-// in providers/anthropic/responses.go).
+// in providers/anthropic/responses.go). It also records whether a client tool_use block
+// was streamed, so the terminal message_delta can report tool_use like the non-streaming
+// converter does.
 //
 // Only the pointer lives on the context: the map is bounded by the number of content
 // blocks in the stream rather than by its content, and it is released with the request.
 type bedrockInvokeStreamState struct {
 	mu           sync.Mutex
 	openedBlocks map[string]int // item key -> content index its content_block_start used
+	sawToolUse   bool           // a client tool_use block was streamed
 }
 
 func getOrCreateBedrockInvokeStreamState(ctx *schemas.BifrostContext) *bedrockInvokeStreamState {
@@ -2096,6 +2093,24 @@ func lookupBedrockInvokeStreamState(ctx *schemas.BifrostContext) *bedrockInvokeS
 	}
 	state, _ := ctx.Value(bedrockInvokeStreamStateKey).(*bedrockInvokeStreamState)
 	return state
+}
+
+func (s *bedrockInvokeStreamState) markToolUse() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sawToolUse = true
+}
+
+func (s *bedrockInvokeStreamState) hasToolUse() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sawToolUse
 }
 
 func (s *bedrockInvokeStreamState) rememberBlockIndex(key string, index int) {
@@ -2145,22 +2160,46 @@ func bedrockInvokeStreamItemKey(resp *schemas.BifrostResponsesStreamResponse) st
 	return ""
 }
 
-// anthropicInvokeStopReason maps a terminal event's StopReason to an Anthropic stop_reason.
-// The invoke stream can be served by any provider, so a reason Anthropic does not define
-// (e.g. a passed-through guardrail_intervened) must not reach message_delta as-is.
-func anthropicInvokeStopReason(reason string) string {
-	switch reason {
-	case "content_filter", "guardrail_intervened":
-		return string(anthropic.AnthropicStopReasonRefusal)
+// anthropicInvokeStopReason derives the Anthropic stop_reason for an InvokeModel response,
+// shared by the streaming and non-streaming converters so both report the same reason.
+// StopReason wins over IncompleteDetails: the Converse conversion folds guardrail_intervened
+// and content_filtered into one content_filter incomplete reason, and only StopReason keeps
+// them apart (a guardrail block is end_turn on InvokeModel, a model filter is refusal).
+// IncompleteDetails covers providers that report no StopReason. Returns "" when neither
+// field is set, leaving the default to the caller. The shared converter reports a guardrail
+// block as refusal; InvokeModel reports it as end_turn and carries the signal in
+// amazon-bedrock-guardrailAction instead (bedrockInvokeGuardrailFields).
+func anthropicInvokeStopReason(resp *schemas.BifrostResponsesResponse) string {
+	if resp == nil {
+		return ""
 	}
-	switch mapped := anthropic.ConvertBifrostFinishReasonToAnthropic(reason); mapped {
-	case anthropic.AnthropicStopReasonEndTurn, anthropic.AnthropicStopReasonMaxTokens,
-		anthropic.AnthropicStopReasonStopSequence, anthropic.AnthropicStopReasonToolUse,
-		anthropic.AnthropicStopReasonPauseTurn, anthropic.AnthropicStopReasonRefusal,
-		anthropic.AnthropicStopReasonModelContextWindowExceeded, anthropic.AnthropicStopReasonCompaction:
-		return string(mapped)
+	if invokeGuardrailIntervened(resp) {
+		return string(anthropic.AnthropicStopReasonEndTurn)
+	}
+	if resp.StopReason != nil && *resp.StopReason != "" {
+		return string(anthropic.ConvertBifrostFinishReasonToAnthropic(*resp.StopReason))
+	}
+	return string(anthropic.AnthropicStopReasonFromIncompleteDetails(resp.IncompleteDetails))
+}
+
+// anthropicInvokeTerminalStopReason is the stop_reason both InvokeModel converters report:
+// anthropicInvokeStopReason, defaulting to end_turn, upgraded to tool_use when the turn
+// carried a client tool_use block. Some providers (e.g. Gemini) report a plain stop on a
+// function-call turn. The upgrade never overrides max_tokens, refusal or a guardrail block.
+func anthropicInvokeTerminalStopReason(resp *schemas.BifrostResponsesResponse, hasToolUse bool) string {
+	stopReason := anthropicInvokeStopReason(resp)
+	if stopReason != "" && stopReason != string(anthropic.AnthropicStopReasonEndTurn) {
+		return stopReason
+	}
+	if hasToolUse && !invokeGuardrailIntervened(resp) {
+		return string(anthropic.AnthropicStopReasonToolUse)
 	}
 	return string(anthropic.AnthropicStopReasonEndTurn)
+}
+
+// invokeGuardrailIntervened reports whether a Bedrock guardrail blocked the turn.
+func invokeGuardrailIntervened(resp *schemas.BifrostResponsesResponse) bool {
+	return resp != nil && resp.StopReason != nil && *resp.StopReason == bedrockStopReasonGuardrailIntervened
 }
 
 // toAnthropicInvokeStreamBytes converts a Bifrost stream event into raw bytes representing
@@ -2269,7 +2308,11 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 			}
 			// Remember where this item opened so its output_item.done closes this block
 			// and not whichever index the neutral stream happens to carry by then.
-			getOrCreateBedrockInvokeStreamState(ctx).rememberBlockIndex(bedrockInvokeStreamItemKey(resp), idx)
+			state := getOrCreateBedrockInvokeStreamState(ctx)
+			state.rememberBlockIndex(bedrockInvokeStreamItemKey(resp), idx)
+			if blockType == "tool_use" {
+				state.markToolUse()
+			}
 		} else {
 			// Skip — content_block_start is emitted on ContentPartAdded where we know the block type
 			return nil, nil
@@ -2393,22 +2436,7 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 	// with message_delta + message_stop, or the client never sees the stop reason.
 	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		// Emit message_delta + message_stop as two separate events
-		stopReason := "end_turn"
-		if resp.Response != nil && resp.Response.IncompleteDetails != nil {
-			// Translate the Responses vocabulary into Anthropic stop reasons.
-			switch resp.Response.IncompleteDetails.Reason {
-			case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
-				stopReason = "max_tokens"
-			case schemas.ResponsesResponseIncompleteReasonContentFilter:
-				stopReason = "refusal"
-			default:
-				stopReason = resp.Response.IncompleteDetails.Reason
-			}
-		} else if resp.Response != nil && resp.Response.StopReason != nil {
-			// A completed turn carries its reason in StopReason (e.g. "tool_calls" when the
-			// model called a tool), matching the non-streaming converter's tool_use.
-			stopReason = anthropicInvokeStopReason(*resp.Response.StopReason)
-		}
+		stopReason := anthropicInvokeTerminalStopReason(resp.Response, lookupBedrockInvokeStreamState(ctx).hasToolUse())
 
 		// Build message_delta event
 		messageDelta := map[string]interface{}{

@@ -79,6 +79,7 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent
+				resizeKey="prompt-folder"
 				className="p-4 md:p-8"
 				onOpenAutoFocus={(e) => {
 					e.preventDefault();

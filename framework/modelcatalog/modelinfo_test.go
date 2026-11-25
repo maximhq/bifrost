@@ -10,8 +10,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
-	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
-	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
 
 func modelInfoCatalog(t testing.TB) *ModelCatalog {
@@ -65,7 +63,7 @@ func modelInfoCatalog(t testing.TB) *ModelCatalog {
 
 	// Pricing resolution logs at debug level, so the store needs a real (no-op)
 	// logger once a test prices a response rather than only reading metadata.
-	ds := datasheet.New(nil, bifrost.NewNoOpLogger(), datasheet.Config{
+	ds := datasheetForTest(t, nil, bifrost.NewNoOpLogger(), datasheet.Config{
 		URL:                "file://" + pricingPath,
 		ModelParametersURL: "file://" + paramsPath,
 	})
@@ -75,13 +73,14 @@ func modelInfoCatalog(t testing.TB) *ModelCatalog {
 	if err := ds.LoadModelParamsFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load model-parameters testdata: %v", err)
 	}
+	liveModels, keyconf := stateStoresForTest(t)
 	mc := &ModelCatalog{
 		datasheet: ds,
-		live:      live.New(nil),
-		keyconf:   keyconfig.New(nil),
+		live:      liveModels,
+		keyconf:   keyconf,
 		done:      make(chan struct{}),
 	}
-	mc.initCaches()
+	withTestCaches(t, mc)
 	return mc
 }
 

@@ -405,10 +405,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return true, fmt.Errorf("failed to generate upload ID: %w", err)
 			}
 
-			kvStore := handlerStore.GetKVStore()
-			if kvStore == nil {
-				return true, errors.New("kvstore not initialized")
-			}
+			uploads := handlerStore.GetSharedTables().GenAIUploads
 
 			session := &gemini.GeminiResumableUploadSession{
 				DisplayName: r.File.DisplayName,
@@ -418,9 +415,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			if vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string); ok && vk != "" {
 				session.VirtualKey = vk
 			}
-			if err := kvStore.SetWithTTL(uploadID, session, 1*time.Minute); err != nil {
-				return true, fmt.Errorf("failed to store upload session: %w", err)
-			}
+			uploads.PutWithTTL(uploadID, session, 1*time.Minute)
 
 			baseURL := lib.BuildBaseURL(ctx, "")
 			if baseURL == "" {
@@ -435,8 +430,8 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			ctx.SetBody([]byte("{}"))
 			return true, nil
 		},
-		// FileRequestConverter handles step 2: retrieves the saved session from
-		// the KV store and builds a full BifrostFileUploadRequest.
+		// FileRequestConverter handles step 2: takes the saved session from the
+		// shared upload table and builds a full BifrostFileUploadRequest.
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			r, ok := req.(*gemini.GeminiFileUploadHandlerReq)
 			if !ok {
@@ -446,19 +441,9 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return nil, errors.New("upload_id missing — step 1 should have been short-circuited")
 			}
 
-			kvStore := handlerStore.GetKVStore()
-			if kvStore == nil {
-				return nil, errors.New("kvstore not initialized")
-			}
-
-			val, err := kvStore.GetAndDelete(r.UploadID)
-			if err != nil {
-				return nil, fmt.Errorf("upload session not found for id %q: %w", r.UploadID, err)
-			}
-
-			session, ok := val.(*gemini.GeminiResumableUploadSession)
-			if !ok {
-				return nil, errors.New("invalid upload session type in kvstore")
+			session, ok := handlerStore.GetSharedTables().GenAIUploads.GetAndDelete(r.UploadID)
+			if !ok || session == nil {
+				return nil, fmt.Errorf("upload session not found for id %q: key not found", r.UploadID)
 			}
 
 			// Chunk requests carry no auth headers (resumable-upload protocol:
@@ -2181,5 +2166,5 @@ func generateUploadID() (string, error) {
 		return "", err
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(b)
-	return "genai_upload_session:" + encoded, nil
+	return lib.GenAIUploadKeyPrefix + encoded, nil
 }

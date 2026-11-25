@@ -14,6 +14,60 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// file_content takes precedence over file_data / file_url / file_id when converting to Anthropic,
+// on both the Chat and the Responses converter.
+func TestCustomDocumentContentTakesPrecedence(t *testing.T) {
+	content := json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."}]`)
+	chatBlock := ConvertToAnthropicDocumentBlock(schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{
+		FileContent: content, FileData: schemas.Ptr("aGVsbG8="), FileURL: schemas.Ptr("https://example.com/a.pdf"), FileID: schemas.Ptr("file_1"),
+	}})
+	responsesBlock := ConvertResponsesFileBlockToAnthropic(&schemas.ResponsesInputMessageContentBlockFile{
+		FileContent: content, FileData: schemas.Ptr("aGVsbG8="), FileURL: schemas.Ptr("https://example.com/a.pdf"),
+	}, schemas.Ptr("file_1"), nil, nil)
+	for name, block := range map[string]AnthropicContentBlock{"chat": chatBlock, "responses": responsesBlock} {
+		src := block.Source.SourceObj
+		if src == nil || src.Type != "content" || string(src.Content) != string(content) || src.Data != nil || src.URL != nil || src.FileID != nil {
+			t.Fatalf("%s: file_content must be the only source, got %+v", name, src)
+		}
+	}
+}
+
+func TestCustomDocumentContentRoundTrip(t *testing.T) {
+	for _, sourceType := range []string{"content", "content_block"} {
+		for _, content := range []string{`"Budget: $4.2M."`, `[{"type":"text","text":"Budget: $4.2M."},{"type":"text","text":"Audit: March."}]`} {
+			// content_block is retained only as Bifrost's compatibility spelling;
+			// current Anthropic requests and the rendered output use content.
+			body := `{"model":"claude-haiku-5-5","max_tokens":128,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":[{"type":"document","title":"pack","source":{"type":"` + sourceType + `","content":` + content + `},"citations":{"enabled":true}}]}]}`
+			var in AnthropicMessageRequest
+			if err := sonic.Unmarshal([]byte(body), &in); err != nil {
+				t.Fatal(err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := in.ToBifrostResponsesRequest(ctx)
+			out, err := ToAnthropicResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := out.Messages[0].Content.ContentBlocks[0].Source.SourceObj; got.Type != "content" || string(got.Content) != content {
+				t.Fatalf("custom document chunks changed: %+v", got)
+			}
+			chat, err := ToAnthropicChatRequest(ctx, req.ToChatRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var block AnthropicContentBlock
+			for _, candidate := range chat.Messages[0].Content.ContentBlocks {
+				if candidate.Type == AnthropicContentBlockTypeDocument {
+					block = candidate
+				}
+			}
+			if block.Source == nil || block.Source.SourceObj == nil || block.Source.SourceObj.Type != "content" || string(block.Source.SourceObj.Content) != content || block.Title == nil || *block.Title != "pack" || block.Citations == nil || block.Citations.Config == nil || block.Citations.Config.Enabled == nil || !*block.Citations.Config.Enabled {
+				t.Fatalf("chat conversion lost custom content, title or citation setting: %+v", block)
+			}
+		}
+	}
+}
+
 func TestWebSearchStreamQueryVariants(t *testing.T) {
 	for _, passthrough := range []bool{false, true} {
 		for _, prepopulated := range []bool{false, true} {

@@ -1825,8 +1825,8 @@ func (h *HybridLogStore) BulkUpdateCost(ctx context.Context, updates map[string]
 // GetNodeUsageAfter delegates to the inner store and returns usage
 // aggregates for the given node since cursor, used by the cluster gossip
 // path to ship incremental usage to peers.
-func (h *HybridLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
-	return h.inner.GetNodeUsageAfter(ctx, nodeID, cursor)
+func (h *HybridLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor, windows NodeUsageWindows) (*NodeUsageAggregate, error) {
+	return h.inner.GetNodeUsageAfter(ctx, nodeID, cursor, windows)
 }
 
 // Flush delegates to the inner store and forces any buffered DB writes since

@@ -14,7 +14,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
-	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -72,9 +71,7 @@ func newCapturePluginWithStore(t *testing.T, suggestions *configstore.Complexity
 	t.Helper()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
 	p := &RoutingPlugin{logger: logger, semanticClassifier: complexity.NewSemanticClassifier(context.Background(), logger)}
-	matcher, err := rules.NewModelRouterMatcher()
-	require.NoError(t, err)
-	p.routerMatcher = matcher
+	p.routerMatcher = newTestRouterMatcher(t)
 	store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
 		Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{},
 	}, logger)

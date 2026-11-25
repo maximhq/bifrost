@@ -493,7 +493,12 @@
 		"maximumSpend": "最大支出（USD）",
 		"noBudgetLimits": "予算の上限は設定されていません。",
 		"removeBudgetAria": "予算 {{number}} を削除",
-		"duplicateResetPeriod": "リセット期間が重複しています。各予算行は異なる間隔を使用する必要があります。"
+		"duplicateResetPeriod": "リセット期間が重複しています。各予算行は異なる間隔を使用する必要があります。",
+		"contentLogging": "コンテンツログ",
+		"contentLoggingInherit": "継承",
+		"contentLoggingOff": "このチームではオフ",
+		"contentLoggingOn": "このチームではオン",
+		"contentLoggingHelp": "このチームのトラフィックについて、リクエストとレスポンスの内容をログに保存するかどうかです。チームはその仮想キーとプロバイダーキーより優先されるため、チームがオフにした内容をキーで再びオンにすることはできません。「オフ」はコネクターのエクスポートからも内容を除きます。リクエストごとの上書きが許可されている場合、リクエスト単位のヘッダーは引き続き適用されます。"
 	},
 	"filters": {
 		"filters": "フィルター",

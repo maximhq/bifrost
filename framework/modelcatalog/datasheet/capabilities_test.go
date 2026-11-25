@@ -62,29 +62,28 @@ func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T)
 	maxOutputTokensChat := 16000
 	modality := "text"
 
-	s := &Store{
-		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKeyNormalized("gpt-4o", "openai", "responses"): {
-				Model:           "gpt-4o",
-				Provider:        "openai",
-				Mode:            "responses",
-				ContextLength:   capabilityIntPtr(200000),
-				MaxInputTokens:  capabilityIntPtr(100000),
-				MaxOutputTokens: capabilityIntPtr(32000),
-			},
-			makeKeyNormalized("gpt-4o", "openai", "chat"): {
-				Model:           "gpt-4o",
-				Provider:        "openai",
-				Mode:            "chat",
-				ContextLength:   &contextLengthChat,
-				MaxInputTokens:  &maxInputTokensChat,
-				MaxOutputTokens: &maxOutputTokensChat,
-				Architecture: &schemas.Architecture{
-					Modality: &modality,
-				},
+	s := testStore(t, nil)
+	fillTable(s.pricingData, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o", "openai", "responses"): {
+			Model:           "gpt-4o",
+			Provider:        "openai",
+			Mode:            "responses",
+			ContextLength:   capabilityIntPtr(200000),
+			MaxInputTokens:  capabilityIntPtr(100000),
+			MaxOutputTokens: capabilityIntPtr(32000),
+		},
+		makeKeyNormalized("gpt-4o", "openai", "chat"): {
+			Model:           "gpt-4o",
+			Provider:        "openai",
+			Mode:            "chat",
+			ContextLength:   &contextLengthChat,
+			MaxInputTokens:  &maxInputTokensChat,
+			MaxOutputTokens: &maxOutputTokensChat,
+			Architecture: &schemas.Architecture{
+				Modality: &modality,
 			},
 		},
-	}
+	})
 
 	entry := s.GetCapabilityEntry("gpt-4o", schemas.OpenAI)
 	if entry == nil {
@@ -108,17 +107,16 @@ func TestGetCapabilityEntry_PrefersChatThenResponsesThenCompletion(t *testing.T)
 }
 
 func TestGetCapabilityEntry_FallsBackToAnyModeDeterministically(t *testing.T) {
-	s := &Store{
-		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKeyNormalized("imagen", "vertex", "image_generation"): {
-				Model:           "imagen",
-				Provider:        "vertex",
-				Mode:            "image_generation",
-				ContextLength:   capabilityIntPtr(4096),
-				MaxOutputTokens: capabilityIntPtr(1),
-			},
+	s := testStore(t, nil)
+	fillTable(s.pricingData, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("imagen", "vertex", "image_generation"): {
+			Model:           "imagen",
+			Provider:        "vertex",
+			Mode:            "image_generation",
+			ContextLength:   capabilityIntPtr(4096),
+			MaxOutputTokens: capabilityIntPtr(1),
 		},
-	}
+	})
 
 	entry := s.GetCapabilityEntry("imagen", schemas.Vertex)
 	if entry == nil {
@@ -132,7 +130,7 @@ func TestGetCapabilityEntry_FallsBackToAnyModeDeterministically(t *testing.T) {
 // Rows that differ only by casing collapse to the lowercase one, and the any-mode
 // scan returns that same row whatever casing the request uses.
 func TestGetCapabilityEntry_AnyModeFallbackUsesLowercaseRowForEveryCasing(t *testing.T) {
-	s := NewTestStore(nil)
+	s := testStore(t, nil)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "Embed-X", Provider: "azure", Mode: "embedding", MaxInputTokens: capabilityIntPtr(999)},
 		{Model: "embed-x", Provider: "azure", Mode: "embedding", MaxInputTokens: capabilityIntPtr(100)},
@@ -158,7 +156,7 @@ func TestGetCapabilityEntry_AnyModeFallbackUsesLowercaseRowForEveryCasing(t *tes
 // resolve for it. The embedding row is what the any-mode scan would return if
 // the chat lookup missed, so it proves the preferred-mode lookup answered.
 func TestGetCapabilityEntry_PreferredModeMatchesAnyCase(t *testing.T) {
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
 		makeKeyNormalized("Qwen3-235B-A22B", "azure", "chat"):      {Model: "Qwen3-235B-A22B", Provider: "azure", Mode: "chat", MaxOutputTokens: capabilityIntPtr(32000)},
 		makeKeyNormalized("qwen3-235b-a22b", "azure", "embedding"): {Model: "qwen3-235b-a22b", Provider: "azure", Mode: "embedding", MaxOutputTokens: capabilityIntPtr(1)},
 	})
@@ -175,29 +173,28 @@ func TestGetCapabilityEntry_PreferredModeMatchesAnyCase(t *testing.T) {
 func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 	contextLengthChat := 128000
 
-	s := &Store{
-		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "responses"): {
-				Model:           "gpt-4o-2024-08-06",
-				BaseModel:       "gpt-4o",
-				Provider:        "openai",
-				Mode:            "responses",
-				ContextLength:   capabilityIntPtr(64000),
-				MaxOutputTokens: capabilityIntPtr(8000),
-			},
-			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
-				Model:           "gpt-4o-2024-08-06",
-				BaseModel:       "gpt-4o",
-				Provider:        "openai",
-				Mode:            "chat",
-				ContextLength:   &contextLengthChat,
-				MaxOutputTokens: capabilityIntPtr(16000),
-			},
+	s := testStore(t, nil)
+	fillTable(s.pricingData, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o-2024-08-06", "openai", "responses"): {
+			Model:           "gpt-4o-2024-08-06",
+			BaseModel:       "gpt-4o",
+			Provider:        "openai",
+			Mode:            "responses",
+			ContextLength:   capabilityIntPtr(64000),
+			MaxOutputTokens: capabilityIntPtr(8000),
 		},
-		baseModelIndex: map[string]string{
-			"gpt-4o-2024-08-06": "gpt-4o",
+		makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
+			Model:           "gpt-4o-2024-08-06",
+			BaseModel:       "gpt-4o",
+			Provider:        "openai",
+			Mode:            "chat",
+			ContextLength:   &contextLengthChat,
+			MaxOutputTokens: capabilityIntPtr(16000),
 		},
-	}
+	})
+	fillTable(s.baseModelIndex, map[string]string{
+		"gpt-4o-2024-08-06": "gpt-4o",
+	})
 
 	entry := s.GetCapabilityEntry("gpt-4o", schemas.OpenAI)
 	if entry == nil {
@@ -212,21 +209,20 @@ func TestGetCapabilityEntry_ResolvesAliasFamilyViaBaseModel(t *testing.T) {
 }
 
 func TestGetCapabilityEntry_ResolvesProviderPrefixedAlias(t *testing.T) {
-	s := &Store{
-		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
-				Model:           "gpt-4o-2024-08-06",
-				BaseModel:       "gpt-4o",
-				Provider:        "openai",
-				Mode:            "chat",
-				ContextLength:   capabilityIntPtr(128000),
-				MaxOutputTokens: capabilityIntPtr(16000),
-			},
+	s := testStore(t, nil)
+	fillTable(s.pricingData, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
+			Model:           "gpt-4o-2024-08-06",
+			BaseModel:       "gpt-4o",
+			Provider:        "openai",
+			Mode:            "chat",
+			ContextLength:   capabilityIntPtr(128000),
+			MaxOutputTokens: capabilityIntPtr(16000),
 		},
-		baseModelIndex: map[string]string{
-			"gpt-4o-2024-08-06": "gpt-4o",
-		},
-	}
+	})
+	fillTable(s.baseModelIndex, map[string]string{
+		"gpt-4o-2024-08-06": "gpt-4o",
+	})
 
 	entry := s.GetCapabilityEntry("openai/gpt-4o", schemas.OpenAI)
 	if entry == nil {
@@ -241,30 +237,29 @@ func TestGetCapabilityEntry_PrefersLiteralMatchOverAliasFamily(t *testing.T) {
 	literalContextLength := 32000
 	aliasContextLength := 128000
 
-	s := &Store{
-		pricingData: map[string]configstoreTables.TableModelPricing{
-			makeKeyNormalized("gpt-4o", "openai", "chat"): {
-				Model:           "gpt-4o",
-				BaseModel:       "gpt-4o",
-				Provider:        "openai",
-				Mode:            "chat",
-				ContextLength:   &literalContextLength,
-				MaxOutputTokens: capabilityIntPtr(4000),
-			},
-			makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
-				Model:           "gpt-4o-2024-08-06",
-				BaseModel:       "gpt-4o",
-				Provider:        "openai",
-				Mode:            "chat",
-				ContextLength:   &aliasContextLength,
-				MaxOutputTokens: capabilityIntPtr(16000),
-			},
+	s := testStore(t, nil)
+	fillTable(s.pricingData, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o", "openai", "chat"): {
+			Model:           "gpt-4o",
+			BaseModel:       "gpt-4o",
+			Provider:        "openai",
+			Mode:            "chat",
+			ContextLength:   &literalContextLength,
+			MaxOutputTokens: capabilityIntPtr(4000),
 		},
-		baseModelIndex: map[string]string{
-			"gpt-4o":            "gpt-4o",
-			"gpt-4o-2024-08-06": "gpt-4o",
+		makeKeyNormalized("gpt-4o-2024-08-06", "openai", "chat"): {
+			Model:           "gpt-4o-2024-08-06",
+			BaseModel:       "gpt-4o",
+			Provider:        "openai",
+			Mode:            "chat",
+			ContextLength:   &aliasContextLength,
+			MaxOutputTokens: capabilityIntPtr(16000),
 		},
-	}
+	})
+	fillTable(s.baseModelIndex, map[string]string{
+		"gpt-4o":            "gpt-4o",
+		"gpt-4o-2024-08-06": "gpt-4o",
+	})
 
 	entry := s.GetCapabilityEntry("gpt-4o", schemas.OpenAI)
 	if entry == nil {
