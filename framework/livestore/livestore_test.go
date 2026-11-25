@@ -110,7 +110,7 @@ func openDB(t *testing.T) *gorm.DB {
 // database. Call load once the rows the test needs are in.
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{db: openDB(t), s: New()}
+	f := &fixture{db: openDB(t), s: newStore()}
 	t.Cleanup(f.s.Close)
 	var err error
 	if f.owners, err = f.s.Register(Kind("owner"), nil, ownerLoader()); err != nil {
@@ -410,7 +410,7 @@ func TestRegistrationErrors(t *testing.T) {
 	ctx := context.Background()
 	db := openDB(t)
 
-	s := New()
+	s := newStore()
 	defer s.Close()
 	if _, err := s.Register(Kind("a"), nil, emptyLoader[owner]()); err != nil {
 		t.Fatal(err)
@@ -451,7 +451,7 @@ func TestRegistrationErrors(t *testing.T) {
 		t.Fatalf("second LoadAll = %v", err)
 	}
 
-	cyc := New()
+	cyc := newStore()
 	defer cyc.Close()
 	if _, err := cyc.Register(Kind("x"), []Kind{"y"}, emptyLoader[owner]()); err != nil {
 		t.Fatal(err)
@@ -463,7 +463,7 @@ func TestRegistrationErrors(t *testing.T) {
 		t.Fatalf("cycle = %v", err)
 	}
 
-	unknown := New()
+	unknown := newStore()
 	defer unknown.Close()
 	if _, err := unknown.Register(Kind("x"), []Kind{"missing"}, emptyLoader[owner]()); err != nil {
 		t.Fatal(err)
@@ -1052,7 +1052,7 @@ func TestRefreshKindKeepsInternedValuesUntilItPublishes(t *testing.T) {
 // without a database, and a Remove, which needs none and drops the record from every index.
 func TestLoadRecords(t *testing.T) {
 	ctx := context.Background()
-	s := New()
+	s := newStore()
 	defer s.Close()
 	groupLoad := emptyLoader[group]()
 	groupLoad.ID = func(g *group) string { return g.ID }
@@ -1110,7 +1110,7 @@ func TestLoadRecordsRefusesARecordOfAnotherStore(t *testing.T) {
 	ownerLoad := emptyLoader[owner]()
 	ownerLoad.ID = func(o *owner) string { return o.ID }
 
-	sameStore, otherStore := New(), New()
+	sameStore, otherStore := newStore(), newStore()
 	t.Cleanup(sameStore.Close)
 	t.Cleanup(otherStore.Close)
 	sameType, err := sameStore.Register(Kind("group"), nil, groupLoad)
@@ -1129,7 +1129,7 @@ func TestLoadRecordsRefusesARecordOfAnotherStore(t *testing.T) {
 		{name: "other type", rec: Rec(otherType, &owner{ID: "g1"})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := New()
+			s := newStore()
 			t.Cleanup(s.Close)
 			groups, err := s.Register(Kind("group"), nil, groupLoad)
 			if err != nil {
@@ -1595,7 +1595,7 @@ func TestLoadRefusesDuplicateUniqueKeys(t *testing.T) {
 		t.Fatalf("LoadAll = %v, want ErrUniqueConflict", err)
 	}
 
-	s := New()
+	s := newStore()
 	t.Cleanup(s.Close)
 	load := emptyLoader[group]()
 	load.ID = func(g *group) string { return g.ID }
@@ -2233,7 +2233,7 @@ func TestTableKeepsEntriesThatNeverExpireAsTheirValueAlone(t *testing.T) {
 // copy of an ID no record holds.
 func TestShareIDsGivesRecordsTheNamedRecordsCopy(t *testing.T) {
 	db := openDB(t)
-	s := New()
+	s := newStore()
 	t.Cleanup(s.Close)
 	owners, err := s.Register(Kind("owner"), nil, ownerLoader())
 	if err != nil {

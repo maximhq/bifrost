@@ -41,6 +41,7 @@ import (
 	"github.com/maximhq/bifrost/framework/envutils"
 	"github.com/maximhq/bifrost/framework/featureflags"
 	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcp_headers"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
@@ -732,6 +733,10 @@ type Config struct {
 
 	// Stores
 	ConfigStore configstore.ConfigStore
+	// LiveStore is the in-memory store of configuration and runtime state, with a typed collection
+	// per config store table in LiveStore.Collections. LoadConfig fills it from ConfigStore, or
+	// from config.json when the config store is disabled.
+	LiveStore   *livestore.Store
 	VectorStore vectorstore.VectorStore
 	LogsStore   logstore.LogStore
 	// LogsStoreConfig is the effective logs store configuration used to create LogsStore.
@@ -1366,6 +1371,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		config.ServerConfig = &ServerConfig{
 			ReadBufferSize: 1024 * 64,
 		}
+	}
+	// 17. Live store, last, so it reads everything the steps above wrote to the config store.
+	if err := loadLiveStore(ctx, config); err != nil {
+		return nil, err
 	}
 	return config, nil
 }
@@ -9154,6 +9163,9 @@ func (c *Config) Close(ctx context.Context) {
 	}
 	if c.KVStore != nil {
 		c.KVStore.Close()
+	}
+	if c.LiveStore != nil {
+		c.LiveStore.Close()
 	}
 	if c.ConfigStore != nil {
 		c.ConfigStore.Close(ctx)
