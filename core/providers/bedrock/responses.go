@@ -1939,8 +1939,7 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				stopReason = detailsReason
 				// A guardrail block and a model content filter share the content_filter
 				// details; only the explicit stop reason tells them apart.
-				if stopReason == "content_filtered" && bifrostResp.Response.StopReason != nil &&
-					*bifrostResp.Response.StopReason == bedrockStopReasonGuardrailIntervened {
+				if stopReason == "content_filtered" && bedrockGuardrailIntervened(bifrostResp.Response) {
 					stopReason = bedrockStopReasonGuardrailIntervened
 				}
 			} else if bifrostResp.Response.StopReason != nil {

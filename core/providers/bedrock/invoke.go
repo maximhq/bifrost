@@ -1531,7 +1531,7 @@ func bedrockInvokeGuardrailFields(resp *schemas.BifrostResponsesResponse) (strin
 			rawTrace = raw
 		}
 	}
-	intervened := invokeGuardrailIntervened(resp)
+	intervened := bedrockGuardrailIntervened(resp)
 	switch {
 	case intervened:
 		return "INTERVENED", rawTrace
@@ -2187,7 +2187,7 @@ func anthropicInvokeStopReason(resp *schemas.BifrostResponsesResponse) string {
 	if resp == nil {
 		return ""
 	}
-	if invokeGuardrailIntervened(resp) {
+	if bedrockGuardrailIntervened(resp) {
 		return string(anthropic.AnthropicStopReasonEndTurn)
 	}
 	if resp.StopReason != nil && *resp.StopReason != "" {
@@ -2205,14 +2205,14 @@ func anthropicInvokeTerminalStopReason(resp *schemas.BifrostResponsesResponse, h
 	if stopReason != "" && stopReason != string(anthropic.AnthropicStopReasonEndTurn) {
 		return stopReason
 	}
-	if hasToolUse && !invokeGuardrailIntervened(resp) {
+	if hasToolUse && !bedrockGuardrailIntervened(resp) {
 		return string(anthropic.AnthropicStopReasonToolUse)
 	}
 	return string(anthropic.AnthropicStopReasonEndTurn)
 }
 
-// invokeGuardrailIntervened reports whether a Bedrock guardrail blocked the turn.
-func invokeGuardrailIntervened(resp *schemas.BifrostResponsesResponse) bool {
+// bedrockGuardrailIntervened reports whether a Bedrock guardrail blocked the turn.
+func bedrockGuardrailIntervened(resp *schemas.BifrostResponsesResponse) bool {
 	return resp != nil && resp.StopReason != nil && *resp.StopReason == bedrockStopReasonGuardrailIntervened
 }
 
