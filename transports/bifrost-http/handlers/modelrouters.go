@@ -230,6 +230,10 @@ func (h *RoutingHandler) createModelRouter(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("%v; use a different priority", err))
 		case errors.Is(err, configstore.ErrAlreadyExists):
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
+		case errors.Is(err, configstore.ErrNotFound):
+			// A store may refuse a reference it cannot resolve for the caller
+			// with ErrNotFound, and that is a bad request, not a server failure.
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		default:
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to create model router: %v", err))
 		}
@@ -428,7 +432,7 @@ func (h *RoutingHandler) getModelRouterStatus(ctx *fasthttp.RequestCtx) {
 
 // sendModelRouterNotServed answers for a router the routing plugin does not
 // serve. A saved router can be left out at startup, as session routing
-// without a KV store is, so the store decides: a saved router is reported as
+// without a session store is, so the store decides: a saved router is reported as
 // not loaded (503), and only one that is not saved as not found (404).
 func (h *RoutingHandler) sendModelRouterNotServed(ctx *fasthttp.RequestCtx, id string) {
 	if _, err := h.configStore.GetModelRouter(ctx, id); errors.Is(err, configstore.ErrNotFound) {
@@ -600,7 +604,15 @@ func (h *RoutingHandler) setModelRouterRouting(ctx *fasthttp.RequestCtx) {
 		case errors.Is(err, configstore.ErrModelRouterPriorityTaken):
 			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("%v; use a different priority", err))
 		case errors.Is(err, configstore.ErrNotFound):
-			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("model router %q not found", id))
+			// A store may refuse a reference it cannot resolve for the caller
+			// with ErrNotFound, and that is a bad request. The router was read
+			// above, so it is missing only if it no longer reads; a read that
+			// fails is answered as the first read's failure is.
+			if _, readErr := h.configStore.GetModelRouter(ctx, id); readErr != nil {
+				sendModelRouterLoadError(ctx, id, readErr)
+			} else {
+				SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			}
 		default:
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save model router routing: %v", err))
 		}

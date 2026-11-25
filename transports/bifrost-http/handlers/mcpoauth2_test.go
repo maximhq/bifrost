@@ -10,7 +10,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,7 +47,7 @@ func TestClientMetadataDocument(t *testing.T) {
 			if tc.wantClientID == "" {
 				tc.wantClientID = tc.wantBase + oauthClientMetadataPath
 			}
-			h := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, &lib.Config{ClientConfig: clientConfig}, nil)
+			h := NewOAuthHandler(newTestOAuthProvider(t, nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, &lib.Config{ClientConfig: clientConfig}, nil)
 			ctx := &fasthttp.RequestCtx{}
 			ctx.Request.Header.SetHost(tc.host)
 			if tc.proto != "" {
@@ -82,7 +81,7 @@ func BenchmarkClientMetadataDocument(b *testing.B) {
 			if externalURL != "" {
 				clientConfig.MCPExternalClientURL = schemas.NewSecretVar(externalURL)
 			}
-			h := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, &lib.Config{ClientConfig: clientConfig}, nil)
+			h := NewOAuthHandler(newTestOAuthProvider(b, nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, &lib.Config{ClientConfig: clientConfig}, nil)
 			ctx := &fasthttp.RequestCtx{}
 			ctx.Request.Header.SetHost("gateway.example.com")
 			ctx.Request.SetRequestURI(oauthClientMetadataPath)
@@ -118,7 +117,7 @@ func TestHandleOAuthCallback_ChecksIssuer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			SetLogger(&mockLogger{})
 			store := newRealOAuth2Store(t)
-			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newTestOAuthProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			h := NewOAuthHandler(provider, nil, &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}, nil)
 			ctx := bgCtx()
 			require.NoError(t, store.CreateOauthConfig(ctx, &tables.TableOauthConfig{

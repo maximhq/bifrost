@@ -8,7 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -105,47 +105,28 @@ func warpGrantSettler(ctx *fasthttp.RequestCtx, warpVirtualKey string) func() sc
 // no longer exists.
 var errWarpVirtualKeyMissing = errors.New("warp's virtual key no longer exists")
 
-// warpVirtualKeyLookupTimeout bounds warpVirtualKey's store read, including the
-// wait for a pooled connection; a var so a test can shorten it.
-var warpVirtualKeyLookupTimeout = 5 * time.Second
-
 // warpVirtualKey resolves the virtual key Warp's settings name (id) to the value
 // its model calls present, or "" when there is nothing to present: no key set,
 // or a caller who brings an identity of their own (see warpCallerIdentified).
 // Such a caller is governed as themselves; the key is for the local admin and
 // for a deployment without an identity provider, whose sessions name nobody.
 //
-// Looked up once per turn, from governance's in-memory store when one is wired
-// (a map load) and the config store otherwise. The store read runs on a
-// background context: the key is the deployment's own setting, not something
-// the asker's data scope should hide. That context carries its own deadline,
-// since nothing from the request (which has none, and is not cancelled by a
-// disconnect) would bound it. An inactive key is still presented, so
-// governance refuses it with its own reason.
+// Looked up once per turn from the live store, which every key write refreshes,
+// so a key it does not hold no longer exists. The key is the deployment's own
+// setting, so the asker's data scope does not hide it. An inactive key is still
+// presented, so governance refuses it with its own reason.
 func (h *WarpHandler) warpVirtualKey(ctx *fasthttp.RequestCtx, id string) (string, error) {
 	if id == "" || warpCallerIdentified(ctx) {
 		return "", nil
 	}
-	if h.virtualKeyCache != nil {
-		if cache := h.virtualKeyCache(); cache != nil {
-			if vk, ok := cache.GetVirtualKeyByID(ctx, id); ok && vk != nil {
-				return vk.Value.GetValue(), nil
-			}
-		}
+	if h.live == nil {
+		return "", fmt.Errorf("warp's virtual key: %w", livestore.ErrNoLiveStore)
 	}
-	if h.virtualKeyStore == nil {
-		return "", errWarpVirtualKeyMissing
-	}
-	lookupCtx, cancel := context.WithTimeout(context.Background(), warpVirtualKeyLookupTimeout)
-	defer cancel()
-	vk, err := h.virtualKeyStore.GetVirtualKey(lookupCtx, id)
-	if errors.Is(err, configstore.ErrNotFound) || (err == nil && vk == nil) {
-		return "", errWarpVirtualKeyMissing
-	}
+	value, err := virtualKeyValueByID(h.live, id)
 	if err != nil {
-		return "", err
+		return "", errWarpVirtualKeyMissing
 	}
-	return vk.Value.GetValue(), nil
+	return value, nil
 }
 
 // warpCallerIdentified reports whether the dashboard request carries an identity

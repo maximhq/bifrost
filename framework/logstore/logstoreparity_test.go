@@ -1035,7 +1035,7 @@ func TestLogStoreParity(t *testing.T) {
 		}
 		start := NodeUsageCursor{Timestamp: base.Add(-time.Hour)}
 		assertParity(t, stores, 1e-6, func(ctx context.Context, s LogStore) (any, error) {
-			a, err := s.GetNodeUsageAfter(ctx, "pnode", start)
+			a, err := s.GetNodeUsageAfter(ctx, "pnode", start, NodeUsageWindows{})
 			if err != nil {
 				return nil, err
 			}
@@ -1044,9 +1044,9 @@ func TestLogStoreParity(t *testing.T) {
 		// Cursor advance parity: a second scan from each store's own returned
 		// cursor must aggregate nothing on every backend.
 		for name, s := range stores {
-			first, err := s.GetNodeUsageAfter(ctx, "pnode", start)
+			first, err := s.GetNodeUsageAfter(ctx, "pnode", start, NodeUsageWindows{})
 			require.NoError(t, err, name)
-			second, err := s.GetNodeUsageAfter(ctx, "pnode", first.NextCursor)
+			second, err := s.GetNodeUsageAfter(ctx, "pnode", first.NextCursor, NodeUsageWindows{})
 			require.NoError(t, err, name)
 			assert.Zero(t, second.RowCount, "%s: cursor must not re-aggregate", name)
 		}

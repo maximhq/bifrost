@@ -263771,6 +263771,507 @@
       ]
     },
     {
+      "name": "384. Plugins API refuses to create, change or delete the built-in plugins Bifrost configures itself (fixed-builtin-plugins) [SERIAL]",
+      "description": "Pins the plugins API's refusal of the built-in plugins Bifrost configures itself, from the client config, the model catalog or their own APIs rather than a plugin config: governance, routing, logging, prompts, compat and model-catalog-resolver. POST /api/plugins naming one, and PUT or DELETE /api/plugins/{name} on one, answer 400 with \"The <name> plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API\" and leave the plugin running. A PUT with enabled false used to stop the running plugin: without model-catalog-resolver, a request with an unprefixed model name has no plugin to pick its provider.\n\nThe cases send each write for governance and model-catalog-resolver through the registered routes and middleware, and after each refused update and delete read GET /api/plugins/loaded to check the plugin is still loaded. The last two cases keep otel, a built-in configured through this API, editable: the first checks the gateway has no otel row of its own, and the second updates otel with PUT /api/plugins/otel, which creates a disabled row, expects 200 with the update stored, and deletes the row afterwards. The update skips when the gateway already has an otel row, so a configuration this run did not create is never changed. The case names carry openai only so the openai fork selects them; no inference request is sent. The folder is [SERIAL] because a refused write that got through would stop a plugin every other request depends on.\n\nRed before the change: the model-catalog-resolver create, update and delete are accepted, and the update removes the resolver from the loaded plugins. Green after.\n\nRun with FEATURE=\"fixed-builtin-plugins\".",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai POST /api/plugins creating the governance plugin is refused as a fixed built-in - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var REFUSAL = 'The governance plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('POST /api/plugins naming governance answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"governance\",\n  \"enabled\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai PUT /api/plugins/governance disabling the governance plugin is refused and it stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The governance plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('PUT /api/plugins/governance with enabled false answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('governance is still loaded after the refused update', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('governance');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/governance",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "governance"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai DELETE /api/plugins/governance is refused and the governance plugin stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The governance plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('DELETE /api/plugins/governance answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('governance is still loaded after the refused delete', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('governance');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/governance",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "governance"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai POST /api/plugins creating the model-catalog-resolver plugin is refused as a fixed built-in - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var REFUSAL = 'The model-catalog-resolver plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('POST /api/plugins naming model-catalog-resolver answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"model-catalog-resolver\",\n  \"enabled\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai PUT /api/plugins/model-catalog-resolver disabling the model-catalog-resolver plugin is refused and it stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The model-catalog-resolver plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('PUT /api/plugins/model-catalog-resolver with enabled false answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('model-catalog-resolver is still loaded after the refused update', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('model-catalog-resolver');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/model-catalog-resolver",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "model-catalog-resolver"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai DELETE /api/plugins/model-catalog-resolver is refused and the model-catalog-resolver plugin stays loaded - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var REFUSAL = 'The model-catalog-resolver plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API';",
+                  "pm.test('DELETE /api/plugins/model-catalog-resolver answers 400 with the built-in refusal', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(400);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect((body.error || {}).message, pm.response.text()).to.equal(REFUSAL);",
+                  "});",
+                  "mgmt('GET', '/api/plugins/loaded', null, function (err, res) {",
+                  "  pm.test('model-catalog-resolver is still loaded after the refused delete', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var loaded = (res.json() || {}).plugins || [];",
+                  "    pm.expect(loaded, res.text()).to.include('model-catalog-resolver');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/model-catalog-resolver",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "model-catalog-resolver"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai GET /api/plugins shows no otel row before the editable built-in update - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var list = [];",
+                  "try { list = (pm.response.json() || {}).plugins || []; } catch (e) { list = []; }",
+                  "var found = list.some(function (p) { return p && p.name === 'otel'; });",
+                  "pm.collectionVariables.set('fixedBuiltinOtelPreexisting', pm.response.code === 200 && !found ? 'false' : 'true');",
+                  "pm.test('GET /api/plugins answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the gateway has no otel row of its own for the otel update to create', function () {",
+                  "  pm.expect(found, 'this gateway already configures otel; the otel update is skipped rather than change a row this run did not create, so point the folder at a gateway without one').to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai PUT /api/plugins/otel still updates otel, a built-in configured through the plugins API - fixed-builtin-plugins",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The update creates a disabled otel row, so it runs only after the previous case confirmed the",
+                  "// gateway has none of its own. Skipping when that check did not run keeps a filtered run from",
+                  "// changing an unchecked gateway.",
+                  "if (pm.collectionVariables.get('fixedBuiltinOtelPreexisting') !== 'false') { pm.execution.skipRequest(); }",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var updated = pm.response.code === 200;",
+                  "pm.test('PUT /api/plugins/otel answers 200 and stores the update', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(200);",
+                  "  var plugin = (pm.response.json() || {}).plugin || {};",
+                  "  pm.expect(plugin.name, pm.response.text()).to.equal('otel');",
+                  "  pm.expect(plugin.enabled, pm.response.text()).to.equal(false);",
+                  "  pm.expect((plugin.config || {}).request_headers, JSON.stringify(plugin.config)).to.eql(['x-bf-fixed-builtin-plugins']);",
+                  "});",
+                  "// The gateway had no otel row before this case, so the row is this case's own: remove it whatever",
+                  "// the update answered. The removal must answer 200 when the update created the row; a failed",
+                  "// update may have left no row, so then 404 is the only other answer accepted.",
+                  "mgmt('DELETE', '/api/plugins/otel', null, function (err, res) {",
+                  "  pm.test(updated ? 'cleanup: deleted the otel row the update created' : 'cleanup: removed any otel row the failed update left', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    if (updated) {",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    } else {",
+                  "      pm.expect(res.code, res.text()).to.be.oneOf([200, 404]);",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/plugins/otel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "plugins",
+                "otel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false,\n  \"config\": {\n    \"request_headers\": [\n      \"x-bf-fixed-builtin-plugins\"\n    ]\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "222. Bedrock Converse Claude tool-schema compatibility (tool-schema-compat)",
       "description": "Claude on Bedrock rejects oneOf/anyOf/allOf at the root of a tool input_schema (\"input_schema does not support oneOf, allOf, or anyOf at the top level\"). Folder 99 pins the Anthropic converter, which bedrock_mantle and the Bedrock InvokeModel egress reuse; Bedrock's default Converse egress forwarded toolSpec.inputSchema verbatim, so Codex tools like automation_update failed on bedrock/ but not on bedrock_mantle/. Every inbound route that reaches Converse for Claude is covered: /v1/responses, /openai/v1/responses streaming (Codex's route), /v1/chat/completions, /anthropic/v1/messages, and the native /bedrock converse and invoke routes. The raw_request cases pin the flattened wire schema; the branch-limit case pins the gateway-side 400; the Nova case pins that non-Claude Converse models keep the root composition, which they accept.",
       "item": [
@@ -349469,6 +349970,195 @@
       ]
     },
     {
+      "name": "380. OpenAI access_programs Daybreak selector (access programs)",
+      "description": "OpenAI's Responses API takes an access_programs object (developers.openai.com/api/docs/guides/daybreak) whose cyber member selects the trusted-access program: standard, daybreak_blue or daybreak_red. The response echoes the program that served the request (null on an implicit standard fallback). Bifrost did not model the field: on /v1/responses it fell into ExtraParams and was only forwarded under x-bf-passthrough-extra-params, so the caller silently got the model's default program, and the echo was dropped from the response. The fix types it on ResponsesParameters and BifrostResponsesResponse and forwards it only when the base provider is OpenAI. The cases pin: an explicit standard selection reaches OpenAI and its echo comes back (unary, streamed, and on the /openai/v1/responses drop-in route); daybreak_red on gpt-6-sol is rejected by OpenAI (invalid_access_program, or access_program_not_enabled on an org without Daybreak), which can only happen if the field reached the wire. Neither needs Daybreak approval on the harness org.",
+      "item": [
+        {
+          "name": "openai/gpt-6-sol /v1/responses access_programs standard is forwarded and echoed - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('explicit access_programs.cyber=standard reaches OpenAI and is echoed', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.access_programs, 'access_programs echo missing, so the selection was dropped before OpenAI or the echo was dropped on the way back: ' + text).to.be.an('object');",
+                  "  pm.expect(j.access_programs.cyber, 'unexpected program echoed: ' + text).to.equal('standard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-sol\",\"stream\":false,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"standard\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-6-sol /v1/responses stream access_programs standard is echoed on response.completed - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed explicit access_programs.cyber=standard is echoed on the completed response', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var completed = null;",
+                  "  var errors = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var payload = line.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    var ev = null;",
+                  "    try { ev = JSON.parse(payload); } catch (e) { return; }",
+                  "    if (ev && ev.type === 'error') { errors.push(payload); }",
+                  "    if (ev && ev.type === 'response.completed') { completed = ev; }",
+                  "  });",
+                  "  pm.expect(errors.length, 'stream carried an error event: ' + errors.join(' | ')).to.equal(0);",
+                  "  pm.expect(completed, 'stream did not reach response.completed: ' + body).to.not.equal(null);",
+                  "  pm.expect(completed.response.access_programs, 'access_programs echo missing on response.completed: ' + JSON.stringify(completed.response)).to.be.an('object');",
+                  "  pm.expect(completed.response.access_programs.cyber).to.equal('standard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-sol\",\"stream\":true,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"standard\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-6-sol /v1/responses access_programs daybreak_red is rejected by OpenAI [EXPECT-4XX] - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('daybreak_red on gpt-6-sol reaches OpenAI and is rejected with an access-program error', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'OpenAI did not reject the selection, so access_programs never reached it: ' + text).to.be.oneOf([400, 403]);",
+                  "  pm.expect(text, 'rejection is not an access-program error: ' + text).to.match(/invalid_access_program|access_program_not_enabled/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-sol\",\"stream\":false,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"daybreak_red\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-6-sol /openai/v1/responses access_programs standard is forwarded and echoed - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('drop-in route forwards access_programs and keeps the echo', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.access_programs, 'access_programs echo missing: ' + text).to.be.an('object');",
+                  "  pm.expect(j.access_programs.cyber, 'unexpected program echoed: ' + text).to.equal('standard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-6-sol\",\"stream\":false,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"standard\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "381. Logs list leaves detail-only fields to the by-id read (logs list projection)",
       "description": "GET /api/logs carried fields that only the log detail sheet reads, and the sheet renders from GET /api/logs/{id} anyway. The list projection now leaves out alias_model_family, server_side_fallback_model, served_model, routing_engines_used, complexity_mechanism, model_router_id, model_router_name, video_generation_input and cache_debug; the by-id read still returns them.\n\n381.1 sends one OpenAI chat, whose answer names a dated snapshot so served_model is set, reads the log by id and asserts served_model is there, then lists the same row by request_id and asserts none of the detail-only keys appear while id, model, status and a real created_at do.",
       "item": [
@@ -349557,7 +350247,415 @@
       ]
     },
     {
-      "name": "382. OpenAI passthrough-encoding (#9764 / PR #9804)",
+      "name": "382. Key aliases in an unfiltered model listing (alias model listing)",
+      "description": "The fallback model pickers of routing rules and model routers read GET /api/models with unfiltered=true, which holds a provider's raw catalog: an alias shows there only when its model_id is a model the provider lists live, so aliases to unlisted targets were never suggested. include_aliases=true adds the alias names on the provider's enabled keys where each key's own allow and block lists admit them, pattern aliases left out. It is opt-in because the deployments picker reads the same listing for a model_id, where an alias name is wrong. Each case creates a run-scoped OpenAI-backed provider with list_models off and placeholder keys, so the listing can hold nothing but aliases, and deletes it afterwards. Before the change the include_aliases listing is empty. Both routes parse the same query, so each is pinned. No provider calls are made. Run with FEATURE=\"alias model listing\".",
+      "item": [
+        {
+          "name": "openai custom provider /api/models lists gpt key aliases beside an unfiltered catalog only with include_aliases=true - alias model listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped provider with list_models off, so its listing holds nothing but alias names ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-alias-listing-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// Only providers older than ten minutes are swept, so a parallel shard's live provider is never touched.",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);",
+                  "var P = '/api/providers/' + encodeURIComponent(name);",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('aliasListingProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function (rd) {",
+                  "        // 404: a parallel run swept it first.",
+                  "        pm.test('setup: stale provider removed', function () { pm.expect([200, 404], 'unexpected status: ' + (rd ? rd.text() : 'no response')).to.include(rd && rd.code); });",
+                  "        if (rd && (rd.code === 200 || rd.code === 404)) { sweep(); }",
+                  "      });",
+                  "    }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false, allowed_requests: { chat_completion: true } } }, function (res) {",
+                  "      if (!expectOk('setup: created the run-scoped provider', res)) { return; }",
+                  "      // Recorded before the keys, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('aliasListingProvider', name);",
+                  "      var key = { name: name + '-key', value: 'sk-harness-alias-listing-placeholder', models: ['*'], blacklisted_models: ['harness-blocked-alias'], weight: 1, aliases: { 'harness-team-alias': { model_id: 'gpt-unlisted-a' }, 'harness-blocked-alias': { model_id: 'gpt-unlisted-b' }, 'regex:harness-pattern-.*': { model_id: 'gpt-unlisted-c' } } };",
+                  "      call('POST', P + '/keys', key, function (res2) {",
+                  "        if (!expectOk('setup: created the key with an alias, a blocked alias and a pattern alias', res2)) { return; }",
+                  "        var off = { name: name + '-disabled', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1, enabled: false, aliases: { 'harness-disabled-alias': { model_id: 'gpt-unlisted-d' } } };",
+                  "        call('POST', P + '/keys', off, function (res3) {",
+                  "          if (!expectOk('setup: created the disabled key with an alias', res3)) { return; }",
+                  "          // Unrestricted and alias-free: it must not lend its lists to the key that blocks its own alias.",
+                  "          call('POST', P + '/keys', { name: name + '-open', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1 }, function (res4) { expectOk('setup: created the unrestricted key', res4); });",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('aliasListingProvider');",
+                  "function namesOf(res) {",
+                  "  var body = null; try { body = res.json(); } catch (e) { body = null; }",
+                  "  return ((body && body.models) || []).map(function (m) { return m.name; });",
+                  "}",
+                  "pm.test('include_aliases listing returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('lists the alias once, and no blocked, pattern or disabled-key alias', function () {",
+                  "  pm.expect(namesOf(pm.response), pm.response.text()).to.eql(['harness-team-alias']);",
+                  "  pm.expect(pm.response.json().total, pm.response.text()).to.equal(1);",
+                  "});",
+                  "function cleanup() {",
+                  "  if (!name || name.indexOf('setup-failed') !== -1) { return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.sendRequest({ url: BASE + '/api/models?provider=' + encodeURIComponent(name) + '&unfiltered=true&limit=50', method: 'GET' }, function (err, res) {",
+                  "  pm.test('an unfiltered listing that does not ask for aliases has none', function () {",
+                  "    pm.expect(err, String(err)).to.eql(null);",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    pm.expect(namesOf(res), res.text()).to.eql([]);",
+                  "  });",
+                  "  cleanup();",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/models?provider={{aliasListingProvider}}&unfiltered=true&include_aliases=true&limit=50"
+          }
+        },
+        {
+          "name": "openai custom provider /api/models/details lists gpt key aliases beside an unfiltered catalog only with include_aliases=true - alias model listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped provider with list_models off, so its listing holds nothing but alias names ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-alias-listing-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// Only providers older than ten minutes are swept, so a parallel shard's live provider is never touched.",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);",
+                  "var P = '/api/providers/' + encodeURIComponent(name);",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('aliasListingProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function (rd) {",
+                  "        // 404: a parallel run swept it first.",
+                  "        pm.test('setup: stale provider removed', function () { pm.expect([200, 404], 'unexpected status: ' + (rd ? rd.text() : 'no response')).to.include(rd && rd.code); });",
+                  "        if (rd && (rd.code === 200 || rd.code === 404)) { sweep(); }",
+                  "      });",
+                  "    }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false, allowed_requests: { chat_completion: true } } }, function (res) {",
+                  "      if (!expectOk('setup: created the run-scoped provider', res)) { return; }",
+                  "      // Recorded before the keys, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('aliasListingProvider', name);",
+                  "      var key = { name: name + '-key', value: 'sk-harness-alias-listing-placeholder', models: ['*'], blacklisted_models: ['harness-blocked-alias'], weight: 1, aliases: { 'harness-team-alias': { model_id: 'gpt-unlisted-a' }, 'harness-blocked-alias': { model_id: 'gpt-unlisted-b' }, 'regex:harness-pattern-.*': { model_id: 'gpt-unlisted-c' } } };",
+                  "      call('POST', P + '/keys', key, function (res2) {",
+                  "        if (!expectOk('setup: created the key with an alias, a blocked alias and a pattern alias', res2)) { return; }",
+                  "        var off = { name: name + '-disabled', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1, enabled: false, aliases: { 'harness-disabled-alias': { model_id: 'gpt-unlisted-d' } } };",
+                  "        call('POST', P + '/keys', off, function (res3) {",
+                  "          if (!expectOk('setup: created the disabled key with an alias', res3)) { return; }",
+                  "          // Unrestricted and alias-free: it must not lend its lists to the key that blocks its own alias.",
+                  "          call('POST', P + '/keys', { name: name + '-open', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1 }, function (res4) { expectOk('setup: created the unrestricted key', res4); });",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('aliasListingProvider');",
+                  "function namesOf(res) {",
+                  "  var body = null; try { body = res.json(); } catch (e) { body = null; }",
+                  "  return ((body && body.models) || []).map(function (m) { return m.name; });",
+                  "}",
+                  "pm.test('include_aliases listing returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('lists the alias once, and no blocked, pattern or disabled-key alias', function () {",
+                  "  pm.expect(namesOf(pm.response), pm.response.text()).to.eql(['harness-team-alias']);",
+                  "  pm.expect(pm.response.json().total, pm.response.text()).to.equal(1);",
+                  "});",
+                  "function cleanup() {",
+                  "  if (!name || name.indexOf('setup-failed') !== -1) { return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.sendRequest({ url: BASE + '/api/models/details?provider=' + encodeURIComponent(name) + '&unfiltered=true&limit=50', method: 'GET' }, function (err, res) {",
+                  "  pm.test('an unfiltered listing that does not ask for aliases has none', function () {",
+                  "    pm.expect(err, String(err)).to.eql(null);",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    pm.expect(namesOf(res), res.text()).to.eql([]);",
+                  "  });",
+                  "  cleanup();",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/models/details?provider={{aliasListingProvider}}&unfiltered=true&include_aliases=true&limit=50"
+          }
+        }
+      ]
+    },
+    {
+      "name": "383. /api/keys lists every key as the provider keys API does: aliases, per-key flags and masked Bedrock credentials (api-keys-list)",
+      "description": "Pins what GET /api/keys returns for a key: the same redacted key the provider keys API (GET /api/providers/{provider}/keys) returns, in the /api/keys list shape with key_id and provider. The list used to build its own copy of each key, which left out the aliases, use_for_batch_api, use_anthropic_endpoints, use_openai_endpoints and disable_content_logging, and returned the Bedrock batch_role_arn unmasked and an env or vault backed project_id or endpoint resolved. It now redacts each key with the providers API's redaction.\n\nThe case stands up a run-scoped Bedrock-based custom provider through the management API, saves one key with literal credentials, an unset env reference, a rich alias and a legacy string alias, the per-key flags and a batch bucket, reads GET /api/keys, and deletes the provider afterwards, sweeping leftovers older than ten minutes. It asserts the aliases, flags, region, project ID and batch bucket read back as saved, every credential (value, access_key, secret_key, session_token, arn, role_arn, session_name, batch_role_arn) comes back masked to its first and last four characters with its middle absent from the body, the env-backed external_id lists its reference, and the provider keys API returns the same values for the key. No inference request is sent.\n\nRed before the change: the listed key has no aliases or flags and batch_role_arn is the saved ARN. Green after.\n\nRun with FEATURE=\"api-keys-list\".",
+      "item": [
+        {
+          "name": "bedrock custom provider key with aliases and batch settings is listed by /api/keys with aliases and flags readable and every credential masked - api-keys-list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var PREFIX = 'harness-apikeys-';",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  mgmt('GET', '/api/providers', null, function (err, res) {",
+                  "    var stale = (!err && res && res.code === 200) ? ((res.json() || {}).providers || []).filter(function (p) { return isStale(p.name); }) : [];",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } mgmt('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "var provider = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.variables.set('apiKeysListProvider', provider);",
+                  "// A fixed body: literal credentials, one unset env reference, two aliases (rich and legacy string), the",
+                  "// per-key flags and Bedrock batch settings. use_anthropic_endpoints is left out on purpose.",
+                  "var keyBody = JSON.stringify({",
+                  "  name: provider + '-key', value: 'harness-apikeys-bedrock-api-key-value', models: ['*'], weight: 1,",
+                  "  use_for_batch_api: true, use_openai_endpoints: true, disable_content_logging: true,",
+                  "  aliases: {",
+                  "    'harness-apikeys-claude': {model_id: 'anthropic.claude-3-5-haiku-20241022-v1:0', description: 'harness alias', region: 'us-west-2', inference_profile_arn: 'arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/harnessapikeys'},",
+                  "    'harness-apikeys-short': 'anthropic.claude-3-haiku-20240307-v1:0'",
+                  "  },",
+                  "  bedrock_key_config: {",
+                  "    access_key: 'harness-apikeys-access-key-id', secret_key: 'harness-apikeys-secret-access-key', session_token: 'harness-apikeys-session-token-value', region: 'us-east-1',",
+                  "    arn: 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/harness', role_arn: 'arn:aws:iam::123456789012:role/harness-apikeys-role', external_id: 'env.HARNESS_APIKEYS_UNSET_EXTERNAL_ID',",
+                  "    session_name: 'harness-apikeys-session-name', batch_role_arn: 'arn:aws:iam::123456789012:role/harness-apikeys-batch-role', project_id: 'harness-apikeys-project',",
+                  "    batch_s3_config: {buckets: [{bucket_name: 'harness-apikeys-batch-bucket', prefix: 'batch/', is_default: true}]}",
+                  "  }",
+                  "});",
+                  "sweepStale(function () {",
+                  "  mgmt('POST', '/api/providers', JSON.stringify({provider: provider, custom_provider_config: {base_provider_type: 'bedrock', is_key_less: false}}), function (err, res) {",
+                  "    pm.test('setup: created the run-scoped Bedrock-based custom provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { return; }",
+                  "    mgmt('POST', '/api/providers/' + encodeURIComponent(provider) + '/keys', keyBody, function (err2, res2) {",
+                  "      pm.test('setup: the key with aliases, per-key flags and Bedrock batch settings is accepted', function () {",
+                  "        pm.expect(err2).to.equal(null);",
+                  "        pm.expect(res2.code, res2.text()).to.equal(200);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "var mgmtHeaders = {'Content-Type': 'application/json'};",
+                  "if (managementToken) { mgmtHeaders.Authorization = 'Bearer ' + managementToken; }",
+                  "function mgmt(method, path, body, cb) {",
+                  "  var req = {url: pm.variables.replaceIn('{{baseUrl}}') + path, method: method, header: mgmtHeaders};",
+                  "  if (body !== null) { req.body = {mode: 'raw', raw: body}; }",
+                  "  pm.sendRequest(req, cb);",
+                  "}",
+                  "var provider = pm.variables.get('apiKeysListProvider');",
+                  "function cleanup() {",
+                  "  if (!provider) { return; }",
+                  "  mgmt('DELETE', '/api/providers/' + encodeURIComponent(provider), null, function (err, res) {",
+                  "    pm.test('cleanup: deleted the run-scoped provider', function () {",
+                  "      pm.expect(err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.below(300);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "// Every credential the key was saved with. A mask keeps the first and last four characters, so the",
+                  "// middle of each literal must never appear in the body.",
+                  "var SECRETS = {",
+                  "  'value': 'harness-apikeys-bedrock-api-key-value',",
+                  "  'access_key': 'harness-apikeys-access-key-id',",
+                  "  'secret_key': 'harness-apikeys-secret-access-key',",
+                  "  'session_token': 'harness-apikeys-session-token-value',",
+                  "  'arn': 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/harness',",
+                  "  'role_arn': 'arn:aws:iam::123456789012:role/harness-apikeys-role',",
+                  "  'session_name': 'harness-apikeys-session-name',",
+                  "  'batch_role_arn': 'arn:aws:iam::123456789012:role/harness-apikeys-batch-role'",
+                  "};",
+                  "function mask(s) { return s.slice(0, 4) + new Array(25).join('*') + s.slice(-4); }",
+                  "var listed = null;",
+                  "pm.test('GET /api/keys lists the saved key once, under its provider', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.equal(200);",
+                  "  var all = pm.response.json();",
+                  "  pm.expect(all, pm.response.text()).to.be.an('array');",
+                  "  var mine = all.filter(function (k) { return k.provider === provider; });",
+                  "  pm.expect(mine, 'keys of ' + provider + ': ' + JSON.stringify(mine)).to.have.lengthOf(1);",
+                  "  listed = mine[0];",
+                  "  pm.expect(listed.name).to.equal(provider + '-key');",
+                  "});",
+                  "if (!listed) { cleanup(); return; }",
+                  "pm.test('the aliases are listed readable: rich alias with region and inference profile ARN, legacy alias as a string', function () {",
+                  "  var aliases = listed.aliases || {};",
+                  "  pm.expect(aliases['harness-apikeys-short'], JSON.stringify(listed)).to.equal('anthropic.claude-3-haiku-20240307-v1:0');",
+                  "  var rich = aliases['harness-apikeys-claude'] || {};",
+                  "  pm.expect(rich.model_id, JSON.stringify(aliases)).to.equal('anthropic.claude-3-5-haiku-20241022-v1:0');",
+                  "  pm.expect(rich.description).to.equal('harness alias');",
+                  "  pm.expect((rich.region || {}).value, 'a literal alias region is an identifier').to.equal('us-west-2');",
+                  "  pm.expect((rich.inference_profile_arn || {}).value, 'a literal inference profile ARN is an identifier').to.equal('arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/harnessapikeys');",
+                  "});",
+                  "pm.test('the per-key flags are listed: batch API, endpoint selection and content logging', function () {",
+                  "  pm.expect(listed.use_for_batch_api, JSON.stringify(listed)).to.equal(true);",
+                  "  pm.expect(listed.use_openai_endpoints).to.equal(true);",
+                  "  pm.expect(listed.use_anthropic_endpoints, 'a flag the key never set reads false').to.equal(false);",
+                  "  pm.expect(listed.disable_content_logging).to.equal(true);",
+                  "});",
+                  "pm.test('the Bedrock identifiers and batch bucket stay readable', function () {",
+                  "  var bedrock = listed.bedrock_key_config || {};",
+                  "  pm.expect((bedrock.region || {}).value, JSON.stringify(bedrock)).to.equal('us-east-1');",
+                  "  pm.expect((bedrock.project_id || {}).value).to.equal('harness-apikeys-project');",
+                  "  pm.expect(bedrock.batch_s3_config).to.eql({buckets: [{bucket_name: 'harness-apikeys-batch-bucket', prefix: 'batch/', is_default: true}]});",
+                  "});",
+                  "pm.test('every credential is masked to its first and last four characters, the batch role ARN included', function () {",
+                  "  var bedrock = listed.bedrock_key_config || {};",
+                  "  var got = {value: listed.value, access_key: bedrock.access_key, secret_key: bedrock.secret_key, session_token: bedrock.session_token, arn: bedrock.arn, role_arn: bedrock.role_arn, session_name: bedrock.session_name, batch_role_arn: bedrock.batch_role_arn};",
+                  "  Object.keys(SECRETS).forEach(function (field) {",
+                  "    pm.expect((got[field] || {}).value, field + ': ' + JSON.stringify(got[field])).to.equal(mask(SECRETS[field]));",
+                  "    pm.expect(pm.response.text(), field + ' must not be echoed').to.not.include(SECRETS[field].slice(4, -4));",
+                  "  });",
+                  "});",
+                  "pm.test('an env-backed credential lists its reference, not a value', function () {",
+                  "  var externalID = (listed.bedrock_key_config || {}).external_id || {};",
+                  "  pm.expect(externalID.ref, JSON.stringify(externalID)).to.equal('env.HARNESS_APIKEYS_UNSET_EXTERNAL_ID');",
+                  "  pm.expect(externalID.type).to.equal('env');",
+                  "  pm.expect(externalID.value, 'the variable is unset on the gateway').to.equal('');",
+                  "});",
+                  "mgmt('GET', '/api/providers/' + encodeURIComponent(provider) + '/keys', null, function (err, res) {",
+                  "  pm.test('the provider keys API returns the same aliases, flags and masked Bedrock config for the key', function () {",
+                  "    pm.expect(err).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "    var keys = (res.json() || {}).keys || [];",
+                  "    pm.expect(keys, res.text()).to.have.lengthOf(1);",
+                  "    pm.expect(listed.key_id).to.equal(keys[0].id);",
+                  "    ['value', 'aliases', 'bedrock_key_config', 'use_for_batch_api', 'use_anthropic_endpoints', 'use_openai_endpoints', 'disable_content_logging', 'models', 'blacklisted_models', 'weight', 'enabled'].forEach(function (field) {",
+                  "      pm.expect(listed[field], field).to.eql(keys[0][field]);",
+                  "    });",
+                  "  });",
+                  "  cleanup();",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "keys"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "385. OpenAI passthrough-encoding (#9764 / PR #9804)",
       "description": "Local gzip regression. Raw JSON and Responses bodies retain encoding metadata. Buffered JSON remains decoded and unlabeled. The delayed gzip Responses case detects plaintext heartbeat or failure injection. Newman decodes HTTP gzip, so these cases assert the exact decoded body and response header. Go transport tests also compare raw wire bytes. A truncated gzip response before its first body byte must produce an unlabeled JSON error. No paid provider calls. Start: node tests/e2e/api/runners/run-passthrough-encoding-fixture.mjs /tmp/bifrost-passthrough-encoding. Start a gateway from this checkout: make dev PORT=3024 APP_DIR=/tmp/bifrost-passthrough-encoding. Verify port 3024 is free first and wait for /health. Log in at POST /api/session/login using encoding-fixture / fixture-only-password and export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\". Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"passthrough-encoding\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3024. Stop both servers and remove the temporary profile afterward. PREVIEW keeps these fixture cases out of paid sweeps.",
       "item": [
         {

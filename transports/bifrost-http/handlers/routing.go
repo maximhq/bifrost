@@ -108,14 +108,12 @@ type RoutingHandler struct {
 	routingManager RoutingManager
 }
 
-// NewRoutingHandler creates a routing handler. Both the manager and the config store are
-// required: rules are persisted in the store and applied through the manager.
+// NewRoutingHandler creates a routing handler. The manager is required: rules are persisted in
+// the config store and applied through the manager. configStore is nil when the config store is
+// disabled; the routes then answer 503 from RequireConfigStoreMiddleware.
 func NewRoutingHandler(manager RoutingManager, configStore configstore.ConfigStore) (*RoutingHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("routing manager is required")
-	}
-	if configStore == nil {
-		return nil, fmt.Errorf("config store is required")
 	}
 	return &RoutingHandler{
 		routingManager: manager,
@@ -262,9 +260,10 @@ func (h *RoutingHandler) validateRoutingScopeID(ctx context.Context, scope strin
 			return fmt.Errorf("failed to verify customer: %w", err)
 		}
 	case "user":
-		// User ids live outside the config store (they arrive on requests via
-		// the resolved identity context), so existence cannot be verified
-		// here; the id is matched at eval time against the calling user.
+		// User ids are not config store rows (they arrive on requests via the
+		// resolved identity context), so the id is not looked up here and is
+		// matched at eval time against the calling user. A store that does hold
+		// users may refuse one the caller cannot see when the rule is saved.
 	}
 	return nil
 }
@@ -353,11 +352,6 @@ func validateRoutingFallbacks(fallbacks []configstoreTables.RoutingFallback) err
 }
 
 func (h *RoutingHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
-	if h.configStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return
-	}
-
 	cfg, err := h.configStore.GetComplexityAnalyzerConfig(ctx)
 	if err != nil {
 		if !errors.Is(err, configstore.ErrConfigUnreadable) {
@@ -392,11 +386,6 @@ func (h *RoutingHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
 const complexityConfigSuggestionsError = "phrase suggestions are set per model router (suggestions on /api/routing/model-routers/{id}), not on the complexity analyzer config"
 
 func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
-	if h.configStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return
-	}
-
 	var payload complexity.AnalyzerConfig
 	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
 	decoder.DisallowUnknownFields()
@@ -445,11 +434,6 @@ func (h *RoutingHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx
 }
 
 func (h *RoutingHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
-	if h.configStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return
-	}
-
 	// Reset owns the two sections it is named for — the tier boundaries and the
 	// phrase lists — and nothing else. The rest of the record is deployment
 	// state configured elsewhere: the embedding provider, model, and storage
@@ -755,6 +739,12 @@ func (h *RoutingHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
 			return
 		}
+		// A store may refuse a reference it cannot resolve for the caller with
+		// ErrNotFound, and that is a bad request, not a server failure.
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to create routing rule: %v", err))
 		return
 	}
@@ -886,6 +876,12 @@ func (h *RoutingHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		}
 		if errors.Is(err, configstore.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
+		// A store may refuse a reference it cannot resolve for the caller with
+		// ErrNotFound, and that is a bad request, not a server failure.
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to update routing rule in database: %v", err))

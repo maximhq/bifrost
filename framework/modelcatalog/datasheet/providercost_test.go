@@ -19,20 +19,21 @@ func creditsUsage() *schemas.BifrostLLMUsage {
 	}
 }
 
-func providerCostTestStore() *Store {
-	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+func providerCostTestStore(t testing.TB) *Store {
+	t.Helper()
+	return testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
 		makeKeyNormalized("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
 	})
 }
 
 func TestCalculateCost_ProviderCostTrustedByDefault(t *testing.T) {
-	s := providerCostTestStore()
+	s := providerCostTestStore(t)
 	cost := s.CalculateCost(makeChatResponse(schemas.OpenAI, "gpt-4o", creditsUsage()), nil)
 	assert.InDelta(t, 1067, cost, 1e-12)
 }
 
 func TestCalculateCost_IgnoreProviderCostUsesCatalog(t *testing.T) {
-	s := providerCostTestStore()
+	s := providerCostTestStore(t)
 	s.SetIgnoreProviderCost(schemas.OpenAI, true)
 
 	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", creditsUsage())
@@ -50,14 +51,14 @@ func TestCalculateCost_IgnoreProviderCostUsesCatalog(t *testing.T) {
 }
 
 func TestCalculateCost_IgnoreProviderCostIsPerProvider(t *testing.T) {
-	s := providerCostTestStore()
+	s := providerCostTestStore(t)
 	s.SetIgnoreProviderCost(schemas.Anthropic, true)
 	cost := s.CalculateCost(makeChatResponse(schemas.OpenAI, "gpt-4o", creditsUsage()), nil)
 	assert.InDelta(t, 1067, cost, 1e-12)
 }
 
 func TestCalculateCost_IgnoreProviderCostAppliesOverride(t *testing.T) {
-	s := providerCostTestStore()
+	s := providerCostTestStore(t)
 	s.SetIgnoreProviderCost(schemas.OpenAI, true)
 	providerID := string(schemas.OpenAI)
 	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
@@ -76,7 +77,7 @@ func TestCalculateCost_IgnoreProviderCostAppliesOverride(t *testing.T) {
 }
 
 func TestCalculateCostBreakdownForUsage_IgnoreProviderCost(t *testing.T) {
-	s := providerCostTestStore()
+	s := providerCostTestStore(t)
 	assert.InDelta(t, 1067, s.CalculateCostBreakdownForUsage(creditsUsage(), schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil).TotalCost, 1e-12)
 
 	s.SetIgnoreProviderCost(schemas.OpenAI, true)
@@ -86,7 +87,7 @@ func TestCalculateCostBreakdownForUsage_IgnoreProviderCost(t *testing.T) {
 }
 
 func TestCalculateBatchCostDetailsForUsage_IgnoreProviderCost(t *testing.T) {
-	s := providerCostTestStore()
+	s := providerCostTestStore(t)
 	s.SetIgnoreProviderCost(schemas.OpenAI, true)
 	details := s.CalculateBatchCostDetailsForUsage(creditsUsage(), schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil)
 	assert.False(t, details.ProviderCostUsed)
@@ -113,7 +114,7 @@ func TestCalculateVideoCostDetails_IgnoreProviderCost(t *testing.T) {
 }
 
 func TestReplaceIgnoreProviderCost(t *testing.T) {
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetIgnoreProviderCost(schemas.OpenAI, true)
 	s.ReplaceIgnoreProviderCost([]schemas.ModelProvider{schemas.Anthropic})
 	assert.False(t, s.IsProviderCostIgnored(schemas.OpenAI))
@@ -149,7 +150,7 @@ func TestCalculateCost_IgnoreProviderCostPricesVideoFromDuration(t *testing.T) {
 // call itself contributes nothing, but a budget-counted routing call is still
 // charged. The provider docs state this exception.
 func TestCalculateCost_IgnoreProviderCostUnpricedModelKeepsRoutingCost(t *testing.T) {
-	s := routingCostTestStore()
+	s := routingCostTestStore(t)
 	provider := schemas.ModelProvider("cortecs")
 	s.SetIgnoreProviderCost(provider, true)
 
@@ -163,7 +164,7 @@ func TestCalculateCost_IgnoreProviderCostUnpricedModelKeepsRoutingCost(t *testin
 }
 
 func TestGetBasePricing_FallsBackToLowercaseModel(t *testing.T) {
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
 		makeKeyNormalized("deepseek-v4.1-flash", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
 	})
 	resp := makeChatResponse(schemas.Azure, "DeepSeek-V4.1-Flash", &schemas.BifrostLLMUsage{
@@ -187,7 +188,7 @@ func TestGetBasePricing_CaseVariantRowsPriceFromLowercaseRow(t *testing.T) {
 	lower := azureChatRow("deepseek-v4-pro", 0.0000003, 0.0000012)
 	mixed := azureChatRow("DeepSeek-V4-Pro", 0.000001, 0.000002)
 	for _, rows := range [][]configstoreTables.TableModelPricing{{lower, mixed}, {mixed, lower}} {
-		s := newTestStore()
+		s := newTestStore(t)
 		s.setPricingRowsUnsafe(rows)
 		for _, model := range []string{"deepseek-v4-pro", "DeepSeek-V4-Pro", "DEEPSEEK-V4-PRO"} {
 			resp := makeChatResponse(schemas.Azure, model, &schemas.BifrostLLMUsage{
@@ -200,7 +201,7 @@ func TestGetBasePricing_CaseVariantRowsPriceFromLowercaseRow(t *testing.T) {
 }
 
 func TestGetBasePricing_LowercaseModelMatchesMixedCaseRow(t *testing.T) {
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
 		makeKeyNormalized("Qwen3-235B-A22B", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
 	})
 	resp := makeChatResponse(schemas.Azure, "qwen3-235b-a22b", &schemas.BifrostLLMUsage{
@@ -211,7 +212,7 @@ func TestGetBasePricing_LowercaseModelMatchesMixedCaseRow(t *testing.T) {
 }
 
 func TestGetBasePricing_CaseInsensitiveOnVertexPrefixFallback(t *testing.T) {
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
 		makeKeyNormalized("gemini-2.5-pro", "vertex", "chat"): chatPricing(0.0000003, 0.0000012),
 	})
 	resp := makeChatResponse(schemas.Vertex, "google/Gemini-2.5-Pro", &schemas.BifrostLLMUsage{
@@ -222,7 +223,7 @@ func TestGetBasePricing_CaseInsensitiveOnVertexPrefixFallback(t *testing.T) {
 }
 
 func BenchmarkGetBasePricing_Casing(b *testing.B) {
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+	s := testStoreWithPricing(b, map[string]configstoreTables.TableModelPricing{
 		makeKeyNormalized("deepseek-v4.1-flash", "azure", "chat"): chatPricing(0.0000003, 0.0000012),
 		makeKeyNormalized("Qwen3-235B-A22B", "azure", "chat"):     chatPricing(0.0000003, 0.0000012),
 	})
@@ -252,10 +253,10 @@ func TestSetPricingRows_PicksLowercaseThenSmallest(t *testing.T) {
 		{[]configstoreTables.TableModelPricing{titled, upper, lower}, "model-x"},
 		{[]configstoreTables.TableModelPricing{lower, upper, titled}, "model-x"},
 	} {
-		s := newTestStore()
+		s := newTestStore(t)
 		s.setPricingRowsUnsafe(tc.rows)
-		assert.Equal(t, tc.want, s.pricingData[key].Model)
-		assert.Len(t, s.pricingData, 1)
+		assert.Equal(t, tc.want, lookup(s.pricingData, key).Model)
+		assert.Equal(t, 1, s.pricingData.Len())
 	}
 }
 
@@ -278,10 +279,10 @@ func TestSetPricingRows_ProviderAndModeCasingPicksLowercaseRow(t *testing.T) {
 		{[]configstoreTables.TableModelPricing{upperProvider, upperMode}, "Azure", "chat"},
 		{[]configstoreTables.TableModelPricing{upperMode, upperProvider}, "Azure", "chat"},
 	} {
-		s := newTestStore()
+		s := newTestStore(t)
 		s.setPricingRowsUnsafe(tc.rows)
-		assert.Equal(t, tc.wantProvider, s.pricingData[key].Provider)
-		assert.Equal(t, tc.wantMode, s.pricingData[key].Mode)
+		assert.Equal(t, tc.wantProvider, lookup(s.pricingData, key).Provider)
+		assert.Equal(t, tc.wantMode, lookup(s.pricingData, key).Mode)
 	}
 }
 
@@ -317,7 +318,7 @@ func TestGetBasePricing_CaseInsensitiveOnEveryFallback(t *testing.T) {
 		k, v := row(r.model, r.provider, r.mode, r.input)
 		entries[k] = v
 	}
-	s := testStoreWithPricing(entries)
+	s := testStoreWithPricing(t, entries)
 
 	for _, tc := range []struct {
 		name, model, provider string
@@ -357,7 +358,7 @@ func TestGetBasePricing_CaseInsensitiveOnEveryFallback(t *testing.T) {
 // one are the tokens (provider-reported or locally estimated) priced at catalog
 // rates, exactly as reported tokens would be.
 func TestCalculateCostForUsage_EstimatedUsagePrecedence(t *testing.T) {
-	s := providerCostTestStore()
+	s := providerCostTestStore(t)
 	estimated := func(cost *schemas.BifrostCost) *schemas.BifrostLLMUsage {
 		return &schemas.BifrostLLMUsage{
 			PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,

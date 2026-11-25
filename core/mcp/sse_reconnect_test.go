@@ -41,7 +41,7 @@ func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 	ts := servertest.NewTestServer(s)
 	t.Cleanup(ts.Close)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID:                   "client-sse-reconnect",
 		Name:                 "sse-client",
@@ -51,6 +51,7 @@ func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 		ToolsToExecute:       []string{"*"},
 		ToolExecutionTimeout: 3 * time.Second,
 	}
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	// Registered after ts.Close above so it runs BEFORE it (t.Cleanup is LIFO):
 	// a live SSE stream keeps httptest.Server.Close blocked indefinitely.

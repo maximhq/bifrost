@@ -12,9 +12,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
-	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -586,11 +584,4 @@ func getPassthroughProvider(ctx *fasthttp.RequestCtx, store lib.HandlerStore, de
 		}
 	}
 	return "", fmt.Errorf("provider does not match the passthrough route: expected %s or a custom provider based on it", defaultProvider)
-}
-
-func RegisterKVDecoders(store *kvstore.Store) {
-	store.RegisterDecoder("genai_upload_session:", func(data []byte) (any, error) {
-		var v gemini.GeminiResumableUploadSession
-		return &v, sonic.Unmarshal(data, &v)
-	})
 }

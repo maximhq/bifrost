@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"net/url"
 	"slices"
 	"sort"
@@ -23,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -91,8 +93,8 @@ type ModelPricingAttributesEntry struct {
 
 // ProviderHandler manages HTTP requests for provider operations
 type ProviderHandler struct {
-	dbStore       configstore.ConfigStore
-	inMemoryStore *lib.Config
+	configStore   configstore.ConfigStore
+	config        *lib.Config
 	client        *bifrost.Bifrost
 	modelsManager ModelsManager
 	providerLocks [providerLockStripes]sync.Mutex // serializes create/update/delete per provider name
@@ -115,10 +117,10 @@ func (h *ProviderHandler) lockProvider(provider schemas.ModelProvider) func() {
 }
 
 // NewProviderHandler creates a new provider handler instance
-func NewProviderHandler(modelsManager ModelsManager, inMemoryStore *lib.Config, client *bifrost.Bifrost) *ProviderHandler {
+func NewProviderHandler(modelsManager ModelsManager, config *lib.Config, client *bifrost.Bifrost) *ProviderHandler {
 	return &ProviderHandler{
-		dbStore:       inMemoryStore.ConfigStore,
-		inMemoryStore: inMemoryStore,
+		configStore:   config.ConfigStore,
+		config:        config,
 		client:        client,
 		modelsManager: modelsManager,
 	}
@@ -300,17 +302,19 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 func (h *ProviderHandler) listProviders(ctx *fasthttp.RequestCtx) {
 	// Fetching providers from database or in-memory store
 	var providers map[schemas.ModelProvider]configstore.ProviderConfig
-	if h.dbStore != nil {
+	if h.configStore != nil {
 		var err error
-		providers, err = h.dbStore.GetProvidersConfig(ctx)
+		providers, err = h.configStore.GetProvidersConfig(ctx)
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
 			return
 		}
 	} else {
-		h.inMemoryStore.Mu.RLock()
-		providers = h.inMemoryStore.Providers
-		h.inMemoryStore.Mu.RUnlock()
+		providers = make(map[schemas.ModelProvider]configstore.ProviderConfig)
+		h.config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
+			providers[p.Name] = p.Config
+			return true
+		})
 	}
 	providersInClient, err := h.client.GetConfiguredProviders()
 	if err != nil {
@@ -355,8 +359,8 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	var config *configstore.ProviderConfig
-	if h.dbStore != nil {
-		config, err = h.dbStore.GetProviderConfig(ctx, provider)
+	if h.configStore != nil {
+		config, err = h.configStore.GetProviderConfig(ctx, provider)
 		if err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
 				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
@@ -366,15 +370,13 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	} else {
-		config, err = h.inMemoryStore.GetProviderConfigRaw(provider)
-		if err != nil {
-			if errors.Is(err, lib.ErrNotFound) {
-				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
-				return
-			}
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
+		stored, ok := h.config.LiveStore.Collections.Providers.Get(string(provider))
+		if !ok {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", lib.ErrNotFound))
 			return
 		}
+		copied := stored.Config
+		config = &copied
 	}
 	redactedConfig := config.Redacted()
 
@@ -481,12 +483,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	}
 	defer h.lockProvider(payload.Provider)() // covers the existence check through any rollback
 	// Check if provider already exists
-	if _, err := h.inMemoryStore.GetProviderConfigRedacted(payload.Provider); err != nil {
-		if !errors.Is(err, lib.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to check provider config: %v", err))
-			return
-		}
-	} else {
+	if _, exists := h.config.LiveStore.Collections.Providers.Get(string(payload.Provider)); exists {
 		SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("Provider %s already exists", payload.Provider))
 		return
 	}
@@ -525,7 +522,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
-	if err := lib.ValidateInjectedTools(config.InjectedTools, h.inMemoryStore.GetMCPClientNames()); err != nil {
+	if err := lib.ValidateInjectedTools(config.InjectedTools, h.mcpClientExists); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
@@ -538,7 +535,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Add provider to store (env vars will be processed by store)
-	if err := h.inMemoryStore.AddProvider(ctx, payload.Provider, config); err != nil {
+	if err := h.config.AddProvider(ctx, payload.Provider, config); err != nil {
 		logger.Warn("Failed to add provider %s: %v", payload.Provider, err)
 		if errors.Is(err, lib.ErrAlreadyExists) {
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
@@ -552,7 +549,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	if err := h.reloadProviderAfterCreate(ctx, payload.Provider); err != nil {
 		logger.Warn("Failed to reload provider %s after add: %v", payload.Provider, err)
 		// Configuration first: while it is stored, a request can lazily prepare a stopped provider again.
-		rollbackErr := h.inMemoryStore.RemoveProvider(context.Background(), payload.Provider)
+		rollbackErr := h.config.RemoveProvider(context.Background(), payload.Provider)
 		h.stopRuntimeProvider(payload.Provider)
 		if rollbackErr != nil {
 			logger.Error("Failed to rollback provider %s after reload failure: %v", payload.Provider, rollbackErr)
@@ -563,18 +560,18 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)
-	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(payload.Provider)
-	if err != nil {
-		logger.Warn("Failed to get redacted config for provider %s: %v", payload.Provider, err)
+	stored, ok := h.config.LiveStore.Collections.Providers.Get(string(payload.Provider))
+	if !ok {
+		logger.Warn("Failed to get redacted config for provider %s: %v", payload.Provider, lib.ErrNotFound)
 		lib.RecordAuditChange(ctx, "provider.created", "provider", string(payload.Provider), string(payload.Provider), nil, auditProviderConfig(config.Redacted()))
-		// Fall back to the saved config, redacted and without keys
+		// Fall back to the saved config, redacted
 		sanitized := config.Redacted()
-		sanitized.Keys = nil
 		response := h.getProviderResponseFromConfig(payload.Provider, *sanitized, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
 	}
 
+	redactedConfig := stored.Config.Redacted()
 	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig, ProviderStatusActive)
 
 	lib.RecordAuditChange(ctx, "provider.created", "provider", string(payload.Provider), string(payload.Provider), nil, auditProviderConfig(redactedConfig))
@@ -618,9 +615,8 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	// Reject `keys` in the request body. This endpoint manages provider-level
 	// configuration only; keys are managed via the dedicated /keys endpoints
 	// (POST/PUT/DELETE /api/providers/{provider}/keys[/{key_id}]). Accepting
-	// the field silently would discard the caller's intent — the construction
-	// below ignores `payload.Keys` and reuses `oldConfigRaw.Keys`. Failing
-	// fast keeps the API contract honest.
+	// the field silently would discard the caller's intent: the settings save
+	// below never writes keys. Failing fast keeps the API contract honest.
 	if len(payload.Keys) > 0 {
 		SendError(
 			ctx,
@@ -630,27 +626,21 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Get the raw config to access actual values for merging with redacted request values
-	oldConfigRaw, err := h.inMemoryStore.GetProviderConfigRaw(provider)
-	if err != nil {
-		if !errors.Is(err, lib.ErrNotFound) {
-			logger.Warn("Failed to get old config for provider %s: %v", provider, err)
-			SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
-			return
-		}
+	// The merge base for fields the body leaves alone and for redacted values it echoes back is the
+	// provider as stored, read fresh, never the live record: nothing memory holds is written back.
+	// A provider with no row starts from an empty base and is created below.
+	if h.config.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", lib.ErrNoConfigStore))
+		return
 	}
-
-	if oldConfigRaw == nil {
-		oldConfigRaw = &configstore.ProviderConfig{}
-	}
-
-	oldRedactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
-	if err != nil {
-		if !errors.Is(err, lib.ErrNotFound) {
-			logger.Warn("Failed to get old redacted config for provider %s: %v", provider, err)
-			SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
-			return
-		}
+	oldConfigRaw := &configstore.ProviderConfig{}
+	var oldRedactedConfig *configstore.ProviderConfig
+	if stored, err := h.config.ConfigStore.GetProviderConfig(ctx, provider); err == nil {
+		oldConfigRaw = stored // keys are managed by their own routes and never read or written here
+		oldRedactedConfig = stored.Redacted()
+	} else if !errors.Is(err, configstore.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to read provider: %v", err))
+		return
 	}
 
 	before := auditProviderConfig(oldRedactedConfig)
@@ -660,7 +650,6 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	// Construct ProviderConfig from individual fields (keys are managed separately via /keys endpoints)
 	config := configstore.ProviderConfig{
-		Keys:                     oldConfigRaw.Keys,
 		NetworkConfig:            oldConfigRaw.NetworkConfig,
 		ConcurrencyAndBufferSize: oldConfigRaw.ConcurrencyAndBufferSize,
 		ProxyConfig:              oldConfigRaw.ProxyConfig,
@@ -704,7 +693,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
-	if err := lib.ValidateInjectedTools(payload.InjectedTools, h.inMemoryStore.GetMCPClientNames()); err != nil {
+	if err := lib.ValidateInjectedTools(payload.InjectedTools, h.mcpClientExists); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid injected tools config: %v", err))
 		return
 	}
@@ -793,14 +782,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Add provider to store if it doesn't exist (upsert behavior)
-	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
-		if !errors.Is(err, lib.ErrNotFound) {
-			logger.Warn("Failed to get provider %s: %v", provider, err)
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider: %v", err))
-			return
-		}
+	if _, exists := h.config.LiveStore.Collections.Providers.Get(string(provider)); !exists {
 		// Adding the provider to store
-		if err := h.inMemoryStore.AddProvider(ctx, provider, config); err != nil {
+		if err := h.config.AddProvider(ctx, provider, config); err != nil {
 			// In an upsert flow, "already exists" is not fatal — the provider may have been
 			// added concurrently or exist in the DB from a previous failed attempt.
 			if !errors.Is(err, lib.ErrAlreadyExists) {
@@ -813,7 +797,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Update provider config in store (env vars will be processed by store)
-	if err := h.inMemoryStore.UpdateProviderConfig(ctx, provider, config); err != nil {
+	if err := h.config.UpdateProviderConfig(ctx, provider, config); err != nil {
 		logger.Warn("Failed to update provider %s: %v", provider, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err))
 		return
@@ -838,18 +822,18 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	h.rearmComplexitySemanticClassifier(provider)
 
 	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)
-	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
-	if err != nil {
-		logger.Warn("Failed to get redacted config for provider %s: %v", provider, err)
+	stored, ok := h.config.LiveStore.Collections.Providers.Get(string(provider))
+	if !ok {
+		logger.Warn("Failed to get redacted config for provider %s: %v", provider, lib.ErrNotFound)
 		lib.RecordAuditChange(ctx, "provider.updated", "provider", string(provider), string(provider), before, auditProviderConfig(config.Redacted()))
-		// Fall back to the saved config, redacted and without keys
+		// Fall back to the saved config, redacted
 		sanitized := config.Redacted()
-		sanitized.Keys = nil
 		response := h.getProviderResponseFromConfig(provider, *sanitized, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
 	}
 
+	redactedConfig := stored.Config.Redacted()
 	response := h.getProviderResponseFromConfig(provider, *redactedConfig, ProviderStatusActive)
 
 	lib.RecordAuditChange(ctx, "provider.updated", "provider", string(provider), string(provider), before, auditProviderConfig(redactedConfig))
@@ -866,17 +850,19 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	defer h.lockProvider(provider)()
 
 	// Check if provider exists
-	existing, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
-	if err != nil && !errors.Is(err, lib.ErrNotFound) {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to get provider: %v", err))
-		return
+	var existing *configstore.ProviderConfig
+	if stored, ok := h.config.LiveStore.Collections.Providers.Get(string(provider)); ok {
+		existing = stored.Config.Redacted()
 	}
 
+	// Any failure answers 500, a failed database delete included: a success would hide a provider
+	// that is still stored, or still served from memory.
 	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
-		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
-	} else {
-		lib.RecordAuditChange(ctx, "provider.deleted", "provider", string(provider), string(provider), auditProviderConfig(existing), nil)
+		logger.Warn("Failed to delete provider %s: %v", provider, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to delete provider: %v", err))
+		return
 	}
+	lib.RecordAuditChange(ctx, "provider.deleted", "provider", string(provider), string(provider), auditProviderConfig(existing), nil)
 
 	response := ProviderResponse{
 		Name: provider,
@@ -885,15 +871,82 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, response)
 }
 
-// listKeys handles GET /api/keys - List all keys
+// listKeys handles GET /api/keys - List all keys. With a config store the keys are read from the
+// database in creation order, as listProviders reads providers, so the list shows what is saved;
+// without one they come from memory.
 func (h *ProviderHandler) listKeys(ctx *fasthttp.RequestCtx) {
-	keys, err := h.inMemoryStore.GetAllKeys()
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get keys: %v", err))
-		return
+	keysByProvider := make(map[schemas.ModelProvider][]schemas.Key)
+	if h.configStore != nil {
+		providers, err := h.configStore.GetProvidersConfig(ctx)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get keys: %v", err))
+			return
+		}
+		if keysByProvider, err = lib.StoredProviderKeys(ctx, h.configStore, providers); err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get keys: %v", err))
+			return
+		}
+	} else {
+		h.config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
+			var keys []schemas.Key
+			if list, ok := h.config.LiveStore.Views.ProviderKeyLists.Get(string(p.Name)); ok {
+				keys = *list
+			}
+			keysByProvider[p.Name] = keys
+			return true
+		})
 	}
+	SendJSON(ctx, redactedKeys(keysByProvider))
+}
 
-	SendJSON(ctx, keys)
+// mcpClientExists reports whether an MCP client with this name is configured.
+func (h *ProviderHandler) mcpClientExists(name string) bool {
+	_, ok := h.config.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientByName, name)
+	return ok
+}
+
+// redactedKeys lists every key of every provider as /api/keys reports it, providers by name and
+// each one's keys in the order given, each redacted by configstore.RedactedKey as the providers
+// API redacts it: identifiers readable, credentials masked. The keys themselves, which may be the
+// live store's, are left untouched. Status and description are left out, as this list has always
+// left them.
+func redactedKeys(keysByProvider map[schemas.ModelProvider][]schemas.Key) []tables.TableKey {
+	keys := make([]tables.TableKey, 0)
+	for _, provider := range slices.Sorted(maps.Keys(keysByProvider)) {
+		for _, key := range keysByProvider[provider] {
+			redacted := configstore.RedactedKey(key)
+			keys = append(keys, tables.TableKey{
+				KeyID:                  redacted.ID,
+				Name:                   redacted.Name,
+				Value:                  redacted.Value,
+				Models:                 redacted.Models,
+				BlacklistedModels:      redacted.BlacklistedModels,
+				Weight:                 bifrost.Ptr(redacted.Weight),
+				Provider:               string(provider),
+				ConfigHash:             redacted.ConfigHash,
+				Enabled:                redacted.Enabled,
+				Aliases:                redacted.Aliases,
+				UseForBatchAPI:         redacted.UseForBatchAPI,
+				UseAnthropicEndpoints:  redacted.UseAnthropicEndpoints,
+				UseOpenAIEndpoints:     redacted.UseOpenAIEndpoints,
+				DisableContentLogging:  redacted.DisableContentLogging,
+				AzureKeyConfig:         redacted.AzureKeyConfig,
+				VertexKeyConfig:        redacted.VertexKeyConfig,
+				BedrockKeyConfig:       redacted.BedrockKeyConfig,
+				BedrockMantleKeyConfig: redacted.BedrockMantleKeyConfig,
+				SageMakerKeyConfig:     redacted.SageMakerKeyConfig,
+				VLLMKeyConfig:          redacted.VLLMKeyConfig,
+				ReplicateKeyConfig:     redacted.ReplicateKeyConfig,
+				OllamaKeyConfig:        redacted.OllamaKeyConfig,
+				SGLKeyConfig:           redacted.SGLKeyConfig,
+				DatabricksKeyConfig:    redacted.DatabricksKeyConfig,
+				CloudflareKeyConfig:    redacted.CloudflareKeyConfig,
+				AnthropicKeyConfig:     redacted.AnthropicKeyConfig,
+				OAuthKeyConfig:         redacted.OAuthKeyConfig,
+			})
+		}
+	}
+	return keys
 }
 
 // ModelResponse represents a single model in the response
@@ -983,6 +1036,8 @@ type modelListQuery struct {
 	Limit      int
 	Offset     int
 	Unfiltered bool
+	// IncludeAliases adds key alias names to an unfiltered listing; a filtered one already has them.
+	IncludeAliases bool
 	// HideDeprecated drops deprecated models from the listing entirely, total included.
 	// Only the browse listing sets it, and only when nothing was searched for.
 	HideDeprecated bool
@@ -1012,6 +1067,7 @@ type listedModel struct {
 //   - keys: Comma-separated list of provider key UUIDs to filter models accessible by those keys
 //   - unfiltered: If true, list the provider's whole catalog: bypass provider-level model pool
 //     restrictions, and do not narrow to what the caller's virtual key or access allows.
+//   - include_aliases: If true with unfiltered, also list the alias names on the provider's keys.
 //   - limit: Maximum number of results to return (default: 5)
 //   - offset: Number of results to skip (for pagination)
 //   - include_deprecated: If true, list deprecated models even when nothing is searched for.
@@ -1024,7 +1080,7 @@ type listedModel struct {
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
 //     results to providers and models allowed by that virtual key.
 func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.inMemoryStore)
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	defer cancel()
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
@@ -1036,7 +1092,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	query.HideDeprecated = query.Query == "" && !query.IncludeDeprecated
-	allModels, total, err := h.listManagementModels(query)
+	allModels, total, err := h.listManagementModels(ctx, query)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
 		return
@@ -1070,6 +1126,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - keys: Comma-separated list of key IDs to filter models accessible by those keys
 //   - unfiltered: If true, list the provider's whole catalog: bypass provider-level model pool
 //     restrictions, and do not narrow to what the caller's virtual key or access allows.
+//   - include_aliases: If true with unfiltered, also list the alias names on the provider's keys.
 //   - limit: Maximum number of results to return (default: 20)
 //   - offset: Number of results to skip (for pagination)
 //
@@ -1077,7 +1134,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
 //     results to providers and models allowed by that virtual key.
 func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.inMemoryStore)
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	defer cancel()
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
@@ -1089,13 +1146,13 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	modelCatalog := h.inMemoryStore.ModelCatalog
+	modelCatalog := h.config.ModelCatalog
 	if modelCatalog == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "model catalog not available")
 		return
 	}
 
-	allModels, total, err := h.listManagementModels(query)
+	allModels, total, err := h.listManagementModels(ctx, query)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
 		return
@@ -1280,11 +1337,11 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 // customProviderConfig returns the provider's custom configuration, or nil for
 // a built-in provider or one that is not configured.
 func (h *ProviderHandler) customProviderConfig(provider schemas.ModelProvider) *schemas.CustomProviderConfig {
-	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
-	if err != nil {
+	stored, ok := h.config.LiveStore.Collections.Providers.Get(string(provider))
+	if !ok {
 		return nil
 	}
-	return config.CustomProviderConfig
+	return stored.Config.CustomProviderConfig
 }
 
 // aliasTarget returns the model a key alias points at, in the order the
@@ -1294,7 +1351,7 @@ func (h *ProviderHandler) customProviderConfig(provider schemas.ModelProvider) *
 // alias itself finds nothing, so it is resolved through the catalog's alias
 // index first, as GetModelCapabilityEntryForModel does for the details listing.
 func (h *ProviderHandler) aliasTarget(provider schemas.ModelProvider, model string) string {
-	catalog := h.inMemoryStore.ModelCatalog
+	catalog := h.config.ModelCatalog
 	if catalog == nil {
 		return model
 	}
@@ -1313,7 +1370,7 @@ func (h *ProviderHandler) aliasTarget(provider schemas.ModelProvider, model stri
 
 // isModelDeprecated reports whether the catalog marks the model as deprecated.
 func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.ModelProvider) bool {
-	modelCatalog := h.inMemoryStore.ModelCatalog
+	modelCatalog := h.config.ModelCatalog
 	if modelCatalog == nil {
 		return false
 	}
@@ -1335,6 +1392,7 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 		Limit:      defaultLimit,
 		Unfiltered: string(queryArgs.Peek("unfiltered")) == "true",
 	}
+	query.IncludeAliases = string(queryArgs.Peek("include_aliases")) == "true"
 	query.IncludeDeprecated = string(queryArgs.Peek("include_deprecated")) == "true"
 	query.Decisions = string(queryArgs.Peek("decisions")) == "true"
 
@@ -1386,16 +1444,16 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 }
 
 // listManagementModels lists models across one or all providers and applies the top-level limit.
-func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedModel, int, error) {
+// It fails when a provider's keys cannot be read for the key filter.
+func (h *ProviderHandler) listManagementModels(ctx context.Context, query modelListQuery) ([]listedModel, int, error) {
 	providers := []schemas.ModelProvider{}
 	if query.Provider != "" {
 		providers = append(providers, query.Provider)
 	} else {
-		var err error
-		providers, err = h.inMemoryStore.GetAllProviders()
-		if err != nil {
-			return nil, 0, err
-		}
+		h.config.LiveStore.Collections.Providers.Range(func(p *registry.Provider) bool {
+			providers = append(providers, p.Name)
+			return true
+		})
 	}
 
 	// When a virtual key is present, restrict the provider list to those explicitly
@@ -1414,7 +1472,11 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 
 	models := make([]listedModel, 0)
 	for _, provider := range providers {
-		models = append(models, h.listManagementModelsForProvider(provider, query)...)
+		listed, err := h.listManagementModelsForProvider(ctx, provider, query)
+		if err != nil {
+			return nil, 0, err
+		}
+		models = append(models, listed...)
 	}
 
 	if query.Decisions {
@@ -1459,14 +1521,23 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	return models, total, nil
 }
 
-// listManagementModelsForProvider applies provider-level model selection and key filtering.
+// listManagementModelsForProvider applies provider-level model selection and key filtering. The key
+// filter reads the provider's keys as the keys API does (providerKeys), and an error reading them
+// is returned.
 func (h *ProviderHandler) listManagementModelsForProvider(
+	ctx context.Context,
 	provider schemas.ModelProvider,
 	query modelListQuery,
-) []listedModel {
+) ([]listedModel, error) {
 	models := h.modelsManager.GetModelsForProvider(provider)
 	if query.Unfiltered {
 		models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+		if catalog := h.config.ModelCatalog; query.IncludeAliases && catalog != nil {
+			// slices.Concat copies: the listing may share the catalog's memory.
+			models = slices.Concat(models, catalog.AliasNamesForProvider(provider))
+			slices.Sort(models)
+			models = slices.Compact(models)
+		}
 	}
 
 	// Keep only the models the caller may use on this provider. A model granted only through
@@ -1478,33 +1549,32 @@ func (h *ProviderHandler) listManagementModelsForProvider(
 	}
 
 	if len(query.KeyIDs) == 0 || query.Unfiltered {
-		return buildListedModels(provider, models, nil, query.Query)
+		return buildListedModels(provider, models, nil, query.Query), nil
 	}
 
-	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
-	if err != nil {
+	keys, err := h.providerKeys(ctx, provider) // read only: may be the live store's
+	if errors.Is(err, lib.ErrNotFound) {
 		logger.Warn("Failed to get config for provider %s: %v", provider, err)
-		return buildListedModels(provider, models, nil, query.Query)
+		return buildListedModels(provider, models, nil, query.Query), nil
 	}
-	if config == nil {
-		logger.Warn("Failed to get config for provider %s: nil provider config", provider)
-		return buildListedModels(provider, models, nil, query.Query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get keys of provider %s: %w", provider, err)
 	}
 
-	validKeyIDs := getValidKeyIDsForProvider(config, query.KeyIDs)
+	validKeyIDs := getValidKeyIDsForProvider(keys, query.KeyIDs)
 	if len(validKeyIDs) == 0 {
-		return buildListedModels(provider, models, nil, query.Query)
+		return buildListedModels(provider, models, nil, query.Query), nil
 	}
 
 	filteredModels, accessByModel := filterModelsByKeysWithAccessMap(
-		config,
+		keys,
 		provider,
-		h.inMemoryStore.ModelCatalog,
+		h.config.ModelCatalog,
 		models,
 		validKeyIDs,
 	)
 
-	return buildListedModels(provider, filteredModels, accessByModel, query.Query)
+	return buildListedModels(provider, filteredModels, accessByModel, query.Query), nil
 }
 
 // buildListedModels filters model names by query and projects them into internal rows.
@@ -1542,7 +1612,7 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if h.dbStore == nil {
+	if h.configStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "database store not available")
 		return
 	}
@@ -1553,10 +1623,10 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 	// exact-match miss.
 	var params *tables.TableModelParameters
 	var err error
-	if h.inMemoryStore != nil && h.inMemoryStore.ModelCatalog != nil {
-		params, err = h.inMemoryStore.ModelCatalog.ResolveModelParameters(ctx, modelParam)
+	if h.config != nil && h.config.ModelCatalog != nil {
+		params, err = h.config.ModelCatalog.ResolveModelParameters(ctx, modelParam)
 	} else {
-		params, err = h.dbStore.GetModelParametersByModel(ctx, modelParam)
+		params, err = h.configStore.GetModelParametersByModel(ctx, modelParam)
 	}
 	if err == nil && params == nil {
 		err = configstore.ErrNotFound
@@ -1623,14 +1693,15 @@ func matchesModelQuery(model, query string) bool {
 		fuzzyMatch(modelLower, queryLower)
 }
 
-// getValidKeyIDsForProvider keeps only enabled, known, deduplicated key IDs.
-func getValidKeyIDsForProvider(config *configstore.ProviderConfig, keyIDs []string) []string {
-	if config == nil || len(keyIDs) == 0 {
+// getValidKeyIDsForProvider keeps only the key IDs that name one of a provider's enabled keys,
+// deduplicated.
+func getValidKeyIDsForProvider(keys []schemas.Key, keyIDs []string) []string {
+	if len(keyIDs) == 0 {
 		return nil
 	}
 
-	existing := make(map[string]bool, len(config.Keys))
-	for _, key := range config.Keys {
+	existing := make(map[string]bool, len(keys))
+	for _, key := range keys {
 		if key.Enabled != nil && !*key.Enabled {
 			continue
 		}
@@ -1653,13 +1724,9 @@ func getValidKeyIDsForProvider(config *configstore.ProviderConfig, keyIDs []stri
 
 // filterModelsByKeysWithAccessMap filters models based on key-level model restrictions
 // and returns the exact key IDs that grant access to each returned model.
-func filterModelsByKeysWithAccessMap(config *configstore.ProviderConfig, provider schemas.ModelProvider, modelCatalog *modelcatalog.ModelCatalog, models []string, keyIDs []string) ([]string, map[string][]string) {
-	if config == nil {
-		return []string{}, map[string][]string{}
-	}
-
-	keysByID := make(map[string]schemas.Key, len(config.Keys))
-	for _, key := range config.Keys {
+func filterModelsByKeysWithAccessMap(keys []schemas.Key, provider schemas.ModelProvider, modelCatalog *modelcatalog.ModelCatalog, models []string, keyIDs []string) ([]string, map[string][]string) {
+	keysByID := make(map[string]schemas.Key, len(keys))
+	for _, key := range keys {
 		if key.Enabled != nil && !*key.Enabled {
 			continue
 		}
@@ -1722,7 +1789,7 @@ func (h *ProviderHandler) listBaseModels(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	modelCatalog := h.inMemoryStore.ModelCatalog
+	modelCatalog := h.config.ModelCatalog
 	if modelCatalog == nil {
 		SendJSON(ctx, ListBaseModelsResponse{Models: []string{}, Total: 0})
 		return
@@ -1937,7 +2004,7 @@ func (h *ProviderHandler) listDatasheetEntries(ctx *fasthttp.RequestCtx) {
 	if n, err := ctx.QueryArgs().GetUint("offset"); err == nil {
 		offset = n
 	}
-	catalog := h.inMemoryStore.ModelCatalog
+	catalog := h.config.ModelCatalog
 	if catalog == nil {
 		SendJSON(ctx, ListDatasheetEntriesResponse{Entries: []modelcatalog.DatasheetEntry{}, Limit: limit, Offset: offset})
 		return
@@ -1965,7 +2032,7 @@ func (h *ProviderHandler) getDatasheetEntry(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "provider and model query parameters are required")
 		return
 	}
-	catalog := h.inMemoryStore.ModelCatalog
+	catalog := h.config.ModelCatalog
 	if catalog == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "model catalog not available")
 		return
@@ -1995,8 +2062,8 @@ func (h *ProviderHandler) saveDatasheetOverride(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request payload: %v", err))
 		return
 	}
-	catalog := h.inMemoryStore.ModelCatalog
-	if catalog == nil || h.dbStore == nil {
+	catalog := h.config.ModelCatalog
+	if catalog == nil || h.configStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "datasheet overrides require a config store")
 		return
 	}
@@ -2048,12 +2115,12 @@ func (h *ProviderHandler) saveDatasheetOverride(ctx *fasthttp.RequestCtx) {
 // restoring the upstream values the override replaced.
 func (h *ProviderHandler) deleteDatasheetOverride(ctx *fasthttp.RequestCtx) {
 	id, _ := ctx.UserValue("id").(string)
-	catalog := h.inMemoryStore.ModelCatalog
-	if catalog == nil || h.dbStore == nil {
+	catalog := h.config.ModelCatalog
+	if catalog == nil || h.configStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "datasheet overrides require a config store")
 		return
 	}
-	existing, _ := h.dbStore.GetDatasheetOverrideByID(ctx, id)
+	existing, _ := h.configStore.GetDatasheetOverrideByID(ctx, id)
 	if err := catalog.DeleteDatasheetOverride(ctx, id); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Datasheet override not found")

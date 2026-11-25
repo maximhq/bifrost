@@ -1,34 +1,43 @@
 package rules
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/cel-go/cel"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/routing"
 )
 
 // ModelRouterMatcher holds the routing of every enabled model router and picks
 // the router that takes a request, after the routing rules.
 //
-// It caches the way LocalStore caches routing rules: grouped by scope,
-// priority ascending, in a sync.Map read without a lock, where a write swaps
-// in a new slice rather than changing one requests may be reading. A router's
-// compiled condition is kept beside its routing, so the two always change
-// together. A disabled router is not cached at all, so a gateway whose routers
-// are all off skips the step on one empty-map check (HasRoutes).
+// It keeps each router's last routing that compiled, grouped by scope,
+// priority ascending, in a live-store table read without a lock, where a write
+// swaps in a new slice rather than changing one requests may be reading. A
+// router's compiled condition is kept beside its routing, so the two always
+// change together. A disabled router is not kept at all, so a gateway whose
+// routers are all off skips the step on one counter read (HasRoutes).
 type ModelRouterMatcher struct {
-	routes  sync.Map   // scopeKey(scope, scopeID) -> []modelRouterRoute, priority ASC
-	writeMu sync.Mutex // serializes writes, so two saves cannot drop each other's route
+	live    *livestore.Store
+	routes  *livestore.Table[string, []modelRouterRoute] // scopeKey(scope, scopeID) -> routes, priority ASC
+	groups  atomic.Int64                                 // scopes holding routes
+	writeMu sync.Mutex                                   // serializes writes, so two saves cannot drop each other's route
 
 	celEnv *cel.Env
 }
+
+// modelRouterRoutesTable names the matcher's table. A process runs one routing plugin, since the
+// plugins API does not create, change or delete it, so the name is fixed.
+const modelRouterRoutesTable = "routing_model_router_routes"
 
 // modelRouterRoute is one enabled router's routing and its compiled
 // condition, nil when it has none.
@@ -39,14 +48,46 @@ type modelRouterRoute struct {
 	program  cel.Program
 }
 
-// NewModelRouterMatcher builds an empty matcher; the plugin fills it as it
-// serves each router.
-func NewModelRouterMatcher() (*ModelRouterMatcher, error) {
+// NewModelRouterMatcher builds an empty matcher over a table in live; the plugin fills it as it
+// serves each router. Close drops the table.
+func NewModelRouterMatcher(live *livestore.Store) (*ModelRouterMatcher, error) {
+	if live == nil {
+		return nil, fmt.Errorf("model router matcher: %w", livestore.ErrNoLiveStore)
+	}
 	env, err := createCELEnvironment()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
 	}
-	return &ModelRouterMatcher{celEnv: env}, nil
+	routes, err := live.NewTable[string, []modelRouterRoute](context.Background(), modelRouterRoutesTable, livestore.HoldsHandles())
+	if err != nil {
+		return nil, err
+	}
+	return &ModelRouterMatcher{live: live, routes: routes, celEnv: env}, nil
+}
+
+// Close drops the matcher's table.
+func (m *ModelRouterMatcher) Close() {
+	if m == nil {
+		return
+	}
+	_ = m.live.DropTable(context.Background(), m.routes.Name())
+}
+
+// storeGroupLocked stores a scope's routes, or drops the scope when it has none, keeping the
+// count of scopes with routes. writeMu must be held.
+func (m *ModelRouterMatcher) storeGroupLocked(key string, group []modelRouterRoute) {
+	_, had := m.routes.Get(key)
+	if len(group) == 0 {
+		if had {
+			m.routes.Delete(key)
+			m.groups.Add(-1)
+		}
+		return
+	}
+	m.routes.Put(key, group)
+	if !had {
+		m.groups.Add(1)
+	}
 }
 
 // ValidateModelRouterCEL checks a router's routing condition: it must compile
@@ -103,7 +144,7 @@ func (m *ModelRouterMatcher) Set(routerID, name string, routing configstore.Mode
 	key := scopeKey(routing.Scope, valueOrEmpty(routing.ScopeID))
 	updated := append(m.groupWithout(key, routerID), modelRouterRoute{routerID: routerID, name: name, priority: routing.Priority, program: program})
 	sort.SliceStable(updated, func(i, j int) bool { return updated[i].priority < updated[j].priority })
-	m.routes.Store(key, updated)
+	m.storeGroupLocked(key, updated)
 	m.removeFromScopes(routerID, key)
 	return nil
 }
@@ -118,8 +159,7 @@ func (m *ModelRouterMatcher) Delete(routerID string) {
 // groupWithout returns a new copy of a scope's group without the router, so
 // the slice requests may be reading is never written to.
 func (m *ModelRouterMatcher) groupWithout(key, routerID string) []modelRouterRoute {
-	value, _ := m.routes.Load(key)
-	group, _ := value.([]modelRouterRoute)
+	group, _ := m.routes.Get(key)
 	kept := make([]modelRouterRoute, 0, len(group)+1)
 	for _, route := range group {
 		if route.routerID != routerID {
@@ -132,18 +172,16 @@ func (m *ModelRouterMatcher) groupWithout(key, routerID string) []modelRouterRou
 // removeFromScopes drops a router from every scope but keep, deleting a group
 // once it is empty so HasRoutes stays accurate. writeMu must be held.
 func (m *ModelRouterMatcher) removeFromScopes(routerID, keep string) {
-	m.routes.Range(func(key, value any) bool {
-		group, _ := value.([]modelRouterRoute)
-		if key == keep || !slices.ContainsFunc(group, func(route modelRouterRoute) bool { return route.routerID == routerID }) {
-			return true
-		}
-		if kept := m.groupWithout(key.(string), routerID); len(kept) > 0 {
-			m.routes.Store(key, kept)
-		} else {
-			m.routes.Delete(key)
+	var touched []string
+	m.routes.Range(func(key string, group []modelRouterRoute) bool {
+		if key != keep && slices.ContainsFunc(group, func(route modelRouterRoute) bool { return route.routerID == routerID }) {
+			touched = append(touched, key)
 		}
 		return true
 	})
+	for _, key := range touched {
+		m.storeGroupLocked(key, m.groupWithout(key, routerID))
+	}
 }
 
 // HasRoutes reports whether any router is enabled: the per-request gate that
@@ -152,12 +190,7 @@ func (m *ModelRouterMatcher) HasRoutes() bool {
 	if m == nil {
 		return false
 	}
-	hasAny := false
-	m.routes.Range(func(_, _ any) bool {
-		hasAny = true
-		return false
-	})
-	return hasAny
+	return m.groups.Load() > 0
 }
 
 // Match returns the id of the first enabled router whose condition holds,
@@ -174,8 +207,7 @@ func (m *ModelRouterMatcher) Match(ctx *schemas.BifrostContext, evaluation *Eval
 		return "", fmt.Errorf("failed to extract routing variables: %w", err)
 	}
 	for _, level := range buildScopeChain(evaluation.Scope) {
-		value, _ := m.routes.Load(scopeKey(level.ScopeName, level.ScopeID))
-		group, _ := value.([]modelRouterRoute)
+		group, _ := m.routes.Get(scopeKey(level.ScopeName, level.ScopeID))
 		for _, route := range group {
 			if route.program == nil {
 				return route.routerID, nil

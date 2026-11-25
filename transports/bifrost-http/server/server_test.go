@@ -37,6 +37,9 @@ import (
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/livestoretest"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpdiscovery"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -46,7 +49,6 @@ import (
 
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
@@ -55,11 +57,26 @@ import (
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
+
+// newTestProviderLiveStore returns a new, empty live store closed when the test ends.
+var newTestProviderLiveStore = livestoretest.New
+
+// newTestPerUserDiscovery returns a per-user discovery store over store with its cache in a live
+// store of its own.
+func newTestPerUserDiscovery(t testing.TB, store configstore.ConfigStore, logger schemas.Logger) *mcpdiscovery.PerUserStore {
+	t.Helper()
+	s, err := mcpdiscovery.NewPerUserStore(store, newTestProviderLiveStore(t), logger)
+	if err != nil {
+		t.Fatalf("per-user discovery store: %v", err)
+	}
+	return s
+}
 
 func TestAgentRegistrationCallbacksRejectUninitializedGateway(t *testing.T) {
 	t.Parallel()
@@ -83,40 +100,6 @@ func TestAgentRegistrationCallbacksRejectUninitializedGateway(t *testing.T) {
 	}
 }
 
-// reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.
-type reloadVirtualKeyConfigStore struct {
-	configstore.ConfigStore
-	vk *configstoreTables.TableVirtualKey
-}
-
-// RetryOnNotFound executes the supplied lookup once for deterministic tests.
-func (s *reloadVirtualKeyConfigStore) RetryOnNotFound(ctx context.Context, fn func(context.Context) (any, error), _ int, _ time.Duration) (any, error) {
-	return fn(ctx)
-}
-
-// GetVirtualKey returns the configured persisted virtual key.
-func (s *reloadVirtualKeyConfigStore) GetVirtualKey(context.Context, string) (*configstoreTables.TableVirtualKey, error) {
-	return s.vk, nil
-}
-
-// GetModelConfigsByScopeAndScopeIDs returns no scoped model configs.
-func (s *reloadVirtualKeyConfigStore) GetModelConfigsByScopeAndScopeIDs(context.Context, string, []string, ...*gorm.DB) ([]configstoreTables.TableModelConfig, error) {
-	return nil, nil
-}
-
-// reloadVirtualKeyGovernanceStore counts snapshot calls while delegating all
-// mutation and direct lookup behavior to a real in-memory store.
-type reloadVirtualKeyGovernanceStore struct {
-	governance.GovernanceStore
-	governanceDataCalls int
-}
-
-// GetGovernanceData records any accidental full-snapshot lookup.
-func (s *reloadVirtualKeyGovernanceStore) GetGovernanceData(context.Context) *governance.GovernanceData {
-	s.governanceDataCalls++
-	return nil
-}
-
 // reloadVirtualKeyPlugin exposes the test governance store.
 type reloadVirtualKeyPlugin struct {
 	governance.BaseGovernancePlugin
@@ -128,6 +111,44 @@ func (p *reloadVirtualKeyPlugin) GetName() string { return governance.PluginName
 
 // GetGovernanceStore returns the test governance store.
 func (p *reloadVirtualKeyPlugin) GetGovernanceStore() governance.GovernanceStore { return p.store }
+
+// governedServer returns a server over a new SQLite config store with a governance plugin whose
+// store reads the server's live store, as a running gateway's does, and that store.
+func governedServer(t *testing.T) (*BifrostHTTPServer, *governance.LocalGovernanceStore) {
+	t.Helper()
+	handlers.SetLogger(noopTestLogger{})
+	previousLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = previousLogger })
+	ctx := context.Background()
+	config := libtest.Config(t, nil, nil)
+	config.ClientConfig = &configstore.ClientConfig{}
+	gs, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, config.LiveStore, nil)
+	require.NoError(t, err)
+	t.Cleanup(gs.Close)
+	plugins := []schemas.BasePlugin{&reloadVirtualKeyPlugin{store: gs}}
+	config.BasePlugins.Store(&plugins)
+	return &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config}, gs
+}
+
+// assignedVirtualMCPs is the virtual MCPs the key with this ID is assigned, as governance holds it.
+func assignedVirtualMCPs(t *testing.T, server *BifrostHTTPServer, gs *governance.LocalGovernanceStore, id string) []uint {
+	t.Helper()
+	vk, ok := gs.GetVirtualKeyByID(context.Background(), id)
+	require.True(t, ok)
+	set, ok := server.Config.LiveStore.Collections.GrantSet(vk.Grants)
+	require.True(t, ok, "the key's grant set is held")
+	return set.VirtualMCPIDs
+}
+
+// storeTestVirtualKey writes an active key with this ID, name and value to the server's config
+// store.
+func storeTestVirtualKey(t *testing.T, server *BifrostHTTPServer, id, name, value string) {
+	t.Helper()
+	require.NoError(t, server.Config.ConfigStore.CreateVirtualKey(context.Background(), &configstoreTables.TableVirtualKey{
+		ID: id, Name: name, Value: *schemas.NewSecretVar(value), IsActive: schemas.Ptr(true),
+	}))
+}
 
 // reloadVirtualKeyToolManager provides an empty MCP tool set.
 type reloadVirtualKeyToolManager struct{}
@@ -152,42 +173,209 @@ func (reloadVirtualKeyToolManager) ExecuteResponsesMCPTool(context.Context, *sch
 	return nil, nil
 }
 
-// TestReloadVirtualKeyAvoidsGovernanceSnapshot pins that reloading one key reads and replaces it
-// directly rather than through a full governance snapshot, which is what keeps a key edit cheap on
-// a deployment holding many keys.
-func TestReloadVirtualKeyAvoidsGovernanceSnapshot(t *testing.T) {
-	handlers.SetLogger(noopTestLogger{})
+// TestVirtualKeyReloadAndRemoveFollowTheDatabase checks the key wrappers against a real config
+// store: ReloadVirtualKey answers with the key's row and brings the key into memory, a later reload
+// picks up a budget and a key-scoped model config written after it, a reload after that model
+// config is deleted drops it, and RemoveVirtualKey drops the key and its budget once its row is
+// deleted.
+func TestVirtualKeyReloadAndRemoveFollowTheDatabase(t *testing.T) {
+	server, gs := governedServer(t)
 	ctx := context.Background()
-	baseStore, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
-	if err != nil {
-		t.Fatalf("create governance store: %v", err)
-	}
-	baseStore.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "old", Value: *schemas.NewSecretVar("sk-bf-old")})
-	store := &reloadVirtualKeyGovernanceStore{GovernanceStore: baseStore}
-	plugin := &reloadVirtualKeyPlugin{store: store}
-	persistedVK := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "new", Value: *schemas.NewSecretVar("sk-bf-new")}
-	config := &lib.Config{
-		ConfigStore:  &reloadVirtualKeyConfigStore{vk: persistedVK},
-		ClientConfig: &configstore.ClientConfig{},
-	}
-	plugins := []schemas.BasePlugin{plugin}
-	config.BasePlugins.Store(&plugins)
-	mcpHandler, err := handlers.NewMCPServerHandler(ctx, config, reloadVirtualKeyToolManager{}, nil, nil, store)
-	if err != nil {
-		t.Fatalf("create MCP handler: %v", err)
-	}
-	server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config, MCPServerHandler: mcpHandler}
+	store := server.Config.ConfigStore
+	vkScope := configstoreTables.ModelConfigScopeVirtualKey
+	keyID := "vk-1"
 
-	if _, err := server.ReloadVirtualKey(ctx, persistedVK.ID); err != nil {
-		t.Fatalf("ReloadVirtualKey returned unexpected error: %v", err)
-	}
-	if store.governanceDataCalls != 0 {
-		t.Fatalf("GetGovernanceData called %d times, want 0", store.governanceDataCalls)
-	}
-	reloaded, ok := baseStore.GetVirtualKeyByID(ctx, "vk-id")
-	if !ok || reloaded.Value.GetValue() != "sk-bf-new" {
-		t.Fatalf("store does not answer with the reloaded key: %+v", reloaded)
-	}
+	storeTestVirtualKey(t, server, keyID, "app", "sk-bf-app")
+	row, err := server.ReloadVirtualKey(ctx, keyID)
+	require.NoError(t, err)
+	require.Equal(t, "app", row.Name, "the response is the key's row")
+	vk, ok := gs.GetVirtualKey(ctx, "sk-bf-app")
+	require.True(t, ok, "the reloaded key is served by its value")
+	require.Empty(t, vk.BudgetIDs)
+
+	require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{ID: "budget-1", MaxLimit: 10, ResetDuration: "1d", LastReset: time.Now(), VirtualKeyID: &keyID}))
+	require.NoError(t, store.CreateModelConfig(ctx, &configstoreTables.TableModelConfig{ID: "mc-1", ModelName: "gpt-4o", Scope: vkScope, ScopeID: &keyID}))
+	_, ok = gs.GetVirtualKeyByID(ctx, keyID)
+	require.True(t, ok)
+	require.Nil(t, gs.LoadBudget(ctx, "budget-1"), "memory changes only when the key is reloaded")
+	_, err = server.ReloadVirtualKey(ctx, keyID)
+	require.NoError(t, err)
+	vk, ok = gs.GetVirtualKeyByID(ctx, keyID)
+	require.True(t, ok)
+	require.Equal(t, []string{"budget-1"}, vk.BudgetIDs, "the key holds the new budget")
+	budget := gs.LoadBudget(ctx, "budget-1")
+	require.NotNil(t, budget, "governance enforces the new budget")
+	require.Equal(t, 10.0, budget.MaxLimit)
+	require.Equal(t, []string{"mc-1"}, scopedModelConfigIDs(gs, vkScope, keyID), "the key-scoped model config came with the key")
+
+	require.NoError(t, store.DeleteModelConfig(ctx, "mc-1"))
+	_, err = server.ReloadVirtualKey(ctx, keyID)
+	require.NoError(t, err)
+	require.Empty(t, scopedModelConfigIDs(gs, vkScope, keyID), "a key-scoped model config the write deleted stops enforcing")
+
+	require.NoError(t, store.DeleteVirtualKey(ctx, keyID))
+	require.NoError(t, server.RemoveVirtualKey(ctx, keyID))
+	_, ok = gs.GetVirtualKeyByID(ctx, keyID)
+	require.False(t, ok, "the removed key is gone")
+	_, ok = gs.GetVirtualKey(ctx, "sk-bf-app")
+	require.False(t, ok, "and no longer served by its value")
+	require.Nil(t, gs.LoadBudget(ctx, "budget-1"), "and its budget went with it")
+}
+
+// TestGetVirtualKeyAnswersAsyncJobKeyLookups checks the async job executor's key lookup: a key's
+// value resolves to a row carrying only its ID and name, a rotated key's previous value still
+// resolves during its grace period, an unknown value does not, and nothing resolves once the
+// governance plugin is not loaded.
+func TestGetVirtualKeyAnswersAsyncJobKeyLookups(t *testing.T) {
+	server, _ := governedServer(t)
+	ctx := context.Background()
+
+	storeTestVirtualKey(t, server, "vk-1", "app", "sk-bf-app")
+	_, err := server.ReloadVirtualKey(ctx, "vk-1")
+	require.NoError(t, err)
+	row, ok := server.GetVirtualKey(ctx, "sk-bf-app")
+	require.True(t, ok, "a loaded key resolves by its value")
+	require.Equal(t, &configstoreTables.TableVirtualKey{ID: "vk-1", Name: "app"}, row, "the row carries only the key's ID and name")
+
+	now := time.Now().UTC()
+	graceEnds := now.Add(5 * time.Minute)
+	require.NoError(t, server.Config.ConfigStore.CreateVirtualKey(ctx, &configstoreTables.TableVirtualKey{
+		ID: "vk-2", Name: "rotated", Value: *schemas.NewSecretVar("sk-bf-new"), IsActive: schemas.Ptr(true),
+		PreviousValue: *schemas.NewSecretVar("sk-bf-old"), PreviousValueExpiresAt: &graceEnds, RotatedAt: &now,
+	}))
+	_, err = server.ReloadVirtualKey(ctx, "vk-2")
+	require.NoError(t, err)
+	row, ok = server.GetVirtualKey(ctx, "sk-bf-old")
+	require.True(t, ok, "a rotated key's previous value resolves during its grace period")
+	require.Equal(t, &configstoreTables.TableVirtualKey{ID: "vk-2", Name: "rotated"}, row)
+
+	row, ok = server.GetVirtualKey(ctx, "sk-bf-unknown")
+	require.False(t, ok, "an unknown value does not resolve")
+	require.Nil(t, row)
+
+	server.Config.BasePlugins.Store(&[]schemas.BasePlugin{})
+	row, ok = server.GetVirtualKey(ctx, "sk-bf-app")
+	require.False(t, ok, "nothing resolves once the governance plugin is not loaded")
+	require.Nil(t, row)
+}
+
+// TestReloadVirtualKeysMatchesPerKeyReload checks that a batched reload leaves every key as
+// ReloadVirtualKey would: each key's row replaces its record, with its key-scoped model configs,
+// duplicates are read once, and an id with no row is skipped without an error and without waiting
+// for the row to appear.
+func TestReloadVirtualKeysMatchesPerKeyReload(t *testing.T) {
+	server, gs := governedServer(t)
+	ctx := context.Background()
+	store := server.Config.ConfigStore
+	vkScope := configstoreTables.ModelConfigScopeVirtualKey
+
+	storeTestVirtualKey(t, server, "vk-a", "old-a", "sk-bf-a")
+	storeTestVirtualKey(t, server, "vk-b", "old-b", "sk-bf-b")
+	require.NoError(t, server.ReloadVirtualKeys(ctx, []string{"vk-a", "vk-b"}))
+
+	require.NoError(t, store.DB().Model(&configstoreTables.TableVirtualKey{}).Where("id = ?", "vk-a").Update("name", "new-a").Error)
+	scopeB := "vk-b"
+	require.NoError(t, store.CreateModelConfig(ctx, &configstoreTables.TableModelConfig{ID: "mc-b", ModelName: "gpt-4o", Scope: vkScope, ScopeID: &scopeB}))
+
+	started := time.Now()
+	require.NoError(t, server.ReloadVirtualKeys(ctx, []string{"vk-a", "vk-b", "vk-missing", "vk-a"}))
+	require.Less(t, time.Since(started), lib.DBLookupDelay, "a key with no row is not waited for")
+
+	vk, ok := gs.GetVirtualKeyByID(ctx, "vk-a")
+	require.True(t, ok)
+	require.Equal(t, "new-a", vk.Name)
+	require.Equal(t, []string{"mc-b"}, scopedModelConfigIDs(gs, vkScope, "vk-b"))
+	_, ok = gs.GetVirtualKeyByID(ctx, "vk-missing")
+	require.False(t, ok)
+}
+
+// TestReloadVirtualKeysDropsAKeyDeletedMeanwhile checks that a batched reload of a held key whose
+// row is gone drops its record: the row was deleted between the write and the read.
+func TestReloadVirtualKeysDropsAKeyDeletedMeanwhile(t *testing.T) {
+	server, gs := governedServer(t)
+	ctx := context.Background()
+	storeTestVirtualKey(t, server, "vk-gone", "gone", "sk-bf-gone")
+	require.NoError(t, server.ReloadVirtualKeys(ctx, []string{"vk-gone"}))
+	_, ok := gs.GetVirtualKeyByID(ctx, "vk-gone")
+	require.True(t, ok)
+
+	require.NoError(t, server.Config.ConfigStore.DB().Where("id = ?", "vk-gone").Delete(&configstoreTables.TableVirtualKey{}).Error)
+	require.NoError(t, server.ReloadVirtualKeys(ctx, []string{"vk-gone"}))
+	_, ok = gs.GetVirtualKeyByID(ctx, "vk-gone")
+	require.False(t, ok, "a key whose row is gone is dropped")
+}
+
+// TestReloadModelConfigKeepsLiveUsage checks that a model config reload installs the row's new
+// budget settings, keeps the usage and reset evidence governance counted since the budget was
+// loaded, answers with them and writes nothing back to the database.
+func TestReloadModelConfigKeepsLiveUsage(t *testing.T) {
+	server, gs := governedServer(t)
+	ctx := context.Background()
+	store := server.Config.ConfigStore
+	mcID := "mc-1"
+
+	require.NoError(t, store.CreateModelConfig(ctx, &configstoreTables.TableModelConfig{ID: mcID, ModelName: "gpt-4o", Scope: configstoreTables.ModelConfigScopeGlobal}))
+	require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{ID: "budget-mc", MaxLimit: 10, ResetDuration: "1d", LastReset: time.Now(), ModelConfigID: &mcID}))
+	_, err := server.ReloadModelConfig(ctx, mcID)
+	require.NoError(t, err)
+	resetAt := time.Now()
+	_, ok := gs.ResetBudgetAt(ctx, "budget-mc", resetAt)
+	require.True(t, ok)
+	require.NoError(t, gs.BumpBudgetUsage(ctx, "budget-mc", 4))
+
+	// Another write raises the limit. Saving a budget row validates the whole row, so the test
+	// writes the one column directly.
+	require.NoError(t, store.DB().Session(&gorm.Session{SkipHooks: true}).Model(&configstoreTables.TableBudget{}).Where("id = ?", "budget-mc").Update("max_limit", 20).Error)
+	reloaded, err := server.ReloadModelConfig(ctx, mcID)
+	require.NoError(t, err)
+	require.Len(t, reloaded.Budgets, 1)
+	require.Equal(t, 20.0, reloaded.Budgets[0].MaxLimit, "the response carries the new setting")
+	require.Equal(t, 4.0, reloaded.Budgets[0].CurrentUsage, "and the usage governance counted")
+	require.Equal(t, resetAt.UnixNano(), reloaded.Budgets[0].UsageResetEpoch, "and the reset evidence")
+
+	live := gs.LoadBudget(ctx, "budget-mc")
+	require.NotNil(t, live)
+	require.Equal(t, 20.0, live.MaxLimit, "governance enforces the new setting")
+	require.Equal(t, 4.0, live.CurrentUsage, "without losing the usage")
+	row, err := store.GetBudget(ctx, "budget-mc")
+	require.NoError(t, err)
+	require.Zero(t, row.CurrentUsage, "a reload writes nothing back; usage reaches the database through the tracker")
+
+	require.NoError(t, store.DeleteModelConfig(ctx, mcID))
+	require.NoError(t, server.RemoveModelConfig(ctx, mcID))
+	require.Nil(t, gs.LoadBudget(ctx, "budget-mc"), "removing the model config drops its budget")
+}
+
+// TestVirtualMCPAssignmentsFollowTheKey checks that attaching and detaching a Virtual MCP refresh
+// the key, which carries its assignments, and that removing a definition drops it from memory.
+func TestVirtualMCPAssignmentsFollowTheKey(t *testing.T) {
+	server, gs := governedServer(t)
+	ctx := context.Background()
+	store := server.Config.ConfigStore
+
+	storeTestVirtualKey(t, server, "vk-1", "app", "sk-bf-app")
+	_, err := server.ReloadVirtualKey(ctx, "vk-1")
+	require.NoError(t, err)
+	def := &configstoreTables.TableVirtualMCP{Name: "research", Enabled: true}
+	require.NoError(t, store.CreateVirtualMCP(ctx, def))
+	reloaded, err := server.ReloadVirtualMCP(ctx, def.ID)
+	require.NoError(t, err)
+	require.Equal(t, "research", reloaded.Name)
+	_, held := server.Config.LiveStore.Collections.VirtualMCPs.Get(registry.VirtualMCPKey(def.ID))
+	require.True(t, held, "the definition is in memory")
+
+	require.NoError(t, store.AttachVirtualMCPToVirtualKey(ctx, def.ID, "vk-1"))
+	require.NoError(t, server.ReloadVirtualMCPAssignment(ctx, "vk-1", def.ID, true))
+	require.Equal(t, []uint{def.ID}, assignedVirtualMCPs(t, server, gs, "vk-1"))
+
+	require.NoError(t, store.DetachVirtualMCPFromVirtualKey(ctx, def.ID, "vk-1"))
+	require.NoError(t, server.ReloadVirtualMCPAssignment(ctx, "vk-1", def.ID, false))
+	require.Empty(t, assignedVirtualMCPs(t, server, gs, "vk-1"))
+
+	require.NoError(t, store.DeleteVirtualMCP(ctx, def.ID))
+	require.NoError(t, server.RemoveVirtualMCP(ctx, def.ID))
+	_, held = server.Config.LiveStore.Collections.VirtualMCPs.Get(registry.VirtualMCPKey(def.ID))
+	require.False(t, held, "the removed definition is gone")
 }
 
 // perCallerNamesConfigStore counts the reads of the names in per-user discoveries.
@@ -208,15 +396,13 @@ func TestEvictMCPPerUserDiscoveryCache_ResyncsTheMCPGateway(t *testing.T) {
 	handlers.SetLogger(noopTestLogger{})
 	ctx := context.Background()
 	store := &perCallerNamesConfigStore{}
-	config := &lib.Config{
+	config := libtest.MCPClients(t, &lib.Config{
 		ConfigStore:  store,
 		ClientConfig: &configstore.ClientConfig{},
-		MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
-			{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)},
-		}},
-	}
-	config.MCPPerUserDiscoveryStore = mcpdiscovery.NewPerUserStore(store, noopTestLogger{})
-	mcpHandler, err := handlers.NewMCPServerHandler(ctx, config, reloadVirtualKeyToolManager{}, nil, nil, nil)
+		MCPConfig:    &schemas.MCPConfig{},
+	}, &schemas.MCPClientConfig{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)})
+	config.MCPPerUserDiscoveryStore = newTestPerUserDiscovery(t, store, noopTestLogger{})
+	mcpHandler, err := handlers.NewMCPServerHandler(ctx, config, reloadVirtualKeyToolManager{}, nil, nil)
 	require.NoError(t, err)
 	server := &BifrostHTTPServer{Config: config, MCPServerHandler: mcpHandler}
 
@@ -227,101 +413,6 @@ func TestEvictMCPPerUserDiscoveryCache_ResyncsTheMCPGateway(t *testing.T) {
 		before := store.reads.Load()
 		evict()
 		assert.Eventually(t, func() bool { return store.reads.Load() > before }, 5*time.Second, 10*time.Millisecond, name)
-	}
-}
-
-// batchReloadConfigStore serves the batched reads ReloadVirtualKeys makes and
-// records the id lists it was asked for.
-type batchReloadConfigStore struct {
-	configstore.ConfigStore
-	vks      map[string]*configstoreTables.TableVirtualKey
-	mcs      []configstoreTables.TableModelConfig
-	vkLoads  [][]string
-	mcsLoads [][]string
-}
-
-// GetVirtualKeysByIDs returns the persisted keys among ids.
-func (s *batchReloadConfigStore) GetVirtualKeysByIDs(_ context.Context, ids []string) ([]configstoreTables.TableVirtualKey, error) {
-	s.vkLoads = append(s.vkLoads, append([]string(nil), ids...))
-	var out []configstoreTables.TableVirtualKey
-	for _, id := range ids {
-		if vk, ok := s.vks[id]; ok {
-			out = append(out, *vk)
-		}
-	}
-	return out, nil
-}
-
-// GetModelConfigsByScopeAndScopeIDs returns the configured model configs scoped to ids.
-func (s *batchReloadConfigStore) GetModelConfigsByScopeAndScopeIDs(_ context.Context, _ string, ids []string, _ ...*gorm.DB) ([]configstoreTables.TableModelConfig, error) {
-	s.mcsLoads = append(s.mcsLoads, append([]string(nil), ids...))
-	want := map[string]bool{}
-	for _, id := range ids {
-		want[id] = true
-	}
-	var out []configstoreTables.TableModelConfig
-	for _, mc := range s.mcs {
-		if mc.ScopeID != nil && want[*mc.ScopeID] {
-			out = append(out, mc)
-		}
-	}
-	return out, nil
-}
-
-// TestReloadVirtualKeysMatchesPerKeyReload pins that a batched reload leaves
-// every key as ReloadVirtualKey would: the persisted key replaces the cached
-// one, its VK-scoped model configs are installed and stale ones evicted. It
-// reads each table once for all ids (deduplicated), skips an id with no row,
-// and never takes a full governance snapshot.
-func TestReloadVirtualKeysMatchesPerKeyReload(t *testing.T) {
-	handlers.SetLogger(noopTestLogger{})
-	previousLogger := logger
-	logger = noopTestLogger{}
-	t.Cleanup(func() { logger = previousLogger })
-	ctx := context.Background()
-	baseStore, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
-	if err != nil {
-		t.Fatalf("create governance store: %v", err)
-	}
-	vkScope := configstoreTables.ModelConfigScopeVirtualKey
-	for _, id := range []string{"vk-a", "vk-b"} {
-		baseStore.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: id, Name: "old", Value: *schemas.NewSecretVar("sk-bf-old-" + id)})
-	}
-	scopeA, scopeB := "vk-a", "vk-b"
-	baseStore.UpdateModelConfigInMemory(ctx, &configstoreTables.TableModelConfig{ID: "mc-stale", ModelName: "gpt-4o", Scope: vkScope, ScopeID: &scopeA})
-	store := &reloadVirtualKeyGovernanceStore{GovernanceStore: baseStore}
-	cs := &batchReloadConfigStore{
-		vks: map[string]*configstoreTables.TableVirtualKey{
-			"vk-a": {ID: "vk-a", Name: "new-a", Value: *schemas.NewSecretVar("sk-bf-new-a")},
-			"vk-b": {ID: "vk-b", Name: "new-b", Value: *schemas.NewSecretVar("sk-bf-new-b")},
-		},
-		mcs: []configstoreTables.TableModelConfig{{ID: "mc-new", ModelName: "gpt-4o", Scope: vkScope, ScopeID: &scopeB}},
-	}
-	config := &lib.Config{ConfigStore: cs, ClientConfig: &configstore.ClientConfig{}}
-	plugins := []schemas.BasePlugin{&reloadVirtualKeyPlugin{store: store}}
-	config.BasePlugins.Store(&plugins)
-	server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config}
-
-	if err := server.ReloadVirtualKeys(ctx, []string{"vk-a", "vk-b", "vk-missing", "vk-a"}); err != nil {
-		t.Fatalf("ReloadVirtualKeys returned unexpected error: %v", err)
-	}
-	for id, want := range map[string]string{"vk-a": "new-a", "vk-b": "new-b"} {
-		vk, ok := baseStore.GetVirtualKeyByID(ctx, id)
-		if !ok || vk.Name != want {
-			t.Fatalf("%s not reloaded: %+v", id, vk)
-		}
-	}
-	if got := baseStore.ScopedModelConfigIDs(vkScope, "vk-a"); len(got) != 0 {
-		t.Fatalf("stale model configs for vk-a not evicted: %v", got)
-	}
-	if got := baseStore.ScopedModelConfigIDs(vkScope, "vk-b"); len(got) != 1 || got[0] != "mc-new" {
-		t.Fatalf("model configs for vk-b = %v, want [mc-new]", got)
-	}
-	if len(cs.vkLoads) != 1 || len(cs.vkLoads[0]) != 3 || len(cs.mcsLoads) != 1 || len(cs.mcsLoads[0]) != 3 {
-		t.Fatalf("want one deduplicated read per table, got keys %v, model configs %v", cs.vkLoads, cs.mcsLoads)
-	}
-	if store.governanceDataCalls != 0 {
-		t.Fatalf("GetGovernanceData called %d times, want 0", store.governanceDataCalls)
 	}
 }
 
@@ -445,6 +536,7 @@ func (noopTestLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventB
 	return schemas.NoopLogEvent
 }
 
+// UpdateStatus records the call, then writes it through when the mock wraps a real store.
 func (s *updateStatusOnlyConfigStore) UpdateStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, errorMsg string) error {
 	s.calls = append(s.calls, schemas.KeyStatus{
 		Provider: provider,
@@ -452,7 +544,10 @@ func (s *updateStatusOnlyConfigStore) UpdateStatus(ctx context.Context, provider
 		Status:   schemas.KeyStatusType(status),
 		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: errorMsg}},
 	})
-	return nil
+	if s.ConfigStore == nil {
+		return nil
+	}
+	return s.ConfigStore.UpdateStatus(ctx, provider, keyID, status, errorMsg)
 }
 
 func TestUpdateKeyStatus_KeylessProviderUpdatesProviderStatusInMemory(t *testing.T) {
@@ -460,18 +555,15 @@ func TestUpdateKeyStatus_KeylessProviderUpdatesProviderStatusInMemory(t *testing
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	store := &updateStatusOnlyConfigStore{}
-	server := &BifrostHTTPServer{
-		Config: &lib.Config{
-			ConfigStore: store,
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"mock-openai": {
-					CustomProviderConfig: &schemas.CustomProviderConfig{IsKeyLess: true},
-					Status:               "unknown",
-				},
-			},
+	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"mock-openai": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+			Status:               "unknown",
 		},
-	}
+	}, nil)
+	store := &updateStatusOnlyConfigStore{ConfigStore: config.ConfigStore}
+	config.ConfigStore = store
+	server := &BifrostHTTPServer{Config: config}
 
 	server.updateKeyStatus(context.Background(), []schemas.KeyStatus{{
 		Provider: "mock-openai",
@@ -480,7 +572,7 @@ func TestUpdateKeyStatus_KeylessProviderUpdatesProviderStatusInMemory(t *testing
 		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: "preview missing model"}},
 	}})
 
-	provider := server.Config.Providers["mock-openai"]
+	provider := libtest.Providers(server.Config)["mock-openai"]
 	if provider.Status != string(schemas.KeyStatusListModelsFailed) {
 		t.Fatalf("expected provider status %q, got %q", schemas.KeyStatusListModelsFailed, provider.Status)
 	}
@@ -500,18 +592,16 @@ func TestUpdateKeyStatus_EmptyKeyIDDoesNotOverwriteKeyedProviderStatus(t *testin
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	store := &updateStatusOnlyConfigStore{}
-	server := &BifrostHTTPServer{
-		Config: &lib.Config{
-			ConfigStore: store,
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"openai": {
-					Keys:   []schemas.Key{{ID: "key-1"}},
-					Status: "healthy",
-				},
-			},
+	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"openai": {
+			Status: "healthy",
 		},
-	}
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {{ID: "key-1"}},
+	})
+	store := &updateStatusOnlyConfigStore{ConfigStore: config.ConfigStore}
+	config.ConfigStore = store
+	server := &BifrostHTTPServer{Config: config}
 
 	server.updateKeyStatus(context.Background(), []schemas.KeyStatus{{
 		Provider: "openai",
@@ -520,18 +610,16 @@ func TestUpdateKeyStatus_EmptyKeyIDDoesNotOverwriteKeyedProviderStatus(t *testin
 		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: "malformed status"}},
 	}})
 
-	provider := server.Config.Providers["openai"]
+	provider := libtest.Providers(server.Config)["openai"]
 	if provider.Status != "healthy" {
 		t.Fatalf("expected keyed provider status to remain unchanged, got %q", provider.Status)
 	}
 	if provider.Description != "" {
 		t.Fatalf("expected keyed provider description to remain unchanged, got %q", provider.Description)
 	}
-	if len(store.calls) != 1 {
-		t.Fatalf("expected one status update call, got %d", len(store.calls))
-	}
-	if store.calls[0].Provider != "openai" || store.calls[0].KeyID != "" {
-		t.Fatalf("expected DB status update to retain empty key ID, got provider=%q keyID=%q", store.calls[0].Provider, store.calls[0].KeyID)
+	// Memory always matches the database, so the provider row is not written either.
+	if len(store.calls) != 0 {
+		t.Fatalf("expected no status update call for a keyed provider, got %d", len(store.calls))
 	}
 }
 
@@ -545,21 +633,18 @@ func TestUpdateKeyStatus_SkipsWriteWhenUnchanged(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	store := &updateStatusOnlyConfigStore{}
-	server := &BifrostHTTPServer{
-		Config: &lib.Config{
-			ConfigStore: store,
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"openai": {
-					Keys: []schemas.Key{{
-						ID:          "key-1",
-						Status:      schemas.KeyStatusListModelsFailed,
-						Description: "upstream 503",
-					}},
-				},
-			},
-		},
-	}
+	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"openai": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {{
+			ID:          "key-1",
+			Status:      schemas.KeyStatusListModelsFailed,
+			Description: "upstream 503",
+		}},
+	})
+	store := &updateStatusOnlyConfigStore{ConfigStore: config.ConfigStore}
+	config.ConfigStore = store
+	server := &BifrostHTTPServer{Config: config}
 
 	unchanged := []schemas.KeyStatus{{
 		Provider: "openai",
@@ -586,11 +671,52 @@ func TestUpdateKeyStatus_SkipsWriteWhenUnchanged(t *testing.T) {
 	if len(store.calls) != 1 {
 		t.Fatalf("expected one status update call after the status changed, got %d", len(store.calls))
 	}
-	if got := server.Config.Providers["openai"].Keys[0].Status; got != schemas.KeyStatusSuccess {
+	if got := server.Config.GetProviderKeys("openai")[0].Status; got != schemas.KeyStatusSuccess {
 		t.Fatalf("expected in-memory status to become success, got %q", got)
 	}
-	if got := server.Config.Providers["openai"].Keys[0].Description; got != "" {
+	if got := server.Config.GetProviderKeys("openai")[0].Description; got != "" {
 		t.Fatalf("expected in-memory description to be cleared, got %q", got)
+	}
+}
+
+// TestUpdateKeyStatus_RereadsOnlyTheChangedKey checks that a key's status change re-reads that key
+// alone: the provider record and the provider's other keys are left as they are, so nothing derived
+// from providers is rebuilt on every list-models pass.
+func TestUpdateKeyStatus_RereadsOnlyTheChangedKey(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"openai": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {{ID: "key-1"}, {ID: "key-2"}},
+	})
+	server := &BifrostHTTPServer{Config: config}
+	collections := config.LiveStore.Collections
+	providerChanges := 0
+	cancel := collections.Providers.Subscribe(func(_ context.Context, changes []livestore.Change[registry.Provider]) {
+		providerChanges += len(changes)
+	})
+	defer cancel()
+	otherBefore, _ := collections.ProviderKeys.Get("key-2")
+
+	server.updateKeyStatus(context.Background(), []schemas.KeyStatus{{
+		Provider: "openai",
+		KeyID:    "key-1",
+		Status:   schemas.KeyStatusListModelsFailed,
+		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream 503"}},
+	}})
+
+	changed, ok := collections.ProviderKeys.Get("key-1")
+	if !ok || changed.Key.Status != schemas.KeyStatusListModelsFailed || changed.Key.Description != "upstream 503" {
+		t.Fatalf("expected key-1 to hold the new status, got %+v", changed)
+	}
+	if providerChanges != 0 {
+		t.Fatalf("expected the provider record to be left alone, got %d provider changes", providerChanges)
+	}
+	if other, _ := collections.ProviderKeys.Get("key-2"); other != otherBefore {
+		t.Fatal("expected the provider's other key record to be left alone")
 	}
 }
 
@@ -602,15 +728,14 @@ func TestUpdateKeyStatus_WritesWhenKeyMissingFromMemory(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	store := &updateStatusOnlyConfigStore{}
-	server := &BifrostHTTPServer{
-		Config: &lib.Config{
-			ConfigStore: store,
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"openai": {Keys: []schemas.Key{{ID: "key-1"}}},
-			},
-		},
-	}
+	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"openai": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {{ID: "key-1"}},
+	})
+	store := &updateStatusOnlyConfigStore{ConfigStore: config.ConfigStore}
+	config.ConfigStore = store
+	server := &BifrostHTTPServer{Config: config}
 
 	server.updateKeyStatus(context.Background(), []schemas.KeyStatus{{
 		Provider: "openai",
@@ -623,6 +748,52 @@ func TestUpdateKeyStatus_WritesWhenKeyMissingFromMemory(t *testing.T) {
 	}
 }
 
+// TestUpdateKeyStatus_LastStatusForAKeyInOneBatchWins covers a batch that reports one key twice,
+// as list-models does when the key succeeds on one page and fails on the next. Memory is
+// refreshed once after the batch, so the batch's last status must be the one compared and
+// written; comparing each against the pre-batch value would skip the last and keep the first.
+func TestUpdateKeyStatus_LastStatusForAKeyInOneBatchWins(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	config := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"openai": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"openai": {{
+			ID:          "key-1",
+			Status:      schemas.KeyStatusListModelsFailed,
+			Description: "upstream 503",
+		}},
+	})
+	store := &updateStatusOnlyConfigStore{ConfigStore: config.ConfigStore}
+	config.ConfigStore = store
+	server := &BifrostHTTPServer{Config: config}
+
+	server.updateKeyStatus(context.Background(), []schemas.KeyStatus{
+		{Provider: "openai", KeyID: "key-1", Status: schemas.KeyStatusSuccess},
+		{Provider: "openai", KeyID: "key-1", Status: schemas.KeyStatusListModelsFailed,
+			Error: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream 503"}}},
+	})
+
+	rows, err := store.ConfigStore.GetProviderKeys(context.Background(), "openai")
+	if err != nil {
+		t.Fatalf("failed to read the key rows: %v", err)
+	}
+	i := slices.IndexFunc(rows, func(k schemas.Key) bool { return k.ID == "key-1" })
+	if i < 0 {
+		t.Fatal("the key row is gone")
+	}
+	row := rows[i]
+	if row.Status != schemas.KeyStatusListModelsFailed || row.Description != "upstream 503" {
+		t.Fatalf("expected the row to end %q (%q), got %q (%q)", schemas.KeyStatusListModelsFailed, "upstream 503", row.Status, row.Description)
+	}
+	live := server.Config.GetProviderKeys("openai")[0]
+	if live.Status != schemas.KeyStatusListModelsFailed || live.Description != "upstream 503" {
+		t.Fatalf("expected the live record to end %q (%q), got %q (%q)", schemas.KeyStatusListModelsFailed, "upstream 503", live.Status, live.Description)
+	}
+}
+
 // TestRefreshAllLiveModels_NilClientIsNoop covers the boot-order guard: the
 // refresher can fire before or after the client exists, and dereferencing a
 // nil client would panic the background goroutine.
@@ -632,12 +803,13 @@ func TestRefreshAllLiveModels_NilClientIsNoop(t *testing.T) {
 	defer func() { logger = prevLogger }()
 
 	server := &BifrostHTTPServer{
-		Config: &lib.Config{
-			ModelCatalog: modelcatalog.NewTestCatalog(nil),
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"custom-provider": {Keys: []schemas.Key{{ID: "key-1"}}},
-			},
-		},
+		Config: libtest.FileOnly(t, &lib.Config{
+			ModelCatalog: catalogForTest(t, nil),
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			"custom-provider": {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			"custom-provider": {{ID: "key-1"}},
+		}),
 	}
 
 	// Reaching the end without panicking is the assertion: s.Client is nil, so
@@ -658,16 +830,17 @@ func TestRefreshAllLiveModels_SkipsProvidersWithNoEnabledKeys(t *testing.T) {
 	defer func() { logger = prevLogger }()
 
 	server := &BifrostHTTPServer{
-		Config: &lib.Config{
-			ModelCatalog: modelcatalog.NewTestCatalog(nil),
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"all-disabled": {Keys: []schemas.Key{
-					{ID: "key-1", Enabled: schemas.Ptr(false)},
-					{ID: "key-2", Enabled: schemas.Ptr(false)},
-				}},
-				"no-keys": {},
+		Config: libtest.FileOnly(t, &lib.Config{
+			ModelCatalog: catalogForTest(t, nil),
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			"all-disabled": {},
+			"no-keys":      {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			"all-disabled": {
+				{ID: "key-1", Enabled: schemas.Ptr(false)},
+				{ID: "key-2", Enabled: schemas.Ptr(false)},
 			},
-		},
+		}),
 	}
 	// Non-nil sentinel would be required for a fetch to be attempted; leaving
 	// Client nil means any scheduled fetch panics and fails this test.
@@ -849,12 +1022,11 @@ func TestRefreshLiveModelsForProvider_AllKeysDisabled(t *testing.T) {
 	defer func() { logger = prevLogger }()
 
 	server := &BifrostHTTPServer{
-		Config: &lib.Config{
-			ModelCatalog: modelcatalog.NewTestCatalog(nil),
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"custom-provider": {},
-			},
-		},
+		Config: libtest.FileOnly(t, &lib.Config{
+			ModelCatalog: catalogForTest(t, nil),
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			"custom-provider": {},
+		}, nil),
 	}
 
 	keys := []schemas.Key{
@@ -894,23 +1066,23 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualDisabledKeys(t *testing
 	defer upstream.Close()
 
 	const provider schemas.ModelProvider = "keyless-provider"
-	cfg := &lib.Config{
-		ModelCatalog: modelcatalog.NewTestCatalog(nil),
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			provider: {
-				Keys: []schemas.Key{{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1, Enabled: schemas.Ptr(false)}},
-				NetworkConfig: &schemas.NetworkConfig{
-					BaseURL:                        upstream.URL,
-					AllowPrivateNetwork:            true,
-					DefaultRequestTimeoutInSeconds: 5,
-				},
-				CustomProviderConfig: &schemas.CustomProviderConfig{
-					IsKeyLess:        true,
-					BaseProviderType: schemas.OpenAI,
-				},
+	cfg := libtest.FileOnly(t, &lib.Config{
+		ModelCatalog: catalogForTest(t, nil),
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		provider: {
+			NetworkConfig: &schemas.NetworkConfig{
+				BaseURL:                        upstream.URL,
+				AllowPrivateNetwork:            true,
+				DefaultRequestTimeoutInSeconds: 5,
+			},
+			CustomProviderConfig: &schemas.CustomProviderConfig{
+				IsKeyLess:        true,
+				BaseProviderType: schemas.OpenAI,
 			},
 		},
-	}
+	}, map[schemas.ModelProvider][]schemas.Key{
+		provider: {{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1, Enabled: schemas.Ptr(false)}},
+	})
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: lib.NewBaseAccount(cfg),
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
@@ -919,8 +1091,7 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualDisabledKeys(t *testing
 	defer client.Shutdown()
 
 	server := &BifrostHTTPServer{Config: cfg, Client: client}
-	keys, err := cfg.GetProviderKeysRaw(provider)
-	require.NoError(t, err)
+	keys := cfg.GetProviderKeys(provider)
 
 	server.RefreshLiveModelsForProvider(context.Background(), provider, keys)
 
@@ -945,23 +1116,23 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualEnabledKey(t *testing.T
 	defer upstream.Close()
 
 	const provider schemas.ModelProvider = "keyless-provider"
-	cfg := &lib.Config{
-		ModelCatalog: modelcatalog.NewTestCatalog(nil),
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			provider: {
-				Keys: []schemas.Key{{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1}},
-				NetworkConfig: &schemas.NetworkConfig{
-					BaseURL:                        upstream.URL,
-					AllowPrivateNetwork:            true,
-					DefaultRequestTimeoutInSeconds: 5,
-				},
-				CustomProviderConfig: &schemas.CustomProviderConfig{
-					IsKeyLess:        true,
-					BaseProviderType: schemas.OpenAI,
-				},
+	cfg := libtest.FileOnly(t, &lib.Config{
+		ModelCatalog: catalogForTest(t, nil),
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		provider: {
+			NetworkConfig: &schemas.NetworkConfig{
+				BaseURL:                        upstream.URL,
+				AllowPrivateNetwork:            true,
+				DefaultRequestTimeoutInSeconds: 5,
+			},
+			CustomProviderConfig: &schemas.CustomProviderConfig{
+				IsKeyLess:        true,
+				BaseProviderType: schemas.OpenAI,
 			},
 		},
-	}
+	}, map[schemas.ModelProvider][]schemas.Key{
+		provider: {{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1}},
+	})
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: lib.NewBaseAccount(cfg),
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
@@ -970,8 +1141,7 @@ func TestRefreshLiveModelsForProvider_KeylessWithResidualEnabledKey(t *testing.T
 	defer client.Shutdown()
 
 	server := &BifrostHTTPServer{Config: cfg, Client: client}
-	keys, err := cfg.GetProviderKeysRaw(provider)
-	require.NoError(t, err)
+	keys := cfg.GetProviderKeys(provider)
 
 	server.RefreshLiveModelsForProvider(context.Background(), provider, keys)
 	require.NotEmpty(t, cfg.ModelCatalog.GetModelsForProvider(provider), "keyless provider has no live models after discovery")
@@ -993,12 +1163,13 @@ func TestOnKeyAdded_DisabledKeySkipsFetch(t *testing.T) {
 
 	disabledKey := schemas.Key{ID: "key-1", Enabled: schemas.Ptr(false)}
 	server := &BifrostHTTPServer{
-		Config: &lib.Config{
-			ModelCatalog: modelcatalog.NewTestCatalog(nil),
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"custom-provider": {Keys: []schemas.Key{disabledKey}},
-			},
-		},
+		Config: libtest.FileOnly(t, &lib.Config{
+			ModelCatalog: catalogForTest(t, nil),
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			"custom-provider": {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			"custom-provider": {disabledKey},
+		}),
 	}
 
 	// s.Client is left nil: if the disabled-key guard regresses, the fetch
@@ -1020,17 +1191,18 @@ func TestOnKeyUpdated_DisabledKeySkipsFetchButInvalidatesCache(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("custom-provider", "key-1", false, []string{"custom-provider/some-model"})
 
 	disabledKey := schemas.Key{ID: "key-1", Enabled: schemas.Ptr(false)}
 	server := &BifrostHTTPServer{
-		Config: &lib.Config{
+		Config: libtest.FileOnly(t, &lib.Config{
 			ModelCatalog: catalog,
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"custom-provider": {Keys: []schemas.Key{disabledKey}},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			"custom-provider": {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			"custom-provider": {disabledKey},
+		}),
 	}
 
 	if models := server.Config.ModelCatalog.GetModelsForProvider("custom-provider"); len(models) == 0 {
@@ -1075,7 +1247,7 @@ func (s *reloadProviderConfigStore) GetProvider(context.Context, schemas.ModelPr
 // RefreshLiveModelsForProvider and the OnKey* handlers use reads the in-memory
 // copy. A fixture that populated only one would exercise a state the running
 // server never has.
-func newReloadProviderServer(catalog *modelcatalog.ModelCatalog, provider schemas.ModelProvider, keys []schemas.Key, keyless bool) *BifrostHTTPServer {
+func newReloadProviderServer(t testing.TB, catalog *modelcatalog.ModelCatalog, provider schemas.ModelProvider, keys []schemas.Key, keyless bool) *BifrostHTTPServer {
 	customProviderConfig := &schemas.CustomProviderConfig{
 		IsKeyLess:       keyless,
 		AllowedRequests: &schemas.AllowedRequests{ListModels: false},
@@ -1083,19 +1255,19 @@ func newReloadProviderServer(catalog *modelcatalog.ModelCatalog, provider schema
 	return &BifrostHTTPServer{
 		Ctx:    schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
 		Client: &bifrost.Bifrost{},
-		Config: &lib.Config{
+		Config: libtest.FileOnly(t, &lib.Config{
 			ConfigStore: &reloadProviderConfigStore{provider: &configstoreTables.TableProvider{
 				Name:                 string(provider),
 				CustomProviderConfig: customProviderConfig,
 			}},
 			ModelCatalog: catalog,
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				provider: {
-					Keys:                 keys,
-					CustomProviderConfig: customProviderConfig,
-				},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			provider: {
+				CustomProviderConfig: customProviderConfig,
 			},
-		},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			provider: keys,
+		}),
 	}
 }
 
@@ -1154,25 +1326,26 @@ func newProviderRegistrationFixture(t *testing.T) *providerRegistrationFixture {
 		http.Error(w, "explicit provider was load balanced", http.StatusBadGateway)
 	}))
 	t.Cleanup(competitor.Close)
-	cs, err := configstore.NewConfigStore(context.Background(), &configstore.Config{Enabled: true, Type: configstore.ConfigStoreTypeSQLite, Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")}}, noopTestLogger{})
-	require.NoError(t, err)
-	t.Cleanup(func() { assert.NoError(t, cs.Close(context.Background())) })
 	pc := configstore.ProviderConfig{
 		NetworkConfig:            &schemas.NetworkConfig{BaseURL: competitor.URL, AllowPrivateNetwork: true, MaxRetries: 0},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 2},
 		CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
 	}
 	cc := lib.DefaultClientConfig
-	cfg := &lib.Config{ConfigStore: cs, ClientConfig: &cc, ModelCatalog: modelcatalog.NewTestCatalog(nil), Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig)}
-	gov, err := governance.Init(context.Background(), nil, noopTestLogger{}, nil, &configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{{
+	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &cc, ModelCatalog: catalogForTest(t, nil)}, nil, nil)
+	// The key is written to the config store and brought into the live store, which the governance
+	// store reads it from.
+	require.NoError(t, cfg.ConfigStore.CreateVirtualKey(context.Background(), &configstoreTables.TableVirtualKey{
 		ID: "registration-vk", Name: "registration-vk", Value: *schemas.NewSecretVar("sk-bf-registration"), IsActive: schemas.Ptr(true),
 		ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{
 			{Provider: string(target), AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true, Weight: schemas.Ptr(0.0)},
 			{Provider: string(other), AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true, Weight: schemas.Ptr(1.0)},
 		},
-	}}}, nil, nil, &GovernanceInMemoryStore{Config: cfg})
+	}))
+	require.NoError(t, cfg.LiveStore.Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindVirtualKey, ID: "registration-vk"}}))
+	gov, err := governance.Init(context.Background(), nil, noopTestLogger{}, nil, cfg.LiveStore, nil, nil)
 	require.NoError(t, err)
-	routingPlugin, err := routing.Init(context.Background(), nil, noopTestLogger{}, nil, gov)
+	routingPlugin, err := routing.Init(context.Background(), nil, noopTestLogger{}, nil, cfg.LiveStore, gov)
 	require.NoError(t, err)
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: lib.NewBaseAccount(cfg), Logger: noopTestLogger{}, LLMPlugins: []schemas.LLMPlugin{gov, routingPlugin}})
 	require.NoError(t, err)
@@ -1361,8 +1534,7 @@ func TestProviderRegistration_FailedCreateStopsRuntimeProvider(t *testing.T) {
 	assert.True(t, runningAtConfigDelete, "runtime provider was stopped while its configuration was still stored, so a request could prepare it again")
 	assert.Nil(t, fixture.server.Client.GetProviderByKey(fixture.provider), "rolled-back provider is still running in core")
 	assert.False(t, schemas.IsKnownProvider(string(fixture.provider)), "rolled-back provider prefix is still registered")
-	_, err := fixture.server.Config.GetProviderConfigRaw(fixture.provider)
-	assert.ErrorIs(t, err, lib.ErrNotFound)
+	assert.False(t, fixture.server.Config.IsProviderConfigured(fixture.provider), "rolled-back provider configuration is still stored")
 }
 
 // A rolled-back create removes the configuration and then stops the runtime provider. A second
@@ -1403,11 +1575,11 @@ func TestReloadProvider_FailedRefetchKeepsPreviousCatalog(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("custom-provider", "key-1", false, []string{"some-model"})
 	catalog.UpsertLive("custom-provider", "key-1", true, []string{"some-model", "unlisted-model"})
 
-	server := newReloadProviderServer(catalog, "custom-provider", []schemas.Key{{ID: "key-1"}}, false)
+	server := newReloadProviderServer(t, catalog, "custom-provider", []schemas.Key{{ID: "key-1"}}, false)
 
 	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
@@ -1432,7 +1604,7 @@ func TestReloadProvider_PrunesRemovedAndDisabledKeys(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("custom-provider", "key-enabled", false, []string{"kept-model"})
 	catalog.UpsertLive("custom-provider", "key-disabled", false, []string{"disabled-model"})
 	catalog.UpsertLive("custom-provider", "key-removed", false, []string{"removed-model"})
@@ -1442,7 +1614,7 @@ func TestReloadProvider_PrunesRemovedAndDisabledKeys(t *testing.T) {
 		{ID: "key-enabled"},
 		{ID: "key-disabled", Enabled: schemas.Ptr(false)},
 	}
-	server := newReloadProviderServer(catalog, "custom-provider", keys, false)
+	server := newReloadProviderServer(t, catalog, "custom-provider", keys, false)
 
 	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
@@ -1466,10 +1638,10 @@ func TestReloadProvider_KeylessProviderRetainsSentinelEntry(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("keyless-provider", "", false, []string{"keyless-model"})
 
-	server := newReloadProviderServer(catalog, "keyless-provider", nil, true)
+	server := newReloadProviderServer(t, catalog, "keyless-provider", nil, true)
 
 	if _, err := server.ReloadProvider(context.Background(), "keyless-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
@@ -1494,8 +1666,8 @@ func TestReloadProvider_ZeroKeyProviderClaimsModelsOnlyWhenKeyless(t *testing.T)
 	const provider schemas.ModelProvider = "harness-oauthkey-run"
 	for _, keyless := range []bool{false, true} {
 		t.Run(fmt.Sprintf("keyless=%v", keyless), func(t *testing.T) {
-			catalog := modelcatalog.NewTestCatalog(nil)
-			server := newReloadProviderServer(catalog, provider, nil, keyless)
+			catalog := catalogForTest(t, nil)
+			server := newReloadProviderServer(t, catalog, provider, nil, keyless)
 			if _, err := server.ReloadProvider(context.Background(), provider, false); err != nil {
 				t.Fatalf("ReloadProvider returned unexpected error: %v", err)
 			}
@@ -1517,11 +1689,11 @@ func TestReloadProvider_KeylessPrunesResidualKeyEntries(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("keyless-provider", "", false, []string{"keyless-model"})
 	catalog.UpsertLive("keyless-provider", "residual-key", false, []string{"residual-model"})
 
-	server := newReloadProviderServer(catalog, "keyless-provider", []schemas.Key{{ID: "residual-key"}}, true)
+	server := newReloadProviderServer(t, catalog, "keyless-provider", []schemas.Key{{ID: "residual-key"}}, true)
 
 	if _, err := server.ReloadProvider(context.Background(), "keyless-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
@@ -1540,10 +1712,10 @@ func TestReloadProvider_NoKeysDropsEverything(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("custom-provider", "key-1", false, []string{"orphaned-model"})
 
-	server := newReloadProviderServer(catalog, "custom-provider", nil, false)
+	server := newReloadProviderServer(t, catalog, "custom-provider", nil, false)
 
 	if _, err := server.ReloadProvider(context.Background(), "custom-provider", false); err != nil {
 		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
@@ -1569,11 +1741,11 @@ func TestReloadProvider_ConcurrentReloadsAndReadsAreRaceFree(t *testing.T) {
 	logger = noopTestLogger{}
 	defer func() { logger = prevLogger }()
 
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLive("custom-provider", "key-1", false, []string{"some-model"})
 	catalog.UpsertLive("custom-provider", "key-1", true, []string{"some-model", "unlisted-model"})
 
-	server := newReloadProviderServer(catalog, "custom-provider", []schemas.Key{{ID: "key-1"}}, false)
+	server := newReloadProviderServer(t, catalog, "custom-provider", []schemas.Key{{ID: "key-1"}}, false)
 
 	const reloaders = 4
 	const readers = 4
@@ -1883,48 +2055,6 @@ func TestMarshalPluginConfig_WithComplexType(t *testing.T) {
 	}
 }
 
-// Provider add, delete and status updates all write to the provider map in place under the write
-// lock, so a caller ranging it after the read lock is released hits a concurrent map iteration and
-// write. That is fatal rather than merely stale — it takes the process down — so the slice is built
-// under the lock instead. Run with -race.
-func TestGetConfiguredProviderNamesIsSafeAgainstConcurrentProviderEdits(t *testing.T) {
-	config := &lib.Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}},
-	}
-	store := &GovernanceInMemoryStore{Config: config}
-
-	churn := []schemas.ModelProvider{"churn-a", "churn-b", "churn-c"}
-	done := make(chan struct{})
-	var writers sync.WaitGroup
-	writers.Add(1)
-	go func() {
-		defer writers.Done()
-		for {
-			select {
-			case <-done:
-				return
-			default:
-			}
-			// The same in-place mutation AddProvider and RemoveProvider make.
-			for _, provider := range churn {
-				config.Mu.Lock()
-				config.Providers[provider] = configstore.ProviderConfig{}
-				delete(config.Providers, provider)
-				config.Mu.Unlock()
-			}
-		}
-	}()
-
-	for range 500 {
-		if names := store.GetConfiguredProviderNames(); len(names) == 0 {
-			t.Fatal("expected the configured providers to be listed")
-		}
-	}
-
-	close(done)
-	writers.Wait()
-}
-
 func TestNotificationPublisher_ResolvesPublisherSetAfterRegistration(t *testing.T) {
 	s := &BifrostHTTPServer{Config: &lib.Config{}}
 	// Captured while the notification service does not exist yet, as RegisterAPIRoutes
@@ -1951,7 +2081,7 @@ func TestReloadProxyConfigUpdatesHTTPClientFactory(t *testing.T) {
 	defer func() { logger = prevLogger }()
 
 	factory := network.NewHTTPClientFactory(nil, nil)
-	s := &BifrostHTTPServer{Config: &lib.Config{}, HTTPClientFactory: factory}
+	s := &BifrostHTTPServer{Config: &lib.Config{LiveStore: liveStoreForTest(t)}, HTTPClientFactory: factory}
 	proxy := &configstoreTables.GlobalProxyConfig{Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://10.0.0.9:3128", EnableForAPI: true}
 
 	if err := s.ReloadProxyConfig(context.Background(), proxy); err != nil {
@@ -1972,7 +2102,7 @@ func TestReloadProxyConfigUpdatesConfigFactory(t *testing.T) {
 	defer func() { logger = prevLogger }()
 
 	factory := network.NewHTTPClientFactory(nil, nil)
-	s := &BifrostHTTPServer{Config: &lib.Config{HTTPClientFactory: factory}}
+	s := &BifrostHTTPServer{Config: &lib.Config{LiveStore: liveStoreForTest(t), HTTPClientFactory: factory}}
 	proxy := &configstoreTables.GlobalProxyConfig{Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://10.0.0.9:3128", EnableForAPI: true}
 	if err := s.ReloadProxyConfig(context.Background(), proxy); err != nil {
 		t.Fatalf("ReloadProxyConfig: %v", err)
@@ -1990,7 +2120,7 @@ func TestReloadProxyConfigAcceptsRemoval(t *testing.T) {
 	defer func() { logger = prevLogger }()
 
 	factory := network.NewHTTPClientFactory(&network.GlobalProxyConfig{Enabled: true, URL: "http://10.0.0.9:3128", EnableForAPI: true}, nil)
-	s := &BifrostHTTPServer{Config: &lib.Config{HTTPClientFactory: factory}}
+	s := &BifrostHTTPServer{Config: &lib.Config{LiveStore: liveStoreForTest(t), HTTPClientFactory: factory}}
 	if err := s.ReloadProxyConfig(context.Background(), nil); err != nil {
 		t.Fatalf("ReloadProxyConfig(nil): %v", err)
 	}
@@ -1999,25 +2129,24 @@ func TestReloadProxyConfigAcceptsRemoval(t *testing.T) {
 	}
 }
 
-// ctxSensitivePromptStore fails any read whose context is already cancelled. That is how
-// a test observes the context ReloadPlugin handed the plugin constructor: prompts.Init
-// calls loadCache(ctx) and returns its error.
-type ctxSensitivePromptStore struct {
-	configstore.ConfigStore
+// ctxRecordingVectorStore records the context the semantic cache constructor creates its
+// namespace with, which it derives from its own, and whether it was already done then; the
+// constructor cancels it on return. That is how a test observes the context ReloadPlugin
+// handed the plugin constructor.
+type ctxRecordingVectorStore struct {
+	vectorstore.VectorStore
 	gotCtx context.Context
+	errAt  error
 }
 
 // errStopAfterInstantiation ends ReloadPlugin at the constructor, before it needs a live
 // Bifrost client, so the test can inspect the context the constructor was given.
 var errStopAfterInstantiation = errors.New("stop after instantiation")
 
-func (s *ctxSensitivePromptStore) GetPrompts(ctx context.Context, _ *string) ([]configstoreTables.TablePrompt, error) {
-	s.gotCtx = ctx
-	return nil, errStopAfterInstantiation
-}
-
-func (s *ctxSensitivePromptStore) GetAllPromptVersions(ctx context.Context) ([]configstoreTables.TablePromptVersion, error) {
-	return nil, ctx.Err()
+// CreateNamespace records ctx and stops the constructor.
+func (s *ctxRecordingVectorStore) CreateNamespace(ctx context.Context, _ string, _ int, _ map[string]vectorstore.VectorStoreProperties) error {
+	s.gotCtx, s.errAt = ctx, ctx.Err()
+	return errStopAfterInstantiation
 }
 
 // A plugin outlives the request that loaded it, so ReloadPlugin must hand its constructor
@@ -2032,19 +2161,19 @@ func TestReloadPluginGivesTheConstructorTheServerContext(t *testing.T) {
 	)
 	defer cancelServer()
 
-	store := &ctxSensitivePromptStore{}
-	s := &BifrostHTTPServer{Ctx: serverCtx, Config: &lib.Config{ConfigStore: store}}
+	store := &ctxRecordingVectorStore{}
+	s := &BifrostHTTPServer{Ctx: serverCtx, Config: &lib.Config{VectorStore: store}}
 
 	// The admin reload request is already over by the time the constructor runs.
 	reloadReqCtx, cancelRequest := context.WithCancel(context.Background())
 	cancelRequest()
 
-	err := s.ReloadPlugin(reloadReqCtx, prompts.PluginName, nil, nil, nil, nil)
+	err := s.ReloadPlugin(reloadReqCtx, semanticcache.PluginName, nil, map[string]any{"dimension": 1}, nil, nil)
 
 	if store.gotCtx == nil {
 		t.Fatal("the plugin constructor never reached the store")
 	}
-	if cerr := store.gotCtx.Err(); cerr != nil {
+	if cerr := store.errAt; cerr != nil {
 		t.Errorf("constructor context was already cancelled (%v); it must be the server context, not the reload request's", cerr)
 	}
 	if !errors.Is(err, errStopAfterInstantiation) {
@@ -2112,10 +2241,9 @@ func TestReloadPluginFailureKeepsTheRunningInstanceStatus(t *testing.T) {
 // A config refused at load wraps lib.ErrInvalidPluginConfig and touches no plugin status.
 func TestReloadPluginValidatesSemanticCacheConfig(t *testing.T) {
 	SetLogger(bifrost.NewNoOpLogger())
-	cfg := &lib.Config{
-		Providers:   map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}},
+	cfg := libtest.FileOnly(t, &lib.Config{
 		VectorStore: mismatchVectorStore{},
-	}
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, nil)
 	s := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), Config: cfg}
 
 	rejected := []struct {
@@ -2544,83 +2672,6 @@ func TestPrometheusHTTPMiddlewarePassesThroughWithoutThePlugin(t *testing.T) {
 	}
 }
 
-// TestGovernanceInMemoryStoreProvidersSurviveEdits pins that the provider map the governance
-// plugin reads (batchBaseProvider, modelMatcher) can be indexed after the accessor has released
-// its lock while a provider edit writes to the live map: the accessor must hand back a copy, not
-// the map itself, or the read is a fatal concurrent map access under load.
-// The per-request model check reads one provider through GetConfiguredProvider: it takes the read
-// lock and copies nothing, unlike GetConfiguredProviders, which snapshots the whole map.
-func TestGovernanceInMemoryStoreReadsOneProviderWithoutCopying(t *testing.T) {
-	config := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}, schemas.Anthropic: {}}}
-	store := &GovernanceInMemoryStore{Config: config}
-	var single interface {
-		GetConfiguredProvider(schemas.ModelProvider) (configstore.ProviderConfig, bool)
-	} = store
-
-	_, ok := single.GetConfiguredProvider(schemas.OpenAI)
-	assert.True(t, ok)
-	_, ok = single.GetConfiguredProvider(schemas.Gemini)
-	assert.False(t, ok)
-	assert.Zero(t, testing.AllocsPerRun(100, func() { _, _ = single.GetConfiguredProvider(schemas.OpenAI) }), "a one-provider read allocates nothing")
-}
-
-// BenchmarkGovernanceInMemoryStoreProviderLookup compares reading one provider out of a snapshot of
-// the whole map (what a model check did) with reading it alone, across twenty configured providers.
-func BenchmarkGovernanceInMemoryStoreProviderLookup(b *testing.B) {
-	providers := map[schemas.ModelProvider]configstore.ProviderConfig{}
-	for i := 0; i < 20; i++ {
-		providers[schemas.ModelProvider(fmt.Sprintf("provider-%d", i))] = configstore.ProviderConfig{}
-	}
-	providers[schemas.OpenAI] = configstore.ProviderConfig{}
-	store := &GovernanceInMemoryStore{Config: &lib.Config{Providers: providers}}
-	b.Run("whole_map", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			_ = store.GetConfiguredProviders()[schemas.OpenAI]
-		}
-	})
-	b.Run("single", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			_, _ = store.GetConfiguredProvider(schemas.OpenAI)
-		}
-	})
-}
-
-func TestGovernanceInMemoryStoreProvidersSurviveEdits(t *testing.T) {
-	t.Parallel()
-	config := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}}
-	store := &GovernanceInMemoryStore{Config: config}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 2000; i++ {
-			providers := store.GetConfiguredProviders()
-			_, _ = providers[schemas.OpenAI]
-			_, _ = providers[schemas.Anthropic]
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 2000; i++ {
-			config.Mu.Lock()
-			config.Providers[schemas.Anthropic] = configstore.ProviderConfig{}
-			delete(config.Providers, schemas.Anthropic)
-			config.Mu.Unlock()
-		}
-	}()
-	wg.Wait()
-
-	providers := store.GetConfiguredProviders()
-	config.Mu.Lock()
-	config.Providers[schemas.Gemini] = configstore.ProviderConfig{}
-	config.Mu.Unlock()
-	_, leaked := providers[schemas.Gemini]
-	assert.False(t, leaked, "the returned map is a snapshot, not the live map")
-}
-
 // TestApplyBasePath pins the resolve-and-store step that Bootstrap runs, and
 // that builds with their own bootstrap (enterprise) call: the flag value wins
 // over server.base_path, the normalized result lands on the server, on its
@@ -2680,7 +2731,7 @@ func TestReloadClientConfigFromConfigStore_AppliesUsageEstimationTokenizers(t *t
 	t.Cleanup(func() { streamusage.Configure(nil) })
 
 	store := &clientConfigOnlyStore{}
-	cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	cfg := &lib.Config{LiveStore: liveStoreForTest(t), ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: lib.NewBaseAccount(cfg),
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
@@ -2798,15 +2849,16 @@ func TestCapturedVectorsFollowLogDeletesAndTheRoutingPlugin(t *testing.T) {
 	}
 	newRouting := func() *routing.RoutingPlugin {
 		t.Helper()
-		ruleStore, err := rules.NewLocalStore(ctx, quiet, nil)
+		ruleStore, err := rules.NewTestRules(ctx, t.TempDir(), quiet)
 		require.NoError(t, err)
-		p, err := routing.InitFromStore(ctx, &routing.Config{}, quiet, nil, ruleStore, unusedGovernance{})
+		t.Cleanup(ruleStore.Close)
+		p, err := routing.InitFromStore(ctx, &routing.Config{}, quiet, nil, ruleStore.Store, unusedGovernance{})
 		require.NoError(t, err)
 		p.SetComplexityWarmupDependencies(vs, nil)
 		return p
 	}
 
-	cfg := &lib.Config{LogsStore: ls, VectorStore: vs}
+	cfg := &lib.Config{LiveStore: liveStoreForTest(t), LogsStore: ls, VectorStore: vs}
 	first := newRouting()
 	t.Cleanup(func() { _ = first.Cleanup() })
 	cfg.BasePlugins.Store(&[]schemas.BasePlugin{first})
@@ -3496,5 +3548,286 @@ func TestGatewayServerOversizedBodyAnswered413BeforeBody(t *testing.T) {
 	}
 	if handlerRan {
 		t.Error("handler ran for an oversized body")
+	}
+}
+
+// TestReloadTeamAnswersWithLiveUsageAndWritesNothing checks a team reload's response: its budget
+// carries the usage and last reset counted in memory and its rate limit the token and request usage
+// and last resets, while the rows keep what the database holds.
+func TestReloadTeamAnswersWithLiveUsageAndWritesNothing(t *testing.T) {
+	server, gs := governedServer(t)
+	ctx := context.Background()
+	store := server.Config.ConfigStore
+	loadedAt := time.Now().Add(-time.Hour).Truncate(time.Second)
+
+	require.NoError(t, store.CreateRateLimit(ctx, &configstoreTables.TableRateLimit{
+		ID: "rl-team", TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1d"),
+		RequestMaxLimit: schemas.Ptr(int64(100)), RequestResetDuration: schemas.Ptr("1d"),
+		TokenLastReset: loadedAt, RequestLastReset: loadedAt,
+	}))
+	require.NoError(t, store.CreateTeam(ctx, &configstoreTables.TableTeam{ID: "team-1", Name: "Platform", RateLimitID: schemas.Ptr("rl-team")}))
+	require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{ID: "budget-team", MaxLimit: 10, ResetDuration: "1d", LastReset: loadedAt, TeamID: schemas.Ptr("team-1")}))
+	_, err := server.ReloadTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.NoError(t, gs.BumpBudgetUsage(ctx, "budget-team", 3))
+	require.NoError(t, gs.BumpRateLimitUsage(ctx, "rl-team", 40, true, true))
+
+	// The rows' last resets change in the database; memory keeps the ones it counts from.
+	budgetReset := gs.LoadBudget(ctx, "budget-team").LastReset
+	tokenReset, requestReset := gs.LoadRateLimit(ctx, "rl-team").TokenLastReset, gs.LoadRateLimit(ctx, "rl-team").RequestLastReset
+	movedAt := budgetReset.Add(-30 * time.Minute)
+	db := store.DB().Session(&gorm.Session{SkipHooks: true})
+	require.NoError(t, db.Model(&configstoreTables.TableBudget{}).Where("id = ?", "budget-team").Update("last_reset", movedAt).Error)
+	require.NoError(t, db.Model(&configstoreTables.TableRateLimit{}).Where("id = ?", "rl-team").Updates(map[string]any{"token_last_reset": movedAt, "request_last_reset": movedAt}).Error)
+
+	team, err := server.ReloadTeam(ctx, "team-1")
+	require.NoError(t, err)
+	require.Len(t, team.Budgets, 1)
+	require.Equal(t, 3.0, team.Budgets[0].CurrentUsage, "the budget carries the usage counted in memory")
+	require.True(t, team.Budgets[0].LastReset.Equal(budgetReset), "and memory's last reset")
+	require.NotNil(t, team.RateLimit)
+	require.Equal(t, int64(40), team.RateLimit.TokenCurrentUsage)
+	require.Equal(t, int64(1), team.RateLimit.RequestCurrentUsage)
+	require.True(t, team.RateLimit.TokenLastReset.Equal(tokenReset), "the rate limit carries memory's last resets")
+	require.True(t, team.RateLimit.RequestLastReset.Equal(requestReset))
+
+	budgetRow, err := store.GetBudget(ctx, "budget-team")
+	require.NoError(t, err)
+	require.Zero(t, budgetRow.CurrentUsage, "nothing is written back")
+	rateLimitRow, err := store.GetRateLimit(ctx, "rl-team")
+	require.NoError(t, err)
+	require.Zero(t, rateLimitRow.TokenCurrentUsage, "nothing is written back")
+	require.Zero(t, rateLimitRow.RequestCurrentUsage, "nothing is written back")
+	require.True(t, budgetRow.LastReset.Equal(movedAt), "the stored last resets stay where the database put them")
+	require.True(t, rateLimitRow.TokenLastReset.Equal(movedAt))
+	require.True(t, rateLimitRow.RequestLastReset.Equal(movedAt))
+}
+
+// TestOverlayUsageCarriesMemoryState checks what a reload answers with for a limit: the usage and
+// last resets memory counts it from, with a budget's override cycles re-derived from the result, and
+// the row's own values for a limit memory does not hold.
+func TestOverlayUsageCarriesMemoryState(t *testing.T) {
+	server, gs := governedServer(t)
+	ctx := context.Background()
+	memoryReset := time.Now().Add(-time.Hour).Truncate(time.Second)
+	rowReset := memoryReset.Add(-24 * time.Hour)
+	store := server.Config.ConfigStore
+	require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{ID: "b", MaxLimit: 10, ResetDuration: "1d", LastReset: memoryReset, CreatedAt: memoryReset}))
+	require.NoError(t, store.CreateRateLimit(ctx, &configstoreTables.TableRateLimit{ID: "rl", TokenMaxLimit: schemas.Ptr(int64(10)), TokenResetDuration: schemas.Ptr("1d"), TokenLastReset: memoryReset, RequestLastReset: memoryReset}))
+	require.NoError(t, server.Config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindBudget, ID: "b"}, {Kind: livestore.KindRateLimit, ID: "rl"}}))
+	require.NoError(t, gs.BumpBudgetUsage(ctx, "b", 2))
+	require.NoError(t, gs.BumpRateLimitUsage(ctx, "rl", 5, true, true))
+	// The resets memory counts from, which a write of the row may have stamped.
+	memoryBudget, memoryRateLimit := gs.LoadBudget(ctx, "b"), gs.LoadRateLimit(ctx, "rl")
+	require.NotNil(t, memoryBudget)
+	require.NotNil(t, memoryRateLimit)
+
+	// A two-cycle override anchored at the row's reset: memory's reset is one window later, so one
+	// cycle has closed and one remains.
+	budget := configstoreTables.TableBudget{ID: "b", MaxLimit: 10, ResetDuration: "1d", LastReset: rowReset,
+		OverrideMode: configstoreTables.BudgetOverrideModeCycles, OverrideAmount: 5, OverrideCyclesTotal: 2,
+		OverrideCyclesRemaining: 2, OverrideAnchorReset: &rowReset}
+	overlayBudgetUsage(ctx, gs, &budget)
+	require.Equal(t, 2.0, budget.CurrentUsage)
+	require.True(t, budget.LastReset.Equal(memoryBudget.LastReset), "memory's last reset, not the row's")
+	require.Equal(t, 1, budget.OverrideCyclesRemaining, "override cycles are re-derived from memory's last reset")
+
+	rateLimit := configstoreTables.TableRateLimit{ID: "rl", TokenLastReset: rowReset, RequestLastReset: rowReset}
+	overlayRateLimitUsage(ctx, gs, &rateLimit)
+	require.Equal(t, int64(5), rateLimit.TokenCurrentUsage)
+	require.Equal(t, int64(1), rateLimit.RequestCurrentUsage)
+	require.True(t, rateLimit.TokenLastReset.Equal(memoryRateLimit.TokenLastReset), "memory's last resets, not the row's")
+	require.True(t, rateLimit.RequestLastReset.Equal(memoryRateLimit.RequestLastReset))
+
+	unknown := configstoreTables.TableBudget{ID: "not-in-memory", CurrentUsage: 7, LastReset: rowReset}
+	overlayBudgetUsage(ctx, gs, &unknown)
+	require.Equal(t, 7.0, unknown.CurrentUsage, "a budget memory does not hold keeps the row's usage")
+	require.True(t, unknown.LastReset.Equal(rowReset))
+}
+
+// TestReloadTeamOfMissingRowFailsFast checks that reloading a team with no row returns not found
+// at once, without waiting for the row as a key reload does.
+func TestReloadTeamOfMissingRowFailsFast(t *testing.T) {
+	server, _ := governedServer(t)
+	started := time.Now()
+	_, err := server.ReloadTeam(context.Background(), "no-such-team")
+	require.ErrorIs(t, err, configstore.ErrNotFound)
+	require.Less(t, time.Since(started), lib.DBLookupDelay, "no retry")
+}
+
+// TestGovernanceWritesWithoutPluginReportItAndKeepLiveStore checks that without the governance
+// plugin a team reload and removal still return the plugin's error, as they always have, while the
+// live store follows the database.
+func TestGovernanceWritesWithoutPluginReportItAndKeepLiveStore(t *testing.T) {
+	handlers.SetLogger(noopTestLogger{})
+	previousLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = previousLogger })
+	ctx := context.Background()
+	config := libtest.Config(t, nil, nil)
+	config.ClientConfig = &configstore.ClientConfig{}
+	server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config}
+
+	// The error both calls must return: the plugin lookup's, not one from the database.
+	_, pluginErr := server.getGovernancePlugin()
+	require.Error(t, pluginErr)
+
+	require.NoError(t, config.ConfigStore.CreateTeam(ctx, &configstoreTables.TableTeam{ID: "team-1", Name: "Platform"}))
+	_, err := server.ReloadTeam(ctx, "team-1")
+	require.EqualError(t, err, pluginErr.Error(), "the plugin's absence is reported")
+	_, ok := config.LiveStore.Collections.Teams.Get("team-1")
+	require.True(t, ok, "the live store still follows the write")
+
+	require.NoError(t, config.ConfigStore.DeleteTeam(ctx, "team-1"))
+	require.EqualError(t, server.RemoveTeam(ctx, "team-1"), pluginErr.Error(), "the plugin's absence is reported")
+	_, ok = config.LiveStore.Collections.Teams.Get("team-1")
+	require.False(t, ok, "the live store still follows the delete")
+}
+
+// liveStoreForTest returns a new, empty live store closed when the test ends.
+var liveStoreForTest = livestoretest.New
+
+// scopedModelConfigIDs returns the IDs of the model configs memory holds for one scope and scope ID.
+func scopedModelConfigIDs(gs *governance.LocalGovernanceStore, scope, scopeID string) []string {
+	var ids []string
+	for _, mc := range gs.ScopedModelConfigs(scope, scopeID) {
+		ids = append(ids, mc.ID)
+	}
+	return ids
+}
+
+// TestRemovingADeletedTeamOrCustomerClearsItsReferences checks that removing a team or customer
+// whose row the database has deleted leaves no key or team naming it, as the removal always
+// has: the records under it are re-read with the reference the delete cleared. The delete routes
+// therefore delete the row before they remove the record; removed first, the records under it
+// would be re-read still naming it.
+func TestRemovingADeletedTeamOrCustomerClearsItsReferences(t *testing.T) {
+	server, gs := governedServer(t)
+	ctx := context.Background()
+	cs := server.Config.ConfigStore
+	require.NoError(t, cs.CreateCustomer(ctx, &configstoreTables.TableCustomer{ID: "cust-1", Name: "Acme"}))
+	require.NoError(t, cs.CreateTeam(ctx, &configstoreTables.TableTeam{ID: "team-1", Name: "Platform", CustomerID: schemas.Ptr("cust-1")}))
+	require.NoError(t, cs.CreateVirtualKey(ctx, &configstoreTables.TableVirtualKey{ID: "vk-team", Name: "vk-team", Value: *schemas.NewSecretVar("sk-bf-team"), IsActive: schemas.Ptr(true), TeamID: schemas.Ptr("team-1")}))
+	require.NoError(t, cs.CreateVirtualKey(ctx, &configstoreTables.TableVirtualKey{ID: "vk-cust", Name: "vk-cust", Value: *schemas.NewSecretVar("sk-bf-cust"), IsActive: schemas.Ptr(true), CustomerID: schemas.Ptr("cust-1")}))
+	_, err := server.ReloadCustomer(ctx, "cust-1")
+	require.NoError(t, err)
+	_, err = server.ReloadTeam(ctx, "team-1")
+	require.NoError(t, err)
+	for _, id := range []string{"vk-team", "vk-cust"} {
+		_, err = server.ReloadVirtualKey(ctx, id)
+		require.NoError(t, err)
+	}
+	vk, ok := gs.GetVirtualKeyByID(ctx, "vk-team")
+	require.True(t, ok)
+	require.Equal(t, "team-1", vk.TeamID)
+
+	require.NoError(t, cs.DeleteTeam(ctx, "team-1"))
+	require.NoError(t, server.RemoveTeam(ctx, "team-1"))
+	vk, ok = gs.GetVirtualKeyByID(ctx, "vk-team")
+	require.True(t, ok)
+	require.Empty(t, vk.TeamID, "a key under a deleted team names no team")
+
+	require.NoError(t, cs.CreateTeam(ctx, &configstoreTables.TableTeam{ID: "team-2", Name: "Data", CustomerID: schemas.Ptr("cust-1")}))
+	_, err = server.ReloadTeam(ctx, "team-2")
+	require.NoError(t, err)
+	require.NoError(t, cs.DeleteCustomer(ctx, "cust-1"))
+	require.NoError(t, server.RemoveCustomer(ctx, "cust-1"))
+	vk, ok = gs.GetVirtualKeyByID(ctx, "vk-cust")
+	require.True(t, ok)
+	require.Empty(t, vk.CustomerID, "a key under a deleted customer names no customer")
+	team, ok := server.Config.LiveStore.Collections.Teams.Get("team-2")
+	require.True(t, ok)
+	require.Empty(t, team.CustomerID, "a team under a deleted customer names no customer")
+}
+
+// keyReadHold holds the first read of key rows the live store makes once armed open after it has
+// captured its rows, so a test can commit a rotation while that read is still in flight. The live
+// store reads keys into a slice; the config store's single-key read, which a reload makes for its
+// response, reads into one row and is let through.
+type keyReadHold struct {
+	armed   atomic.Bool
+	reads   atomic.Int32
+	reading chan struct{}
+	release chan struct{}
+}
+
+// install registers the hold on db's query callbacks.
+func (h *keyReadHold) install(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	require.NoError(t, db.Callback().Query().After("gorm:query").Register("test:hold_key_read", func(tx *gorm.DB) {
+		if !h.armed.Load() || tx.Statement.Table != (configstoreTables.TableVirtualKey{}).TableName() {
+			return
+		}
+		if _, ok := tx.Statement.Dest.(*[]configstoreTables.TableVirtualKey); !ok {
+			return
+		}
+		if h.reads.Add(1) == 1 {
+			close(h.reading)
+			<-h.release
+		}
+	}))
+}
+
+// TestOverlappingKeyReloadsKeepTheRotatedValue checks that a reload which read the key
+// before a rotation cannot install it after the rotation's own reload.
+func TestOverlappingKeyReloadsKeepTheRotatedValue(t *testing.T) {
+	single := func(ctx context.Context, server *BifrostHTTPServer) error {
+		_, err := server.ReloadVirtualKey(ctx, "vk-id")
+		return err
+	}
+	batch := func(ctx context.Context, server *BifrostHTTPServer) error {
+		return server.ReloadVirtualKeys(ctx, []string{"vk-id", "vk-other"})
+	}
+	for name, reloads := range map[string][2]func(context.Context, *BifrostHTTPServer) error{
+		"single then single": {single, single},
+		"batch then single":  {batch, single},
+		"single then batch":  {single, batch},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, store := governedServer(t)
+			ctx := t.Context()
+			db := server.Config.ConfigStore
+			before, after := "sk-bf-old", "sk-bf-rotated"
+			storeTestVirtualKey(t, server, "vk-id", "key", before)
+			_, err := server.ReloadVirtualKey(ctx, "vk-id")
+			require.NoError(t, err)
+			hold := &keyReadHold{reading: make(chan struct{}), release: make(chan struct{})}
+			// Released once, here or when the test ends, so a failed assertion never leaves the
+			// older reload blocked inside its read.
+			releaseHold := sync.OnceFunc(func() { close(hold.release) })
+			t.Cleanup(releaseHold)
+			hold.install(t, db.DB())
+			hold.armed.Store(true)
+
+			older, newer := make(chan error, 1), make(chan error, 1)
+			go func() { older <- reloads[0](ctx, server) }()
+			select {
+			case <-hold.reading:
+			case err := <-older:
+				t.Fatalf("the older reload returned before its read was held: %v", err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("the older reload's key read was not held within 10s")
+			}
+			row, err := db.GetVirtualKey(ctx, "vk-id")
+			require.NoError(t, err)
+			row.Value = *schemas.NewSecretVar(after)
+			require.NoError(t, db.UpdateVirtualKey(ctx, row))
+			go func() { newer <- reloads[1](ctx, server) }()
+			// Unserialized, the newer reload installs here and the older one then
+			// overwrites it. Serialized, it waits for the older one to finish.
+			select {
+			case err := <-newer:
+				newer <- err
+			case <-time.After(100 * time.Millisecond):
+			}
+			releaseHold()
+			require.NoError(t, <-older)
+			require.NoError(t, <-newer)
+
+			_, stale := store.GetVirtualKey(ctx, before)
+			require.False(t, stale, "the rotated-out value must not authenticate")
+			_, live := store.GetVirtualKey(ctx, after)
+			require.True(t, live, "the committed value must authenticate")
+		})
 	}
 }

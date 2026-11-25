@@ -111,10 +111,6 @@ type loggedInUser struct {
 
 // GET /api/oauth2/consent/flows/{id}
 func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store unavailable")
-		return
-	}
 	flowID, ok := ctx.UserValue("id").(string)
 	if !ok || flowID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid flow id")
@@ -193,10 +189,6 @@ type consentFlowSubmitResponse struct {
 
 // PUT /api/oauth2/consent/flows/{id}
 func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store unavailable")
-		return
-	}
 	flowID, ok := ctx.UserValue("id").(string)
 	if !ok || flowID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid flow id")

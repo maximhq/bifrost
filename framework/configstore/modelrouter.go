@@ -404,6 +404,42 @@ func (s *RDBConfigStore) GetModelRouters(ctx context.Context) ([]ModelRouter, er
 	return routers, nil
 }
 
+// ReadModelRouters reads the routers where selects from db, each with its targets. A router stored
+// in a form this version cannot read is left out of routers and reported in unreadable, under its
+// ID, with an error matching ErrConfigUnreadable.
+func ReadModelRouters(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm.DB) (routers []ModelRouter, unreadable map[string]error, err error) {
+	var rows []tables.TableModelRouter
+	if err := where(db.WithContext(ctx)).Find(&rows).Error; err != nil {
+		return nil, nil, err
+	}
+	unreadable = make(map[string]error)
+	if len(rows) == 0 {
+		return nil, unreadable, nil
+	}
+	ids := make([]string, len(rows))
+	for i := range rows {
+		ids[i] = rows[i].ID
+	}
+	targets, unreadableTargets, err := loadModelRouterTargets(ctx, db, ids...)
+	if err != nil {
+		return nil, nil, err
+	}
+	routers = make([]ModelRouter, 0, len(rows))
+	for i := range rows {
+		router, err := decodeModelRouterRow(&rows[i])
+		if err == nil {
+			err = unreadableTargets[rows[i].ID]
+		}
+		if err != nil {
+			unreadable[rows[i].ID] = err
+			continue
+		}
+		router.Targets = targets[router.ID]
+		routers = append(routers, *router)
+	}
+	return routers, unreadable, nil
+}
+
 // GetModelRouter returns one router. It is ErrNotFound when no row exists, or
 // when the row-visibility scope on ctx hides it (see GetModelRouters), and
 // ErrConfigUnreadable when the row exists but this version cannot run it.
