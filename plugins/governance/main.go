@@ -906,6 +906,15 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 			var disallowed []string
 			var deniedBy []schemas.Permit
 			for _, tool := range addedTools {
+				// Code-mode meta-tools (listToolFiles, readToolFile, getToolDocs, executeToolCode)
+				// are recorded on this list too, but they belong to no client and so to no grant's
+				// tool list: a grant names "<client>-<tool>" entries, which a bare meta-tool name
+				// can never match. Checking them here would refuse every governed request that has
+				// code mode enabled. PreMCPHook evaluates them as tool calls and scopes what they
+				// can discover to the grant (stampMCPToolAccessForCodemode).
+				if bifrost.IsCodemodeTool(tool) {
+					continue
+				}
 				if !access.IsMCPToolAllowed(tool) {
 					disallowed = append(disallowed, tool)
 					if deniedBy == nil {

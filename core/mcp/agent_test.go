@@ -411,6 +411,166 @@ func TestExecuteAgentForChatRequest_WithNonAutoExecutableTools(t *testing.T) {
 	}
 }
 
+// TestExecuteAgentForChatRequest_CallerDeclaredCodeModeToolNotAutoExecuted
+// covers issue #9714: a caller can declare a tool named like a code-mode
+// meta-tool (e.g. "listToolFiles") in their own request even though no MCP
+// client backs it and Bifrost never injected it. Before the fix, agent.go
+// treated any tool call named ToolTypeListToolFiles/ReadToolFile/GetToolDocs/
+// ExecuteToolCode as auto-executable purely by name, whenever
+// GetClientForTool returned nil. It must instead be treated like any other
+// unrecognized tool: non-auto-executable.
+func TestExecuteAgentForChatRequest_CallerDeclaredCodeModeToolNotAutoExecuted(t *testing.T) {
+	for _, toolName := range []string{ToolTypeListToolFiles, ToolTypeReadToolFile, ToolTypeGetToolDocs, ToolTypeExecuteToolCode} {
+		t.Run(toolName, func(t *testing.T) {
+			response := &schemas.BifrostChatResponse{
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						FinishReason: schemas.Ptr("tool_calls"),
+						ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+							Message: &schemas.ChatMessage{
+								Role: schemas.ChatMessageRoleAssistant,
+								ChatAssistantMessage: &schemas.ChatAssistantMessage{
+									ToolCalls: []schemas.ChatAssistantMessageToolCall{
+										{
+											ID: schemas.Ptr("call_1"),
+											Function: schemas.ChatAssistantMessageToolCallFunction{
+												Name:      schemas.Ptr(toolName),
+												Arguments: `{"code": "irrelevant"}`,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			llmCaller := &MockLLMCaller{}
+			makeReq := func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+				return llmCaller.ChatCompletionRequest(ctx, req)
+			}
+			originalReq := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+				},
+			}
+
+			// Deliberately no BifrostContextKeyMCPAddedTools set: Bifrost never
+			// offered this tool on this turn, matching a caller-declared tool.
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			agentModeExecutor := &AgentModeExecutor{logger: &MockLogger{}}
+
+			result, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, originalReq, response, makeReq, nil, nil, &MockClientManager{})
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			if llmCaller.chatCallCount != 0 {
+				t.Errorf("expected tool to be treated as non-auto-executable (0 follow-up LLM calls), got %d calls", llmCaller.chatCallCount)
+			}
+			if result == nil {
+				t.Fatal("expected a result to be returned")
+			}
+			// The returned response should still carry the original, unexecuted tool call.
+			msg := result.Choices[0].ChatNonStreamResponseChoice.Message
+			if msg.ChatAssistantMessage == nil || len(msg.ChatAssistantMessage.ToolCalls) != 1 {
+				t.Fatalf("expected the unexecuted tool call to be preserved in the response")
+			}
+		})
+	}
+}
+
+// TestExecuteAgentForChatRequest_BifrostInjectedCodeModeToolStillAutoExecutes
+// is the companion case to the test above: when Bifrost's own tool-injection
+// step actually added the meta-tool to the request (recorded via
+// BifrostContextKeyMCPAddedTools), list/read/docs tools remain auto-executable,
+// same as before the fix.
+func TestExecuteAgentForChatRequest_BifrostInjectedCodeModeToolStillAutoExecutes(t *testing.T) {
+	response := &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				FinishReason: schemas.Ptr("tool_calls"),
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant,
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{
+									ID: schemas.Ptr("call_1"),
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name:      schemas.Ptr(ToolTypeListToolFiles),
+										Arguments: `{}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	llmCaller := &MockLLMCaller{
+		chatResponses: []*schemas.BifrostChatResponse{
+			{
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						FinishReason: schemas.Ptr("stop"),
+						ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+							Message: &schemas.ChatMessage{
+								Role:    schemas.ChatMessageRoleAssistant,
+								Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("done")},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	makeReq := func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		return llmCaller.ChatCompletionRequest(ctx, req)
+	}
+	originalReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// Simulate ParseAndAddToolsToRequest having injected this tool earlier in the turn.
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, ToolTypeListToolFiles)
+
+	agentModeExecutor := &AgentModeExecutor{logger: &MockLogger{}}
+	executeToolFunc := func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		toolCallID := ""
+		if req.ChatAssistantMessageToolCall != nil && req.ChatAssistantMessageToolCall.ID != nil {
+			toolCallID = *req.ChatAssistantMessageToolCall.ID
+		}
+		return &schemas.BifrostMCPResponse{
+			ChatMessage: &schemas.ChatMessage{
+				Role:            schemas.ChatMessageRoleTool,
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("[]")},
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &toolCallID},
+			},
+		}, nil
+	}
+
+	result, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, originalReq, response, makeReq, nil, executeToolFunc, &codeModeAutoExecClientManager{toolsToAutoExecute: schemas.WhiteList{ToolTypeListToolFiles}})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if llmCaller.chatCallCount != 1 {
+		t.Errorf("expected the tool to be auto-executed and one follow-up LLM call made, got %d calls", llmCaller.chatCallCount)
+	}
+	if result == nil {
+		t.Fatal("expected a result to be returned")
+	}
+}
+
 func TestHasToolCallsForResponsesResponse(t *testing.T) {
 	// Test nil response
 	if hasToolCallsForResponsesResponse(nil) {
@@ -1019,6 +1179,245 @@ func TestExecutedToolSummaryNamesMedia(t *testing.T) {
 		}
 		if !strings.Contains(string(data), "[image/png") {
 			t.Errorf("%s: expected the image placeholder in the summary; got %s", name, data)
+		}
+	}
+}
+
+// codeModeToolCallResponse is a chat response in which the model calls one tool.
+func codeModeToolCallResponse(toolName, arguments string) *schemas.BifrostChatResponse {
+	return &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				FinishReason: schemas.Ptr("tool_calls"),
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant,
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{
+									ID: schemas.Ptr("call_1"),
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name:      schemas.Ptr(toolName),
+										Arguments: arguments,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// The two agent tests above set BifrostContextKeyMCPAddedTools by hand. These run
+// the real injection step first, so the list agent mode reads is the one
+// ParseAndAddToolsToRequest produced for that request: a tool the caller declared
+// is not on it, and a tool Bifrost inserted is.
+func TestAgentMode_CodeModeToolDeclaredByCallerIsNotAutoExecutedAfterInjection(t *testing.T) {
+	for _, toolName := range []string{ToolTypeListToolFiles, ToolTypeReadToolFile, ToolTypeGetToolDocs, ToolTypeExecuteToolCode} {
+		t.Run(toolName, func(t *testing.T) {
+			tm := newCodeModeToolsManagerForTest()
+			injected := buildChatRequest(toolName) // the caller declares this tool themselves
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			tm.ParseAndAddToolsToRequest(ctx, injected)
+
+			// If the tool were auto-executed the loop would call this and then ask the model
+			// again, so a regression reads as a plain assertion failure rather than a panic.
+			llmCaller := &MockLLMCaller{
+				chatResponses: []*schemas.BifrostChatResponse{
+					{
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								FinishReason: schemas.Ptr("stop"),
+								ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+									Message: &schemas.ChatMessage{
+										Role:    schemas.ChatMessageRoleAssistant,
+										Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("done")},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			makeReq := func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+				return llmCaller.ChatCompletionRequest(ctx, req)
+			}
+			executed := false
+			executeToolFunc := func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+				executed = true
+				return &schemas.BifrostMCPResponse{
+					ChatMessage: &schemas.ChatMessage{
+						Role:            schemas.ChatMessageRoleTool,
+						Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("[]")},
+						ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+					},
+				}, nil
+			}
+			agentModeExecutor := &AgentModeExecutor{logger: &MockLogger{}}
+
+			_, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, injected.ChatRequest, codeModeToolCallResponse(toolName, `{"code": "irrelevant"}`), makeReq, nil, executeToolFunc, &MockClientManager{})
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			if executed {
+				t.Errorf("a caller-declared %s must not be auto-executed", toolName)
+			}
+			if llmCaller.chatCallCount != 0 {
+				t.Errorf("a caller-declared %s must not be auto-executed, but the agent loop made %d follow-up LLM call(s)", toolName, llmCaller.chatCallCount)
+			}
+		})
+	}
+}
+
+func TestAgentMode_CodeModeToolInsertedByBifrostIsAutoExecutedAfterInjection(t *testing.T) {
+	tm := newCodeModeToolsManagerForTest()
+	injected := buildChatRequest() // the caller declares nothing, so Bifrost inserts all four
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	tm.ParseAndAddToolsToRequest(ctx, injected)
+
+	llmCaller := &MockLLMCaller{
+		chatResponses: []*schemas.BifrostChatResponse{
+			{
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						FinishReason: schemas.Ptr("stop"),
+						ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+							Message: &schemas.ChatMessage{
+								Role:    schemas.ChatMessageRoleAssistant,
+								Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("done")},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	makeReq := func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		return llmCaller.ChatCompletionRequest(ctx, req)
+	}
+	executeToolFunc := func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		toolCallID := ""
+		if req.ChatAssistantMessageToolCall != nil && req.ChatAssistantMessageToolCall.ID != nil {
+			toolCallID = *req.ChatAssistantMessageToolCall.ID
+		}
+		return &schemas.BifrostMCPResponse{
+			ChatMessage: &schemas.ChatMessage{
+				Role:            schemas.ChatMessageRoleTool,
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("[]")},
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &toolCallID},
+			},
+		}, nil
+	}
+	agentModeExecutor := &AgentModeExecutor{logger: &MockLogger{}}
+
+	_, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, injected.ChatRequest, codeModeToolCallResponse(ToolTypeListToolFiles, `{}`), makeReq, nil, executeToolFunc, &codeModeAutoExecClientManager{toolsToAutoExecute: schemas.WhiteList{ToolTypeListToolFiles}})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if llmCaller.chatCallCount != 1 {
+		t.Errorf("a listToolFiles Bifrost inserted must still be auto-executed (1 follow-up LLM call), got %d", llmCaller.chatCallCount)
+	}
+}
+
+// codeModeAutoExecClientManager is a client manager with one code mode client whose
+// tools_to_auto_execute is the given list.
+type codeModeAutoExecClientManager struct {
+	*MockClientManager
+	toolsToAutoExecute schemas.WhiteList
+}
+
+func (m *codeModeAutoExecClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
+	return map[string][]schemas.ChatTool{"codemode": nil}
+}
+
+func (m *codeModeAutoExecClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
+	if clientName != "codemode" {
+		return nil
+	}
+	return &schemas.MCPClientState{
+		Name: "codemode",
+		ExecutionConfig: &schemas.MCPClientConfig{
+			ID:                 "codemode",
+			Name:               "codemode",
+			IsCodeModeClient:   true,
+			ToolsToExecute:     schemas.WhiteList{"*"},
+			ToolsToAutoExecute: m.toolsToAutoExecute,
+		},
+	}
+}
+
+// Agent mode is opt-in. The list, read, and docs meta-tools only discover and describe tools,
+// but they are still auto-executed only when a code mode client's tools_to_auto_execute names
+// them or is "*"; with nothing listed, or only entries for other tools, the call goes back to
+// the caller. See #9714.
+func TestAgentMode_CodeModeDiscoveryToolsFollowToolsToAutoExecute(t *testing.T) {
+	cases := []struct {
+		name               string
+		toolsToAutoExecute schemas.WhiteList
+		wantAutoExecuted   bool
+	}{
+		{"names the tool", schemas.WhiteList{ToolTypeListToolFiles, ToolTypeReadToolFile, ToolTypeGetToolDocs}, true},
+		{"wildcard", schemas.WhiteList{"*"}, true},
+		{"nothing configured", nil, false},
+		{"only unrelated entries", schemas.WhiteList{"some_tool", ToolTypeExecuteToolCode}, false},
+	}
+	for _, toolName := range []string{ToolTypeListToolFiles, ToolTypeReadToolFile, ToolTypeGetToolDocs} {
+		for _, tc := range cases {
+			t.Run(toolName+"/"+tc.name, func(t *testing.T) {
+				// Bifrost inserted the tool, so the only question is the allow-list.
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, toolName)
+
+				llmCaller := &MockLLMCaller{
+					chatResponses: []*schemas.BifrostChatResponse{
+						{
+							Choices: []schemas.BifrostResponseChoice{
+								{
+									FinishReason: schemas.Ptr("stop"),
+									ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+										Message: &schemas.ChatMessage{
+											Role:    schemas.ChatMessageRoleAssistant,
+											Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("done")},
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+				makeReq := func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+					return llmCaller.ChatCompletionRequest(ctx, req)
+				}
+				executed := false
+				executeToolFunc := func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+					executed = true
+					return &schemas.BifrostMCPResponse{
+						ChatMessage: &schemas.ChatMessage{
+							Role:            schemas.ChatMessageRoleTool,
+							Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("[]")},
+							ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+						},
+					}, nil
+				}
+				originalReq := &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4",
+					Input: []schemas.ChatMessage{
+						{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+					},
+				}
+				agentModeExecutor := &AgentModeExecutor{logger: &MockLogger{}}
+
+				_, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, originalReq, codeModeToolCallResponse(toolName, `{}`), makeReq, nil, executeToolFunc, &codeModeAutoExecClientManager{toolsToAutoExecute: tc.toolsToAutoExecute})
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+				if executed != tc.wantAutoExecuted {
+					t.Errorf("%s with tools_to_auto_execute %v: auto-executed = %v, want %v", toolName, tc.toolsToAutoExecute, executed, tc.wantAutoExecuted)
+				}
+			})
 		}
 	}
 }
