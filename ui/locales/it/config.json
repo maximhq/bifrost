@@ -1509,6 +1509,8 @@
 			"charged": "Addebitato",
 			"routeDisabled": "{{method}} {{path}} · disabilitata",
 			"noRouteRelayPricing": "Nessuna route · prezzi del relay",
+			"statusCheck": "Controllo di stato (gratuito)",
+			"statusCheckHelp": "Corrisponde al controllo di stato di un chiamante per uno dei job del relay. Se Bifrost ha avviato quel job, la chiamata viene inoltrata gratis e il job viene addebitato una volta, al termine.",
 			"noRouteRefused": "Nessuna route · rifiutata",
 			"billable": "Fatturabile",
 			"notCharged": "Non addebitato",

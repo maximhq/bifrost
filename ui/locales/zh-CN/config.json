@@ -1507,6 +1507,8 @@
 			"charged": "已扣费",
 			"routeDisabled": "{{method}} {{path}} · 已禁用",
 			"noRouteRelayPricing": "无路由 · 中继定价",
+			"statusCheck": "状态检查（免费）",
+			"statusCheckHelp": "这与调用方对该中继某个作业的状态检查相匹配。如果该作业由 Bifrost 启动，此调用将免费转发，作业在完成时只计费一次。",
 			"noRouteRefused": "无路由 · 已拒绝",
 			"billable": "计费",
 			"notCharged": "未扣费",

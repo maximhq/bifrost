@@ -315,3 +315,44 @@ func previewUsage(cfg *schemas.RelayConfig, extra map[string]schemas.SecretVar, 
 	cfg.IgnoreUpstreamCost = ignoreUpstreamCost
 	return PreviewUsage(cfg, in)
 }
+
+// The preview matches the path the transport hands a live call: . and .. segments resolved.
+func TestPreviewResolvesDotSegmentsAsTheTransportDoes(t *testing.T) {
+	cfg := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{{Method: "GET", Path: "/w/x", Billable: schemas.Ptr(true), Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.1)}}}}
+	for _, path := range []string{"/w/a/../x", "/w/./x", "/w/x"} {
+		out, err := previewUsage(cfg, nil, UsagePreviewInput{Method: "GET", Path: path, ResponseContentType: "application/json"}, false)
+		require.NoError(t, err, path)
+		require.NotNil(t, out.RouteIndex, "%s is /w/x on the relay", path)
+		assert.True(t, out.RouteAllowed, path)
+		assert.InDelta(t, 0.1, out.Cost, 1e-12, path)
+	}
+}
+
+// A sample matching a job's status check is shown as relayed free, as a live call is once the job
+// lookup confirms Bifrost started it, instead of the 404 an unrouted call gets.
+func TestPreviewShowsAStatusCheckAsFree(t *testing.T) {
+	cfg := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{{
+		Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.StartDocumentAnalysis"},
+		Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.01)},
+		Job: &schemas.RelayJobConfig{IDPath: "JobId", StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"},
+			Poll: schemas.RelayJobPoll{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}, Body: `{"JobId":"{{job.id}}"}`, ContentType: "application/x-amz-json-1.1"}},
+	}}}
+	check := UsagePreviewInput{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"},
+		RequestContentType: "application/x-amz-json-1.1", RequestBody: `{"JobId":"j-1"}`, ResponseContentType: "application/json", ResponseBody: `{"JobStatus":"IN_PROGRESS"}`}
+	out, err := previewUsage(cfg, nil, check, false)
+	require.NoError(t, err)
+	assert.True(t, out.StatusCheck)
+	assert.True(t, out.RouteAllowed, "relayed, not refused with 404")
+	assert.False(t, out.Counted)
+	assert.Zero(t, out.Cost)
+	assert.Contains(t, strings.Join(out.Notes, " "), "status check")
+
+	start := check
+	start.Headers = map[string]string{"X-Amz-Target": "Textract.StartDocumentAnalysis"}
+	start.RequestBody = `{"Document":{}}`
+	start.ResponseBody = `{"JobId":"j-1"}`
+	out, err = previewUsage(cfg, nil, start, false)
+	require.NoError(t, err)
+	assert.False(t, out.StatusCheck, "the start call is priced as itself")
+	assert.InDelta(t, 0.01, out.Cost, 1e-12)
+}

@@ -1509,6 +1509,8 @@
 			"charged": "Cobrado",
 			"routeDisabled": "{{method}} {{path}} · desativada",
 			"noRouteRelayPricing": "Sem rota · preços do relay",
+			"statusCheck": "Verificação de status (grátis)",
+			"statusCheckHelp": "Isto corresponde à verificação de status de um chamador para um dos jobs do relay. Se o Bifrost iniciou esse job, a chamada é repassada de graça e o job é cobrado uma vez, quando termina.",
 			"noRouteRefused": "Sem rota · recusado",
 			"billable": "Faturável",
 			"notCharged": "Não cobrado",

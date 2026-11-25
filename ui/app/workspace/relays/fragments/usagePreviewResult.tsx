@@ -64,25 +64,29 @@ export function UsagePreviewResult({ result, endpoint }: { result: UsagePreview;
 				</div>
 				<div className="flex flex-wrap items-center gap-2">
 					<Badge variant="secondary" className="font-mono">
-						{route
-							? result.route_allowed
-								? `${route.method} ${route.path}`
-								: t("relays.preview.routeDisabled", { method: route.method, path: route.path })
-							: result.route_allowed
-								? t("relays.preview.noRouteRelayPricing")
-								: t("relays.preview.noRouteRefused")}
+						{result.status_check
+							? t("relays.preview.statusCheck")
+							: route
+								? result.route_allowed
+									? `${route.method} ${route.path}`
+									: t("relays.preview.routeDisabled", { method: route.method, path: route.path })
+								: result.route_allowed
+									? t("relays.preview.noRouteRelayPricing")
+									: t("relays.preview.noRouteRefused")}
 					</Badge>
-					<Badge variant={result.counted ? "default" : "outline"}>{result.counted ? t("relays.preview.billable") : t("relays.preview.notCharged")}</Badge>
+					<Badge variant={result.counted ? "default" : "outline"}>
+						{result.counted ? t("relays.preview.billable") : t("relays.preview.notCharged")}
+					</Badge>
 					{result.streams && <Badge variant="outline">{t("relays.preview.streamed")}</Badge>}
 				</div>
 			</div>
 
-			{!result.route_allowed ? (
-				<p className="text-muted-foreground">
-					{route
-						? t("relays.preview.disabledRoute")
-						: t("relays.preview.noRouteMatch")}
+			{result.status_check ? (
+				<p className="text-muted-foreground" data-testid="relay-preview-status-check">
+					{t("relays.preview.statusCheckHelp")}
 				</p>
+			) : !result.route_allowed ? (
+				<p className="text-muted-foreground">{route ? t("relays.preview.disabledRoute") : t("relays.preview.noRouteMatch")}</p>
 			) : !result.counted ? (
 				<p className="text-muted-foreground">
 					{refusal
@@ -109,25 +113,25 @@ export function UsagePreviewResult({ result, endpoint }: { result: UsagePreview;
 										<TableCell className="break-words whitespace-normal">
 											{result.units === null ? (
 												<Trans
-																						t={t}
-																						i18nKey="relays.preview.unitsNone"
-																						values={{ path: result.units_path || t("relays.preview.theBody"), source: unitsSource }}
-																						components={{ code: <Code /> }}
-																					/>
+													t={t}
+													i18nKey="relays.preview.unitsNone"
+													values={{ path: result.units_path || t("relays.preview.theBody"), source: unitsSource }}
+													components={{ code: <Code /> }}
+												/>
 											) : (
 												<Trans
-																						t={t}
-																						i18nKey="relays.preview.unitsRead"
-																						values={{
-																							units: result.units,
-																							measure: describeMeasure(t, result.units_measure, result.units_path),
-																							source: unitsSource,
-																							rounding: rounding ? t("relays.preview.billedRounding", { rounding }) : "",
-																							billed: billedUnits,
-																							price: usd(result.cost_per_unit),
-																						}}
-																						components={{ strong: <span className="font-medium" /> }}
-																					/>
+													t={t}
+													i18nKey="relays.preview.unitsRead"
+													values={{
+														units: result.units,
+														measure: describeMeasure(t, result.units_measure, result.units_path),
+														source: unitsSource,
+														rounding: rounding ? t("relays.preview.billedRounding", { rounding }) : "",
+														billed: billedUnits,
+														price: usd(result.cost_per_unit),
+													}}
+													components={{ strong: <span className="font-medium" /> }}
+												/>
 											)}
 										</TableCell>
 										<TableCell className="w-24 text-right font-mono whitespace-nowrap">{usd(unitCharge)}</TableCell>
@@ -150,7 +154,8 @@ export function UsagePreviewResult({ result, endpoint }: { result: UsagePreview;
 					</div>
 					<div className="bg-muted/50 rounded-sm px-3 py-2 font-mono text-xs" data-testid="relay-preview-formula">
 						<span className="text-muted-foreground">
-							{t("relays.preview.formulaLabel")}{result.extracted_cost !== null ? t("relays.preview.formulaReported") : ""} ={" "}
+							{t("relays.preview.formulaLabel")}
+							{result.extracted_cost !== null ? t("relays.preview.formulaReported") : ""} ={" "}
 						</span>
 						{formula} = {usd(result.cost)}
 					</div>

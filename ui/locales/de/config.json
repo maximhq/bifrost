@@ -1538,6 +1538,8 @@
 			"charged": "Berechnet",
 			"routeDisabled": "{{method}} {{path}} · deaktiviert",
 			"noRouteRelayPricing": "Keine Route · Relay-Preise",
+			"statusCheck": "Statusabfrage (kostenlos)",
+			"statusCheckHelp": "Dies entspricht der Statusabfrage eines Aufrufers für einen der Jobs des Relays. Hat Bifrost diesen Job gestartet, wird der Aufruf kostenlos weitergeleitet, und der Job wird einmal berechnet, wenn er fertig ist.",
 			"noRouteRefused": "Keine Route · abgelehnt",
 			"billable": "Abrechenbar",
 			"notCharged": "Nicht berechnet",

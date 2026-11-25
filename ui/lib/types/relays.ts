@@ -212,6 +212,7 @@ export interface RelayOpenAPISpecResponse {
 export interface UsagePreview {
 	route_index: number | null;
 	route_allowed: boolean;
+	status_check: boolean; // a caller's status check for one of the relay's jobs: relayed free
 	billable: boolean;
 	streams: boolean;
 	counted: boolean;
