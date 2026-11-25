@@ -9729,7 +9729,7 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 		return fmt.Errorf("failed to update provider config in store: %w", err)
 	}
 	if err := c.refreshProvider(ctx, provider); err != nil {
-		return err
+		return &SavedNotAppliedError{Err: err}
 	}
 	logger.Info("added provider: %s", provider)
 	return nil
@@ -9763,10 +9763,10 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 		return fmt.Errorf("failed to update provider config in store: %w", err)
 	}
 	if err := c.refreshProvider(ctx, provider); err != nil {
-		return err
+		return &SavedNotAppliedError{Err: err}
 	}
 	if err := c.client.UpdateProvider(provider); err != nil {
-		return fmt.Errorf("failed to update provider: %w", err)
+		return &SavedNotAppliedError{Err: fmt.Errorf("failed to update provider: %w", err)}
 	}
 	logger.Info("Updated configuration for provider: %s", provider)
 	return nil
@@ -9809,10 +9809,10 @@ func (c *Config) AddProviderKey(ctx context.Context, provider schemas.ModelProvi
 		return fmt.Errorf("failed to create provider key in store: %w", err)
 	}
 	if err := c.refreshRef(ctx, "provider key", livestore.Ref{Kind: livestore.KindProviderKey, ID: key.ID}); err != nil {
-		return err
+		return &SavedNotAppliedError{Err: err}
 	}
 	if err := c.client.UpdateProvider(provider); err != nil {
-		return fmt.Errorf("failed to update provider: %w", err)
+		return &SavedNotAppliedError{Err: fmt.Errorf("failed to update provider: %w", err)}
 	}
 	logger.Info("Added key %s to provider: %s", key.ID, provider)
 	return nil
@@ -9842,10 +9842,10 @@ func (c *Config) UpdateProviderKey(ctx context.Context, provider schemas.ModelPr
 		return fmt.Errorf("failed to update provider key in store: %w", err)
 	}
 	if err := c.refreshRef(ctx, "provider key", livestore.Ref{Kind: livestore.KindProviderKey, ID: keyID}); err != nil {
-		return err
+		return &SavedNotAppliedError{Err: err}
 	}
 	if err := c.client.UpdateProvider(provider); err != nil {
-		return fmt.Errorf("failed to update provider: %w", err)
+		return &SavedNotAppliedError{Err: fmt.Errorf("failed to update provider: %w", err)}
 	}
 	logger.Info("Updated key %s for provider: %s", keyID, provider)
 	return nil
@@ -9869,10 +9869,17 @@ func (c *Config) RemoveProviderKey(ctx context.Context, provider schemas.ModelPr
 		return fmt.Errorf("failed to delete provider key from store: %w", err)
 	}
 	if err := c.refreshRef(ctx, "provider key", livestore.Ref{Kind: livestore.KindProviderKey, ID: keyID, Remove: true}); err != nil {
-		return err
+		if gone {
+			return err
+		}
+		return &SavedNotAppliedError{Err: err}
 	}
 	if err := c.client.UpdateProvider(provider); err != nil {
-		return fmt.Errorf("failed to update provider: %w", err)
+		err = fmt.Errorf("failed to update provider: %w", err)
+		if gone {
+			return err
+		}
+		return &SavedNotAppliedError{Err: err}
 	}
 	if gone {
 		return ErrNotFound
@@ -9882,27 +9889,34 @@ func (c *Config) RemoveProviderKey(ctx context.Context, provider schemas.ModelPr
 }
 
 // RemoveProvider deletes a provider and its keys from the config store and drops it from the live
-// store. With BifrostContextKeySkipDBUpdate set, the rows are already gone from the config store,
+// store. When the store holds no such provider the live store still drops it, and ErrNotFound is
+// returned. With BifrostContextKeySkipDBUpdate set, the rows are already gone from the config store,
 // so only the live store changes.
 func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	skipDBUpdate, _ := ctx.Value(schemas.BifrostContextKeySkipDBUpdate).(bool)
+	var notFound error
 	if !skipDBUpdate {
 		if c.ConfigStore == nil {
 			return ErrNoConfigStore
 		}
-		// A provider with no row is already deleted: memory only has to catch up.
-		if err := c.ConfigStore.DeleteProvider(ctx, provider); err != nil && !errors.Is(err, configstore.ErrNotFound) {
-			return fmt.Errorf("failed to delete provider config from store: %w", err)
+		if err := c.ConfigStore.DeleteProvider(ctx, provider); err != nil {
+			if !errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("failed to delete provider config from store: %w", err)
+			}
+			notFound = ErrNotFound // already deleted: memory only has to catch up
 		}
 	}
 	if !c.IsProviderConfigured(provider) {
-		return nil
+		return notFound
 	}
 	if err := c.removeProvider(ctx, provider); err != nil {
-		return err
+		if skipDBUpdate || notFound != nil {
+			return err
+		}
+		return &SavedNotAppliedError{Err: err}
 	}
 	logger.Info("Removed provider: %s", provider)
-	return nil
+	return notFound
 }
 
 // SetBifrostClient sets the Bifrost client in the store.

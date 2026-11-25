@@ -2862,6 +2862,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		if err := h.mcpManager.AddMCPClient(bifrostCtx, schemasConfig); err != nil {
 			if delErr := h.store.ConfigStore.DeleteMCPClientConfig(ctx, schemasConfig.ID); delErr != nil {
 				logger.Error(fmt.Sprintf("Failed to roll back MCP client config after AddMCPClient failure: %v", delErr))
+				lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", schemasConfig.ID, schemasConfig.Name, nil, auditMCPClient(h.store, schemasConfig))
 			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 			return
@@ -3026,6 +3027,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		if err := h.mcpManager.AddMCPClient(bifrostCtx, schemasConfig); err != nil {
 			if delErr := h.store.ConfigStore.DeleteMCPClientConfig(ctx, schemasConfig.ID); delErr != nil {
 				logger.Error(fmt.Sprintf("Failed to roll back MCP client config after AddMCPClient failure: %v", delErr))
+				lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", schemasConfig.ID, schemasConfig.Name, nil, auditMCPClient(h.store, schemasConfig))
 			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to register MCP client: %v", err))
 			return
@@ -3292,6 +3294,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		if h.store.ConfigStore != nil {
 			if err := h.store.ConfigStore.DeleteMCPClientConfig(ctx, schemasConfig.ID); err != nil {
 				logger.Error(fmt.Sprintf("Failed to delete MCP client config from database: %v. please restart bifrost to keep core and database in sync", err))
+				lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", schemasConfig.ID, schemasConfig.Name, nil, auditMCPClient(h.store, schemasConfig))
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to delete MCP client config from database: %v. please restart bifrost to keep core and database in sync", err))
 				return
 			}
@@ -3954,6 +3957,44 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 		dbUpdateRecord.DiscoveredTools = migrated
 	}
+	// Build in-memory config from resolved values. A 0 interval means no
+	// per-client override: the runtime resolves it against the live global
+	// setting, matching the persisted row above, so a later change to the
+	// global reaches this client too.
+	schemasConfig := &schemas.MCPClientConfig{
+		ID:                     id,
+		Name:                   name,
+		IsCodeModeClient:       isCodeMode,
+		ServerTypeOnSlug:       serverTypeOnSlug,
+		ConnectionType:         existingConfig.ConnectionType,
+		ConnectionString:       existingConfig.ConnectionString,
+		RequirePublicTarget:    requirePublicTarget,
+		StdioConfig:            existingConfig.StdioConfig,
+		TLSConfig:              tlsConfig,
+		ToolsToExecute:         resolvedToolsToExecute,
+		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
+		PromptsToExpose:        resolvedPromptsToExpose,
+		ResourcesToExpose:      resolvedResourcesToExpose,
+		Headers:                headers,
+		AllowedExtraHeaders:    allowedExtraHeaders,
+		AuthType:               existingConfig.AuthType,
+		OauthConfigID:          existingConfig.OauthConfigID,
+		IsPingAvailable:        isPingAvailable,
+		NeedsSessionStickiness: needsSessionStickiness,
+		ToolSyncInterval:       resolvedToolSyncInterval,
+		MaxProtocolVersion:     resolvedMaxProtocolVersion,
+		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
+		MaxInstructionsLength:  resolvedMaxInstructionsLength,
+		ToolPricing:            toolPricing,
+		AllowByDefault:         allowByDefault,
+		Disabled:               disabled,
+		PerUserHeaderKeys:      perUserHeaderKeys,
+		TokenExchange:          tokenExchange,
+		OpenAPIConfig:          resolvedOpenAPIConfig,
+		PerUserDiscovery:       perUserDiscovery,
+		PendingVerification:    pendingVerification,
+	}
+
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord); err != nil {
 			// The name is the only unique column an update can change (the endpoint
@@ -3994,6 +4035,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			}
 			stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, id)
 			if err != nil {
+				// The flip committed with every resolved field of this request.
+				lib.RecordAuditChange(ctx, "mcp_client.updated", "mcp_client", id, name, before, auditMCPClient(h.store, mcpClientAfterUpdate(existingConfig, schemasConfig)))
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("per_user_discovery was changed, but reading the client back failed, so the running client does not have the change yet; send the request again to apply it: %v", err))
 				return
 			}
@@ -4001,43 +4044,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	// Build in-memory config from resolved values. A 0 interval means no
-	// per-client override: the runtime resolves it against the live global
-	// setting, matching the persisted row above, so a later change to the
-	// global reaches this client too.
-	schemasConfig := &schemas.MCPClientConfig{
-		ID:                     id,
-		Name:                   name,
-		IsCodeModeClient:       isCodeMode,
-		ServerTypeOnSlug:       serverTypeOnSlug,
-		ConnectionType:         existingConfig.ConnectionType,
-		ConnectionString:       existingConfig.ConnectionString,
-		RequirePublicTarget:    requirePublicTarget,
-		StdioConfig:            existingConfig.StdioConfig,
-		TLSConfig:              tlsConfig,
-		ToolsToExecute:         resolvedToolsToExecute,
-		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
-		PromptsToExpose:        resolvedPromptsToExpose,
-		ResourcesToExpose:      resolvedResourcesToExpose,
-		Headers:                headers,
-		AllowedExtraHeaders:    allowedExtraHeaders,
-		AuthType:               existingConfig.AuthType,
-		OauthConfigID:          existingConfig.OauthConfigID,
-		IsPingAvailable:        isPingAvailable,
-		NeedsSessionStickiness: needsSessionStickiness,
-		ToolSyncInterval:       resolvedToolSyncInterval,
-		MaxProtocolVersion:     resolvedMaxProtocolVersion,
-		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
-		MaxInstructionsLength:  resolvedMaxInstructionsLength,
-		ToolPricing:            toolPricing,
-		AllowByDefault:         allowByDefault,
-		Disabled:               disabled,
-		PerUserHeaderKeys:      perUserHeaderKeys,
-		TokenExchange:          tokenExchange,
-		OpenAPIConfig:          resolvedOpenAPIConfig,
-		PerUserDiscovery:       perUserDiscovery,
-		PendingVerification:    pendingVerification,
-	}
+	schemasConfig.PendingVerification = pendingVerification
 
 	// Compare per-call-ness before/after so the response can tell the admin
 	// whether this update actually changed how the client connects (only
@@ -4049,7 +4056,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	wasPerCallConnection := h.mcpManager.RequiresPerCallConnection(existingConfig)
 	isPerCallConnection := h.mcpManager.RequiresPerCallConnection(schemasConfig)
 	// Snapshotted now: existingConfig is the live entry the runtime update replaces.
-	after := auditMCPClient(h.store, mcpClientAfterUpdate(existingConfig, schemasConfig))
+	afterConfig := *mcpClientAfterUpdate(existingConfig, schemasConfig)
+	if req.PerUserDiscovery == nil && oldDBConfig != nil {
+		afterConfig.PerUserDiscovery = oldDBConfig.PerUserDiscovery // an omitted flag keeps the stored value, which can differ from the runtime's
+	}
+	after := auditMCPClient(h.store, &afterConfig)
 
 	// Update MCP client config in memory (always — applies name/tools/header changes,
 	// sharedConnectErr records a needs_session_stickiness=true dial failure without
@@ -4079,13 +4090,19 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		} else {
 			// Rollback DB update to keep DB and memory in sync, unless it flipped
 			// per_user_discovery (see the read-back above).
+			rolledBack := false
 			if h.store.ConfigStore != nil && oldDBConfig != nil && !perUserDiscoveryChanged {
 				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, oldDBConfig); rollbackErr != nil {
 					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
+				} else {
+					rolledBack = true
 				}
 				if refreshErr := h.refreshMCPClientRow(ctx, id); refreshErr != nil {
 					logger.Error(fmt.Sprintf("failed to reload MCP client %s after rolling back its update: %v", id, refreshErr))
 				}
+			}
+			if h.store.ConfigStore != nil && !rolledBack {
+				lib.RecordAuditChange(ctx, "mcp_client.updated", "mcp_client", id, name, before, after)
 			}
 			logger.Error(fmt.Sprintf("Failed to update MCP client: %v", err))
 			if perUserDiscoveryChanged {
@@ -5063,6 +5080,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			if err := h.updateMCPClientWithRetry(bifrostCtx, mcpClientConfig.ID, mcpClientConfig); err != nil {
 				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
 					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
+					h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(tools))
 				}
 				if refreshErr := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); refreshErr != nil {
 					logger.Error(fmt.Sprintf("failed to reload MCP client %s after rolling back its update: %v", mcpClientConfig.ID, refreshErr))
@@ -5097,6 +5115,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				if h.store.ConfigStore != nil {
 					if delErr := h.store.ConfigStore.DeleteMCPClientConfig(ctx, mcpClientConfig.ID); delErr != nil {
 						logger.Error(fmt.Sprintf("Failed to delete MCP client config from database: %v. please restart bifrost to keep core and database in sync", delErr))
+						h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(tools))
 						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to delete MCP client config from database: %v. please restart bifrost to keep core and database in sync", delErr))
 						return
 					}
@@ -5151,6 +5170,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 						"Runtime and database state have drifted: the client works now but will return to pending_verification on restart. Re-run verification to retry.",
 					mcpClientConfig.ID, err,
 				))
+				h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(tools))
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client verified and activated but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
 				return
 			}
@@ -5222,6 +5242,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			} else {
 				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
 					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
+					h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(mcpClientConfig.DiscoveredTools))
 				}
 				if refreshErr := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); refreshErr != nil {
 					logger.Error(fmt.Sprintf("failed to reload MCP client %s after rolling back its update: %v", mcpClientConfig.ID, refreshErr))
@@ -5256,6 +5277,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			if h.store.ConfigStore != nil {
 				if delErr := h.store.ConfigStore.DeleteMCPClientConfig(ctx, mcpClientConfig.ID); delErr != nil {
 					logger.Warn(fmt.Sprintf("Failed to rollback MCP client config after add failure: %v", delErr))
+					h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(mcpClientConfig.DiscoveredTools))
 				}
 			}
 			logger.Error(fmt.Sprintf("[OAuth Complete] Failed to connect MCP client: %v", err))
@@ -5285,6 +5307,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 					"Runtime and database state have drifted: the client is connected now but will return to pending_verification on restart. Re-run verification to retry.",
 				mcpClientConfig.ID, err,
 			))
+			h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(mcpClientConfig.DiscoveredTools))
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client connected but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
 			return
 		}

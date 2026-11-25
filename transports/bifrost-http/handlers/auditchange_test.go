@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 // auditChanges returns the audit changes a handler recorded on ctx.
@@ -616,6 +619,17 @@ func requireCommitPointChange(t *testing.T, ctx *fasthttp.RequestCtx, eventName,
 	return changes[0]
 }
 
+// requireRecordedOrNone asserts exactly one change named eventName when recorded, and none otherwise.
+func requireRecordedOrNone(t *testing.T, changes []configstore.AuditChange, recorded bool, eventName string) {
+	t.Helper()
+	if recorded && (len(changes) != 1 || changes[0].EventName != eventName) {
+		t.Fatalf("want one %s change, got %+v", eventName, changes)
+	}
+	if !recorded && len(changes) != 0 {
+		t.Fatalf("want no changes, got %+v", changes)
+	}
+}
+
 func requireStatus(t *testing.T, ctx *fasthttp.RequestCtx, want int) {
 	t.Helper()
 	if got := ctx.Response.StatusCode(); got != want {
@@ -796,4 +810,460 @@ func TestCommitPoint_PricingOverrideRecordedWhenUpsertFails(t *testing.T) {
 	h.updatePricingOverride(update)
 	requireStatus(t, update, fasthttp.StatusInternalServerError)
 	requireCommitPointChange(t, update, "pricing_override.updated", "name", "Renamed")
+}
+
+// keyReadBackFailingStore commits key writes but fails the read-back that follows them.
+type keyReadBackFailingStore struct {
+	configstore.ConfigStore
+}
+
+func (s *keyReadBackFailingStore) GetProviderKey(context.Context, schemas.ModelProvider, string) (*configstoreTables.TableKey, error) {
+	return nil, errCommitPointInjected
+}
+
+func newKeyReadBackFailingHandler(t *testing.T, keys ...schemas.Key) (*ProviderHandler, configstore.ConfigStore) {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: keys})
+	attachBifrostClient(t, cfg)
+	store := cfg.ConfigStore
+	h := &ProviderHandler{
+		configStore:   &keyReadBackFailingStore{ConfigStore: store},
+		config:        cfg,
+		modelsManager: &mockModelsManager{},
+	}
+	return h, store
+}
+
+func TestCommitPoint_ProviderKeyCreateRecordedWhenReadBackFails(t *testing.T) {
+	h, store := newKeyReadBackFailingHandler(t)
+	const secret = "sk-commit-point-create-0123456789abcdef"
+
+	ctx := newTestRequestCtx(`{"name":"commit-key","value":"` + secret + `","weight":1}`)
+	ctx.SetUserValue("provider", string(schemas.OpenAI))
+	h.createProviderKey(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	keys, err := store.GetProviderKeys(context.Background(), schemas.OpenAI)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("expected the key to be stored, got %+v %v", keys, err)
+	}
+	change := requireCommitPointChange(t, ctx, "provider_key.created", "name", "commit-key")
+	requireNoSecret(t, change, secret)
+}
+
+func TestCommitPoint_ProviderKeyUpdateRecordedWhenReadBackFails(t *testing.T) {
+	const oldSecret = "sk-commit-point-old-0123456789abcdef"
+	const newSecret = "sk-commit-point-new-fedcba9876543210"
+	key := schemas.Key{ID: "key-1", Name: "commit-key", Value: *schemas.NewSecretVar(oldSecret), Weight: 1}
+	h, _ := newKeyReadBackFailingHandler(t, key)
+
+	ctx := newTestRequestCtx(`{"name":"renamed-key","value":"` + newSecret + `","weight":2}`)
+	ctx.SetUserValue("provider", string(schemas.OpenAI))
+	ctx.SetUserValue("key_id", "key-1")
+	h.updateProviderKey(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "provider_key.updated", "name", "renamed-key")
+	requireNoSecret(t, change, oldSecret)
+	requireNoSecret(t, change, newSecret)
+}
+
+func TestCommitPoint_DeleteProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		removeErr error
+		status    int
+		recorded  bool
+	}{
+		{"success", nil, fasthttp.StatusOK, true},
+		{"already deleted", lib.ErrNotFound, fasthttp.StatusOK, false},
+		{"nothing deleted", errors.New("client refused the removal"), fasthttp.StatusInternalServerError, false},
+		{"deleted, cleanup failed", &lib.SavedNotAppliedError{Err: errors.New("pricing manager not found")}, fasthttp.StatusInternalServerError, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			h := &ProviderHandler{
+				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, nil),
+				modelsManager: &mockModelsManager{remove: func(context.Context, schemas.ModelProvider) error { return tc.removeErr }},
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodDelete)
+			ctx.SetUserValue("provider", string(schemas.OpenAI))
+			h.deleteProvider(ctx)
+
+			requireStatus(t, ctx, tc.status)
+			changes := liveAuditChanges(ctx)
+			requireRecordedOrNone(t, changes, tc.recorded, "provider.deleted")
+		})
+	}
+}
+
+// failingRuntimeUpdateMCPManager fails the in-memory update after the row is written.
+type failingRuntimeUpdateMCPManager struct {
+	fakeMCPManagerVerifyOnly
+}
+
+func (*failingRuntimeUpdateMCPManager) UpdateMCPClient(context.Context, string, *schemas.MCPClientConfig) error {
+	return errors.New("runtime update failed")
+}
+
+// rollbackStore commits the first client write and fails the rollback write when failRollback is set.
+type rollbackStore struct {
+	mockUpdateConfigStore
+	failRollback bool
+}
+
+func (s *rollbackStore) UpdateMCPClientConfig(ctx context.Context, id string, row *configstoreTables.TableMCPClient) error {
+	s.updates++
+	if s.updates > 1 && s.failRollback {
+		return errors.New("rollback write failed")
+	}
+	return nil
+}
+
+func TestCommitPoint_MCPClientUpdateRuntimeFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		failRollback bool
+		recorded     bool
+	}{
+		{"rollback restores the row", false, false},
+		{"rollback fails so the write stands", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			existing := &schemas.MCPClientConfig{ID: "client-rb", Name: "rb_mcp", EndpointSlug: "rb-slug", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone}
+			store := libtest.MCPClients(t, &lib.Config{
+				MCPConfig:    &schemas.MCPConfig{},
+				ClientConfig: &configstore.ClientConfig{},
+			}, existing)
+			cfgStore := &rollbackStore{failRollback: tc.failRollback}
+			store.ConfigStore = cfgStore
+			h := &MCPHandler{store: store, mcpManager: &failingRuntimeUpdateMCPManager{}}
+
+			disabled := true
+			body, err := json.Marshal(MCPClientUpdateRequest{Disabled: &disabled})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("id", existing.ID)
+			ctx.Request.SetBody(body)
+			h.updateMCPClient(ctx)
+
+			requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+			if cfgStore.updates != 2 {
+				t.Fatalf("expected the write and its rollback, got %d writes", cfgStore.updates)
+			}
+			changes := liveAuditChanges(ctx)
+			requireRecordedOrNone(t, changes, tc.recorded, "mcp_client.updated")
+		})
+	}
+}
+
+// storedDiscoveryRollbackStore holds per_user_discovery on in the stored row and fails the rollback write.
+type storedDiscoveryRollbackStore struct {
+	rollbackStore
+}
+
+func (s *storedDiscoveryRollbackStore) GetMCPClientByID(_ context.Context, id string) (*configstoreTables.TableMCPClient, error) {
+	on := true
+	return &configstoreTables.TableMCPClient{ClientID: id, PerUserDiscovery: &on}, nil
+}
+
+func TestCommitPoint_MCPClientUpdateRuntimeFailureKeepsStoredDiscovery(t *testing.T) {
+	SetLogger(&mockLogger{})
+	off := false
+	existing := &schemas.MCPClientConfig{ID: "client-pud", Name: "pud_mcp", EndpointSlug: "pud-slug", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone, PerUserDiscovery: &off}
+	store := libtest.MCPClients(t, &lib.Config{
+		MCPConfig:    &schemas.MCPConfig{},
+		ClientConfig: &configstore.ClientConfig{},
+	}, existing)
+	store.ConfigStore = &storedDiscoveryRollbackStore{rollbackStore{failRollback: true}}
+	h := &MCPHandler{store: store, mcpManager: &failingRuntimeUpdateMCPManager{}, mcpCredentialCacheManager: &evictionLog{}}
+
+	disabled := true
+	body, err := json.Marshal(MCPClientUpdateRequest{Disabled: &disabled})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("id", existing.ID)
+	ctx.Request.SetBody(body)
+	h.updateMCPClient(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "mcp_client.updated", "per_user_discovery", true)
+	live, ok := store.LiveStore.Collections.MCPClients.Get(existing.ID)
+	if !ok || live.Config.PerUserDiscovery == nil || *live.Config.PerUserDiscovery {
+		t.Fatalf("live config must keep its own value, live = %+v, after = %s", live, change.After)
+	}
+}
+
+// readBackFailingMCPStore commits the client update and fails the read-back after it.
+type readBackFailingMCPStore struct {
+	configstore.ConfigStore
+	updated bool
+}
+
+func (s *readBackFailingMCPStore) UpdateMCPClientConfig(ctx context.Context, id string, row *configstoreTables.TableMCPClient) error {
+	s.updated = true
+	return s.ConfigStore.UpdateMCPClientConfig(ctx, id, row)
+}
+
+func (s *readBackFailingMCPStore) GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error) {
+	if s.updated {
+		return nil, errCommitPointInjected
+	}
+	return s.ConfigStore.GetMCPClientConfigByID(ctx, id)
+}
+
+func TestCommitPoint_MCPClientDiscoveryFlipReadBackFailure(t *testing.T) {
+	h, _ := newOpenAPITestHandler(t)
+	h.mcpCredentialCacheManager = &evictionLog{}
+	client := headersNotesClient()
+	createSignInClient(t, h.store.ConfigStore, client, false)
+	loadMCPClient(t, h, client.ID)
+	h.store.ConfigStore = &readBackFailingMCPStore{ConfigStore: h.store.ConfigStore}
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPut)
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"per_user_discovery":true,"disabled":true}`)
+	ctx := initCtx(&req)
+	ctx.SetUserValue("id", client.ID)
+	h.updateMCPClient(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := requireCommitPointChange(t, ctx, "mcp_client.updated", "per_user_discovery", true)
+	var after map[string]any
+	if err := json.Unmarshal(change.After, &after); err != nil {
+		t.Fatalf("decode after: %v", err)
+	}
+	if after["disabled"] != true {
+		t.Fatalf("after.disabled = %v, want the committed true (after=%s)", after["disabled"], change.After)
+	}
+}
+
+// providerDeleteFailStore commits provider writes and fails the delete a rollback starts with, or reports deleteErr after it.
+type providerDeleteFailStore struct {
+	configstore.ConfigStore
+	failDelete bool
+	deleteErr  error
+}
+
+func (s *providerDeleteFailStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
+	if s.failDelete {
+		return errCommitPointInjected
+	}
+	if err := s.ConfigStore.DeleteProvider(ctx, provider, tx...); err != nil {
+		return err
+	}
+	return s.deleteErr
+}
+
+const commitPointProxySecret = "proxy-secret-commit-point"
+
+func commitPointProviderBody(t *testing.T) []byte {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"provider":               "audit-openai",
+		"custom_provider_config": map[string]any{"base_provider_type": "openai", "is_key_less": true},
+		"proxy_config":           map[string]any{"type": "http", "url": "http://proxy.internal:3128", "username": "proxy-user", "password": commitPointProxySecret},
+	})
+	if err != nil {
+		t.Fatalf("marshal provider body: %v", err)
+	}
+	return body
+}
+
+func TestCommitPoint_ProviderCreateRollback(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		failDelete   bool
+		deleteErr    error
+		wantRecorded bool
+	}{
+		{"rollback removes the provider", false, nil, false},
+		{"rollback fails so the provider stays", true, nil, true},
+		{"rollback removes the provider, then fails", false, &lib.SavedNotAppliedError{Err: errCommitPointInjected}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			lib.SetLogger(&mockLogger{})
+			cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil, nil)
+			store := &providerDeleteFailStore{ConfigStore: cfg.ConfigStore, failDelete: tc.failDelete, deleteErr: tc.deleteErr}
+			cfg.ConfigStore = store
+			h := &ProviderHandler{
+				config:        cfg,
+				modelsManager: &mockModelsManager{reloadErr: errCommitPointInjected},
+			}
+			ctx := newTestRequestCtx(string(commitPointProviderBody(t)))
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			h.addProvider(ctx)
+
+			requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+			stored, err := store.ConfigStore.GetProvidersConfig(context.Background())
+			if err != nil {
+				t.Fatalf("read providers: %v", err)
+			}
+			if _, kept := stored["audit-openai"]; kept != tc.failDelete {
+				t.Fatalf("stored provider kept=%v, want %v", kept, tc.failDelete)
+			}
+			changes := liveAuditChanges(ctx)
+			requireRecordedOrNone(t, changes, tc.wantRecorded, "provider.created")
+			if tc.wantRecorded {
+				requireNoSecret(t, changes[0], commitPointProxySecret)
+			}
+		})
+	}
+}
+
+// newProviderRefreshFailingConfig saves providers to sqlite while its live store has no database to re-read them from.
+func newProviderRefreshFailingConfig(t *testing.T) *lib.Config {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	store := libtest.WithProviders(t, &lib.Config{}, nil, nil).ConfigStore
+	cfg := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil, nil)
+	cfg.ConfigStore = store
+	return cfg
+}
+
+func requireCreatedProviderRecorded(t *testing.T, ctx *fasthttp.RequestCtx, cfg *lib.Config) {
+	t.Helper()
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	stored, err := cfg.ConfigStore.GetProvidersConfig(context.Background())
+	if err != nil {
+		t.Fatalf("read providers: %v", err)
+	}
+	if _, ok := stored["audit-openai"]; !ok {
+		t.Fatal("the provider must be stored although the request failed")
+	}
+	changes := liveAuditChanges(ctx)
+	requireRecordedOrNone(t, changes, true, "provider.created")
+	requireNoSecret(t, changes[0], commitPointProxySecret)
+}
+
+func TestCommitPoint_ProviderCreateRefreshFailure(t *testing.T) {
+	cfg := newProviderRefreshFailingConfig(t)
+	h := &ProviderHandler{config: cfg, modelsManager: &mockModelsManager{}}
+	ctx := newTestRequestCtx(string(commitPointProviderBody(t)))
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	h.addProvider(ctx)
+	requireCreatedProviderRecorded(t, ctx, cfg)
+}
+
+func TestCommitPoint_ProviderUpsertRefreshFailure(t *testing.T) {
+	cfg := newProviderRefreshFailingConfig(t)
+	h := &ProviderHandler{config: cfg, modelsManager: &mockModelsManager{}}
+	body := strings.Replace(string(commitPointProviderBody(t)), "{", `{"concurrency_and_buffer_size":{"concurrency":1,"buffer_size":10},`, 1)
+	ctx := newTestRequestCtx(body)
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.SetUserValue("provider", "audit-openai")
+	h.updateProvider(ctx)
+	requireCreatedProviderRecorded(t, ctx, cfg)
+}
+
+func TestCommitPoint_ProviderUpsertUpdateRejectedAfterAdd(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil, nil)
+	cfg.ConfigStore = providerUpdateRejectingStore{ConfigStore: cfg.ConfigStore}
+	h := &ProviderHandler{config: cfg, modelsManager: &mockModelsManager{}}
+	body := strings.Replace(string(commitPointProviderBody(t)), "{", `{"concurrency_and_buffer_size":{"concurrency":1,"buffer_size":10},`, 1)
+	ctx := newTestRequestCtx(body)
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.SetUserValue("provider", "audit-openai")
+	h.updateProvider(ctx)
+	requireCreatedProviderRecorded(t, ctx, cfg)
+}
+
+// providerUpdateRejectingStore refuses the provider update write.
+type providerUpdateRejectingStore struct {
+	configstore.ConfigStore
+}
+
+func (providerUpdateRejectingStore) UpdateProvider(context.Context, schemas.ModelProvider, configstore.ProviderConfig, ...*gorm.DB) error {
+	return errCommitPointInjected
+}
+
+func TestCommitPoint_ProviderUpdateRejectedWriteRecordsNothing(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil, nil)
+	store := cfg.ConfigStore
+	h := &ProviderHandler{
+		config:        cfg,
+		modelsManager: &mockModelsManager{},
+	}
+	addCtx := newTestRequestCtx(string(commitPointProviderBody(t)))
+	addCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	h.addProvider(addCtx)
+	requireStatus(t, addCtx, fasthttp.StatusOK)
+	before, err := store.GetProvidersConfig(context.Background())
+	if err != nil {
+		t.Fatalf("read providers: %v", err)
+	}
+	cfg.ConfigStore = providerUpdateRejectingStore{ConfigStore: store}
+
+	ctx := newTestRequestCtx(`{"concurrency_and_buffer_size":{"concurrency":3,"buffer_size":6},"custom_provider_config":{"base_provider_type":"openai","is_key_less":true}}`)
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.SetUserValue("provider", "audit-openai")
+	h.updateProvider(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	after, err := store.GetProvidersConfig(context.Background())
+	if err != nil {
+		t.Fatalf("read providers: %v", err)
+	}
+	if !reflect.DeepEqual(before["audit-openai"].ConcurrencyAndBufferSize, after["audit-openai"].ConcurrencyAndBufferSize) {
+		t.Fatalf("stored concurrency changed from %+v to %+v after a rejected write", before["audit-openai"].ConcurrencyAndBufferSize, after["audit-openai"].ConcurrencyAndBufferSize)
+	}
+	requireRecordedOrNone(t, liveAuditChanges(ctx), false, "provider.updated")
+}
+
+func TestCommitPoint_ProviderUpdateRecordedWhenRuntimeRebuildFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	cfg := libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, nil, nil)
+	store := cfg.ConfigStore
+	h := &ProviderHandler{
+		config:        cfg,
+		modelsManager: &mockModelsManager{},
+	}
+	addCtx := newTestRequestCtx(string(commitPointProviderBody(t)))
+	addCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	h.addProvider(addCtx)
+	requireStatus(t, addCtx, fasthttp.StatusOK)
+
+	// A client that is shutting down refuses UpdateProvider, which runs after the store write.
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(cfg),
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("init client: %v", err)
+	}
+	client.Shutdown()
+	cfg.SetBifrostClient(client)
+
+	ctx := newTestRequestCtx(`{"concurrency_and_buffer_size":{"concurrency":3,"buffer_size":6},"custom_provider_config":{"base_provider_type":"openai","is_key_less":true},"proxy_config":{"type":"http","url":"http://proxy.internal:3128","username":"proxy-user","password":"` + commitPointProxySecret + `"}}`)
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.SetUserValue("provider", "audit-openai")
+	h.updateProvider(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	stored, err := store.GetProvidersConfig(context.Background())
+	if err != nil {
+		t.Fatalf("read providers: %v", err)
+	}
+	if got := stored["audit-openai"].ConcurrencyAndBufferSize; got == nil || got.Concurrency != 3 {
+		t.Fatalf("stored concurrency = %+v, want the committed update", got)
+	}
+	changes := liveAuditChanges(ctx)
+	requireRecordedOrNone(t, changes, true, "provider.updated")
+	requireNoSecret(t, changes[0], commitPointProxySecret)
 }
