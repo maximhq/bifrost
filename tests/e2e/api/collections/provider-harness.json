@@ -350471,11 +350471,11 @@
       ]
     },
     {
-      "name": "385. Responses stream that ends with [DONE] and no terminal event (responses done truncation)",
+      "name": "385. Responses stream that ends with [DONE] and no terminal event (responses done truncation) (#10287 / PR #10288)",
       "description": "Local fixture regression, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. The fixture streams response.created and one text delta, then [DONE]. Models upstream-responses-done-only (create) and response id resp_fixture_done_only (retrieve stream) never send a terminal event; the client must get an error event saying the provider closed the stream before a completion marker, not a clean end. upstream-responses-completed and resp_fixture_completed add response.completed before [DONE] and must end without an error. Setup and scoped run commands are in tests/e2e/api/README.md under Responses stream ending with [DONE].",
       "item": [
         {
-          "name": "385.1 openai openai/upstream-responses-done-only create stream reports truncation (responses done truncation)",
+          "name": "385.1 openai openai/upstream-responses-done-only create stream reports truncation (responses done truncation) - #10287",
           "event": [
             {
               "listen": "prerequest",
@@ -350533,7 +350533,7 @@
           }
         },
         {
-          "name": "385.2 openai resp_fixture_done_only retrieve stream reports truncation (responses done truncation)",
+          "name": "385.2 openai openai/upstream-responses-done-only resp_fixture_done_only retrieve stream reports truncation (responses done truncation) - #10287",
           "event": [
             {
               "listen": "prerequest",
@@ -350593,7 +350593,7 @@
           }
         },
         {
-          "name": "385.3 openai openai/upstream-responses-completed create stream ends cleanly (responses done truncation)",
+          "name": "385.3 openai openai/upstream-responses-completed create stream ends cleanly (responses done truncation) - #10287",
           "event": [
             {
               "listen": "prerequest",
@@ -350648,7 +350648,7 @@
           }
         },
         {
-          "name": "385.4 openai resp_fixture_completed retrieve stream ends cleanly (responses done truncation)",
+          "name": "385.4 openai openai/upstream-responses-completed resp_fixture_completed retrieve stream ends cleanly (responses done truncation) - #10287",
           "event": [
             {
               "listen": "prerequest",
