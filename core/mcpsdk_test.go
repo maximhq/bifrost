@@ -825,7 +825,7 @@ func TestLazyMCPManagerWiresDecisionRanker(t *testing.T) {
 	b := newSDKClient(t, schemas.BifrostConfig{Logger: logger})
 	client := alphaClient(a.url)
 	client.IsCodeModeClient = true
-	if err := b.AddMCPClient(context.Background(), client); err != nil {
+	if err := addMCPClient(context.Background(), b, client); err != nil {
 		t.Fatalf("AddMCPClient: %v", err)
 	}
 	b.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
@@ -854,7 +854,7 @@ func TestDecisionRankerIgnoresAgentServedRoute(t *testing.T) {
 	b := newSDKClient(t, schemas.BifrostConfig{Logger: logger})
 	client := alphaClient(a.url)
 	client.IsCodeModeClient = true
-	if err := b.AddMCPClient(context.Background(), client); err != nil {
+	if err := addMCPClient(context.Background(), b, client); err != nil {
 		t.Fatalf("AddMCPClient: %v", err)
 	}
 	b.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
