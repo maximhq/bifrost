@@ -9284,6 +9284,39 @@ func TestGuardTagSuffixValidation_ConversePath(t *testing.T) {
 // burst, and aborted on its idle watchdog. Claude Code sends no flag at all when
 // pointed at a gateway, so Bifrost must default it on for the models Claude Code
 // itself enables on Bedrock.
+func BenchmarkBedrockConverseChatRequest_EagerTools(b *testing.B) {
+	for _, toolset := range []bool{false, true} {
+		name := "no toolset"
+		if toolset {
+			name = "computer toolset"
+		}
+		b.Run(name, func(b *testing.B) {
+			req := &schemas.BifrostChatRequest{
+				Model:  "global.anthropic.claude-opus-5-5",
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ChatParameters{},
+			}
+			for _, toolName := range []string{"Read", "Write"} {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{
+					Type:                schemas.ChatToolTypeFunction,
+					Function:            &schemas.ChatToolFunction{Name: toolName, Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+					EagerInputStreaming: schemas.Ptr(true),
+				})
+			}
+			if toolset {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: "computer_toolset_20260801"})
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if _, err := bedrock.ToBedrockChatCompletionRequest(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 	const beta = "fine-grained-tool-streaming-2025-05-14"
 	params := func() *schemas.ToolFunctionParameters {
@@ -9300,6 +9333,7 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 		noTools    bool
 		clientBeta string
 		serverTool bool
+		toolset    string
 		wantBeta   bool
 	}{
 		{name: "opus 5 tool without flag gets the default", model: "global.anthropic.claude-opus-5", wantBeta: true},
@@ -9311,6 +9345,8 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 		{name: "no custom tools", model: "global.anthropic.claude-opus-5", noTools: true, wantBeta: false},
 		{name: "non-Anthropic model", model: "amazon.nova-pro-v1:0", eager: schemas.Ptr(true), wantBeta: false},
 		{name: "dedupes against server-tool betas", model: "global.anthropic.claude-opus-5", serverTool: true, wantBeta: true},
+		{name: "beside the computer toolset", model: "global.anthropic.claude-opus-5-5", eager: schemas.Ptr(true), toolset: "computer_toolset_20260801", wantBeta: false},
+		{name: "beside the browser toolset", model: "global.anthropic.claude-opus-5-5", eager: schemas.Ptr(true), toolset: "browser_toolset_20260801", wantBeta: false},
 	}
 
 	for _, tc := range cases {
@@ -9336,6 +9372,9 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 		}
 
 		t.Run(tc.name+"/responses", func(t *testing.T) {
+			if tc.toolset != "" {
+				t.Skip("a Responses request with a computer tool goes to InvokeModel, not Converse")
+			}
 			req := &schemas.BifrostResponsesRequest{
 				Model:  tc.model,
 				Input:  []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("write the file")}}},
@@ -9371,9 +9410,17 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 			if tc.serverTool {
 				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: "memory_20250818", Name: "memory"})
 			}
+			if tc.toolset != "" {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: schemas.ChatToolType(tc.toolset)})
+			}
 			bedrockReq, err := bedrock.ToBedrockChatCompletionRequest(newCtx(), req)
 			require.NoError(t, err)
 			assertBeta(t, bedrockReq.AdditionalModelRequestFields)
+			if tc.toolset != "" {
+				tunneled, err := json.Marshal(bedrockReq.AdditionalModelRequestFields)
+				require.NoError(t, err)
+				assert.Contains(t, string(tunneled), tc.toolset, "toolset was not tunneled")
+			}
 			if tc.serverTool {
 				raw, ok := bedrockReq.AdditionalModelRequestFields.Get("anthropic_beta")
 				require.True(t, ok)

@@ -1,3 +1,5 @@
+- fix: anthropic - a request that carries `computer_toolset_20260801` or `browser_toolset_20260801` no longer gets the `fine-grained-tool-streaming` beta that Bifrost derives from `eager_input_streaming`, on the Messages route and on Bedrock Converse; Anthropic rejects that beta beside a toolset with a 400 and accepts the flag without it
+- fix: anthropic - Haiku 5.5 keeps the computer toolset, and a dated computer tool or a Responses `computer_use_preview` tool reaches it as the toolset on the Claude API and Vertex and as `computer_20251124` on Bedrock
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
 - feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)

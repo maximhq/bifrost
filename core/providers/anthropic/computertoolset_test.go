@@ -314,6 +314,10 @@ func TestComputerToolset_ForwardedWhenTargetAcceptsIt(t *testing.T) {
 		{schemas.Vertex, "claude-opus-5"},
 		{schemas.Bedrock, "claude-opus-5-5"},
 		{schemas.Bedrock, "claude-sonnet-5-5"},
+		{schemas.Anthropic, "claude-haiku-5-5"},
+		{schemas.Anthropic, "claude-haiku-5.5"},
+		{schemas.Vertex, "claude-haiku-5-5"},
+		{schemas.Bedrock, "us.anthropic.claude-haiku-5-5"},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
@@ -328,6 +332,47 @@ func TestComputerToolset_ForwardedWhenTargetAcceptsIt(t *testing.T) {
 			assert.Equal(t, AnthropicToolTypeComputerToolset20260801, *tool.Type)
 			assert.Empty(t, tool.Name, "a toolset entry rejects name")
 			assert.Nil(t, tool.AnthropicToolComputerUse, "a toolset entry rejects the display_* geometry")
+		})
+	}
+}
+
+func TestComputerToolset_Haiku55GetsAnAcceptedComputerTool(t *testing.T) {
+	cases := []struct {
+		provider schemas.ModelProvider
+		model    string
+		want     AnthropicToolType
+	}{
+		{schemas.Anthropic, "claude-haiku-5-5", AnthropicToolTypeComputerToolset20260801},
+		{schemas.Vertex, "claude-haiku-5-5", AnthropicToolTypeComputerToolset20260801},
+		{schemas.Bedrock, "us.anthropic.claude-haiku-5-5", AnthropicToolTypeComputer20251124},
+	}
+	for _, tc := range cases {
+		caps := schemas.ResolveModelCaps(tc.provider, tc.model)
+		t.Run(string(tc.provider)+"/responses", func(t *testing.T) {
+			tool := convertBifrostToolToAnthropic(caps, &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeComputerUsePreview,
+				ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{
+					Environment: "browser", DisplayWidth: 1024, DisplayHeight: 768,
+				},
+			}, tc.provider, false)
+			require.NotNil(t, tool)
+			require.NotNil(t, tool.Type)
+			assert.Equal(t, tc.want, *tool.Type)
+		})
+		t.Run(string(tc.provider)+"/chat completions", func(t *testing.T) {
+			tool, ok := convertServerToolToAnthropic(schemas.ChatTool{
+				Type: schemas.ChatToolType(AnthropicToolTypeComputer20250124),
+			}, caps, tc.provider)
+			require.True(t, ok)
+			require.NotNil(t, tool.Type)
+			assert.Equal(t, tc.want, *tool.Type)
+		})
+		t.Run(string(tc.provider)+"/messages", func(t *testing.T) {
+			body := []byte(`{"model":"` + tc.model + `","max_tokens":64,` +
+				`"tools":[{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768}]}`)
+			out, err := RemapRawToolVersionsForProvider(body, tc.provider, tc.model)
+			require.NoError(t, err)
+			assert.Equal(t, string(tc.want), providerUtils.GetJSONField(out, "tools.0.type").String())
 		})
 	}
 }

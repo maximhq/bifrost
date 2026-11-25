@@ -1803,6 +1803,130 @@ func TestBuildAnthropicRequestBody_DefaultEagerInputStreaming(t *testing.T) {
 	}
 }
 
+// Anthropic rejects the fine-grained-tool-streaming beta beside a computer_toolset_20260801
+// entry with a 400, and accepts eager_input_streaming there without it. So a request that
+// carries the toolset keeps the flag on its tools and gets no derived beta. The same request
+// without the toolset still gets the beta.
+func TestComputerToolset_NoFineGrainedBetaDerived(t *testing.T) {
+	const (
+		toolset    = `{"type":"computer_toolset_20260801"}`
+		browser    = `{"type":"browser_toolset_20260801"}`
+		eagerTool  = `{"name":"Eager","input_schema":{"type":"object"},"eager_input_streaming":true}`
+		toolChange = `{"type":"tool_addition","tool":{"type":"tool_definition","definition":`
+	)
+	rawBody := func(model, tools, system string) []byte {
+		messages := `{"role":"user","content":"take a screenshot"}`
+		if system != "" {
+			messages += `,{"role":"system","content":[` + system + `]}`
+		}
+		return []byte(`{"model":"` + model + `","max_tokens":1024,"tools":[` + tools + `],"messages":[` + messages + `]}`)
+	}
+	hosts := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"bedrock opus 5.5", schemas.Bedrock, "us.anthropic.claude-opus-5-5"},
+		{"bedrock sonnet 5.5", schemas.Bedrock, "global.anthropic.claude-sonnet-5-5"},
+		{"vertex opus 5.5", schemas.Vertex, "claude-opus-5-5"},
+		{"anthropic opus 5.5", schemas.Anthropic, "claude-opus-5-5"},
+	}
+	type testCase struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		raw      []byte
+		chat     bool
+		toolset  bool
+		browser  bool
+		wantBeta bool
+	}
+	var cases []testCase
+	for _, h := range hosts {
+		cases = append(cases,
+			testCase{name: h.name + "/responses/toolset", provider: h.provider, model: h.model, toolset: true},
+			testCase{name: h.name + "/responses/no toolset", provider: h.provider, model: h.model, wantBeta: true},
+			testCase{name: h.name + "/messages/toolset", provider: h.provider, model: h.model, raw: rawBody(h.model, toolset+`,`+eagerTool, ""), toolset: true},
+			testCase{name: h.name + "/messages/no toolset", provider: h.provider, model: h.model, raw: rawBody(h.model, eagerTool, ""), wantBeta: true},
+		)
+	}
+	const opus = "claude-opus-5-5"
+	cases = append(cases,
+		testCase{name: "chat completions/toolset", provider: schemas.Anthropic, model: opus, chat: true, toolset: true},
+		testCase{name: "chat completions/no toolset", provider: schemas.Anthropic, model: opus, chat: true, wantBeta: true},
+		testCase{name: "inline definition beside the toolset", provider: schemas.Anthropic, model: opus,
+			raw: rawBody(opus, toolset, toolChange+eagerTool+`}}`), toolset: true},
+		testCase{name: "toolset defined by value", provider: schemas.Anthropic, model: opus,
+			raw: rawBody(opus, eagerTool, toolChange+toolset+`}}`), toolset: true},
+		testCase{name: "browser toolset/messages", provider: schemas.Anthropic, model: opus,
+			raw: rawBody(opus, browser+`,`+eagerTool, ""), toolset: true, browser: true},
+		testCase{name: "browser toolset/bedrock messages", provider: schemas.Bedrock, model: "us.anthropic.claude-opus-5-5",
+			raw: rawBody("us.anthropic.claude-opus-5-5", browser+`,`+eagerTool, ""), toolset: true, browser: true},
+	)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			cfg := AnthropicRequestBuildConfig{Provider: tc.provider, IsStreaming: true}
+			if tc.provider != schemas.Anthropic {
+				cfg.Model = tc.model
+			}
+			toolsetType := AnthropicToolTypeComputerToolset20260801
+			if tc.browser {
+				toolsetType = AnthropicToolTypeBrowserToolset20260801
+			}
+			var body []byte
+			var bErr *schemas.BifrostError
+			if tc.chat {
+				tools := []schemas.ChatTool{{
+					Type:                schemas.ChatToolTypeFunction,
+					Function:            &schemas.ChatToolFunction{Name: "Eager", Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+					EagerInputStreaming: schemas.Ptr(true),
+				}}
+				if tc.toolset {
+					tools = append(tools, schemas.ChatTool{Type: schemas.ChatToolType(toolsetType)})
+				}
+				body, bErr = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{
+					Provider: tc.provider, Model: tc.model,
+					Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("take a screenshot")}}},
+					Params: &schemas.ChatParameters{Tools: tools},
+				}, cfg)
+			} else {
+				request := &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: makeSimpleInput("take a screenshot")}
+				if tc.raw != nil {
+					ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+					request.RawRequestBody = tc.raw
+				} else {
+					request.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+						responsesToolFromJSON(t, `{"type":"function","name":"Eager","parameters":{"type":"object"},"eager_input_streaming":true}`),
+					}}
+					if tc.toolset {
+						request.Params.Tools = append(request.Params.Tools, responsesToolFromJSON(t, `{"type":"computer"}`))
+					}
+				}
+				body, bErr = BuildAnthropicResponsesRequestBody(ctx, request, cfg)
+			}
+			if bErr != nil {
+				t.Fatalf("building request body: %v", bErr.Error.Message)
+			}
+
+			if got := strings.Contains(string(body), string(toolsetType)); got != tc.toolset {
+				t.Fatalf("toolset in body = %v, want %v: %s", got, tc.toolset, body)
+			}
+			if !strings.Contains(string(body), `"eager_input_streaming":true`) {
+				t.Errorf("the tool lost eager_input_streaming: %s", body)
+			}
+			betas := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), tc.provider)
+			for _, b := range providerUtils.GetJSONField(body, "anthropic_beta").Array() {
+				betas = append(betas, b.String())
+			}
+			if got := slices.Contains(betas, AnthropicEagerInputStreamingBetaHeader); got != tc.wantBeta {
+				t.Errorf("betas %v, fine-grained beta present = %v, want %v", betas, got, tc.wantBeta)
+			}
+		})
+	}
+}
+
 func TestDefaultEagerInputStreaming(t *testing.T) {
 	cases := []struct {
 		provider schemas.ModelProvider
@@ -3977,6 +4101,43 @@ func TestMoveCachePrefixKeysLast(t *testing.T) {
 			}
 			if json.Valid([]byte(tc.in)) && !json.Valid(got) {
 				t.Fatalf("produced invalid JSON: %s", got)
+			}
+		})
+	}
+}
+
+func BenchmarkBuildAnthropicResponsesRequestBody_EagerTools(b *testing.B) {
+	for _, toolset := range []bool{false, true} {
+		name := "no toolset"
+		if toolset {
+			name = "computer toolset"
+		}
+		b.Run(name, func(b *testing.B) {
+			var tools []schemas.ResponsesTool
+			for _, raw := range []string{
+				`{"type":"function","name":"Read","parameters":{"type":"object"},"eager_input_streaming":true}`,
+				`{"type":"function","name":"Write","parameters":{"type":"object"},"eager_input_streaming":true}`,
+				`{"type":"computer"}`,
+			} {
+				var tool schemas.ResponsesTool
+				if err := json.Unmarshal([]byte(raw), &tool); err != nil {
+					b.Fatal(err)
+				}
+				if tool.Type != schemas.ResponsesToolTypeComputer || toolset {
+					tools = append(tools, tool)
+				}
+			}
+			request := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Anthropic, Model: "claude-opus-5-5", Input: makeSimpleInput("take a screenshot"),
+				Params: &schemas.ResponsesParameters{Tools: tools},
+			}
+			cfg := AnthropicRequestBuildConfig{Provider: schemas.Anthropic, IsStreaming: true}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				if _, bErr := BuildAnthropicResponsesRequestBody(ctx, request, cfg); bErr != nil {
+					b.Fatal(bErr.Error.Message)
+				}
 			}
 		})
 	}
