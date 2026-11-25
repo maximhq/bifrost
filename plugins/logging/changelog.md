@@ -1,3 +1,4 @@
+- feat: Claude Code subagent requests are logged with their agent ID as `agent_correlation_id`
 - feat: speech sessions are logged with their full input text
 - feat: streamed multipart passthrough uploads are summarized with each part's content type
 - fix: log previews for agent-loop requests use the latest tool call or result

@@ -1946,6 +1946,36 @@ func requestHeaderFromContext(ctx *schemas.BifrostContext, name string) string {
 	return ""
 }
 
+// harnessAgentIDHeaders lists the headers coding harnesses use to name the subagent that
+// made a request, as lowercased keys. Only headers a harness verifiably sends belong here.
+// Claude Code sets x-claude-code-agent-id on subagent requests and omits it on the main
+// conversation.
+var harnessAgentIDHeaders = []string{
+	"x-claude-code-agent-id",
+}
+
+// agentCorrelationIDFromContext returns the agent correlation identity for an LLM request:
+// x-bf-agent-correlation-id when the caller sent it, otherwise the subagent identity a
+// coding harness put on its own header. A harness cannot be configured to send a custom
+// header per subagent, so without the fallback its subagent requests are indistinguishable
+// from the main conversation's, which shares their session ID.
+//
+// The fallback is one map load per listed header. The request header map is keyed by
+// lowercased name, so it does not repeat requestHeaderFromContext's case-insensitive scan
+// on the requests that carry neither header, which is nearly all of them.
+func agentCorrelationIDFromContext(ctx *schemas.BifrostContext) string {
+	if value := requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"); value != "" {
+		return value
+	}
+	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	for _, name := range harnessAgentIDHeaders {
+		if value := allHeaders[name]; value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // userAgentFromContext returns the raw HTTP User-Agent of the calling client from
 // the request header map, or "" when absent. Keys in the map are lowercased, so
 // the lookup is case-insensitive. The value is stored verbatim on the log entry;
@@ -2121,7 +2151,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
 	initialData.UserAgent = userAgentFromContext(ctx)
 	initialData.ClientIP = p.clientIPFromContext(ctx)
-	initialData.AgentCorrelationID = requestHeaderFromContext(ctx, "x-bf-agent-correlation-id")
+	initialData.AgentCorrelationID = agentCorrelationIDFromContext(ctx)
 	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
 	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
 		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
@@ -2349,7 +2379,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				Timestamp: logRequestTimestamp(ctx, schemas.BifrostContextKeyRequestStartTime),
 				CreatedAt: time.Now().UTC(),
 			}
-			if agentCorrelationID := requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"); agentCorrelationID != "" {
+			if agentCorrelationID := agentCorrelationIDFromContext(ctx); agentCorrelationID != "" {
 				agentCorrelationID = clampString(agentCorrelationID, maxPersistedAgentCorrelationIDLen)
 				entry.AgentCorrelationID = &agentCorrelationID
 			}
