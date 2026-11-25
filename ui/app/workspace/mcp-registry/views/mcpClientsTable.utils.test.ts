@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import i18n from "@/lib/i18n";
-import { canReconnectMCPClient, exchangeVerifyCopy } from "./mcpClientsTable.utils";
+import { authTypeLabel, canReconnectMCPClient, exchangeVerifyCopy } from "./mcpClientsTable.utils";
 
 beforeAll(async () => {
 	await i18n.changeLanguage("en");
@@ -27,6 +27,12 @@ describe("exchangeVerifyCopy", () => {
 		expect(verified.title).toBe("Re-verify as me");
 		expect(verified.description).toBe("Renew Bifrost's own discovery credential using your identity.");
 		expect(verified.detail).toContain("the credential badge shows it's expired");
+	});
+});
+
+describe("authTypeLabel", () => {
+	it("names client credentials", () => {
+		expect(authTypeLabel("client_credentials")).toBe("OAuth Client Credentials");
 	});
 });
 

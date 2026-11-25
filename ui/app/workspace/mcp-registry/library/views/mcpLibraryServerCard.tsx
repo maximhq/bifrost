@@ -53,6 +53,8 @@ export function authLabel(authType?: string): string {
 			return i18n.t("library.auth.userOauth", { ns: "mcp" });
 		case "token_exchange":
 			return i18n.t("library.auth.tokenExchange", { ns: "mcp" });
+		case "client_credentials":
+			return i18n.t("registry.clientCredentials.authType", { ns: "mcp" });
 		default:
 			return i18n.t("library.auth.noAuth", { ns: "mcp" });
 	}
