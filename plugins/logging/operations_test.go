@@ -7562,3 +7562,93 @@ func (a oneMCPClientAccount) GetConfigForMCPClientByName(name string) (*schemas.
 	}
 	return a.client, nil
 }
+
+func TestAgentCorrelationIDFromContext(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers map[string]string
+		want    string
+	}{
+		{
+			name:    "explicit correlation header",
+			headers: map[string]string{"x-bf-agent-correlation-id": "task-1"},
+			want:    "task-1",
+		},
+		{
+			name:    "Claude Code subagent header",
+			headers: map[string]string{"x-claude-code-agent-id": "aa831ea59460aba7e"},
+			want:    "aa831ea59460aba7e",
+		},
+		{
+			name: "explicit header wins over the harness header",
+			headers: map[string]string{
+				"x-bf-agent-correlation-id": "task-1",
+				"x-claude-code-agent-id":    "aa831ea59460aba7e",
+			},
+			want: "task-1",
+		},
+		{
+			name:    "main conversation sends neither",
+			headers: map[string]string{"x-claude-code-session-id": "5e018618-92e5-4903-8795-d097858ad9b8"},
+		},
+		{name: "no headers"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.headers != nil {
+				ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, tc.headers)
+			}
+			if got := agentCorrelationIDFromContext(ctx); got != tc.want {
+				t.Fatalf("agentCorrelationIDFromContext() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// BenchmarkAgentCorrelationIDFromContext records the per-request cost of resolving the agent
+// correlation identity against the plain x-bf-agent-correlation-id read it replaces. The
+// header set is the size a coding harness sends. "neither" is the common case.
+func BenchmarkAgentCorrelationIDFromContext(b *testing.B) {
+	base := map[string]string{
+		"accept": "application/json", "accept-encoding": "gzip", "anthropic-beta": "claude-code-20250219",
+		"anthropic-version": "2023-06-01", "authorization": "Bearer sk-bf-test", "content-length": "48211",
+		"content-type": "application/json", "user-agent": "claude-cli/2.1.322 (external, cli)", "x-app": "cli",
+		"x-claude-code-session-id": "5e018618-92e5-4903-8795-d097858ad9b8", "x-stainless-lang": "js",
+		"x-stainless-runtime": "node",
+	}
+	withHeader := func(name, value string) map[string]string {
+		headers := make(map[string]string, len(base)+1)
+		for k, v := range base {
+			headers[k] = v
+		}
+		if name != "" {
+			headers[name] = value
+		}
+		return headers
+	}
+	cases := []struct {
+		name    string
+		headers map[string]string
+	}{
+		{"neither", withHeader("", "")},
+		{"explicit", withHeader("x-bf-agent-correlation-id", "task-1")},
+		{"claude_code_subagent", withHeader("x-claude-code-agent-id", "aa831ea59460aba7e")},
+	}
+	for _, c := range cases {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, c.headers)
+		b.Run(c.name+"/before", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = requestHeaderFromContext(ctx, "x-bf-agent-correlation-id")
+			}
+		})
+		b.Run(c.name+"/after", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = agentCorrelationIDFromContext(ctx)
+			}
+		})
+	}
+}

@@ -351593,6 +351593,222 @@
           }
         }
       ]
+    },
+    {
+      "name": "389. Claude Code subagent requests are logged with their agent ID (claude code agent id)",
+      "description": "A Claude Code subagent's requests share the parent's session ID, so a session's log rows could not be split into main-conversation and subagent requests. Claude Code names the subagent in `x-claude-code-agent-id` and cannot be configured to send a custom header per subagent.\n\nThe log row's `agent_correlation_id` now falls back to that header when the request carries no `x-bf-agent-correlation-id`. The cases use the `/anthropic/v1/messages` route Claude Code calls and read the log row by `x-bifrost-request-id`: a subagent request records the agent ID, an explicit `x-bf-agent-correlation-id` still wins, and a main-conversation request (session header only) records none.",
+      "item": [
+        {
+          "name": "Logs: anthropic claude-haiku-4-5 /anthropic/v1/messages records x-claude-code-agent-id as agent_correlation_id (claude code agent id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('subagent request: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('subagent request: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                  "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      pm.test('subagent request: agent_correlation_id is the Claude Code agent id', function () { pm.expect(j.agent_correlation_id, JSON.stringify(j)).to.eql('aa831ea59460aba7e'); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('subagent request: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-claude-code-session-id",
+                "value": "5e018618-92e5-4903-8795-d097858ad9b8"
+              },
+              {
+                "key": "x-claude-code-agent-id",
+                "value": "aa831ea59460aba7e"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 8,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Logs: anthropic claude-haiku-4-5 /anthropic/v1/messages x-bf-agent-correlation-id wins over x-claude-code-agent-id (claude code agent id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('explicit correlation id: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('explicit correlation id: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                  "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      pm.test('explicit correlation id: agent_correlation_id is the explicit header', function () { pm.expect(j.agent_correlation_id, JSON.stringify(j)).to.eql('task-explicit-1'); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('explicit correlation id: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-claude-code-session-id",
+                "value": "5e018618-92e5-4903-8795-d097858ad9b8"
+              },
+              {
+                "key": "x-claude-code-agent-id",
+                "value": "aa831ea59460aba7e"
+              },
+              {
+                "key": "x-bf-agent-correlation-id",
+                "value": "task-explicit-1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 8,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Logs: anthropic claude-haiku-4-5 /anthropic/v1/messages main conversation records no agent_correlation_id (claude code agent id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('main conversation: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('main conversation: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                  "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      pm.test('main conversation: agent_correlation_id is absent', function () { pm.expect(j.agent_correlation_id, JSON.stringify(j)).to.be.oneOf([undefined, null, '']); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('main conversation: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-claude-code-session-id",
+                "value": "5e018618-92e5-4903-8795-d097858ad9b8"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 8,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

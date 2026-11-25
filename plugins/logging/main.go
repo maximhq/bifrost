@@ -1947,8 +1947,9 @@ func requestHeaderFromContext(ctx *schemas.BifrostContext, name string) string {
 }
 
 // harnessAgentIDHeaders lists the headers coding harnesses use to name the subagent that
-// made a request. Only headers a harness verifiably sends belong here. Claude Code sets
-// x-claude-code-agent-id on subagent requests and omits it on the main conversation.
+// made a request, as lowercased keys. Only headers a harness verifiably sends belong here.
+// Claude Code sets x-claude-code-agent-id on subagent requests and omits it on the main
+// conversation.
 var harnessAgentIDHeaders = []string{
 	"x-claude-code-agent-id",
 }
@@ -1958,12 +1959,17 @@ var harnessAgentIDHeaders = []string{
 // coding harness put on its own header. A harness cannot be configured to send a custom
 // header per subagent, so without the fallback its subagent requests are indistinguishable
 // from the main conversation's, which shares their session ID.
+//
+// The fallback is one map load per listed header. The request header map is keyed by
+// lowercased name, so it does not repeat requestHeaderFromContext's case-insensitive scan
+// on the requests that carry neither header, which is nearly all of them.
 func agentCorrelationIDFromContext(ctx *schemas.BifrostContext) string {
 	if value := requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"); value != "" {
 		return value
 	}
+	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
 	for _, name := range harnessAgentIDHeaders {
-		if value := requestHeaderFromContext(ctx, name); value != "" {
+		if value := allHeaders[name]; value != "" {
 			return value
 		}
 	}
