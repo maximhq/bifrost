@@ -529,7 +529,7 @@ The raw response appears in `extra_fields.raw_response`:
 **Type:** `bool` (header values: `"true"` or `"false"`)  
 **Required:** No
 
-Return the cost Bifrost computed for this request: in `extra_fields.cost` on `/v1` responses, errors and the final stream chunk, and in the `x-bifrost-cost` response header on every route. Either value overrides the gateway's `client.send_back_cost` setting for this request. Unlike the raw-response headers, it needs no `allow_per_request_raw_override`. See [Send Back Cost](/features/send-back-cost) for what each route returns.
+Return the cost Bifrost computed for this request: in `extra_fields.cost` on `/v1` responses, errors and the final stream chunk, and in the `x-bifrost-cost` response header on every route except streams. Either value overrides the gateway's `client.send_back_cost` setting for this request. Unlike the raw-response headers, it needs no `allow_per_request_raw_override`. See [Send Back Cost](/features/send-back-cost) for what each route returns.
 
 <Tabs>
 <Tab title="Gateway (cURL)">
