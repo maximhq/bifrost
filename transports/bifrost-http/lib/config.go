@@ -1299,10 +1299,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
 		return nil, err
 	}
-	// 3a. Feature flags (after ConfigStore from initStores, before handlers)
-	if err := initFeatureFlags(ctx, config, &configData); err != nil {
-		return nil, err
-	}
 	// 4. Client config (store → file → defaults)
 	if err := loadClientConfig(ctx, config, &configData); err != nil {
 		return nil, err
@@ -1373,6 +1369,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		}
 	}
 	if err := attachLiveStore(config); err != nil {
+		return nil, err
+	}
+	// 12a. Feature flags, kept in the live store (nothing reads them before the server starts)
+	if err := initFeatureFlags(ctx, config, &configData); err != nil {
 		return nil, err
 	}
 	if err := initFrameworkConfig(ctx, config, &configData); err != nil {
@@ -9173,7 +9173,7 @@ func initFeatureFlags(ctx context.Context, config *Config, configData *ConfigDat
 	// context key declares it as bool, so the assertion is the documented
 	// shape; the comma-ok zero-value handles the unset path cleanly.
 	isEnterprise, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool)
-	store, err := featureflags.New(featureflags.Config{IsEnterprise: isEnterprise})
+	store, err := featureflags.New(config.LiveStore, featureflags.Config{IsEnterprise: isEnterprise})
 	if err != nil {
 		return fmt.Errorf("failed to initialize feature flags: %w", err)
 	}

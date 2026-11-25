@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/livestoretest"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/mcpdiscovery"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -72,6 +73,9 @@ func providerStore(t *testing.T, providers map[schemas.ModelProvider]configstore
 	require.NoError(t, live.LoadAll(ctx, store.DB()))
 	return c
 }
+
+// newLiveStoreForTest returns a new, empty live store closed when the test ends.
+var newLiveStoreForTest = livestoretest.New
 
 // providersOf returns the providers c's live store holds, keyed by name, each with its keys.
 func providersOf(c *Config) map[schemas.ModelProvider]configstore.ProviderConfig {

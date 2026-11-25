@@ -25359,14 +25359,14 @@ func TestRegisterFeatureFlags_WarpDefaultsPerBuildAndIsIdempotent(t *testing.T) 
 	require.False(t, def.DefaultFor(true), "Warp is off by default in enterprise until an operator enables it")
 	require.False(t, def.EnterpriseOnly, "enterprise can still turn it on")
 
-	oss, err := featureflags.New(featureflags.Config{})
+	oss, err := featureflags.New(newLiveStoreForTest(t), featureflags.Config{})
 	require.NoError(t, err)
 	require.True(t, oss.IsEnabled(FeatureFlagWarp))
 	_, err = oss.Set(context.Background(), FeatureFlagWarp, false)
 	require.NoError(t, err)
 	require.False(t, oss.IsEnabled(FeatureFlagWarp), "an OSS operator can still turn Warp off")
 
-	enterprise, err := featureflags.New(featureflags.Config{IsEnterprise: true})
+	enterprise, err := featureflags.New(newLiveStoreForTest(t), featureflags.Config{IsEnterprise: true})
 	require.NoError(t, err)
 	require.False(t, enterprise.IsEnabled(FeatureFlagWarp))
 	status, err := enterprise.Status(FeatureFlagWarp)
@@ -25390,7 +25390,7 @@ func TestRegisterFeatureFlags_PhraseSuggestionsOffByDefault(t *testing.T) {
 	require.False(t, def.EnterpriseOnly, "OSS can turn it on")
 
 	for _, isEnterprise := range []bool{false, true} {
-		store, err := featureflags.New(featureflags.Config{IsEnterprise: isEnterprise})
+		store, err := featureflags.New(newLiveStoreForTest(t), featureflags.Config{IsEnterprise: isEnterprise})
 		require.NoError(t, err)
 		require.False(t, store.IsEnabled(FeatureFlagPhraseSuggestions), "enterprise=%v", isEnterprise)
 		_, err = store.Set(context.Background(), FeatureFlagPhraseSuggestions, true)
