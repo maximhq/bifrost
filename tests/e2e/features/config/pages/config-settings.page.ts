@@ -17,6 +17,7 @@ export class ConfigSettingsPage extends BasePage {
   // Client Settings
   readonly dropExcessRequestsSwitch: Locator
   readonly disableDBPingsSwitch: Locator
+  readonly sendBackCostSwitch: Locator
   readonly asyncJobResultTtlInput: Locator
   readonly extraFieldsPlacementSelect: Locator
   readonly extraFieldsPlacementDroppedNote: Locator
@@ -76,6 +77,7 @@ export class ConfigSettingsPage extends BasePage {
     // Client Settings locators
     this.dropExcessRequestsSwitch = page.locator('#drop-excess-requests')
     this.disableDBPingsSwitch = page.locator('#disable-db-pings-in-health')
+    this.sendBackCostSwitch = page.getByTestId('client-settings-send-back-cost-switch')
     this.asyncJobResultTtlInput = page.getByTestId('client-settings-async-job-result-ttl-input')
     this.extraFieldsPlacementSelect = page.getByTestId('client-settings-extra-fields-placement-select')
     this.extraFieldsPlacementDroppedNote = page.getByTestId('client-settings-extra-fields-placement-dropped-note')
@@ -366,6 +368,10 @@ export class ConfigSettingsPage extends BasePage {
 
   async toggleDisableDBPings(): Promise<void> {
     await this.disableDBPingsSwitch.click()
+  }
+
+  async toggleSendBackCost(): Promise<void> {
+    await this.sendBackCostSwitch.click()
   }
 
   // === Logging Settings Methods ===

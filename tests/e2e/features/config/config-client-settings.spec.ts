@@ -252,6 +252,23 @@ test.describe('Client Settings', () => {
     )
   })
 
+  test('should save and persist send back cost toggle', async ({ configSettingsPage, request }) => {
+    await expect(configSettingsPage.sendBackCostSwitch).toBeVisible()
+    const initialState = await configSettingsPage.getSwitchState(configSettingsPage.sendBackCostSwitch)
+
+    await configSettingsPage.toggleSendBackCost()
+    expect(await configSettingsPage.hasPendingChanges()).toBe(true)
+    await configSettingsPage.saveSettings()
+
+    const expectedState = !initialState
+    await expect.poll(async () => (await coreConfigApi.get(request)).client_config.send_back_cost).toBe(expectedState)
+    await configSettingsPage.goto('client-settings')
+    await expect(configSettingsPage.sendBackCostSwitch).toHaveAttribute(
+      'data-state',
+      expectedState ? 'checked' : 'unchecked'
+    )
+  })
+
   test('should save and persist extra fields placement', async ({ configSettingsPage, page }) => {
     await expect(configSettingsPage.extraFieldsPlacementSelect).toBeVisible()
 
