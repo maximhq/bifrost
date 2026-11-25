@@ -195,6 +195,14 @@ var streamedRequestBodyPool = sync.Pool{
 	New: func() any { return new(bytes.Buffer) },
 }
 
+// initialStreamedBodyReserve bounds the upfront bytes.Buffer.Grow reservation
+// before reading a known-length streamed request body. fasthttp dispatches
+// streamed handlers after pre-reading at most 8 KiB, so capping the initial
+// reservation prevents a client declaring a huge Content-Length and stalling
+// from forcing a multi-megabyte allocation before bytes arrive; larger bodies
+// grow incrementally as BodyWriteTo reads chunks from the stream.
+const initialStreamedBodyReserve = 8 << 10
+
 // releaseStreamedBodyBuffer resets and returns buf to streamedRequestBodyPool unless
 // its capacity exceeds poolLimit.
 func releaseStreamedBodyBuffer(buf *bytes.Buffer, poolLimit int) {
@@ -280,7 +288,7 @@ func RequestBodyMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				// Request.Body() slices after next(ctx) returns.
 				buf := streamedRequestBodyPool.Get().(*bytes.Buffer)
 				buf.Reset()
-				buf.Grow(contentLength)
+				buf.Grow(min(contentLength, initialStreamedBodyReserve))
 				if err := ctx.Request.BodyWriteTo(buf); err != nil {
 					releaseStreamedBodyBuffer(buf, poolLimit)
 					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to read request body: %v", err))

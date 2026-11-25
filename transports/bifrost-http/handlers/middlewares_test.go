@@ -6912,9 +6912,51 @@ func TestRequestBodyMiddleware_BodySurvivesPastHandlerReturn(t *testing.T) {
 	}
 }
 
+// TestRequestBodyMiddleware_LargeDeclaredContentLengthDoesNotPreallocate verifies
+// that a client declaring a multi-megabyte Content-Length and failing/stalling after
+// a small prefix does not force upfront allocation of the declared body size.
+func TestRequestBodyMiddleware_LargeDeclaredContentLengthDoesNotPreallocate(t *testing.T) {
+	const declaredSize = 64 << 20
+	handlerRan := false
+	handler := RequestBodyMiddleware(nil)(func(*fasthttp.RequestCtx) {
+		handlerRan = true
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.Header.SetContentLength(declaredSize)
+	ctx.Request.SetBodyStream(strings.NewReader(`{"prefix":`), declaredSize)
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	handler(ctx)
+	runtime.ReadMemStats(&after)
+
+	if handlerRan {
+		t.Fatal("handler should not run on truncated large stream")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", ctx.Response.StatusCode())
+	}
+	if !ctx.Response.ConnectionClose() {
+		t.Fatal("expected Connection: close on incomplete stream")
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated >= declaredSize/2 {
+		t.Fatalf("allocated %d bytes for stalled %d-byte Content-Length, want bounded initial reservation", allocated, declaredSize)
+	}
+}
+
 // BenchmarkRequestBodyMiddleware measures known-length JSON request processing through
-// RequestBodyMiddleware on a streaming fasthttp server (StreamRequestBody: true).
+// RequestBodyMiddleware on a streaming fasthttp server (StreamRequestBody: true) with
+// the production body-buffer pool limit applied.
 func BenchmarkRequestBodyMiddleware(b *testing.B) {
+	maxBody := requestBodyCap(nil)
+	lib.ApplyBodyBufferPoolLimit(nil, maxBody)
+	b.Cleanup(func() {
+		fasthttp.SetBodySizePoolLimit(lib.BodyBufferPoolLimitDisabled, lib.BodyBufferPoolLimitDisabled)
+	})
+
 	sizes := []struct {
 		name string
 		size int
@@ -6935,7 +6977,7 @@ func BenchmarkRequestBodyMiddleware(b *testing.B) {
 		Handler:                      handler,
 		StreamRequestBody:            true,
 		DisablePreParseMultipartForm: true,
-		MaxRequestBodySize:           64 << 20,
+		MaxRequestBodySize:           maxBody,
 	}
 	served := make(chan struct{})
 	go func() {
