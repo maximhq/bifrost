@@ -48,8 +48,28 @@ func TestJobHandleRefusesUnsafeIDs(t *testing.T) {
 		assert.Nil(t, h, name)
 	}
 	h, err := handle("")
-	assert.NoError(t, err, "a reply naming no id is an ordinary call")
+	assert.EqualError(t, err, "the job id at JobId is empty", "a reply naming no id is an ordinary call, flagged as not tracked")
 	assert.Nil(t, h)
+}
+
+// A job route whose reply names no usable id says why, so the call's row shows the job was not
+// tracked instead of silently charging only the fee. A route without a job reads nothing.
+func TestJobHandleSaysWhyNoJobWasTracked(t *testing.T) {
+	route := &compiledRoute{job: &schemas.RelayJobConfig{IDPath: "JobId"}, jobParams: "{}"}
+	for name, c := range map[string]struct{ contentType, body, want string }{
+		"empty body": {"application/json", "", "the reply has no body to read the job id at JobId from"},
+		"not JSON":   {"text/plain", "accepted", "the reply is not JSON, so the job id at JobId could not be read"},
+		"no id":      {"application/json", `{"Status":"STARTED"}`, "the reply has no job id at JobId"},
+		"blank id":   {"application/json", `{"JobId":"  "}`, "the job id at JobId is empty"},
+	} {
+		h, err := route.jobHandle(c.contentType, []byte(c.body))
+		assert.Nil(t, h, name)
+		assert.EqualError(t, err, c.want, name)
+	}
+	plain := &compiledRoute{}
+	h, err := plain.jobHandle("application/json", []byte(`{"JobId":"x"}`))
+	assert.Nil(t, h)
+	assert.NoError(t, err, "a route without a job starts none and flags nothing")
 }
 
 // The job id is escaped for where it lands, so an upstream-chosen id cannot add a parameter to a

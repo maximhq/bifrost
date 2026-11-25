@@ -852,6 +852,7 @@
 		},
 		"columns": {
 			"startsJob": "ジョブ {{id}} を開始",
+			"jobUntracked": "ジョブは追跡されていません",
 			"jobUnpriced": "価格なし: {{reason}}",
 			"jobFailed": "失敗: {{status}}",
 			"jobBadge": "ジョブ",
@@ -897,6 +898,7 @@
 			"jobNotSettled": "未精算",
 			"jobSettlementFailed": "精算を確認できませんでした。",
 			"jobSettlement": "ジョブの精算",
+			"jobUntracked": "ジョブは追跡されていません",
 			"costUnpriced": "価格なし",
 			"unpricedBody": "Bifrost はこのジョブの価格を決められなかったため、コストは不明で、ジョブ自体には課金されていません。開始呼び出しの課金はそのままです。",
 			"unpricedTitle": "価格なしのジョブ",

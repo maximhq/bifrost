@@ -7556,3 +7556,23 @@ func TestAdmitRelaySettleIsBounded(t *testing.T) {
 	require.True(t, ok)
 	r()
 }
+
+// A job route whose reply named no usable job id marks its row as an untracked job with the reason,
+// so a fee-only charge is visible rather than silent.
+func TestRelayUntrackedJobMarksTheStartRow(t *testing.T) {
+	entry := &logstore.RelayLog{}
+	applyEndpointUsage(entry, &schemas.RelayUsage{Cost: 0.01, JobUntracked: "the reply has no job id at JobId"})
+	require.NotNil(t, entry.JobStatus)
+	require.Equal(t, logstore.RelayJobOutcomeUntracked, *entry.JobStatus)
+	require.NotNil(t, entry.JobDebugParsed)
+	require.Equal(t, logstore.RelayJobOutcomeUntracked, entry.JobDebugParsed.Outcome)
+	require.Equal(t, "the reply has no job id at JobId", entry.JobDebugParsed.LastError)
+	require.Nil(t, entry.JobID, "no job id was read, so none is stored")
+	require.NotNil(t, entry.Cost)
+	require.Equal(t, 0.01, *entry.Cost, "the fee is still charged")
+
+	tracked := &logstore.RelayLog{}
+	applyEndpointUsage(tracked, &schemas.RelayUsage{Job: &schemas.RelayJobHandle{ID: "j-1"}})
+	require.Equal(t, "started", *tracked.JobStatus)
+	require.Nil(t, tracked.JobDebugParsed)
+}

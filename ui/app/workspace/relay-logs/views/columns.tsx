@@ -7,7 +7,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { TruncatedLabel } from "@/components/ui/truncatedLabel";
 import { Status, StatusBarColors, Statuses } from "@/lib/constants/logs";
 import type { RelayLog } from "@/lib/types/relays";
-import { RELAY_JOB_OUTCOME_BAR, relayJobOutcome, relayJobReason, relayJobSettledAt } from "../relayJob";
+import { RELAY_JOB_OUTCOME_BAR, relayJobOutcome, relayJobReason, relayJobSettledAt, relayJobUntracked } from "../relayJob";
 import { getLocale } from "@/lib/i18n";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
 import { format } from "date-fns";
@@ -151,6 +151,7 @@ export const createRelayColumns = (
 						log.billable ? "" : t("relayLogs.columns.notBillable"),
 						// A start call names the job it started, so the settlement can be found from it.
 						log.job_id ? t("relayLogs.columns.startsJob", { id: log.job_id }) : "",
+						relayJobUntracked(log) != null ? t("relayLogs.columns.jobUntracked") : "",
 					]
 						.filter(Boolean)
 						.join(" · ");

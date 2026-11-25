@@ -589,6 +589,11 @@ func applyEndpointUsage(entry *logstore.RelayLog, usage *schemas.RelayUsage) {
 		entry.JobID = schemas.Ptr(usage.Job.ID)
 		entry.JobStatus = schemas.Ptr("started")
 	}
+	// A job route whose reply named no usable job id: only the fee is charged, so the row says so.
+	if usage.JobUntracked != "" {
+		entry.JobStatus = schemas.Ptr(logstore.RelayJobOutcomeUntracked)
+		entry.JobDebugParsed = &logstore.RelayJobDebug{Outcome: logstore.RelayJobOutcomeUntracked, LastError: usage.JobUntracked}
+	}
 }
 
 // accountRelayStatusCheck settles a relay job from a caller's status check that found it finished,

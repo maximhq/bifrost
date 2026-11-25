@@ -857,6 +857,7 @@
 		},
 		"columns": {
 			"startsJob": "Startet Job {{id}}",
+			"jobUntracked": "Job nicht verfolgt",
 			"jobUnpriced": "Ohne Preis: {{reason}}",
 			"jobFailed": "Fehlgeschlagen: {{status}}",
 			"jobBadge": "Job",
@@ -903,6 +904,7 @@
 			"jobNotSettled": "Noch nicht abgerechnet",
 			"jobSettlementFailed": "Die Abrechnung konnte nicht geprüft werden.",
 			"jobSettlement": "Job-Abrechnung",
+			"jobUntracked": "Job nicht verfolgt",
 			"costUnpriced": "ohne Preis",
 			"unpricedBody": "Bifrost konnte diesen Job nicht bepreisen. Seine Kosten sind unbekannt, und der Job selbst wurde nicht belastet. Der Startaufruf behielt seine eigene Belastung.",
 			"unpricedTitle": "Job ohne Preis",

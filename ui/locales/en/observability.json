@@ -857,6 +857,7 @@
 		},
 		"columns": {
 			"startsJob": "Starts job {{id}}",
+			"jobUntracked": "Job not tracked",
 			"jobUnpriced": "Unpriced: {{reason}}",
 			"jobFailed": "Failed: {{status}}",
 			"jobBadge": "Job",
@@ -903,6 +904,7 @@
 			"jobNotSettled": "Not settled yet",
 			"jobSettlementFailed": "Could not check the settlement.",
 			"jobSettlement": "Job settlement",
+			"jobUntracked": "Job not tracked",
 			"costUnpriced": "unpriced",
 			"unpricedBody": "Bifrost could not price this job, so its cost is unknown and the job itself was not charged. The start call kept its own charge.",
 			"unpricedTitle": "Unpriced job",

@@ -857,6 +857,7 @@
 		},
 		"columns": {
 			"startsJob": "Démarre la tâche {{id}}",
+			"jobUntracked": "Tâche non suivie",
 			"jobUnpriced": "Sans prix : {{reason}}",
 			"jobFailed": "Échoué : {{status}}",
 			"jobBadge": "Tâche",
@@ -903,6 +904,7 @@
 			"jobNotSettled": "Pas encore réglé",
 			"jobSettlementFailed": "Impossible de vérifier le règlement.",
 			"jobSettlement": "Règlement de la tâche",
+			"jobUntracked": "Tâche non suivie",
 			"costUnpriced": "sans prix",
 			"unpricedBody": "Bifrost n’a pas pu fixer le prix de cette tâche : son coût est inconnu et la tâche elle-même n’a pas été facturée. L’appel de démarrage garde sa propre facturation.",
 			"unpricedTitle": "Tâche sans prix",

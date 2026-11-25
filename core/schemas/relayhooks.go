@@ -56,7 +56,8 @@ type RelayUsage struct {
 	OutputTokens   int      `json:"output_tokens,omitempty"`
 	TotalTokens    int      `json:"total_tokens,omitempty"`
 
-	Job *RelayJobHandle `json:"job,omitempty"` // set when the call started a job billed on completion
+	Job          *RelayJobHandle `json:"job,omitempty"`           // set when the call started a job billed on completion
+	JobUntracked string          `json:"job_untracked,omitempty"` // why a job route's reply started no tracked job, "" otherwise
 }
 
 // RelayJobStatusCheck names the job a caller's own status check asked about, so the logging plugin

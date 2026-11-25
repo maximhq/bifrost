@@ -889,22 +889,25 @@ func hugeExponent(n string) bool {
 }
 
 // jobHandle reads the job id a start response names and returns the handle the logging plugin
-// records, or nil when the response names none (the call is then billed as an ordinary one). An
-// id that is unsafe to poll with is refused with an error, and the call is billed as an ordinary one.
+// records. On a job route a reply it cannot read a usable id from returns an error saying why: the
+// call is billed as an ordinary one, and its log row shows the job was not tracked.
 func (route *compiledRoute) jobHandle(contentType string, body []byte) (*schemas.RelayJobHandle, error) {
-	if route == nil || route.job == nil || len(body) == 0 {
+	if route == nil || route.job == nil {
 		return nil, nil
 	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("the reply has no body to read the job id at %s from", route.job.IDPath)
+	}
 	if !looksJSON(contentType, body) {
-		return nil, nil
+		return nil, fmt.Errorf("the reply is not JSON, so the job id at %s could not be read", route.job.IDPath)
 	}
 	v := providerUtils.GetJSONField(body, route.job.IDPath)
 	if !v.Exists() {
-		return nil, nil
+		return nil, fmt.Errorf("the reply has no job id at %s", route.job.IDPath)
 	}
 	id := strings.TrimSpace(v.String())
 	if id == "" {
-		return nil, nil
+		return nil, fmt.Errorf("the job id at %s is empty", route.job.IDPath)
 	}
 	if !validRelayJobID(id) {
 		return nil, fmt.Errorf("the job id at %s is not safe to poll with (%d bytes; printable ASCII, no spaces, \\, ?, # or . segments, at most %d bytes)", route.job.IDPath, len(id), maxRelayJobIDLength)

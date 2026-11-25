@@ -852,6 +852,7 @@
 		},
 		"columns": {
 			"startsJob": "啟動作業 {{id}}",
+			"jobUntracked": "作業未追蹤",
 			"jobUnpriced": "未計價：{{reason}}",
 			"jobFailed": "失敗：{{status}}",
 			"jobBadge": "作業",
@@ -898,6 +899,7 @@
 			"jobNotSettled": "尚未結算",
 			"jobSettlementFailed": "無法檢查結算。",
 			"jobSettlement": "作業結算",
+			"jobUntracked": "作業未追蹤",
 			"costUnpriced": "未計價",
 			"unpricedBody": "Bifrost 無法為此作業計價，因此其費用未知，作業本身未扣款。啟動呼叫保留其自身的扣款。",
 			"unpricedTitle": "未計價的作業",

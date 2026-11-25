@@ -857,6 +857,7 @@
 		},
 		"columns": {
 			"startsJob": "Avvia il job {{id}}",
+			"jobUntracked": "Job non tracciato",
 			"jobUnpriced": "Senza prezzo: {{reason}}",
 			"jobFailed": "Non riuscito: {{status}}",
 			"jobBadge": "Job",
@@ -903,6 +904,7 @@
 			"jobNotSettled": "Non ancora regolato",
 			"jobSettlementFailed": "Impossibile verificare il regolamento.",
 			"jobSettlement": "Regolazione del job",
+			"jobUntracked": "Job non tracciato",
 			"costUnpriced": "senza prezzo",
 			"unpricedBody": "Bifrost non ha potuto prezzare questo job, quindi il suo costo è sconosciuto e il job non è stato addebitato. La chiamata di avvio ha mantenuto il proprio addebito.",
 			"unpricedTitle": "Job senza prezzo",

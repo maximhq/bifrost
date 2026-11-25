@@ -852,6 +852,7 @@
 		},
 		"columns": {
 			"startsJob": "启动作业 {{id}}",
+			"jobUntracked": "作业未跟踪",
 			"jobUnpriced": "未计价：{{reason}}",
 			"jobFailed": "失败：{{status}}",
 			"jobBadge": "作业",
@@ -898,6 +899,7 @@
 			"jobNotSettled": "尚未结算",
 			"jobSettlementFailed": "无法检查结算。",
 			"jobSettlement": "作业结算",
+			"jobUntracked": "作业未跟踪",
 			"costUnpriced": "未计价",
 			"unpricedBody": "Bifrost 无法为此作业计价，因此其费用未知，作业本身未扣费。启动调用保留其自身的扣费。",
 			"unpricedTitle": "未计价的作业",

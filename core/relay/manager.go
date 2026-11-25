@@ -773,8 +773,11 @@ func (m *Manager) run(ctx *schemas.BifrostContext, e *endpoint, p plan, req *sch
 		// A status check never starts a job, even when its reply carries an id at the job's id path.
 		if statusJobID == "" {
 			job, err := p.route.jobHandle(reply.contentType, reply.body)
-			if err != nil && m.logger != nil {
-				m.logger.Warn("relay %s: %v; the call is billed without settling a job", req.RelayName, err)
+			if err != nil {
+				resp.Usage.JobUntracked = err.Error()
+				if m.logger != nil {
+					m.logger.Warn("relay %s: %v; the call is billed without settling a job", req.RelayName, err)
+				}
 			}
 			resp.Usage.Job = job
 		}

@@ -10,6 +10,12 @@ export function relayJobOutcome(log: Pick<RelayLog, "job_debug" | "cost">): Rela
 	return log.cost == null ? "unpriced" : "succeeded";
 }
 
+/** Why a start call's job was not tracked (its reply named no usable job id), or null. */
+export function relayJobUntracked(log: Pick<RelayLog, "kind" | "job_debug">): string | null {
+	if (log.kind === "job" || log.job_debug?.outcome !== "untracked") return null;
+	return log.job_debug.last_error ?? "";
+}
+
 /**
  * When a job row's job ended. The row's own time is the start call's, kept stable for log dedupe, so
  * this is what shows as the job's end; null for other rows and rows from before job_debug.

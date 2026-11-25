@@ -239,7 +239,8 @@ export type RelayLogStatus = "success" | "error" | "cancelled" | "processing";
 
 /** How a job row's job was polled (job_debug); poll replies are never stored. */
 export interface RelayJobDebug {
-	outcome?: "succeeded" | "failed" | "unpriced";
+	// untracked: on a start call whose reply named no usable job id; last_error says why.
+	outcome?: "succeeded" | "failed" | "unpriced" | "untracked";
 	polls: number;
 	last_status?: string;
 	last_http_status?: number;
