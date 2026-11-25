@@ -2628,8 +2628,14 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 					if stripExtraFields {
 						errorJSON = lib.StripExtraFields(errorJSON)
 					}
+					// Typed by request type as well: a stream cut before its first chunk never set includeEventType.
 					eventType := ""
-					if includeEventType || requestType == schemas.ResponsesStreamRequest || requestType == schemas.ResponsesRetrieveStreamRequest {
+					switch {
+					case includeEventType,
+						requestType == schemas.ResponsesStreamRequest,
+						requestType == schemas.ResponsesRetrieveStreamRequest,
+						requestType == schemas.ImageGenerationStreamRequest,
+						requestType == schemas.ImageEditStreamRequest:
 						eventType = string(schemas.ResponsesStreamResponseTypeError)
 					}
 					reader.SendEvent(eventType, errorJSON)
