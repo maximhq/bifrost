@@ -351706,6 +351706,78 @@
               }
             }
           ]
+        },
+        {
+          "name": "openai/gpt-4o-mini stream cut by x-bf-request-timeout after its first chunk ends with a request_timed_out error frame, not [DONE], via POST /v1/chat/completions - request timeout - #10010",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-request-timeout",
+                "value": "3s"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 4000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from 1 to 2000, one number per line, with no other text.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The answer takes far longer than the 3s cap, so the deadline passes after the stream has",
+                  "// started: the response keeps its 200 and must end with a request_timed_out error frame",
+                  "// instead of [DONE], so the partial output does not read as a complete answer.",
+                  "var txt = pm.response.text() || '';",
+                  "var frames = [];",
+                  "txt.split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data:') === 0) { frames.push(l.slice(5).replace(/^\\s+/, '')); }",
+                  "});",
+                  "var contentFrames = 0, timeoutAt = -1, doneCount = 0;",
+                  "frames.forEach(function (p, i) {",
+                  "  if (p === '[DONE]') { doneCount++; return; }",
+                  "  var c = null;",
+                  "  try { c = JSON.parse(p); } catch (e) { return; }",
+                  "  if (c && c.error && c.error.type === 'request_timed_out' && timeoutAt === -1) { timeoutAt = i; }",
+                  "  if (c && Array.isArray(c.choices) && c.choices.some(function (ch) { return ch && ch.delta && typeof ch.delta.content === 'string' && ch.delta.content.length > 0; })) { contentFrames++; }",
+                  "});",
+                  "pm.test('the stream started before the deadline', function () {",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'content-type: ' + txt.slice(0, 400)).to.include('text/event-stream');",
+                  "  pm.expect(contentFrames, 'content frames before the cut: ' + txt.slice(0, 400)).to.be.above(0);",
+                  "});",
+                  "pm.test('the stream ends with a request_timed_out error frame', function () {",
+                  "  pm.expect(timeoutAt, 'no request_timed_out frame: ' + txt.slice(-400)).to.not.equal(-1);",
+                  "  pm.expect(timeoutAt, 'frames after the timeout frame: ' + txt.slice(-400)).to.equal(frames.length - 1);",
+                  "});",
+                  "pm.test('no [DONE] marks the cut stream as complete', function () {",
+                  "  pm.expect(doneCount, '[DONE] frames: ' + txt.slice(-400)).to.equal(0);",
+                  "});",
+                  "// Same allowance as the 504 case above: a deadline honored late lands well beyond it.",
+                  "pm.test('the stream ends within the cap plus a 1000ms allowance', function () {",
+                  "  pm.expect(pm.response.responseTime, 'finished in ' + pm.response.responseTime + 'ms').to.be.below(3000 + 1000);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }
