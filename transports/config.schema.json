@@ -169,6 +169,11 @@
           "description": "Allow individual requests to send raw provider request/response bytes back to the caller via the x-bf-send-back-raw-request and x-bf-send-back-raw-response headers. When false (default), the provider-level send_back_raw_request/response settings are authoritative and per-request overrides are ignored. Does not affect raw-byte persistence in logs \u2014 see allow_per_request_content_storage_override.",
           "default": false
         },
+        "send_back_cost": {
+          "type": "boolean",
+          "description": "Return Bifrost's computed cost of each request to the caller: in extra_fields.cost on native /v1 responses, errors and final stream chunks, and in the x-bifrost-cost response header (USD) on every route. Off by default. A request can turn it on or off for itself with the x-bf-send-back-cost: true|false header, which applies regardless of this setting.",
+          "default": false
+        },
         "disable_db_pings_in_health": {
           "type": "boolean",
           "description": "Disable DB pings in health check",

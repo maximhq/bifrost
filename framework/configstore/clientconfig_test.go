@@ -199,3 +199,16 @@ func TestGenerateClientConfigHashCoversEntityAccessProfileMode(t *testing.T) {
 	require.Equal(t, unset, hash(tables.EntityAccessProfileModeUnion), "union is the default and hashes as unset")
 	require.NotEqual(t, unset, hash(tables.EntityAccessProfileModeIntersect), "intersect is a change")
 }
+
+// Turning send_back_cost on is a config change; leaving it off must hash as it
+// did before the field existed, so an upgrade does not churn stored hashes.
+func TestGenerateClientConfigHashCoversSendBackCost(t *testing.T) {
+	before, err := (&ClientConfig{}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	off, err := (&ClientConfig{SendBackCost: false}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	on, err := (&ClientConfig{SendBackCost: true}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.Equal(t, before, off, "off is the default and hashes as unset")
+	require.NotEqual(t, off, on, "on is a change")
+}
