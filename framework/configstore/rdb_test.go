@@ -7519,6 +7519,25 @@ func TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset(t *testing.T) {
 	assert.Equal(t, schemas.Ptr(false), stored(), "an update can turn the flag off")
 }
 
+// TestCreateMCPClientConfigStoresToolPricing pins that creating a client stores its tool prices, so a
+// client created from config.json is priced from its first boot.
+func TestCreateMCPClientConfigStoresToolPricing(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "priced-client",
+		Name:             "priced_client",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:         schemas.MCPAuthTypeHeaders,
+		ToolsToExecute:   []string{"*"},
+		ToolPricing:      map[string]float64{"search": 0.25},
+	}))
+	row, err := store.GetMCPClientByID(ctx, "priced-client")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]float64{"search": 0.25}, row.ToolPricing)
+}
+
 // TestUpdateMCPClientConfigHash pins that the hash upgrade writes config_hash alone, and only from the
 // expected old value, so a concurrent edit or an earlier upgrade by another node is never overwritten.
 func TestUpdateMCPClientConfigHash(t *testing.T) {

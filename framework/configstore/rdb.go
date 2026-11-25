@@ -2345,6 +2345,9 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			PendingOAuthConfig: clientConfigCopy.PendingOAuthConfig,
 			OpenAPIConfig:      clientConfigCopy.OpenAPIConfig,
 			Disabled:           clientConfigCopy.Disabled,
+			// Stored like every other field, so a client created from config.json is
+			// priced from its first boot.
+			ToolPricing: clientConfigCopy.ToolPricing,
 			// ConfigHash has json:"-" so deepCopy loses it; use original
 			// clientConfig. Empty for dashboard-created clients; set for
 			// config-file clients so the next boot's reconciliation sees

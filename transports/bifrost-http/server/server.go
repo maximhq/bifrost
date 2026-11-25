@@ -1621,23 +1621,25 @@ func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) er
 	return err
 }
 
-// ReloadWebhookEndpoint refreshes a single webhook endpoint in the in-memory
-// store from the database after a mutation. A clustered deployment overrides
-// this to also notify peers so their in-memory copies stay current.
+// ReloadWebhookEndpoint re-reads a single webhook endpoint into the live store
+// after a mutation. A row that is gone answers configstore.ErrNotFound, as
+// reading it from the config store did. A server that embeds this one may
+// override it to act after the refresh.
 func (s *BifrostHTTPServer) ReloadWebhookEndpoint(ctx context.Context, id string) error {
-	endpoint, err := s.Config.ConfigStore.GetWebhookEndpointByID(ctx, id)
-	if err != nil {
+	if err := s.refreshRows(ctx, []livestore.Ref{{Kind: livestore.KindWebhookEndpoint, ID: id}}); err != nil {
 		return err
 	}
-	s.Config.SetWebhookEndpoint(endpoint)
+	if _, ok := s.Config.LiveStore.Collections.WebhookEndpoints.Get(id); !ok {
+		return configstore.ErrNotFound
+	}
 	return nil
 }
 
-// RemoveWebhookEndpoint drops a webhook endpoint from the in-memory store after
-// a database delete. A clustered deployment overrides this to also notify peers.
+// RemoveWebhookEndpoint drops a webhook endpoint from the live store after a
+// database delete. A server that embeds this one may override it to act after
+// the removal.
 func (s *BifrostHTTPServer) RemoveWebhookEndpoint(ctx context.Context, id string) error {
-	s.Config.RemoveWebhookEndpoint(id)
-	return nil
+	return s.removeRecord(ctx, livestore.KindWebhookEndpoint, id)
 }
 
 // EvictOauthTokenCacheByID drops the cached per-user MCP OAuth access token

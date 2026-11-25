@@ -2242,8 +2242,8 @@ func (m *MCPSyncInterval) Resolve(existing time.Duration) (time.Duration, error)
 // server runs discovery, attaches DiscoveredTools to the persisted config,
 // and discards the credentials. Ignored for non-per_user_headers auth types.
 //
-// The embedded table's tool_pricing is decoded but not used: prices are set
-// with an update, the only path that stores them.
+// The embedded table's tool_pricing is decoded but not used: through the API,
+// prices are set with an update, the only API path that stores them.
 type MCPClientRequest struct {
 	configstoreTables.TableMCPClient
 	OauthConfig      *OAuthConfigRequest `json:"oauth_config,omitempty"`

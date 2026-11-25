@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/webhooks"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -26,21 +27,24 @@ import (
 
 // configWebhookManager adapts a *lib.Config to WebhookEndpointManager,
 // mirroring the base server's per-endpoint reload/remove so handler tests
-// observe the same in-memory refresh the real wiring produces.
+// observe the same live-store refresh the real wiring produces.
 type configWebhookManager struct{ config *lib.Config }
 
+// ReloadWebhookEndpoint re-reads the endpoint into the live store; a row that is gone answers
+// configstore.ErrNotFound, as the server does.
 func (m configWebhookManager) ReloadWebhookEndpoint(ctx context.Context, id string) error {
-	endpoint, err := m.config.ConfigStore.GetWebhookEndpointByID(ctx, id)
-	if err != nil {
+	if err := m.config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindWebhookEndpoint, ID: id}}); err != nil {
 		return err
 	}
-	m.config.SetWebhookEndpoint(endpoint)
+	if _, ok := m.config.LiveStore.Collections.WebhookEndpoints.Get(id); !ok {
+		return configstore.ErrNotFound
+	}
 	return nil
 }
 
+// RemoveWebhookEndpoint drops the endpoint from the live store.
 func (m configWebhookManager) RemoveWebhookEndpoint(ctx context.Context, id string) error {
-	m.config.RemoveWebhookEndpoint(id)
-	return nil
+	return m.config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindWebhookEndpoint, ID: id, Remove: true}})
 }
 
 func newWebhookTestHandler(t *testing.T) (*WebhookHandler, *lib.Config) {
@@ -64,6 +68,9 @@ func newWebhookTestHandler(t *testing.T) (*WebhookHandler, *lib.Config) {
 	t.Cleanup(func() { logsStore.Close(context.Background()) })
 
 	config := &lib.Config{ConfigStore: store, LogsStore: logsStore}
+	live := liveStoreForTest(t)
+	require.NoError(t, config.AttachLiveStore(live))
+	require.NoError(t, live.LoadAll(ctx, store.DB()))
 	dispatcher := webhooks.NewDispatcher(ctx, "", 30*24*time.Hour, store, logsStore, config, testLogger{})
 	t.Cleanup(dispatcher.Stop)
 	return NewWebhookHandler(configWebhookManager{config}, config, dispatcher), config

@@ -48,6 +48,9 @@ const KindModelRouter Kind = "model_router"
 // KindPricingOverride names the pricing override collection.
 const KindPricingOverride Kind = "pricing_override"
 
+// KindWebhookEndpoint names the webhook endpoint collection.
+const KindWebhookEndpoint Kind = "webhook_endpoint"
+
 // KindPrompt and KindPromptVersion name the prompt collections: prompts, and their versions with
 // their messages.
 const (
@@ -78,6 +81,9 @@ type Collections struct {
 	Prompts      *Collection[registry.Prompt]
 	// PricingOverrides holds every pricing override; the model catalog prices requests with them.
 	PricingOverrides *Collection[registry.PricingOverride]
+	// WebhookEndpoints holds every webhook endpoint, by ID and by name, for async job submissions
+	// and the delivery worker.
+	WebhookEndpoints *Collection[registry.WebhookEndpoint]
 	// PromptVersions holds every prompt version, by prompt and number and as each prompt's latest;
 	// a prompt's refresh re-reads its versions and its removal removes them.
 	PromptVersions *Collection[registry.PromptVersion]
@@ -264,6 +270,13 @@ func registerCollections(s *Store, o *storeOptions) (*Collections, error) {
 		Page: registry.PricingOverridesPage,
 		ByID: registry.PricingOverridesByID,
 	}); err != nil {
+		return nil, err
+	}
+	if c.WebhookEndpoints, err = s.Register(KindWebhookEndpoint, nil, Loader[registry.WebhookEndpoint]{
+		ID:   registry.WebhookEndpointID,
+		Page: registry.WebhookEndpointsPage,
+		ByID: registry.WebhookEndpointsByID,
+	}, UniqueIndex(registry.WebhookEndpointByName, registry.WebhookEndpointName)); err != nil {
 		return nil, err
 	}
 	if c.Prompts, err = s.Register(KindPrompt, nil, Loader[registry.Prompt]{
