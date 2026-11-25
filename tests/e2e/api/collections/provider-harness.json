@@ -346986,7 +346986,8 @@
                   "  pm.expect(content, 'no ranked shortlist header: ' + content).to.include('# Ranked shortlist for this query');",
                   "  // Tool binding lists servers/<client>/echo.pyi; server binding (the default) lists",
                   "  // servers/<client>.pyi with the matching tool names beside it. Other visible clients",
-                  "  // may expose echo too and rank level with it, so this run's echo only has to be listed.",
+                  "  // may expose echo too; the query names this run's client, whose timestamp word only this",
+                  "  // client's tools match, so its echo outranks theirs and stays within limit=2.",
                   "  var files = content.split('\\n').filter(function (line) { return line.indexOf('servers/') === 0; });",
                   "  var listed = files.some(function (line) {",
                   "    var path = line.split('  #')[0];",
@@ -347011,7 +347012,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"id\": \"code-mode-discovery\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"listToolFiles\",\n    \"arguments\": \"{\\\"query\\\": \\\"echo back the input message\\\", \\\"limit\\\": 2}\"\n  }\n}"
+              "raw": "{\n  \"id\": \"code-mode-discovery\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"listToolFiles\",\n    \"arguments\": \"{\\\"query\\\": \\\"echo back the input message on {{codeModeDiscoveryClient}}\\\", \\\"limit\\\": 2}\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/mcp/tool/execute",
