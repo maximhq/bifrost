@@ -219,6 +219,12 @@ Client HTTP Request
 - **Object pooling everywhere**: `sync.Pool` wrappers reduce GC pressure. Pools exist for: channel messages, response channels, error channels, stream channels, plugin pipelines, MCP requests, HTTP request/response objects, scanner buffers.
 - **Plugin pipeline symmetry**: Pre-hooks execute in registration order, post-hooks in **reverse** order (LIFO). For every pre-hook executed, the corresponding post-hook is guaranteed to run.
 - **Streaming**: SSE chunks flow through `chan chan *schemas.BifrostStreamChunk`. Accumulated into full response for post-hooks via `framework/streaming/accumulator.go`.
+- **Data lives in the live store**: every piece of data a process keeps (configuration, runtime state, caches) goes in `framework/livestore`. Components keep only handles (connections, goroutines, locks, compiled programs) and per-request buffers. Pick the structure by what a miss means:
+  - **Collection**: every row of one config-database kind, loaded at boot and refreshed after every write. A miss means the row does not exist.
+  - **Cache**: only the values someone asked for, fetched by a loader on a miss from wherever they live (the config store included) and dropped by expiry or eviction. A miss means "go fetch".
+  - **Table**: what the process itself writes, with no loader. A miss means nothing was written yet. State tables keyed by an entity ID and tables with a generation are tables.
+
+  `TestRepositoryKeepsDataInTheLiveStore` (`tests/rawmaps`, a module of its own; run it with `cd tests/rawmaps && GOWORK=off go test -count=1 ./...`; without `-count=1` Go reports a cached pass, since it does not notice changed files outside the test module) fails on a new `sync.Map` field or package-level `sync.Map`, a map on a struct with a mutex, maps behind an atomic pointer, or a package-level map a function writes; when one genuinely cannot go in the store, add it to `tests/rawmaps/allowlist.txt` with its group and reason.
 
 ### Every change states its cost on the request flow
 
