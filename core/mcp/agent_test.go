@@ -925,6 +925,54 @@ func TestExecuteAgentSumsTurnCostsWhenReturningNonAutoTools(t *testing.T) {
 	}
 }
 
+// Tools the agent executes carry the cost the gate attached; the loop adds them
+// to the turns' costs. The turn's tools run in parallel, so this also pins that
+// their costs are summed safely.
+func TestExecuteAgentAddsExecutedToolCosts(t *testing.T) {
+	first := costedChatTurn(true, &schemas.BifrostCost{InputCost: 0.1, TotalCost: 0.1})
+	message := first.Choices[0].Message.ChatAssistantMessage
+	for _, id := range []string{"call_2", "call_3"} {
+		message.ToolCalls = append(message.ToolCalls, schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr(id),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("is_prime"), Arguments: `{"n": 3}`},
+		})
+	}
+	final := costedChatTurn(false, &schemas.BifrostCost{OutputCost: 0.3, TotalCost: 0.3})
+	makeReq := func(*schemas.BifrostContext, *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		return final, nil
+	}
+	toolCost := &schemas.BifrostCost{AdditionalCost: 0.02, AdditionalCostDetails: &schemas.AdditionalCostDetails{MCPCost: 0.02}, TotalCost: 0.02}
+	executeTool := func(_ *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		return &schemas.BifrostMCPResponse{
+			ChatMessage: &schemas.ChatMessage{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: req.ID},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("true")},
+			},
+			ExtraFields: schemas.BifrostMCPResponseExtraFields{Cost: toolCost},
+		}, nil
+	}
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("are 2 and 3 prime?")}}},
+	}
+	executor := &AgentModeExecutor{logger: &MockLogger{}}
+	resp, bifrostErr := executor.ExecuteAgentForChatRequest(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), 10, req, first, makeReq, nil, executeTool, &MockAutoClientManager{},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	cost := resp.ExtraFields.Cost
+	if cost == nil || math.Abs(cost.TotalCost-0.46) > 1e-12 {
+		t.Fatalf("cost = %+v, want turns 0.1 + 0.3 plus three tools at 0.02 = 0.46", cost)
+	}
+	if cost.AdditionalCostDetails == nil || math.Abs(cost.AdditionalCostDetails.MCPCost-0.06) > 1e-12 {
+		t.Fatalf("mcp cost = %+v, want 0.06", cost.AdditionalCostDetails)
+	}
+}
+
 func TestResponsesAdapterApplyCostReturnsCopy(t *testing.T) {
 	adapter := &responsesAPIAdapter{}
 	original := &schemas.BifrostResponsesResponse{ExtraFields: schemas.BifrostResponseExtraFields{Cost: &schemas.BifrostCost{TotalCost: 0.1}}}

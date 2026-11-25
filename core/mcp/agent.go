@@ -304,6 +304,9 @@ func (a *AgentModeExecutor) executeAgent(
 			channelToolResults := make(chan *schemas.ChatMessage, len(autoExecutableTools))
 			var authRequiredErr *schemas.MCPAuthRequiredError
 			var authRequiredOnce sync.Once
+			// The send-back cost the gate attached to each executed tool, summed for this turn.
+			var toolCostMu sync.Mutex
+			var toolCost *schemas.BifrostCost
 			for _, toolCall := range autoExecutableTools {
 				go func(toolCall schemas.ChatAssistantMessageToolCall) {
 					defer wg.Done()
@@ -322,6 +325,11 @@ func (a *AgentModeExecutor) executeAgent(
 					}
 
 					mcpResponse, toolErr := executeToolFunc(toolCtx, mcpRequest)
+					if mcpResponse != nil && mcpResponse.ExtraFields.Cost != nil {
+						toolCostMu.Lock()
+						toolCost = toolCost.Add(mcpResponse.ExtraFields.Cost)
+						toolCostMu.Unlock()
+					}
 					if toolErr != nil {
 						// Check if this is a per-user auth-required error
 						var authErr *schemas.MCPAuthRequiredError
@@ -345,6 +353,7 @@ func (a *AgentModeExecutor) executeAgent(
 			}
 			wg.Wait()
 			close(channelToolResults)
+			accumulatedCost = accumulatedCost.Add(toolCost)
 
 			// If any tool required per-user OAuth, stop the agent loop and return the error
 			if authRequiredErr != nil {
