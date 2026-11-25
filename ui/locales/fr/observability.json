@@ -826,6 +826,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "La ligne de règlement a été supprimée avant la facturation",
+			"relay_job_relay_deleted": "Le relais a été supprimé ou n'a pas pu être chargé avant la fin de la tâche",
 			"relay_job_no_usage": "La réponse finale ne contenait aucun usage à facturer",
 			"relay_job_rejected": "L’upstream a refusé l’ID de la tâche",
 			"relay_job_access_denied": "L’upstream a refusé l’accès à la tâche",
@@ -857,6 +858,7 @@
 		},
 		"columns": {
 			"startsJob": "Démarre la tâche {{id}}",
+			"jobUntracked": "Tâche non suivie",
 			"jobUnpriced": "Sans prix : {{reason}}",
 			"jobFailed": "Échoué : {{status}}",
 			"jobBadge": "Tâche",
@@ -903,6 +905,7 @@
 			"jobNotSettled": "Pas encore réglé",
 			"jobSettlementFailed": "Impossible de vérifier le règlement.",
 			"jobSettlement": "Règlement de la tâche",
+			"jobUntracked": "Tâche non suivie",
 			"costUnpriced": "sans prix",
 			"unpricedBody": "Bifrost n’a pas pu fixer le prix de cette tâche : son coût est inconnu et la tâche elle-même n’a pas été facturée. L’appel de démarrage garde sa propre facturation.",
 			"unpricedTitle": "Tâche sans prix",

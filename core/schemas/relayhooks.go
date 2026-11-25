@@ -56,7 +56,8 @@ type RelayUsage struct {
 	OutputTokens   int      `json:"output_tokens,omitempty"`
 	TotalTokens    int      `json:"total_tokens,omitempty"`
 
-	Job *RelayJobHandle `json:"job,omitempty"` // set when the call started a job billed on completion
+	Job          *RelayJobHandle `json:"job,omitempty"`           // set when the call started a job billed on completion
+	JobUntracked string          `json:"job_untracked,omitempty"` // why a job route's reply started no tracked job, "" otherwise
 }
 
 // RelayJobStatusCheck names the job a caller's own status check asked about, so the logging plugin
@@ -74,12 +75,12 @@ type RelayJobHandle struct {
 	IntervalSeconds  int    `json:"interval_seconds"`
 	Params           string `json:"params"`
 	ReusedIDIsNewJob bool   `json:"reused_id_is_new_job,omitempty"` // the job config's reused_id_is_new_job
-	RouteKey         string `json:"route_key,omitempty"`            // names the start route in the job's row
+	RouteKey         string `json:"route_key,omitempty"`            // names the job's status check in its row
 }
 
 // RelayJobMatch is one job route whose poll template a caller's status check matched.
 type RelayJobMatch struct {
-	RouteKey string       // the job route, as RelayJobHandle.RouteKey names it
+	RouteKey string       // the job's status check, as RelayJobHandle.RouteKey names it
 	Poll     RelayJobPoll // a copy of its poll template
 }
 

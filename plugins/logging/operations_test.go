@@ -21,6 +21,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	coremcp "github.com/maximhq/bifrost/core/mcp"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -6803,28 +6804,25 @@ func TestRelayJobRowTakesTheRelayFromTheReply(t *testing.T) {
 	}
 }
 
-// The start call's route, app and names are stored with the job, beside the relay's snapshot, so a job
-// settled before this row is written still shows them.
-func TestRelayJobRecordCarriesTheStartDetails(t *testing.T) {
+// A job keeps only its start call's x-bf-dim-* values, for the settlement's metrics labels; its
+// names and email come from the start call's own row when it settles, so none are stored with it.
+func TestRelayJobRecordKeepsOnlyTheStartDimensions(t *testing.T) {
 	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
 	plugin := policyTestPlugin(nil, nil, true)
 	plugin.batchStore = store
 	start := &logstore.RelayLog{ID: "req-1", RequestID: "req-1", RelayName: "textract", RoutePath: "/v1/textract",
-		App: schemas.Ptr("curl"), UserAgent: schemas.Ptr("curl/8.7.1"), VirtualKeyName: schemas.Ptr("team-key")}
+		App: schemas.Ptr("curl"), UserAgent: schemas.Ptr("curl/8.7.1"), VirtualKeyName: schemas.Ptr("team-key"), UserEmail: schemas.Ptr("a@b.c")}
 	plugin.recordEndpointJob(start, "textract", &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{"status_path":"s"}}`}, map[string]string{"region": "eu-west"})
 	require.Len(t, store.jobs, 1)
 	for _, row := range store.jobs {
 		require.NotNil(t, row.Params)
-		var params struct {
-			Job   map[string]any `json:"job"`
-			Start map[string]any `json:"start"`
-		}
+		var params map[string]any
 		require.NoError(t, json.Unmarshal([]byte(*row.Params), &params))
-		require.Equal(t, map[string]any{"status_path": "s"}, params.Job, "the relay's snapshot is kept as it was")
-		require.Equal(t, "/v1/textract", params.Start["route_path"])
-		require.Equal(t, "curl/8.7.1", params.Start["user_agent"])
-		require.Equal(t, "team-key", params.Start["virtual_key_name"])
-		require.Equal(t, map[string]any{"region": "eu-west"}, params.Start["dimensions"], "the call's x-bf-dim-* values, for the settlement's labels")
+		// The whole stored value: the relay's snapshot as it was and the dimensions, nothing else.
+		require.Equal(t, map[string]any{
+			"job":        map[string]any{"status_path": "s"},
+			"dimensions": map[string]any{"region": "eu-west"},
+		}, params)
 	}
 }
 
@@ -6863,6 +6861,30 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	store.fail = errors.New("database is down")
 	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-5", RequestID: "req-5", RelayName: "textract"}, "", &schemas.RelayJobHandle{ID: "j-2", Params: `{"job":{}}`}, nil)
 	require.Len(t, store.jobs, 2, "a lookup error records nothing rather than risk a duplicate row")
+}
+
+// Jobs are filed under their status check, so a start route edited between two starts files the same
+// job in the same place: a retry is still one job, and reused_id_is_new_job still opens the next
+// generation rather than a fresh first one.
+func TestRelayJobRowFollowsTheStatusCheckAcrossStartRouteEdits(t *testing.T) {
+	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.batchStore = store
+	key := relay.JobPollKey(schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"})
+	before := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{}}`, RouteKey: key}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-1", RequestID: "req-1", RelayName: "textract"}, "", before, nil)
+	after := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{"usage":{"cost_per_request":0.2}}}`, RouteKey: key}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-2", RequestID: "req-2", RelayName: "textract"}, "", after, nil)
+	require.Len(t, store.jobs, 1, "a start retried after the start route was edited is the same job")
+
+	for _, row := range store.jobs {
+		row.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
+	}
+	reusing := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{}}`, RouteKey: key, ReusedIDIsNewJob: true}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3", RequestID: "req-3", RelayName: "textract"}, "", reusing, nil)
+	require.Len(t, store.jobs, 2)
+	gen2, _ := jobaccounting.RelayJobRowID("textract", key, "j-1", 2)
+	require.Contains(t, store.jobs, gen2, "a reused id after settlement opens the next generation of the same job")
 }
 
 // Past the last generation slot each start gets its own row, even when callers share an x-request-id.
@@ -7172,6 +7194,22 @@ func TestRelayReconcileCarriesRetainedContent(t *testing.T) {
 
 	visible := relayLogUpdateColumns(&logstore.RelayLog{ID: "row", Path: "/search?q=1"}, false)
 	require.NotContains(t, visible, logstore.RelayRetainedPathUpdate, "a visible row carries nothing extra")
+}
+
+// A start call that outlived the stale sweep is reconciled by an update, which carries job_debug so
+// an untracked job keeps its reason, not only its job_status.
+func TestRelayReconcileKeepsTheUntrackedReason(t *testing.T) {
+	entry := &logstore.RelayLog{ID: "row"}
+	applyEndpointUsage(entry, &schemas.RelayUsage{Cost: 0.01, JobUntracked: "the reply has no job id at JobId"})
+	updates := relayLogUpdateColumns(entry, false)
+	require.Equal(t, schemas.Ptr(logstore.RelayJobOutcomeUntracked), updates["job_status"])
+	raw, ok := updates["job_debug"].(string)
+	require.True(t, ok, "job_debug is in the update")
+	require.Contains(t, raw, `"outcome":"untracked"`)
+	require.Contains(t, raw, "the reply has no job id at JobId")
+
+	plain := relayLogUpdateColumns(&logstore.RelayLog{ID: "row"}, false)
+	require.NotContains(t, plain, "job_debug", "a call with no job leaves job_debug alone")
 }
 
 // streamAccount serves one provider whose upstream is a test server.
@@ -7530,4 +7568,24 @@ func TestAdmitRelaySettleIsBounded(t *testing.T) {
 	r, ok := p.admitRelaySettle("relay\x00one-more")
 	require.True(t, ok)
 	r()
+}
+
+// A job route whose reply named no usable job id marks its row as an untracked job with the reason,
+// so a fee-only charge is visible rather than silent.
+func TestRelayUntrackedJobMarksTheStartRow(t *testing.T) {
+	entry := &logstore.RelayLog{}
+	applyEndpointUsage(entry, &schemas.RelayUsage{Cost: 0.01, JobUntracked: "the reply has no job id at JobId"})
+	require.NotNil(t, entry.JobStatus)
+	require.Equal(t, logstore.RelayJobOutcomeUntracked, *entry.JobStatus)
+	require.NotNil(t, entry.JobDebugParsed)
+	require.Equal(t, logstore.RelayJobOutcomeUntracked, entry.JobDebugParsed.Outcome)
+	require.Equal(t, "the reply has no job id at JobId", entry.JobDebugParsed.LastError)
+	require.Nil(t, entry.JobID, "no job id was read, so none is stored")
+	require.NotNil(t, entry.Cost)
+	require.Equal(t, 0.01, *entry.Cost, "the fee is still charged")
+
+	tracked := &logstore.RelayLog{}
+	applyEndpointUsage(tracked, &schemas.RelayUsage{Job: &schemas.RelayJobHandle{ID: "j-1"}})
+	require.Equal(t, "started", *tracked.JobStatus)
+	require.Nil(t, tracked.JobDebugParsed)
 }

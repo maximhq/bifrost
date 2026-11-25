@@ -48,7 +48,7 @@ type compiledRoute struct {
 	job         *schemas.RelayJobConfig
 	jobParams   string
 	jobInterval int
-	jobRouteKey string // names the route in the job's row, so two job routes never share one
+	jobRouteKey string // names the job's status check in its row (JobPollKey), so editing the start route keeps running jobs
 }
 
 // headerMatch is one required request header: a lower-cased name and a value glob. AWS JSON
@@ -365,7 +365,7 @@ func compileRoutesWithCostPolicy(cfg *schemas.RelayConfig, ignoreUpstreamCost bo
 				compiled.job = route.Job
 				compiled.jobParams = params
 				compiled.jobInterval = (&JobSnapshot{Job: *route.Job}).Interval()
-				compiled.jobRouteKey = jobRouteKey(route)
+				compiled.jobRouteKey = JobPollKey(route.Job.Poll)
 			}
 		}
 		routes = append(routes, compiled)

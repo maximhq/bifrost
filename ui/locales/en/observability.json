@@ -826,6 +826,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "The settlement row was deleted before it was charged",
+			"relay_job_relay_deleted": "The relay was deleted or could not be loaded before the job finished",
 			"relay_job_no_usage": "The final reply had no usage to price",
 			"relay_job_rejected": "The upstream refused the job id",
 			"relay_job_access_denied": "The upstream denied access to the job",
@@ -857,6 +858,7 @@
 		},
 		"columns": {
 			"startsJob": "Starts job {{id}}",
+			"jobUntracked": "Job not tracked",
 			"jobUnpriced": "Unpriced: {{reason}}",
 			"jobFailed": "Failed: {{status}}",
 			"jobBadge": "Job",
@@ -903,6 +905,7 @@
 			"jobNotSettled": "Not settled yet",
 			"jobSettlementFailed": "Could not check the settlement.",
 			"jobSettlement": "Job settlement",
+			"jobUntracked": "Job not tracked",
 			"costUnpriced": "unpriced",
 			"unpricedBody": "Bifrost could not price this job, so its cost is unknown and the job itself was not charged. The start call kept its own charge.",
 			"unpricedTitle": "Unpriced job",

@@ -826,6 +826,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "Die Abrechnungszeile wurde vor der Belastung gelöscht",
+			"relay_job_relay_deleted": "Das Relay wurde gelöscht oder konnte nicht geladen werden, bevor der Job fertig war",
 			"relay_job_no_usage": "Die letzte Antwort enthielt keine Nutzung",
 			"relay_job_rejected": "Der Upstream hat die Job-ID abgelehnt",
 			"relay_job_access_denied": "Der Upstream hat den Zugriff verweigert",
@@ -857,6 +858,7 @@
 		},
 		"columns": {
 			"startsJob": "Startet Job {{id}}",
+			"jobUntracked": "Job nicht verfolgt",
 			"jobUnpriced": "Ohne Preis: {{reason}}",
 			"jobFailed": "Fehlgeschlagen: {{status}}",
 			"jobBadge": "Job",
@@ -903,6 +905,7 @@
 			"jobNotSettled": "Noch nicht abgerechnet",
 			"jobSettlementFailed": "Die Abrechnung konnte nicht geprüft werden.",
 			"jobSettlement": "Job-Abrechnung",
+			"jobUntracked": "Job nicht verfolgt",
 			"costUnpriced": "ohne Preis",
 			"unpricedBody": "Bifrost konnte diesen Job nicht bepreisen. Seine Kosten sind unbekannt, und der Job selbst wurde nicht belastet. Der Startaufruf behielt seine eigene Belastung.",
 			"unpricedTitle": "Job ohne Preis",

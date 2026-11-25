@@ -138,6 +138,9 @@ const (
 	RelayJobOutcomeSucceeded = "succeeded"
 	RelayJobOutcomeFailed    = "failed"
 	RelayJobOutcomeUnpriced  = "unpriced"
+	// RelayJobOutcomeUntracked marks a start call whose reply named no usable job id, so only its
+	// fee was charged; LastError says why.
+	RelayJobOutcomeUntracked = "untracked"
 )
 
 // Relay log kinds and statuses.

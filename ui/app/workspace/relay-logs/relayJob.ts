@@ -10,6 +10,12 @@ export function relayJobOutcome(log: Pick<RelayLog, "job_debug" | "cost">): Rela
 	return log.cost == null ? "unpriced" : "succeeded";
 }
 
+/** Why a start call's job was not tracked (its reply named no usable job id), or null. */
+export function relayJobUntracked(log: Pick<RelayLog, "kind" | "job_debug">): string | null {
+	if (log.kind === "job" || log.job_debug?.outcome !== "untracked") return null;
+	return log.job_debug.last_error ?? "";
+}
+
 /**
  * When a job row's job ended. The row's own time is the start call's, kept stable for log dedupe, so
  * this is what shows as the job's end; null for other rows and rows from before job_debug.
@@ -28,6 +34,7 @@ const JOB_REASONS = [
 	"relay_job_rejected",
 	"relay_job_no_usage",
 	"relay_job_row_missing",
+	"relay_job_relay_deleted",
 ] as const;
 type JobReason = (typeof JOB_REASONS)[number];
 
@@ -37,6 +44,17 @@ export function relayJobReason(log: Pick<RelayLog, "error_details">): string {
 	if (type && (JOB_REASONS as readonly string[]).includes(type))
 		return i18n.t(`relayLogs.jobReasons.${type as JobReason}`, { ns: "observability" });
 	return type ?? log.error_details?.error?.message ?? "";
+}
+
+/**
+ * A job status as shown: an upstream's own status as it reported it, and one of Bifrost's internal
+ * end codes (a job that timed out records relay_job_timeout) as its translated reason.
+ */
+export function relayJobStatusLabel(status: string | null | undefined): string {
+	if (!status) return "";
+	if ((JOB_REASONS as readonly string[]).includes(status))
+		return i18n.t(`relayLogs.jobReasons.${status as JobReason}`, { ns: "observability" });
+	return status;
 }
 
 export const RELAY_JOB_OUTCOME_CLASS: Record<RelayJobOutcome, string> = {
