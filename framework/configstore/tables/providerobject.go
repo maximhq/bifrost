@@ -12,11 +12,14 @@ const (
 	ProviderObjectKindCachedContent = "cached_content"
 	ProviderObjectKindContainerFile = "container_file"
 	ProviderObjectKindLiveSession   = "live_session"
+	// ProviderObjectKindResponse is a stored Responses API response, addressed by its id on the
+	// retrieve, delete, cancel and input_items requests and by previous_response_id.
+	ProviderObjectKindResponse = "response"
 )
 
 // TableProviderObject records which virtual key created a provider-side object.
 //
-// Objects such as files, videos, containers and cached contents are created
+// Objects such as files, videos, containers, cached contents and stored responses are created
 // through the operator's provider key, which every virtual key allowed on the
 // provider shares, and are afterwards addressed by their provider-side id alone.
 // This row is the only place the gateway remembers who created one. It is written

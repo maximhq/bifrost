@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -15,13 +16,21 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
+	"github.com/tidwall/gjson"
 )
 
-// Provider objects (batches, videos, files, containers and the files inside them, cached contents) are created through the
-// operator's provider key, which every virtual key allowed on the provider shares, and are then
+// Provider objects (batches, videos, files, containers and the files inside them, cached contents,
+// stored responses) are created through the operator's provider key, which every virtual key
+// allowed on the provider shares, and are then
 // addressed by the provider-side id alone. This file makes them belong to the virtual key that
 // created them: the create response records the key, the read, download, delete, remix and
 // container-file paths honour it, and list pages are narrowed to what the key may see.
+//
+// A stored response (the Responses API keeps one unless the request says store: false) is the
+// same kind of object: its id opens the retrieve, delete, cancel and input_items requests, and a
+// later request continues from it through previous_response_id. The create records the key, from
+// the whole answer or from the first stream event that names the response, and those five
+// references honour it. Responses have no list request, so there is no page to narrow.
 //
 // Who created an object is read from the ownership row written here, and, for batches and
 // videos, from the accounting job row the logging plugin writes, which predates ownership rows.
@@ -52,6 +61,21 @@ type providerObjectRef struct {
 // value is the ids of the containers the same request named outright, which are never claimed.
 const governanceAutoContainerContextKey schemas.BifrostContextKey = "bf-governance-auto-container"
 
+// governanceUnstoredResponseContextKey marks a Responses request that asked the provider not to
+// store its response (store: false), so the response it returns is not recorded: there is nothing
+// to reach by its id afterwards.
+const governanceUnstoredResponseContextKey schemas.BifrostContextKey = "bf-governance-unstored-response"
+
+// governanceRecordedResponseContextKey holds the id of the stored response already recorded for a
+// request. A stream names its response on several events (response.created, response.in_progress,
+// the terminal event), and only the first one writes the row.
+const governanceRecordedResponseContextKey schemas.BifrostContextKey = "bf-governance-recorded-response"
+
+// governancePassthroughResponseCreateContextKey marks a raw provider request that creates a
+// Responses response (POST .../responses), so the post-hook reads the stored response's id from
+// the provider's own body. The answer alone does not say whether it was a create or a read.
+const governancePassthroughResponseCreateContextKey schemas.BifrostContextKey = "bf-governance-passthrough-response-create"
+
 // providerObjectLabel is the noun a kind goes by in client-facing messages.
 func providerObjectLabel(kind string) string {
 	switch kind {
@@ -67,6 +91,8 @@ func providerObjectLabel(kind string) string {
 		return "cached content"
 	case configstoreTables.ProviderObjectKindContainerFile:
 		return "container file"
+	case configstoreTables.ProviderObjectKindResponse:
+		return "response"
 	}
 	return "object"
 }
@@ -169,6 +195,7 @@ func providerObjectReference(req *schemas.BifrostRequest) (providerObjectRef, bo
 	file := configstoreTables.ProviderObjectKindFile
 	container := configstoreTables.ProviderObjectKindContainer
 	cached := configstoreTables.ProviderObjectKindCachedContent
+	response := configstoreTables.ProviderObjectKindResponse
 	switch {
 	case req.BatchRetrieveRequest != nil:
 		return objectRef(batch, req.BatchRetrieveRequest.Provider, req.BatchRetrieveRequest.BatchID)
@@ -233,15 +260,125 @@ func providerObjectReference(req *schemas.BifrostRequest) (providerObjectRef, bo
 		return objectRef(cached, req.CachedContentDeleteRequest.Provider, req.CachedContentDeleteRequest.Name)
 	case req.CachedContentListRequest != nil:
 		return listRef(cached, req.CachedContentListRequest.Provider)
+	case req.ResponsesRetrieveRequest != nil:
+		// A streamed retrieve replays the same stored response and carries the same request.
+		return objectRef(response, req.ResponsesRetrieveRequest.Provider, req.ResponsesRetrieveRequest.ResponseID)
+	case req.ResponsesDeleteRequest != nil:
+		return objectRef(response, req.ResponsesDeleteRequest.Provider, req.ResponsesDeleteRequest.ResponseID)
+	case req.ResponsesCancelRequest != nil:
+		return objectRef(response, req.ResponsesCancelRequest.Provider, req.ResponsesCancelRequest.ResponseID)
+	case req.ResponsesInputItemsRequest != nil:
+		return objectRef(response, req.ResponsesInputItemsRequest.Provider, req.ResponsesInputItemsRequest.ResponseID)
+	case req.CompactionRequest != nil:
+		return previousResponseRef(req.CompactionRequest.Provider, req.CompactionRequest.PreviousResponseID)
 	}
 	return providerObjectRef{}, false
+}
+
+// previousResponseRef returns the stored response a request continues from through
+// previous_response_id. The provider reads that response's whole conversation into the new one
+// under the shared key, so it is checked like the response itself.
+func previousResponseRef(provider schemas.ModelProvider, previousResponseID *string) (providerObjectRef, bool) {
+	if previousResponseID == nil {
+		return providerObjectRef{}, false
+	}
+	ref, ok := objectRef(configstoreTables.ProviderObjectKindResponse, provider, strings.TrimSpace(*previousResponseID))
+	ref.indirect = true
+	return ref, ok
+}
+
+// continuationRefs returns the stored responses a request continues from: the typed
+// previous_response_id, the one in extra_params, and the one in the raw request body, when each
+// is set. A raw body is what a Go SDK caller hands over to be sent as it is, so an id that is
+// only there reaches the provider without ever being a typed field. Whether the raw body or the
+// typed request is sent is settled per attempt, after this check has run, so all three are read.
+func continuationRefs(provider schemas.ModelProvider, typed *string, extra map[string]any, rawBody []byte) []providerObjectRef {
+	var refs []providerObjectRef
+	if ref, ok := previousResponseRef(provider, typed); ok {
+		refs = append(refs, ref)
+	}
+	if id, ok := extraParamString(extra["previous_response_id"]); ok {
+		if ref, ok := previousResponseRef(provider, &id); ok {
+			refs = append(refs, ref)
+		}
+	}
+	// Only the top-level field names the response continued from; a metadata key of the same
+	// name is an annotation.
+	if len(rawBody) > 0 {
+		if id := gjson.GetBytes(rawBody, "previous_response_id"); id.Type == gjson.String {
+			if ref, ok := previousResponseRef(provider, new(id.String())); ok {
+				refs = append(refs, ref)
+			}
+		}
+	}
+	return refs
+}
+
+// extraParamString reads an extra_params value the way the body is built from it. The body is
+// made by marshalling the map, which writes a *string or a named string type as the same JSON
+// string a plain one gives, so a check that took only a plain string would miss an id a Go SDK
+// caller passed any other way.
+func extraParamString(value any) (string, bool) {
+	rv, ok := extraParamValue(value)
+	if !ok || rv.Kind() != reflect.String {
+		return "", false
+	}
+	return rv.String(), true
+}
+
+// extraParamBool is extraParamString for a boolean: a *bool or a named bool type is marshalled
+// as the same true or false.
+func extraParamBool(value any) (bool, bool) {
+	rv, ok := extraParamValue(value)
+	if !ok || rv.Kind() != reflect.Bool {
+		return false, false
+	}
+	return rv.Bool(), true
+}
+
+// extraParamValue follows pointers and interfaces down to the value that is marshalled. A nil
+// anywhere on the way marshals as null, which names nothing.
+func extraParamValue(value any) (reflect.Value, bool) {
+	rv := reflect.ValueOf(value)
+	for rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) {
+		if rv.IsNil() {
+			return reflect.Value{}, false
+		}
+		rv = rv.Elem()
+	}
+	return rv, rv.IsValid()
+}
+
+// responsesCreateStore reports the store setting of a Responses create: nil when the request is
+// not one or left it unset, which the provider reads as true.
+//
+// extra_params are merged into the body that is sent, over the typed field, when the request asks
+// for that with a header this check does not read. So a store of true in extra_params wins: the
+// response may be stored, and recording one that was not is harmless, while missing one that was
+// leaves it open to every key. A raw request body is read the same way: it may be what is sent,
+// and it stores the response when it says true or says nothing at all.
+func responsesCreateStore(req *schemas.BifrostRequest) *bool {
+	if req == nil || req.ResponsesRequest == nil {
+		return nil
+	}
+	if raw := req.ResponsesRequest.RawRequestBody; len(raw) > 0 && gjson.GetBytes(raw, "store").Type != gjson.False {
+		return new(true)
+	}
+	if req.ResponsesRequest.Params == nil {
+		return nil
+	}
+	if stored, ok := extraParamBool(req.ResponsesRequest.Params.ExtraParams["store"]); ok && stored {
+		return &stored
+	}
+	return req.ResponsesRequest.Params.Store
 }
 
 // providerObjectReferences returns every provider object a request names. Most requests address
 // one object by id (providerObjectReference). Several shapes name objects indirectly: a container
 // create copies the files in file_ids into the new container, a container-file create can copy an
 // existing file in by file_id, a video edit runs on its source video, a chat or responses request
-// can carry uploaded files by file_id in its messages, and a chat, responses, image or
+// can carry uploaded files by file_id in its messages, a responses or compaction request can
+// continue from a stored response (previous_response_id), and a chat, responses, image or
 // transcription request can run on a cached content (Gemini's cached_content, in either key
 // spelling). Those are checked like a direct reference, since the provider would otherwise hand
 // another key's file, video or cache to the caller through the object it is creating or the
@@ -332,7 +469,37 @@ func providerObjectReferences(req *schemas.BifrostRequest) []providerObjectRef {
 			refs = append(refs, ref)
 		}
 		refs = append(refs, toolObjectRefs(req, provider)...)
+		if r := req.ResponsesRequest; r != nil {
+			// extra_params are merged into the body that is sent, over the typed field, so the id
+			// can arrive there instead, and a raw request body carries its own. All are checked:
+			// which one reaches the provider depends on request settings this check does not read.
+			var typed *string
+			var extraParams map[string]any
+			if r.Params != nil {
+				typed, extraParams = r.Params.PreviousResponseID, r.Params.ExtraParams
+			}
+			refs = append(refs, continuationRefs(provider, typed, extraParams, r.RawRequestBody)...)
+		}
 		return refs
+	}
+	// Counting the input tokens of a continuation makes the provider read the stored response,
+	// and the count it returns says the response exists and how large it is. A compaction reads
+	// the stored conversation itself. Both places the id can arrive in are checked, as for a
+	// create: extra_params are merged into the body that is sent, over the typed field.
+	if r := req.CountTokensRequest; r != nil {
+		var typed *string
+		var extraParams map[string]any
+		if r.Params != nil {
+			typed, extraParams = r.Params.PreviousResponseID, r.Params.ExtraParams
+		}
+		if refs := continuationRefs(r.Provider, typed, extraParams, r.RawRequestBody); len(refs) > 0 {
+			return refs
+		}
+	}
+	if r := req.CompactionRequest; r != nil {
+		if refs := continuationRefs(r.Provider, r.PreviousResponseID, r.ExtraParams, r.RawRequestBody); len(refs) > 0 {
+			return refs
+		}
 	}
 	if ref, ok := providerObjectReference(req); ok {
 		return []providerObjectRef{ref}
@@ -412,7 +579,7 @@ var passthroughCollections = map[string]string{
 // passthroughObjectRefs returns the provider objects a passthrough request reaches. The router
 // forwards the provider's own path and body under the shared key, so the object a path addresses
 // (files/<id>, batches/<id>, containers/<id> and the files inside it, videos/<id>,
-// cachedContents/<id>) is checked directly, a GET of one of those collections is a list, and the
+// cachedContents/<id>, responses/<id>) is checked directly, a GET of one of those collections is a list, and the
 // objects a JSON body names are checked like the same references on the native routes (see
 // jsonObjectRefs). A body that is not JSON names nothing that can be checked.
 func passthroughObjectRefs(r *schemas.BifrostPassthroughRequest) []providerObjectRef {
@@ -472,6 +639,11 @@ func passthroughObjectRefs(r *schemas.BifrostPassthroughRequest) []providerObjec
 			add(configstoreTables.ProviderObjectKindVideo, raw)
 		case "cachedContents":
 			add(configstoreTables.ProviderObjectKindCachedContent, "cachedContents/"+id)
+		case "responses":
+			// responses/compact and responses/input_tokens are operations, not stored responses.
+			if id != "compact" && id != "input_tokens" {
+				add(configstoreTables.ProviderObjectKindResponse, id)
+			}
 		}
 	}
 	if len(r.Body) == 0 || !mayNameProviderObjects(r.Body) {
@@ -490,6 +662,7 @@ var providerObjectBodyMarkers = [][]byte{
 	[]byte(`"file_id`), []byte(`"fileUri"`), []byte(`"file_uri"`),
 	[]byte(`"cached_content"`), []byte(`"cachedContent"`), []byte(`code_interpreter`),
 	[]byte(`"input_file_id"`), []byte(`"training_file"`), []byte(`"validation_file"`), []byte(`"fileName"`),
+	[]byte(`"previous_response_id"`),
 }
 
 var unicodeEscape = []byte(`\u`)
@@ -512,10 +685,10 @@ func mayNameProviderObjects(body []byte) bool {
 
 // jsonObjectRefs returns the provider objects a JSON request body names anywhere in it: file_id
 // and file_ids, a code_interpreter tool's container named by id, a Gemini fileUri (or file_uri),
-// a cached content (cached_content or cachedContent), and the input file a batch or fine-tune
-// runs on (input_file_id, training_file, validation_file, and a Gemini batch's fileName). It
-// reads passthrough bodies and the bodies of inline batch items, which reach the provider as
-// written.
+// a cached content (cached_content or cachedContent), the stored response a request continues from
+// (previous_response_id, read only at the top of the body), and the input file a batch or fine-tune runs on (input_file_id,
+// training_file, validation_file, and a Gemini batch's fileName). It reads passthrough bodies and
+// the bodies of inline batch items, which reach the provider as written.
 func jsonObjectRefs(provider schemas.ModelProvider, body any) []providerObjectRef {
 	var refs []providerObjectRef
 	add := func(kind, id string) {
@@ -524,8 +697,10 @@ func jsonObjectRefs(provider schemas.ModelProvider, body any) []providerObjectRe
 			refs = append(refs, ref)
 		}
 	}
-	var walk func(value any)
-	walk = func(value any) {
+	// top is true only for the body's own object. previous_response_id is a field of the request
+	// itself; the same name deeper in the body (a metadata key, say) is the caller's own data.
+	var walk func(value any, top bool)
+	walk = func(value any, top bool) {
 		switch v := value.(type) {
 		case map[string]any:
 			if t, _ := v["type"].(string); t == "code_interpreter" {
@@ -562,16 +737,20 @@ func jsonObjectRefs(provider schemas.ModelProvider, body any) []providerObjectRe
 					if name, ok := item.(string); ok {
 						add(configstoreTables.ProviderObjectKindCachedContent, name)
 					}
+				case "previous_response_id":
+					if id, ok := item.(string); ok && top {
+						add(configstoreTables.ProviderObjectKindResponse, id)
+					}
 				}
-				walk(item)
+				walk(item, false)
 			}
 		case []any:
 			for _, item := range v {
-				walk(item)
+				walk(item, false)
 			}
 		}
 	}
-	walk(body)
+	walk(body, true)
 	return refs
 }
 
@@ -1060,6 +1239,18 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 	if vkID == "" {
 		return nil
 	}
+	// A response the request asked not to store is marked so the post-hook does not record it,
+	// whether or not anything is refused here.
+	if store := responsesCreateStore(req); store != nil && !*store {
+		ctx.SetValue(governanceUnstoredResponseContextKey, true)
+	}
+	if isPassthroughResponseCreate(req) {
+		ctx.SetValue(governancePassthroughResponseCreateContextKey, true)
+		// The raw body carries store where the typed request has a field for it.
+		if store := gjson.GetBytes(req.PassthroughRequest.Body, "store"); store.Type == gjson.False {
+			ctx.SetValue(governanceUnstoredResponseContextKey, true)
+		}
+	}
 	// With client.enforce_vk_object_ownership turned off nothing is refused, but an automatic
 	// container still needs its marker so the post-hook records its creator.
 	enforced := p.objectOwnershipEnforced()
@@ -1344,7 +1535,8 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 
 // recordProviderObjectLifecycle remembers the virtual key a create response was produced under,
 // and forgets an object a delete response confirms gone. A video create is told apart from a
-// retrieve, which answers with the same shape, by the request type. An id is recorded only as the
+// retrieve, which answers with the same shape, by the request type, and so is a stored response
+// (see createdStoredResponseID). An id is recorded only as the
 // create returned it; short forms of a full resource name are resolved by suffix at lookup time
 // (see resolveShortResourceNames). A delete forgets every form of the id it names, and a delete in
 // short form also forgets the deleting key's own full name that ends in it. A write that fails is
@@ -1362,7 +1554,15 @@ func (p *GovernancePlugin) recordProviderObjectLifecycle(ctx *schemas.BifrostCon
 	}
 	var createdKind, createdID string
 	var deletedKind, deletedID string
+	storedResponseID := createdStoredResponseID(ctx, requestType, result)
+	if storedResponseID == "" {
+		storedResponseID = passthroughCreatedStoredResponseID(ctx, result)
+	}
 	switch {
+	case storedResponseID != "":
+		createdKind, createdID = configstoreTables.ProviderObjectKindResponse, storedResponseID
+	case result.ResponsesDeleteResponse != nil && result.ResponsesDeleteResponse.Deleted:
+		deletedKind, deletedID = configstoreTables.ProviderObjectKindResponse, result.ResponsesDeleteResponse.ID
 	case result.FileUploadResponse != nil && requestType == schemas.FileUploadRequest:
 		createdKind, createdID = configstoreTables.ProviderObjectKindFile, result.FileUploadResponse.ID
 	case result.VideoGenerationResponse != nil && (requestType == schemas.VideoGenerationRequest || requestType == schemas.VideoEditRequest || requestType == schemas.VideoRemixRequest):
@@ -1397,7 +1597,12 @@ func (p *GovernancePlugin) recordProviderObjectLifecycle(ctx *schemas.BifrostCon
 		// Recorded as the provider named it, and under no short form: a Vertex job number is one
 		// project's, so a row keyed by it would be shared by every project's job of that number.
 		// Short forms are resolved against the full names when they are asked for instead.
-		p.recordProviderObjectCreator(ctx, createdKind, provider, createdID, vkID)
+		recorded := p.recordProviderObjectCreator(ctx, createdKind, provider, createdID, vkID)
+		// A stream names its response on several events. It is marked as recorded only once the
+		// row is written, so a write that failed is tried again on the next event.
+		if recorded && createdKind == configstoreTables.ProviderObjectKindResponse {
+			ctx.SetValue(governanceRecordedResponseContextKey, createdID)
+		}
 		return
 	}
 	// The object is forgotten under every provider name that reaches the same upstream: the delete
@@ -1413,6 +1618,140 @@ func (p *GovernancePlugin) recordProviderObjectLifecycle(ctx *schemas.BifrostCon
 	if suffix, short := resourceNameSuffix(deletedKind, deletedID); short && p.builtOnVertex(provider) {
 		p.forgetShortFormDelete(ctx, deletedKind, aliases, suffix, vkID)
 	}
+}
+
+// createdStoredResponseID returns the id of the stored response a Responses create just produced,
+// or empty when the result is not one that needs recording. A create answers whole, or as a stream
+// whose response.created event (and every later event that carries the response) names it; the
+// first event that does is the one recorded, so a stream the caller drops, or a background
+// response read later, is already bound. A retrieve, a streamed retrieve and a cancel answer with
+// the same shapes and are told apart by the request type: reading a response nobody recorded does
+// not make it the reader's. A response the provider reports as not stored (store: false), or that
+// the request asked not to store, cannot be reached by id and is not recorded.
+func createdStoredResponseID(ctx *schemas.BifrostContext, requestType schemas.RequestType, result *schemas.BifrostResponse) string {
+	var resp *schemas.BifrostResponsesResponse
+	switch requestType {
+	case schemas.ResponsesRequest:
+		resp = result.ResponsesResponse
+	case schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+		if result.ResponsesStreamResponse != nil {
+			resp = result.ResponsesStreamResponse.Response
+		}
+	}
+	if resp == nil || resp.ID == nil || *resp.ID == "" {
+		return ""
+	}
+	if resp.Store != nil && !*resp.Store {
+		return ""
+	}
+	if unstored, _ := ctx.Value(governanceUnstoredResponseContextKey).(bool); unstored {
+		return ""
+	}
+	if recorded, _ := ctx.Value(governanceRecordedResponseContextKey).(string); recorded == *resp.ID {
+		return ""
+	}
+	return *resp.ID
+}
+
+// isPassthroughResponseCreate reports whether a raw provider request creates a Responses response:
+// a POST whose path, as it will be sent, ends on the responses collection. responses/compact,
+// responses/input_tokens and responses/{id}/cancel end elsewhere and are not creates.
+func isPassthroughResponseCreate(req *schemas.BifrostRequest) bool {
+	if req == nil || req.PassthroughRequest == nil || !strings.EqualFold(req.PassthroughRequest.Method, "POST") {
+		return false
+	}
+	sent := req.PassthroughRequest.Path
+	if i := strings.IndexAny(sent, "?#"); i >= 0 {
+		sent = sent[:i]
+	}
+	sent = path.Clean("/" + sent)
+	return sent == "/responses" || strings.HasSuffix(sent, "/responses")
+}
+
+// passthroughCreatedStoredResponseID returns the id of the stored response a raw provider create
+// just produced, read from the provider's own body: the response object of a whole answer, or the
+// response carried by a stream event. The rules match createdStoredResponseID: a failed create, a
+// response the provider says it did not store, one the request asked not to store, and one this
+// request already recorded all return "".
+func passthroughCreatedStoredResponseID(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) string {
+	resp := result.PassthroughResponse
+	if resp == nil || len(resp.Body) == 0 || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ""
+	}
+	if create, _ := ctx.Value(governancePassthroughResponseCreateContextKey).(bool); !create {
+		return ""
+	}
+	if unstored, _ := ctx.Value(governanceUnstoredResponseContextKey).(bool); unstored {
+		return ""
+	}
+	id := storedResponseIDFromBody(resp.Body)
+	if id == "" {
+		return ""
+	}
+	if recorded, _ := ctx.Value(governanceRecordedResponseContextKey).(string); recorded == id {
+		return ""
+	}
+	return id
+}
+
+// storedResponseIDFromBody reads a stored response's id from a provider body. A whole answer is
+// the response object itself; a stream chunk holds server-sent events whose data lines carry it
+// under "response". Anything else, and a response with store set to false, yields "".
+func storedResponseIDFromBody(body []byte) string {
+	if !bytes.Contains(body, []byte(`"response"`)) {
+		return ""
+	}
+	fromObject := func(obj gjson.Result) string {
+		if obj.Get("object").String() != "response" {
+			return ""
+		}
+		if store := obj.Get("store"); store.Exists() && !store.Bool() {
+			return ""
+		}
+		return obj.Get("id").String()
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		// A whole answer is the response object. A stream read can also open on an event's JSON,
+		// when the read before it ended right after "data: "; that object carries the response
+		// under "response" and may itself be cut short, so it is read leniently like a data line.
+		if gjson.GetBytes(trimmed, "object").String() == "response" {
+			if !gjson.ValidBytes(trimmed) {
+				return ""
+			}
+			return fromObject(gjson.ParseBytes(trimmed))
+		}
+		if gjson.GetBytes(trimmed, "response.object").String() != "response" {
+			return ""
+		}
+		if store := gjson.GetBytes(trimmed, "response.store"); store.Type == gjson.False {
+			return ""
+		}
+		return gjson.GetBytes(trimmed, "response.id").String()
+	}
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		data, ok := bytes.CutPrefix(bytes.TrimSpace(line), []byte("data:"))
+		if !ok {
+			continue
+		}
+		data = bytes.TrimSpace(data)
+		if len(data) == 0 || data[0] != '{' {
+			continue
+		}
+		// The stream is relayed in fixed-size reads, so an event can arrive cut short. The id
+		// and object come first in the response object and are read from what has arrived; a
+		// store field that has not arrived yet is covered by the request's own setting.
+		if gjson.GetBytes(data, "response.object").String() != "response" {
+			continue
+		}
+		if store := gjson.GetBytes(data, "response.store"); store.Type == gjson.False {
+			return ""
+		}
+		if id := gjson.GetBytes(data, "response.id").String(); id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 // forgetShortFormDelete forgets the deleting key's own full name that a delete by a short form
@@ -1483,8 +1822,9 @@ func (p *GovernancePlugin) recordAutomaticContainers(ctx *schemas.BifrostContext
 
 // recordProviderObjectCreator writes the ownership row of an object, trying once more when the
 // write fails: the object exists at the provider either way, and a bound object beats an unbound
-// one. A second failure is logged and the object follows the unbound-object rule.
-func (p *GovernancePlugin) recordProviderObjectCreator(ctx *schemas.BifrostContext, kind, provider, objectID, vkID string) {
+// one. A second failure is logged and the object follows the unbound-object rule. It reports whether
+// the row was written.
+func (p *GovernancePlugin) recordProviderObjectCreator(ctx *schemas.BifrostContext, kind, provider, objectID, vkID string) bool {
 	row := &configstoreTables.TableProviderObject{
 		ID:           configstoreTables.ProviderObjectID(kind, provider, objectID),
 		Kind:         kind,
@@ -1498,7 +1838,9 @@ func (p *GovernancePlugin) recordProviderObjectCreator(ctx *schemas.BifrostConte
 	}
 	if err != nil {
 		p.logger.Warn("failed to record the creating virtual key of %s %s on %s (after a retry): %v", providerObjectLabel(kind), objectID, provider, err)
+		return false
 	}
+	return true
 }
 
 // recordBatchFiles binds the output and error files a batch retrieve names to the batch's

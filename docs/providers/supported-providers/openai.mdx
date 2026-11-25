@@ -240,6 +240,10 @@ Manage stored and background responses after creation (requests made with `store
 When multiple API keys are configured for the provider, pin key selection on lifecycle calls (for example, with the `x-bf-api-key-id` header, see [Request Options](/providers/request-options)) so they hit the same upstream account as the create call that produced the `response_id`.
 </Note>
 
+<Note>
+A stored response is bound to the virtual key that created it. With a virtual key, retrieve, delete, cancel, and `input_items` on a response created by another key return `404`, and so does a request whose `previous_response_id` names one. A response created with `store: false` is not stored, so there is nothing to bind; a `store: true` in `extra_params` counts as stored, even over a typed `store: false`. Stored responses created without a virtual key, outside the gateway, or before this binding existed are not bound, and neither is one whose creating key could not be written. These stay reachable to every key allowed on the provider. The binding follows `client.enforce_vk_object_ownership`; see [Files and Batch](/integrations/openai-sdk/files-and-batch#list-batches).
+</Note>
+
 ### Retrieve Response
 
 GET `/v1/responses/{response_id}` - Retrieve a stored response ([docs](https://platform.openai.com/docs/api-reference/responses/get))

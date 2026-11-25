@@ -120,7 +120,11 @@ func TestUpdateConfig_InferenceAuthBlocksUpstream(t *testing.T) {
 				case "files":
 					_, failure = client.FileListRequest(ctx, &schemas.BifrostFileListRequest{Provider: schemas.OpenAI})
 				case "responses":
-					_, failure = client.ResponsesRetrieveRequest(ctx, &schemas.BifrostResponsesRetrieveRequest{Provider: schemas.OpenAI, ResponseID: "resp_test"})
+					// A create, not a retrieve: reading a stored response by id is bound to the key
+					// that created it, and this fixture has no config store to check that against.
+					// What is under test here is whether a request needs a credential at all.
+					_, failure = client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+						Input: []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("ok")}}}})
 				}
 				if credential == "" {
 					require.NotNil(t, failure)
