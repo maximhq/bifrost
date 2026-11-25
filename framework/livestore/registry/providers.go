@@ -19,6 +19,9 @@ import (
 type Provider struct {
 	Name     schemas.ModelProvider
 	Settings configstore.ProviderSettings
+	// BudgetID and RateLimitID name the limits governance holds every request to this provider
+	// to; "" for none.
+	BudgetID, RateLimitID string
 }
 
 // ProviderName is a provider record's primary key.
@@ -51,7 +54,10 @@ func readProviders(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm.
 	out := make([]*Provider, 0, len(rows))
 	for i := range rows {
 		config := configstore.ProviderConfigFromTable(&rows[i])
-		out = append(out, &Provider{Name: schemas.ModelProvider(rows[i].Name), Settings: config.Settings()})
+		out = append(out, &Provider{
+			Name: schemas.ModelProvider(rows[i].Name), Settings: config.Settings(),
+			BudgetID: deref(rows[i].BudgetID), RateLimitID: deref(rows[i].RateLimitID),
+		})
 	}
 	return out, nil
 }
