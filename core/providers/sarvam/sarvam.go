@@ -347,6 +347,9 @@ func (provider *SarvamProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	go func() {
+		// Registered first so it runs last: the cancellation and timeout handlers below
+		// run post-hooks on the plugin pipeline that the finalizer releases.
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer func() {
 			if ctx.Err() == context.Canceled {
 				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
@@ -365,7 +368,6 @@ func (provider *SarvamProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
-		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
 		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 
 		buffer := make([]byte, 4096)

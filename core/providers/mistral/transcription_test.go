@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -1668,4 +1669,69 @@ func TestMistralTranscriptionStreamIntegration(t *testing.T) {
 	// by bifrost.go's dispatcher, not by provider streaming methods called
 	// in isolation.
 	_ = lastResponse
+}
+
+// TestTranscriptionStreamCancelledRunsPostHooksBeforeFinalizer checks that a stream the
+// client cancels mid-way runs its cancellation post-hook before the stream finalizer.
+// The finalizer releases the request's plugin pipeline to the pool, so a post-hook
+// after it would run on a pipeline another request may already be using.
+func TestTranscriptionStreamCancelledRunsPostHooksBeforeFinalizer(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: transcription.text.delta\ndata: {\"text\": \"Hello\"}\n\n"))
+		w.(http.Flusher).Flush()
+		select { // hold the stream open until the client goes away
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+
+	provider := NewMistralProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, &testLogger{})
+
+	var mu sync.Mutex
+	finalized := false
+	hooksAfterFinalizer := 0
+	postHookRunner := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		mu.Lock()
+		if finalized {
+			hooksAfterFinalizer++
+		}
+		mu.Unlock()
+		return resp, err
+	}
+	finalizerDone := make(chan struct{})
+	finalizer := func(context.Context) {
+		mu.Lock()
+		first := !finalized
+		finalized = true
+		mu.Unlock()
+		if first {
+			close(finalizerDone)
+		}
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	stream, bifrostErr := provider.TranscriptionStream(ctx, postHookRunner, finalizer, schemas.Key{Value: *schemas.NewSecretVar("test-key")},
+		&schemas.BifrostTranscriptionRequest{Model: "voxtral-mini-latest", Input: &schemas.TranscriptionInput{File: createMinimalAudioFile()}})
+	require.Nil(t, bifrostErr)
+	_, ok := <-stream
+	require.True(t, ok, "stream closed before its first chunk")
+	cancel() // the client goes away mid-stream
+	for range stream {
+	}
+	select {
+	case <-finalizerDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stream finalizer never ran")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Zero(t, hooksAfterFinalizer, "post-hook calls after the finalizer released the plugin pipeline")
 }
