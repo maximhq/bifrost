@@ -349744,6 +349744,230 @@
           ]
         }
       ]
+    },
+    {
+      "name": "382. Key aliases in an unfiltered model listing (alias model listing)",
+      "description": "The fallback model pickers of routing rules and model routers read GET /api/models with unfiltered=true, which holds a provider's raw catalog: an alias shows there only when its model_id is a model the provider lists live, so aliases to unlisted targets were never suggested. include_aliases=true adds the alias names on the provider's enabled keys where each key's own allow and block lists admit them, pattern aliases left out. It is opt-in because the deployments picker reads the same listing for a model_id, where an alias name is wrong. Each case creates a run-scoped OpenAI-backed provider with list_models off and placeholder keys, so the listing can hold nothing but aliases, and deletes it afterwards. Before the change the include_aliases listing is empty. Both routes parse the same query, so each is pinned. No provider calls are made. Run with FEATURE=\"alias model listing\".",
+      "item": [
+        {
+          "name": "openai custom provider /api/models lists gpt key aliases beside an unfiltered catalog only with include_aliases=true - alias model listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped provider with list_models off, so its listing holds nothing but alias names ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-alias-listing-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// Only providers older than ten minutes are swept, so a parallel shard's live provider is never touched.",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);",
+                  "var P = '/api/providers/' + encodeURIComponent(name);",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('aliasListingProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function (rd) {",
+                  "        // 404: a parallel run swept it first.",
+                  "        pm.test('setup: stale provider removed', function () { pm.expect([200, 404], 'unexpected status: ' + (rd ? rd.text() : 'no response')).to.include(rd && rd.code); });",
+                  "        if (rd && (rd.code === 200 || rd.code === 404)) { sweep(); }",
+                  "      });",
+                  "    }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false, allowed_requests: { chat_completion: true } } }, function (res) {",
+                  "      if (!expectOk('setup: created the run-scoped provider', res)) { return; }",
+                  "      // Recorded before the keys, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('aliasListingProvider', name);",
+                  "      var key = { name: name + '-key', value: 'sk-harness-alias-listing-placeholder', models: ['*'], blacklisted_models: ['harness-blocked-alias'], weight: 1, aliases: { 'harness-team-alias': { model_id: 'gpt-unlisted-a' }, 'harness-blocked-alias': { model_id: 'gpt-unlisted-b' }, 'regex:harness-pattern-.*': { model_id: 'gpt-unlisted-c' } } };",
+                  "      call('POST', P + '/keys', key, function (res2) {",
+                  "        if (!expectOk('setup: created the key with an alias, a blocked alias and a pattern alias', res2)) { return; }",
+                  "        var off = { name: name + '-disabled', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1, enabled: false, aliases: { 'harness-disabled-alias': { model_id: 'gpt-unlisted-d' } } };",
+                  "        call('POST', P + '/keys', off, function (res3) {",
+                  "          if (!expectOk('setup: created the disabled key with an alias', res3)) { return; }",
+                  "          // Unrestricted and alias-free: it must not lend its lists to the key that blocks its own alias.",
+                  "          call('POST', P + '/keys', { name: name + '-open', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1 }, function (res4) { expectOk('setup: created the unrestricted key', res4); });",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('aliasListingProvider');",
+                  "function namesOf(res) {",
+                  "  var body = null; try { body = res.json(); } catch (e) { body = null; }",
+                  "  return ((body && body.models) || []).map(function (m) { return m.name; });",
+                  "}",
+                  "pm.test('include_aliases listing returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('lists the alias once, and no blocked, pattern or disabled-key alias', function () {",
+                  "  pm.expect(namesOf(pm.response), pm.response.text()).to.eql(['harness-team-alias']);",
+                  "  pm.expect(pm.response.json().total, pm.response.text()).to.equal(1);",
+                  "});",
+                  "function cleanup() {",
+                  "  if (!name || name.indexOf('setup-failed') !== -1) { return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.sendRequest({ url: BASE + '/api/models?provider=' + encodeURIComponent(name) + '&unfiltered=true&limit=50', method: 'GET' }, function (err, res) {",
+                  "  pm.test('an unfiltered listing that does not ask for aliases has none', function () {",
+                  "    pm.expect(err, String(err)).to.eql(null);",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    pm.expect(namesOf(res), res.text()).to.eql([]);",
+                  "  });",
+                  "  cleanup();",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/models?provider={{aliasListingProvider}}&unfiltered=true&include_aliases=true&limit=50"
+          }
+        },
+        {
+          "name": "openai custom provider /api/models/details lists gpt key aliases beside an unfiltered catalog only with include_aliases=true - alias model listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped provider with list_models off, so its listing holds nothing but alias names ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-alias-listing-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// Only providers older than ten minutes are swept, so a parallel shard's live provider is never touched.",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);",
+                  "var P = '/api/providers/' + encodeURIComponent(name);",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('aliasListingProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function (rd) {",
+                  "        // 404: a parallel run swept it first.",
+                  "        pm.test('setup: stale provider removed', function () { pm.expect([200, 404], 'unexpected status: ' + (rd ? rd.text() : 'no response')).to.include(rd && rd.code); });",
+                  "        if (rd && (rd.code === 200 || rd.code === 404)) { sweep(); }",
+                  "      });",
+                  "    }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false, allowed_requests: { chat_completion: true } } }, function (res) {",
+                  "      if (!expectOk('setup: created the run-scoped provider', res)) { return; }",
+                  "      // Recorded before the keys, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('aliasListingProvider', name);",
+                  "      var key = { name: name + '-key', value: 'sk-harness-alias-listing-placeholder', models: ['*'], blacklisted_models: ['harness-blocked-alias'], weight: 1, aliases: { 'harness-team-alias': { model_id: 'gpt-unlisted-a' }, 'harness-blocked-alias': { model_id: 'gpt-unlisted-b' }, 'regex:harness-pattern-.*': { model_id: 'gpt-unlisted-c' } } };",
+                  "      call('POST', P + '/keys', key, function (res2) {",
+                  "        if (!expectOk('setup: created the key with an alias, a blocked alias and a pattern alias', res2)) { return; }",
+                  "        var off = { name: name + '-disabled', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1, enabled: false, aliases: { 'harness-disabled-alias': { model_id: 'gpt-unlisted-d' } } };",
+                  "        call('POST', P + '/keys', off, function (res3) {",
+                  "          if (!expectOk('setup: created the disabled key with an alias', res3)) { return; }",
+                  "          // Unrestricted and alias-free: it must not lend its lists to the key that blocks its own alias.",
+                  "          call('POST', P + '/keys', { name: name + '-open', value: 'sk-harness-alias-listing-placeholder', models: ['*'], weight: 1 }, function (res4) { expectOk('setup: created the unrestricted key', res4); });",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('aliasListingProvider');",
+                  "function namesOf(res) {",
+                  "  var body = null; try { body = res.json(); } catch (e) { body = null; }",
+                  "  return ((body && body.models) || []).map(function (m) { return m.name; });",
+                  "}",
+                  "pm.test('include_aliases listing returns HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('lists the alias once, and no blocked, pattern or disabled-key alias', function () {",
+                  "  pm.expect(namesOf(pm.response), pm.response.text()).to.eql(['harness-team-alias']);",
+                  "  pm.expect(pm.response.json().total, pm.response.text()).to.equal(1);",
+                  "});",
+                  "function cleanup() {",
+                  "  if (!name || name.indexOf('setup-failed') !== -1) { return; }",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.sendRequest({ url: BASE + '/api/models/details?provider=' + encodeURIComponent(name) + '&unfiltered=true&limit=50', method: 'GET' }, function (err, res) {",
+                  "  pm.test('an unfiltered listing that does not ask for aliases has none', function () {",
+                  "    pm.expect(err, String(err)).to.eql(null);",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    pm.expect(namesOf(res), res.text()).to.eql([]);",
+                  "  });",
+                  "  cleanup();",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/models/details?provider={{aliasListingProvider}}&unfiltered=true&include_aliases=true&limit=50"
+          }
+        }
+      ]
     }
   ]
 }
