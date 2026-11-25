@@ -1630,7 +1630,7 @@ func TestClickHouseNodeUsageCursorDoesNotRewind(t *testing.T) {
 	require.NoError(t, store.CreateIfNotExists(ctx, mk("ch-usage-1", base, 1.0)))
 	require.NoError(t, store.CreateIfNotExists(ctx, mk("ch-usage-2", base.Add(200*time.Millisecond), 2.0)))
 
-	first, err := store.GetNodeUsageAfter(ctx, nodeID, NodeUsageCursor{Timestamp: base.Add(-time.Hour)})
+	first, err := store.GetNodeUsageAfter(ctx, nodeID, NodeUsageCursor{Timestamp: base.Add(-time.Hour)}, NodeUsageWindows{})
 	require.NoError(t, err)
 	assert.Equal(t, 2, first.RowCount)
 	assert.InDelta(t, 3.0, first.BudgetCosts["b1"], 1e-9)
@@ -1638,7 +1638,7 @@ func TestClickHouseNodeUsageCursorDoesNotRewind(t *testing.T) {
 	// Re-scan from the advanced cursor: nothing new, so nothing may be
 	// re-aggregated - a rewound (seconds-truncated) cursor would return both
 	// rows again and double-count the budget spend.
-	second, err := store.GetNodeUsageAfter(ctx, nodeID, first.NextCursor)
+	second, err := store.GetNodeUsageAfter(ctx, nodeID, first.NextCursor, NodeUsageWindows{})
 	require.NoError(t, err)
 	assert.Equal(t, 0, second.RowCount, "cursor must not rewind into already-counted rows")
 	assert.Empty(t, second.BudgetCosts)

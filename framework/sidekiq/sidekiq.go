@@ -35,6 +35,8 @@ type Store interface {
 	FinalizeCancelledSidekiqJob(ctx context.Context, id, runnerID, metadata string) error
 	// ListClaimableSidekiqJobs returns pending jobs and running jobs whose heartbeat is older than staleBefore.
 	ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error)
+	// DeleteTerminalSidekiqJobs deletes up to limit finished jobs of kind last updated before the cutoff.
+	DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error)
 }
 
 // ProgressFunc persists a checkpoint and bumps the heartbeat. Handlers call it after each unit of work.
@@ -61,6 +63,12 @@ const (
 	StaleAfter        = 15 * time.Minute
 	// MaxAttempts caps re-claims before a job is permanently failed, preventing poison-job loops.
 	MaxAttempts = 5
+	// RetentionSweepInterval is how often the dispatcher deletes finished jobs
+	// past their kind's retention.
+	RetentionSweepInterval = time.Hour
+	// retentionDeleteBatch bounds each retention delete so a large backlog never
+	// holds one long lock on the job table.
+	retentionDeleteBatch = 1000
 )
 
 // Runner owns the handler registry and job goroutine lifecycle.
@@ -71,7 +79,12 @@ type Runner struct {
 	// summarizers holds the optional per-kind progress extractors, guarded by mu.
 	summarizers map[string]SummarizeFunc
 	quiet       map[string]struct{} // kinds whose completed jobs are left out of listings, guarded by mu
-	mu          sync.RWMutex
+	// retention maps a kind to how long its finished jobs are kept, guarded by mu.
+	retention map[string]time.Duration
+	// lastSweep is when the dispatcher last ran the retention sweep; only its goroutine touches it.
+	lastSweep time.Time
+	sweeping  atomic.Bool // set while a retention sweep goroutine runs
+	mu        sync.RWMutex
 
 	// runnerID fences job mutations to the node that claimed the job.
 	// Empty string disables the stale window so crashed jobs are immediately re-claimable.
@@ -111,6 +124,7 @@ func New(store Store, logger schemas.Logger, maxConcurrent int, runnerID string)
 		handlers:          make(map[string]HandlerFunc),
 		summarizers:       make(map[string]SummarizeFunc),
 		quiet:             make(map[string]struct{}),
+		retention:         make(map[string]time.Duration),
 		runnerID:          runnerID,
 		heartbeatInterval: HeartbeatInterval,
 		inflight:          make(map[string]struct{}),
@@ -150,6 +164,84 @@ func (r *Runner) RegisterQuietOnSuccess(kind string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.quiet[kind] = struct{}{}
+}
+
+// RegisterRetention keeps finished (completed, failed or cancelled) jobs of a
+// kind for keep, after which the dispatcher deletes them. For work queued on
+// a timer, whose rows would otherwise grow without bound. Kinds without a
+// retention keep their jobs forever; keep <= 0 removes a registered one.
+func (r *Runner) RegisterRetention(kind string, keep time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if keep <= 0 {
+		delete(r.retention, kind)
+		return
+	}
+	r.retention[kind] = keep
+}
+
+// sweepRetentionIfDue starts SweepRetention in its own goroutine at most once
+// per RetentionSweepInterval, so a large backlog never delays the next
+// dispatcher scan. A sweep still running skips the start, and the next tick
+// retries. It returns a channel closed when the started sweep ends, or nil if
+// none started. Only the dispatcher goroutine calls it.
+func (r *Runner) sweepRetentionIfDue(ctx context.Context, now time.Time) <-chan struct{} {
+	if !r.lastSweep.IsZero() && now.Sub(r.lastSweep) < RetentionSweepInterval {
+		return nil
+	}
+	if !r.sweeping.CompareAndSwap(false, true) {
+		return nil
+	}
+	r.lastSweep = now
+	done := make(chan struct{})
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		defer close(done)
+		defer r.sweeping.Store(false)
+		r.SweepRetention(ctx, now)
+	}()
+	return done
+}
+
+// SweepRetention deletes, for every kind with a retention, the finished jobs
+// last updated more than its retention before now, in bounded batches.
+// Deleting is idempotent, so every node may sweep without coordination.
+// Errors are logged and the kind is retried on the next sweep.
+func (r *Runner) SweepRetention(ctx context.Context, now time.Time) {
+	r.mu.RLock()
+	kinds := make(map[string]time.Duration, len(r.retention))
+	for kind, keep := range r.retention {
+		kinds[kind] = keep
+	}
+	r.mu.RUnlock()
+	for kind, keep := range kinds {
+		before := now.Add(-keep)
+		var total int64
+		for ctx.Err() == nil {
+			n, err := r.store.DeleteTerminalSidekiqJobs(ctx, kind, before, retentionDeleteBatch)
+			if err != nil {
+				r.logger.Warn("sidekiq: retention sweep for kind %s failed: %v", kind, err)
+				break
+			}
+			total += n
+			if n < retentionDeleteBatch {
+				break
+			}
+		}
+		if total > 0 {
+			r.logger.Debug("sidekiq: deleted %d finished %s jobs older than %s", total, kind, keep)
+		}
+	}
+}
+
+// Retention returns how long finished jobs of kind are kept and whether the
+// kind has a retention registered with RegisterRetention.
+func (r *Runner) Retention(kind string) (time.Duration, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	keep, ok := r.retention[kind]
+	return keep, ok
 }
 
 // QuietOnSuccessKinds returns the kinds registered with RegisterQuietOnSuccess,
@@ -477,11 +569,15 @@ func (r *Runner) StartDispatcher(interval, staleAfter time.Duration) (stop func(
 	r.staleAfter.Store(int64(staleAfter))
 	ticker := time.NewTicker(interval)
 	done := make(chan struct{})
+	// sweepCtx ends an in-flight retention sweep when the dispatcher stops or the runner shuts down.
+	sweepCtx, cancelSweep := context.WithCancel(r.baseCtx)
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
 		defer ticker.Stop()
+		defer cancelSweep()
 		r.dispatchOnce()
+		r.sweepRetentionIfDue(sweepCtx, time.Now())
 		for {
 			select {
 			case <-done:
@@ -490,6 +586,7 @@ func (r *Runner) StartDispatcher(interval, staleAfter time.Duration) (stop func(
 				return
 			case <-ticker.C:
 				r.dispatchOnce()
+				r.sweepRetentionIfDue(sweepCtx, time.Now())
 			}
 		}
 	}()

@@ -88,6 +88,8 @@ config:
           without an authenticated admin session
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 version:
   get:
@@ -203,6 +205,8 @@ proxy-config:
           authenticated)
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 force-sync-pricing:
   post:

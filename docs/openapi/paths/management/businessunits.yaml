@@ -59,14 +59,14 @@ business-units:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/ListBusinessUnitsResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/governance.yaml#/ListBusinessUnitsResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   post:
     operationId: createBusinessUnit
@@ -95,27 +95,27 @@ business-units:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/CreateBusinessUnitRequest'
+            $ref: "../../schemas/management/governance.yaml#/CreateBusinessUnitRequest"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Business unit created successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/BusinessUnitMutationResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '409':
+              $ref: "../../schemas/management/governance.yaml#/BusinessUnitMutationResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "409":
         description: A business unit with this name already exists
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 business-units-by-id:
   get:
@@ -151,20 +151,20 @@ business-units-by-id:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/BusinessUnitDetailResponse'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/BusinessUnitDetailResponse"
+      "404":
         description: Business unit not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   put:
     operationId: updateBusinessUnit
@@ -184,8 +184,7 @@ business-units-by-id:
 
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update business unit
-    description: |
-      Updates the business unit name.
+    description: Updates the business unit's content-logging decision. Renaming a business unit is refused.
     tags:
       - Governance
     parameters:
@@ -200,29 +199,29 @@ business-units-by-id:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/CreateBusinessUnitRequest'
+            $ref: "../../schemas/management/governance.yaml#/UpdateBusinessUnitRequest"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Business unit updated successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/BusinessUnitMutationResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '409':
+              $ref: "../../schemas/management/governance.yaml#/BusinessUnitMutationResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "409":
         description: A business unit with this name already exists
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: deleteBusinessUnit
@@ -259,20 +258,20 @@ business-units-by-id:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Business unit deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '404':
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "404":
         description: Business unit not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # ---- Business Unit - User Membership (M:N) ----
 
@@ -332,20 +331,20 @@ business-units-users:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/BusinessUnitUsersResponse'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/BusinessUnitUsersResponse"
+      "404":
         description: Business unit not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   post:
     operationId: assignUserToBusinessUnit
@@ -382,27 +381,27 @@ business-units-users:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/AssignUserToBusinessUnitRequest'
+            $ref: "../../schemas/management/governance.yaml#/AssignUserToBusinessUnitRequest"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: User assigned to business unit
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: Business unit or user not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 business-units-user-by-id:
   delete:
@@ -444,22 +443,22 @@ business-units-user-by-id:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: User removed from business unit
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: Membership not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # ---- Business Unit Governance (budget + rate limit) ----
 
@@ -500,33 +499,33 @@ business-units-governance:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/CreateBusinessUnitGovernanceRequest'
+            $ref: "../../schemas/management/governance.yaml#/CreateBusinessUnitGovernanceRequest"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Business unit governance created successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/BusinessUnitGovernanceResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/BusinessUnitGovernanceResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: Business unit not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '409':
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "409":
         description: Business unit already has governance configured
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   put:
     operationId: updateBusinessUnitGovernance
@@ -563,27 +562,27 @@ business-units-governance:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/governance.yaml#/UpdateBusinessUnitGovernanceRequest'
+            $ref: "../../schemas/management/governance.yaml#/UpdateBusinessUnitGovernanceRequest"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Business unit governance updated successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/governance.yaml#/BusinessUnitGovernanceResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+              $ref: "../../schemas/management/governance.yaml#/BusinessUnitGovernanceResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: Business unit not found
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: deleteBusinessUnitGovernance
@@ -618,17 +617,17 @@ business-units-governance:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Business unit governance deleted successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '404':
+              $ref: "../../schemas/management/common.yaml#/MessageResponse"
+      "404":
         description: Business unit not found or has no governance configured
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"

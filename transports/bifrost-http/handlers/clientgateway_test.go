@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,17 +33,34 @@ func newClaudeCodeGateway(t testing.TB, enforceAuth bool) (*clientGatewayEndpoin
 	t.Helper()
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, enforceAuth)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, enforceAuth)
 	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
-	return NewClientGatewayHandler(cfg, nil, nil, nil).endpoint("claude-code"), NewOAuth2ConsentHandler(cfg, nil, nil), store, cfg
+	loadGatewayLiveStore(t, cfg)
+	return newClientGatewaysForTest(t, cfg).endpoint("claude-code"), NewOAuth2ConsentHandler(cfg, nil, nil), store, cfg
 }
 
-// seedGatewayVK stores an active virtual key and returns it.
-func seedGatewayVK(t testing.TB, store configstore.ConfigStore, id, value string) *configtables.TableVirtualKey {
+// seedGatewayVK stores an active virtual key, brings it into cfg's live store as a key write does,
+// and returns it.
+func seedGatewayVK(t testing.TB, cfg *lib.Config, id, value string) *configtables.TableVirtualKey {
 	t.Helper()
 	vk := &configtables.TableVirtualKey{ID: id, Name: id, Value: *schemas.NewSecretVar(value), IsActive: new(true)}
-	require.NoError(t, store.CreateVirtualKey(context.Background(), vk))
+	require.NoError(t, cfg.ConfigStore.CreateVirtualKey(context.Background(), vk))
+	refreshGatewayVK(t, cfg, id)
 	return vk
+}
+
+// refreshGatewayVK re-reads a virtual key into cfg's live store, as the server does after a key
+// write; the gateway resolves the keys its tokens name from there.
+func refreshGatewayVK(t testing.TB, cfg *lib.Config, id string) {
+	t.Helper()
+	require.NoError(t, cfg.LiveStore.Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindVirtualKey, ID: id}}))
+}
+
+// loadGatewayLiveStore loads the live store newTestOAuth2Config attached to cfg from cfg's config
+// store, as boot does, so the gateway resolves the virtual keys the test writes there.
+func loadGatewayLiveStore(t testing.TB, cfg *lib.Config) {
+	t.Helper()
+	require.NoError(t, cfg.LiveStore.LoadAll(context.Background(), cfg.ConfigStore.DB()))
 }
 
 func jsonBody(t *testing.T, ctx *fasthttp.RequestCtx) map[string]any {
@@ -138,12 +157,13 @@ func (otherGatewayProfile) Enabled(*configtables.OAuth2ServerConfig) bool { retu
 func TestClientGateway_GrantsStayOnTheirGateway(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
-	gateways := NewClientGatewayHandler(cfg, nil, nil, nil, claudeCodeProfile{}, otherGatewayProfile{})
+	loadGatewayLiveStore(t, cfg)
+	gateways := newClientGatewaysForTest(t, cfg, claudeCodeProfile{}, otherGatewayProfile{})
 	claude, other := gateways.endpoint("claude-code"), gateways.endpoint("other-client")
 	consent := NewOAuth2ConsentHandler(cfg, nil, nil)
-	vk := seedGatewayVK(t, store, "vk-cross", "sk-bf-cross")
+	vk := seedGatewayVK(t, cfg, "vk-cross", "sk-bf-cross")
 
 	deviceCode, userCode := startDeviceSignIn(t, claude)
 
@@ -180,9 +200,9 @@ func TestClientGateway_GrantsStayOnTheirGateway(t *testing.T) {
 func TestClientGateway_SharedDeviceVerify(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	cfg.ClientConfig.OAuth2ServerConfig.Gateways = &configtables.ClientGatewaysConfig{ClaudeCode: &configtables.ClaudeCodeGatewayConfig{Enabled: true}}
-	gateways := NewClientGatewayHandler(cfg, nil, nil, nil, claudeCodeProfile{}, otherGatewayProfile{})
+	gateways := newClientGatewaysForTest(t, cfg, claudeCodeProfile{}, otherGatewayProfile{})
 	verify := func(userCode string) *fasthttp.RequestCtx {
 		ctx := jsonPostCtx(`{"user_code":"` + userCode + `"}`)
 		gateways.handleDeviceVerify(ctx)
@@ -260,7 +280,7 @@ func TestClaudeCodeGateway_Metadata(t *testing.T) {
 
 func TestClaudeCodeGateway_DeviceSignInWithVirtualKey(t *testing.T) {
 	h, consent, store, cfg := newClaudeCodeGateway(t, true)
-	vk := seedGatewayVK(t, store, "vk-cc-1", "sk-bf-claude-code")
+	vk := seedGatewayVK(t, cfg, "vk-cc-1", "sk-bf-claude-code")
 
 	deviceCode, userCode := startDeviceSignIn(t, h)
 
@@ -427,8 +447,11 @@ func TestClaudeCodeGateway_RefreshRejectsOtherClients(t *testing.T) {
 	assert.Nil(t, rt.RevokedAt)
 }
 
+// TestClaudeCodeGateway_BearerRejections checks that the gateway answers 401 to a missing, misused or
+// expired bearer, and to a session whose virtual key is inactive, expired or deleted. The inactive and
+// expired keys are held, so they are refused for their state rather than as missing.
 func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
-	h, _, store, _ := newClaudeCodeGateway(t, true)
+	h, _, store, cfg := newClaudeCodeGateway(t, true)
 	signingKey, err := store.GetOAuth2SigningKey(bgCtx())
 	require.NoError(t, err)
 	gatewayPriv, err := parseRSAPrivateKeyPEM(signingKey.PrivateKeyPEM)
@@ -436,9 +459,11 @@ func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
 
 	inactive := &configtables.TableVirtualKey{ID: "vk-off", Name: "vk-off", Value: *schemas.NewSecretVar("sk-bf-off"), IsActive: new(false)}
 	require.NoError(t, store.CreateVirtualKey(context.Background(), inactive))
+	refreshGatewayVK(t, cfg, "vk-off")
 	past := time.Now().Add(-time.Hour)
 	expired := &configtables.TableVirtualKey{ID: "vk-expired", Name: "vk-expired", Value: *schemas.NewSecretVar("sk-bf-expired"), IsActive: new(true), ExpiresAt: &past}
 	require.NoError(t, store.CreateVirtualKey(context.Background(), expired))
+	refreshGatewayVK(t, cfg, "vk-expired")
 
 	mint := func(mutate func(jwt.MapClaims)) string {
 		return mintTestToken(t, gatewayPriv, signingKey.KID, func(c jwt.MapClaims) {
@@ -475,6 +500,9 @@ func TestClaudeCodeGateway_BearerRejections(t *testing.T) {
 			body := jsonBody(t, ctx)
 			assert.Equal(t, "error", body["type"])
 			assert.Equal(t, "authentication_error", body["error"].(map[string]any)["type"])
+			if name == "expired virtual key" {
+				assert.Contains(t, string(ctx.Response.Body()), "has expired", "an expired key is refused as expired, not as missing")
+			}
 		})
 	}
 
@@ -585,8 +613,8 @@ func TestClientGateway_DeviceVerifyNeedsNoCredentials(t *testing.T) {
 // 8628 §3.5) instead of polling until the code expires, and the refused sign-in cannot then be
 // approved.
 func TestClaudeCodeGateway_DeniedSignIn(t *testing.T) {
-	h, consent, store, _ := newClaudeCodeGateway(t, false)
-	vk := seedGatewayVK(t, store, "vk-deny", "sk-bf-deny")
+	h, consent, _, cfg := newClaudeCodeGateway(t, false)
+	vk := seedGatewayVK(t, cfg, "vk-deny", "sk-bf-deny")
 	deviceCode, userCode := startDeviceSignIn(t, h)
 
 	verify := jsonPostCtx(`{"user_code":"` + userCode + `"}`)
@@ -661,7 +689,8 @@ func TestClaudeCodeGatewayTokenCache(t *testing.T) {
 	claims := func(exp time.Time) *jwtMCPClaims {
 		return &jwtMCPClaims{RegisteredClaims: jwt.RegisteredClaims{Subject: "vk-1", ExpiresAt: jwt.NewNumericDate(exp)}}
 	}
-	c := newGatewayTokenCache(2)
+	c, err := newGatewayTokenCache(liveStoreForTest(t), 2)
+	require.NoError(t, err)
 	c.put("tok-a", testClaudeCodeResource, claims(now.Add(time.Minute)), now)
 
 	assert.NotNil(t, c.get("tok-a", testClaudeCodeResource, now.Add(30*time.Second)))
@@ -674,13 +703,14 @@ func TestClaudeCodeGatewayTokenCache(t *testing.T) {
 
 	c.put("tok-b", testClaudeCodeResource, claims(now.Add(time.Minute)), now)
 	c.put("tok-c", testClaudeCodeResource, claims(now.Add(time.Minute)), now)
-	assert.Len(t, c.entries, 2, "a full cache does not grow")
+	assert.Equal(t, 2, tableLen(c.entries), "a full cache does not grow")
 	assert.Nil(t, c.get("tok-c", testClaudeCodeResource, now))
 
 	later := now.Add(2 * time.Minute)
 	c.put("tok-c", testClaudeCodeResource, claims(later.Add(time.Minute)), later)
 	assert.NotNil(t, c.get("tok-c", testClaudeCodeResource, later), "expired entries are swept to make room")
-	assert.LessOrEqual(t, len(c.entries), 2)
+	assert.LessOrEqual(t, tableLen(c.entries), 2)
+	assert.Equal(t, tableLen(c.entries), c.size, "the size count follows the table")
 }
 
 // TestClaudeCodeGateway_CachedTokenStillChecked pins that a token served from
@@ -688,7 +718,7 @@ func TestClaudeCodeGatewayTokenCache(t *testing.T) {
 // no longer matches) and once the virtual key behind it is deactivated.
 func TestClaudeCodeGateway_CachedTokenStillChecked(t *testing.T) {
 	h, _, store, cfg := newClaudeCodeGateway(t, true)
-	vk := seedGatewayVK(t, store, "vk-cached", "sk-bf-cached")
+	vk := seedGatewayVK(t, cfg, "vk-cached", "sk-bf-cached")
 	signingKey, err := store.GetOAuth2SigningKey(bgCtx())
 	require.NoError(t, err)
 	priv, err := parseRSAPrivateKeyPEM(signingKey.PrivateKeyPEM)
@@ -718,26 +748,18 @@ func TestClaudeCodeGateway_CachedTokenStillChecked(t *testing.T) {
 		require.Equal(t, fasthttp.StatusOK, run())
 		vk.IsActive = new(false)
 		require.NoError(t, store.UpdateVirtualKey(context.Background(), vk))
+		refreshGatewayVK(t, cfg, vk.ID)
 		assert.Equal(t, fasthttp.StatusUnauthorized, run())
 	})
-}
-
-// staticVKCache is a warm governance virtual-key cache for the benchmark.
-type staticVKCache map[string]*configtables.TableVirtualKey
-
-func (c staticVKCache) GetVirtualKeyByID(_ context.Context, id string) (*configtables.TableVirtualKey, bool) {
-	vk, ok := c[id]
-	return vk, ok
 }
 
 // BenchmarkClaudeCodeGatewayBearerMiddleware measures what the bearer
 // middleware adds to every gateway request in steady state: the enabled check,
 // RS256 verification against the cached signing key, the identity re-check
-// (a warm virtual-key cache hit, or the user resolver), and the header rewrite.
+// (a live-store virtual-key lookup, or the user resolver), and the header rewrite.
 func BenchmarkClaudeCodeGatewayBearerMiddleware(b *testing.B) {
-	h, _, store, _ := newClaudeCodeGateway(b, true)
-	vk := seedGatewayVK(b, store, "vk-bench", "sk-bf-bench")
-	h.vkCache = staticVKCache{vk.ID: vk}
+	h, _, store, cfg := newClaudeCodeGateway(b, true)
+	vk := seedGatewayVK(b, cfg, "vk-bench", "sk-bf-bench")
 	h.identityResolver = &fakeResolver{userModeAvailable: true}
 	signingKey, err := store.GetOAuth2SigningKey(bgCtx())
 	require.NoError(b, err)
@@ -786,7 +808,8 @@ func TestClaudeCodeIPRateLimiter(t *testing.T) {
 	start := time.Unix(1_700_000_000, 0)
 
 	t.Run("per-key fixed window", func(t *testing.T) {
-		l := newIPRateLimiter(2, time.Minute)
+		l, err := newIPRateLimiter(liveStoreForTest(t), "windows", 2, time.Minute)
+		require.NoError(t, err)
 		assert.True(t, l.allow("a", start))
 		assert.True(t, l.allow("a", start.Add(time.Second)))
 		assert.False(t, l.allow("a", start.Add(2*time.Second)), "third hit inside the window")
@@ -795,18 +818,59 @@ func TestClaudeCodeIPRateLimiter(t *testing.T) {
 	})
 
 	t.Run("bounded number of tracked addresses", func(t *testing.T) {
-		l := newIPRateLimiter(5, time.Minute)
+		l, err := newIPRateLimiter(liveStoreForTest(t), "windows", 5, time.Minute)
+		require.NoError(t, err)
 		l.maxKeys = 3
 		for _, key := range []string{"a", "b", "c"} {
 			require.True(t, l.allow(key, start))
 		}
 		assert.False(t, l.allow("d", start.Add(time.Second)), "a new address past the cap is refused")
 		assert.True(t, l.allow("a", start.Add(time.Second)), "a tracked address keeps its budget")
-		assert.Len(t, l.windows, 3)
+		assert.Equal(t, 3, tableLen(l.windows))
 
 		later := start.Add(time.Minute + time.Second)
 		assert.True(t, l.allow("d", later), "expired windows are swept to make room")
-		assert.LessOrEqual(t, len(l.windows), 3)
+		assert.LessOrEqual(t, tableLen(l.windows), 3)
+		assert.Equal(t, tableLen(l.windows), l.size, "the size count follows the table")
+	})
+}
+
+// BenchmarkClaudeCodeIPRateLimiter measures one sign-in hit against the device-authorization
+// limiter while it tracks 300 addresses: a hit inside the address's current window, which counts
+// it, and a hit after the address's window ended, which starts a new one.
+func BenchmarkClaudeCodeIPRateLimiter(b *testing.B) {
+	const addresses = 300
+	start := time.Unix(1_700_000_000, 0)
+	ips := make([]string, addresses)
+	for i := range ips {
+		ips[i] = fmt.Sprintf("10.0.%d.%d", i/256, i%256)
+	}
+	l, err := newIPRateLimiter(liveStoreForTest(b), clientGatewayDeviceAuthWindowsTable, clientGatewayDeviceAuthorizationLimit, clientGatewayRateLimitWindow)
+	require.NoError(b, err)
+	for _, ip := range ips {
+		require.True(b, l.allow(ip, start))
+	}
+
+	b.Run("inside-window", func(b *testing.B) {
+		b.ReportAllocs()
+		i := 0
+		for b.Loop() {
+			l.allow(ips[i%addresses], start.Add(time.Second))
+			i++
+		}
+	})
+	// rolled counts the rollover hits across every run of the case (-count runs it again over the
+	// same limiter), so each pass over the addresses is one window later than the last.
+	rolled := 0
+	b.Run("window-rollover", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			// Each pass over the addresses is one window later, so every hit finds its window ended.
+			if !l.allow(ips[rolled%addresses], start.Add(time.Duration(rolled/addresses+1)*clientGatewayRateLimitWindow)) {
+				b.Fatal("a hit that starts a new window is allowed")
+			}
+			rolled++
+		}
 	})
 }
 
@@ -821,4 +885,65 @@ func TestClaudeCodeUserCode(t *testing.T) {
 	assert.Greater(t, len(seen), 45)
 	assert.Equal(t, "WDJBMJHT", normalizeGatewayUserCode(" wdjb-mjht "))
 	assert.Equal(t, "WDJBMJHT", normalizeGatewayUserCode("WDJB MJHT"))
+}
+
+// newClientGatewaysForTest builds the client gateway handler over cfg's live store for profiles,
+// failing the test on an error and closing the handler when the test ends.
+func newClientGatewaysForTest(t testing.TB, cfg *lib.Config, profiles ...ClientGatewayProfile) *ClientGatewayHandler {
+	t.Helper()
+	h, err := NewClientGatewayHandler(cfg, nil, nil, profiles...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close(context.Background()) })
+	return h
+}
+
+// TestClientGatewayKeepsItsPacingInTheLiveStore pins that the handler's sign-in windows, poll
+// times and verified tokens are live-store tables, that a second handler on the same store is
+// refused until the first is closed and leaves the first handler's tables and entries alone, that
+// closing a retired handler again leaves its replacement's tables alone, and that a store-less
+// config is refused.
+func TestClientGatewayKeepsItsPacingInTheLiveStore(t *testing.T) {
+	live := liveStoreForTest(t)
+	cfg := &lib.Config{LiveStore: live}
+	h, err := NewClientGatewayHandler(cfg, nil, nil)
+	require.NoError(t, err)
+	names := []string{clientGatewayDeviceAuthWindowsTable, clientGatewayDeviceVerifyWindowsTable, clientGatewayTelemetryWindowsTable, clientGatewayDevicePollsTable, clientGatewayVerifiedTokensTable}
+	requireHeld := func(why string) {
+		t.Helper()
+		for _, name := range names {
+			_, err := live.NewTable[string, int](context.Background(), name)
+			require.Error(t, err, "%s: %s", name, why)
+		}
+	}
+	requireHeld("held by the handler")
+	const ip = "203.0.113.7"
+	now := time.Now()
+	require.True(t, h.deviceAuthLimiter.allow(ip, now))
+
+	_, err = NewClientGatewayHandler(cfg, nil, nil)
+	require.Error(t, err, "a second handler on the same store is refused")
+	requireHeld("a refused handler leaves the first handler's tables in place")
+	_, ok := h.deviceAuthLimiter.windows.Get(ip)
+	require.True(t, ok, "a refused handler leaves the first handler's entries in place")
+
+	h.Close(context.Background())
+	again, err := NewClientGatewayHandler(cfg, nil, nil)
+	require.NoError(t, err, "closing drops the tables, so a new handler can create them")
+	require.True(t, again.deviceAuthLimiter.allow(ip, now))
+	h.Close(context.Background())
+	requireHeld("closing the retired handler again leaves its replacement's tables in place")
+	_, ok = again.deviceAuthLimiter.windows.Get(ip)
+	require.True(t, ok, "closing the retired handler again leaves its replacement's entries in place")
+	again.Close(context.Background())
+	_, err = NewClientGatewayHandler(&lib.Config{}, nil, nil)
+	require.ErrorIs(t, err, livestore.ErrNoLiveStore)
+}
+
+// tableLen counts the entries t holds.
+func tableLen[K comparable, V any](t *livestore.Table[K, V]) int {
+	n := 0
+	t.Range(func(K, V) bool { n++; return true })
+	return n
 }

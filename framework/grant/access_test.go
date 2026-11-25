@@ -339,7 +339,7 @@ func TestAccess_ModelNamesResolveThroughTheMatcher(t *testing.T) {
 	// "every string", so the same permit answers differently with and without one. Without a
 	// matcher, entries are matched by name.
 	unrestricted := permitWithModels(PermitVirtualKey, "vk1", "Caller Key", "openai", "*")
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	matcher := catalogMatcher(catalog, &fakeProviderConfigSource{})
 
 	byName := NewAccess(held(unrestricted), "", nil, "", nil)
@@ -964,7 +964,7 @@ func TestAccess_GrantedProvidersForIgnoresTheMatcher(t *testing.T) {
 	// This coarse gate must not resolve model names even when a matcher is available: the layers
 	// consuming it run their own resolution.
 	base := permitWithModels(PermitVirtualKey, "vk1", "Caller Key", "openai", "*")
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(t, nil)
 	matcher := catalogMatcher(catalog, &fakeProviderConfigSource{})
 
 	access := NewAccess(held(base), "", nil, "", matcher)
@@ -2702,4 +2702,16 @@ func permitIDs(permits []schemas.Permit) []string {
 		ids = append(ids, p.ID())
 	}
 	return ids
+}
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
 }

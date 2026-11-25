@@ -214,8 +214,8 @@ func (m *MCPManager) reachableClients(ctx context.Context) []*reachableClient {
 	aggregate := GatewayAggregate(ctx)
 	m.mu.RLock()
 	states := make([]schemas.MCPClientState, 0, len(m.clientMap))
-	for _, state := range m.clientMap {
-		states = append(states, *state)
+	for id, state := range m.clientMap {
+		states = append(states, *m.snapshot(id, state))
 	}
 	m.mu.RUnlock()
 
@@ -257,10 +257,10 @@ func (m *MCPManager) reachable(ctx context.Context, state *schemas.MCPClientStat
 }
 
 // included reports whether state is open to callers (see withheldFromCallers) and ctx's client
-// include list admits it.
+// include list admits it. It reads the client's entry, so the caller must not hold m.mu.
 func (m *MCPManager) included(ctx context.Context, state *schemas.MCPClientState) bool {
 	config := state.ExecutionConfig
-	if config == nil || withheldFromCallers(state.State, config) {
+	if config == nil || m.withheld(config.ID) {
 		return false
 	}
 	includeClients, _ := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string)

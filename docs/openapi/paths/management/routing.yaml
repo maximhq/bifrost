@@ -72,6 +72,8 @@ rules:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createRoutingRule
@@ -115,6 +117,8 @@ rules:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 rules-by-id:
   get:
@@ -161,6 +165,8 @@ rules-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updateRoutingRule
@@ -217,6 +223,8 @@ rules-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteRoutingRule
@@ -259,6 +267,8 @@ rules-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 # Complexity analyzer
 
@@ -1127,6 +1137,8 @@ model-routers:
               $ref: '../../schemas/management/governance.yaml#/ModelRouterList'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createModelRouter
@@ -1166,6 +1178,8 @@ model-routers:
         $ref: '../../openapi.yaml#/components/responses/Conflict'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 model-routers-by-id:
   parameters:
@@ -1210,6 +1224,8 @@ model-routers-by-id:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updateModelRouter
@@ -1254,6 +1270,8 @@ model-routers-by-id:
               $ref: '../../openapi.yaml#/components/schemas/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteModelRouter
@@ -1284,6 +1302,8 @@ model-routers-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 model-router-reset:
   parameters:
@@ -1322,6 +1342,8 @@ model-router-reset:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 model-router-defaults:
   get:
@@ -1349,6 +1371,8 @@ model-router-defaults:
           application/json:
             schema:
               $ref: '../../schemas/management/governance.yaml#/ModelRouterDefaults'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 model-router-targets:
   parameters:
@@ -1395,6 +1419,8 @@ model-router-targets:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 model-router-routing:
   parameters:
@@ -1444,6 +1470,8 @@ model-router-routing:
         $ref: '../../openapi.yaml#/components/responses/Conflict'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 model-router-status:
   parameters:
