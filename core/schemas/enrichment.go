@@ -4,9 +4,10 @@ package schemas
 // request's telemetry — which team, customer, virtual key it belongs to.
 //
 // The curated emitters derive their lists from this registry and a per-connector
-// conformance test pins each one to it: Prometheus labels (plugins/telemetry),
-// Datadog and Splunk metric tags, BigQuery columns. The generic emitters (otel,
-// kafka, pubsub) project the whole attribute map and need no derivation.
+// conformance test pins each one to it: Prometheus labels (plugins/telemetry), otel
+// metric labels, Datadog and Splunk metric tags, BigQuery columns. The generic
+// emitters (otel traces, kafka, pubsub) project the whole attribute map and need no
+// derivation.
 type EnrichmentDim struct {
 	// Name is used verbatim as the Prometheus label and Datadog tag key.
 	Name string
