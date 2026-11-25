@@ -559,7 +559,9 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 	}
 	var reqCtx *schemas.BifrostContext
 	if ctx == nil {
-		reqCtx, _ = bifrost.newRequestContext(nil)
+		var cancelCtx func()
+		reqCtx, cancelCtx = bifrost.newRequestContext(nil)
+		defer cancelCtx()
 	} else {
 		reqCtx = schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	}
@@ -914,7 +916,9 @@ func (bifrost *Bifrost) ModelRetrieveRequest(ctx *schemas.BifrostContext, req *s
 	}
 	var reqCtx *schemas.BifrostContext
 	if ctx == nil {
-		reqCtx, _ = bifrost.newRequestContext(nil)
+		var cancelCtx func()
+		reqCtx, cancelCtx = bifrost.newRequestContext(nil)
+		defer cancelCtx()
 	} else {
 		reqCtx = schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	}
@@ -3241,11 +3245,11 @@ func (bifrost *Bifrost) PassthroughStream(
 // no provider config on the standalone path, so the default is false and only the per-request
 // override is honored, mirroring the per-request half of the LLM pipeline's logic.
 //
-// Callers must only pass request-scoped contexts, never the shared instance context
-// (bifrost.ctx): SetValue mutates the receiver's value map, so writing here would stamp the
-// flag onto state shared by unrelated calls. Nil-ctx standalone executions therefore skip this
-// entirely — consumers treat a missing key as false, and the per-request override keys can
-// never be present on the instance context, so the outcome is identical.
+// Callers must only pass request-scoped contexts (caller-supplied or allocated via
+// newRequestContext), never the shared instance context (bifrost.ctx): SetValue mutates the
+// receiver's value map, so writing on a shared context would stamp the flag onto state shared
+// by unrelated calls. Nil-ctx standalone executions run on an isolated context from
+// newRequestContext, so they safely record the same explicit default here.
 func ensureMCPRawStorageContext(ctx *schemas.BifrostContext) {
 	if ctx == nil {
 		return
@@ -3281,17 +3285,13 @@ func ensureMCPTracerContext(ctx *schemas.BifrostContext, tracer schemas.Tracer) 
 // real work — request pooling, plugin gate (PreMCPHook / PostMCPHook), short-circuit
 // handling, error enrichment — lives on MCPManager.ExecuteChatTool.
 func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
-	if ctx == nil {
-		var cancelCtx func()
-		ctx, cancelCtx = bifrost.newRequestContext(nil)
+	ctx, cancelCtx := bifrost.newRequestContext(ctx)
+	if cancelCtx != nil {
 		defer cancelCtx()
-		ensureMCPTracerContext(ctx, bifrost.getTracer())
-		bifrost.setModelCatalogOnContext(ctx)
-	} else {
-		ensureMCPRawStorageContext(ctx)
-		ensureMCPTracerContext(ctx, bifrost.getTracer())
-		bifrost.setModelCatalogOnContext(ctx)
 	}
+	ensureMCPRawStorageContext(ctx)
+	ensureMCPTracerContext(ctx, bifrost.getTracer())
+	bifrost.setModelCatalogOnContext(ctx)
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -3305,17 +3305,13 @@ func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall
 // ExecuteResponsesMCPTool executes an MCP tool call and returns the result as a responses
 // message. Thin delegator — see ExecuteChatMCPTool for the rationale.
 func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
-	if ctx == nil {
-		var cancelCtx func()
-		ctx, cancelCtx = bifrost.newRequestContext(nil)
+	ctx, cancelCtx := bifrost.newRequestContext(ctx)
+	if cancelCtx != nil {
 		defer cancelCtx()
-		ensureMCPTracerContext(ctx, bifrost.getTracer())
-		bifrost.setModelCatalogOnContext(ctx)
-	} else {
-		ensureMCPRawStorageContext(ctx)
-		ensureMCPTracerContext(ctx, bifrost.getTracer())
-		bifrost.setModelCatalogOnContext(ctx)
 	}
+	ensureMCPRawStorageContext(ctx)
+	ensureMCPTracerContext(ctx, bifrost.getTracer())
+	bifrost.setModelCatalogOnContext(ctx)
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -6067,7 +6063,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		stampRequestedRoute(ctx, requested)
 	}
 
-	// Reset first: bifrost.ctx is shared across every nil-ctx caller. A later agent turn
+	// Reset first on turn 1 so a reused caller context starts clean. A later agent turn
 	// keeps turn 1's totals so earlier turns' provider time is not counted as overhead.
 	if continuation == nil {
 		ctx.ResetUpstreamLatency()
@@ -7403,7 +7399,7 @@ func executeRequestWithRetries[T any](
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
 
-		// Reset the trail on the first attempt so a reused or shared context (bifrost.ctx)
+		// Reset the trail on the first attempt so a reused caller context
 		// doesn't carry over records from a previous request.
 		if keyProvider != nil && attempts == 0 {
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{})

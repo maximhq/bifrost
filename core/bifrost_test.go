@@ -10903,10 +10903,11 @@ func (t *uniqueTraceTracer) CreateTrace(_ string, _ ...string) string {
 }
 
 type observedContextIdentity struct {
-	requestID string
-	traceID   string
-	customVal any
-	rootCtx   *schemas.BifrostContext
+	requestID  string
+	traceID    string
+	virtualKey string
+	customVal  any
+	rootCtx    *schemas.BifrostContext
 }
 
 type identityRecordingPlugin struct {
@@ -10927,6 +10928,7 @@ func (p *identityRecordingPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *s
 func (p *identityRecordingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	reqID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	vk, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
 	var customVal any
 	if p.customKey != nil {
 		customVal = ctx.Value(p.customKey)
@@ -10934,10 +10936,11 @@ func (p *identityRecordingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *s
 
 	p.mu.Lock()
 	p.observed = append(p.observed, observedContextIdentity{
-		requestID: reqID,
-		traceID:   traceID,
-		customVal: customVal,
-		rootCtx:   ctx.Root(),
+		requestID:  reqID,
+		traceID:    traceID,
+		virtualKey: vk,
+		customVal:  customVal,
+		rootCtx:    ctx.Root(),
 	})
 	p.capturedCtx = ctx.Root()
 	p.mu.Unlock()
@@ -10960,6 +10963,24 @@ func (p *identityRecordingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *s
 					ChatResponse: &schemas.BifrostChatResponse{Model: "gpt-4o-mini"},
 				},
 			}, nil
+		case schemas.ResponsesRequest:
+			return req, &schemas.LLMPluginShortCircuit{
+				Response: &schemas.BifrostResponse{
+					ResponsesResponse: &schemas.BifrostResponsesResponse{Model: "gpt-4o-mini"},
+				},
+			}, nil
+		case schemas.ListModelsRequest:
+			return req, &schemas.LLMPluginShortCircuit{
+				Response: &schemas.BifrostResponse{
+					ListModelsResponse: &schemas.BifrostListModelsResponse{},
+				},
+			}, nil
+		case schemas.ModelRetrieveRequest:
+			return req, &schemas.LLMPluginShortCircuit{
+				Response: &schemas.BifrostResponse{
+					ModelRetrieveResponse: &schemas.BifrostModelRetrieveResponse{},
+				},
+			}, nil
 		}
 	}
 	return req, nil, nil
@@ -10969,18 +10990,70 @@ func (p *identityRecordingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *s
 	return resp, bifrostErr, nil
 }
 
+type mcpIdentityRecordingPlugin struct {
+	schemas.MCPPluginNoOpHooks
+	mu        sync.Mutex
+	observed  []observedContextIdentity
+	customKey any
+}
+
+func (p *mcpIdentityRecordingPlugin) GetName() string { return "mcp-identity-recording" }
+func (p *mcpIdentityRecordingPlugin) Cleanup() error  { return nil }
+
+func (p *mcpIdentityRecordingPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+	reqID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	vk, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+	var customVal any
+	if p.customKey != nil {
+		customVal = ctx.Value(p.customKey)
+	}
+
+	p.mu.Lock()
+	p.observed = append(p.observed, observedContextIdentity{
+		requestID:  reqID,
+		traceID:    traceID,
+		virtualKey: vk,
+		customVal:  customVal,
+		rootCtx:    ctx.Root(),
+	})
+	p.mu.Unlock()
+
+	switch req.RequestType {
+	case schemas.MCPRequestTypeChatToolCall:
+		return req, &schemas.MCPPluginShortCircuit{
+			Response: &schemas.BifrostMCPResponse{
+				ChatMessage: &schemas.ChatMessage{
+					Role:    schemas.ChatMessageRoleTool,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("ok")},
+				},
+			},
+		}, nil
+	case schemas.MCPRequestTypeResponsesToolCall:
+		return req, &schemas.MCPPluginShortCircuit{
+			Response: &schemas.BifrostMCPResponse{
+				ResponsesMessage: &schemas.ResponsesMessage{},
+			},
+		}, nil
+	}
+	return req, nil, nil
+}
+
 func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
 	type customCtxKey struct{}
 
-	// Seed Init parent context with stale identity keys to verify nil-context
-	// requests isolate both from sibling requests and from the instance context.
+	// Seed Init parent context with stale identity, governance, and custom keys to verify
+	// nil-context requests isolate from both sibling requests and the instance context.
 	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	initCtx.SetValue(schemas.BifrostContextKeyRequestID, "init-req-id")
 	initCtx.SetValue(schemas.BifrostContextKeyTraceID, "init-trace-id")
+	initCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "init-vk")
+	initCtx.SetValue(customCtxKey{}, "init-custom")
 	defer initCtx.Cancel()
 
 	tracer := &uniqueTraceTracer{}
 	plugin := &identityRecordingPlugin{shortCircuit: true, customKey: customCtxKey{}}
+	mcpPlugin := &mcpIdentityRecordingPlugin{customKey: customCtxKey{}}
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 1, 10)
 	client, err := Init(initCtx, schemas.BifrostConfig{
@@ -10988,6 +11061,8 @@ func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
 		Logger:     NewNoOpLogger(),
 		Tracer:     tracer,
 		LLMPlugins: []schemas.LLMPlugin{plugin},
+		MCPPlugins: []schemas.MCPPlugin{mcpPlugin},
+		MCPConfig:  &schemas.MCPConfig{},
 	})
 	require.NoError(t, err)
 	defer client.Shutdown()
@@ -11037,11 +11112,55 @@ func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
 	require.NotNil(t, wsHooks)
 	wsHooks.Cleanup()
 
+	// 5. Responses request with nil context.
+	_, respErr := client.ResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+	})
+	require.Nil(t, respErr)
+
+	// 6. ListModels request with nil context.
+	_, listModelsErr := client.ListModelsRequest(nil, &schemas.BifrostListModelsRequest{
+		Provider: schemas.OpenAI,
+	})
+	require.Nil(t, listModelsErr)
+
+	// 7. ModelRetrieve request with nil context.
+	_, retrieveErr := client.ModelRetrieveRequest(nil, &schemas.BifrostModelRetrieveRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+	})
+	require.Nil(t, retrieveErr)
+
+	// 8. Standalone MCP chat tool execution with nil context.
+	_, mcpChatErr := client.ExecuteChatMCPTool(nil, &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-1"),
+		Type:     schemas.Ptr("function"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("alpha-echo"), Arguments: `{}`},
+	})
+	require.Nil(t, mcpChatErr)
+
+	// 9. Standalone MCP responses tool execution with nil context.
+	_, mcpRespErr := client.ExecuteResponsesMCPTool(nil, &schemas.ResponsesToolMessage{
+		CallID:    schemas.Ptr("call-2"),
+		Name:      schemas.Ptr("alpha-echo"),
+		Arguments: schemas.Ptr(`{}`),
+	})
+	require.Nil(t, mcpRespErr)
+
 	plugin.mu.Lock()
 	observed := append([]observedContextIdentity(nil), plugin.observed...)
 	plugin.mu.Unlock()
+	require.Len(t, observed, 7)
 
-	require.Len(t, observed, 4)
+	mcpPlugin.mu.Lock()
+	mcpObserved := append([]observedContextIdentity(nil), mcpPlugin.observed...)
+	mcpPlugin.mu.Unlock()
+	require.Len(t, mcpObserved, 2)
 
 	// Completed nil-context operations release their internal cancellation watchers.
 	assert.Error(t, observed[0].rootCtx.Err(), "realtime turn cleanup should cancel nil-context watcher")
@@ -11050,25 +11169,41 @@ func TestNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "completed stream should cancel nil-context watcher")
 	assert.Error(t, observed[2].rootCtx.Err(), "completed chat request should cancel nil-context watcher")
 	assert.Error(t, observed[3].rootCtx.Err(), "websocket pre-hooks cleanup should cancel nil-context watcher")
+	assert.Error(t, observed[4].rootCtx.Err(), "completed responses request should cancel nil-context watcher")
+	assert.Error(t, observed[5].rootCtx.Err(), "completed list models request should cancel nil-context watcher")
+	assert.Error(t, observed[6].rootCtx.Err(), "completed model retrieve request should cancel nil-context watcher")
+	assert.Error(t, mcpObserved[0].rootCtx.Err(), "completed chat MCP tool call should cancel nil-context watcher")
+	assert.Error(t, mcpObserved[1].rootCtx.Err(), "completed responses MCP tool call should cancel nil-context watcher")
 
-	seenReqIDs := make(map[string]struct{}, len(observed))
+	seenReqIDs := make(map[string]struct{}, len(observed)+len(mcpObserved))
 	seenTraceIDs := make(map[string]struct{}, 3)
 	for i, item := range observed {
 		assert.NotEmpty(t, item.requestID, "call %d requestID should be populated", i)
 		assert.NotEqual(t, "init-req-id", item.requestID, "call %d must not inherit init request ID", i)
+		assert.Empty(t, item.virtualKey, "call %d must not inherit init virtual key", i)
+		assert.Nil(t, item.customVal, "call %d must not inherit init custom key", i)
 		assert.NotContains(t, seenReqIDs, item.requestID, "call %d reused a request ID", i)
 		seenReqIDs[item.requestID] = struct{}{}
 
-		// Non-stream ChatCompletionRequest does not allocate a stream trace in core,
-		// so it must observe an empty trace ID rather than inheriting one.
-		if i == 2 {
-			assert.Empty(t, item.traceID, "non-stream call must not inherit a stale trace ID")
+		// Unary LLM calls do not allocate a stream trace in core, so they must observe an
+		// empty trace ID rather than inheriting one from Init.
+		if i != 0 && i != 1 && i != 3 {
+			assert.Empty(t, item.traceID, "unary call %d must not inherit a stale trace ID", i)
 			continue
 		}
 		assert.NotEmpty(t, item.traceID, "call %d traceID should be populated", i)
 		assert.NotEqual(t, "init-trace-id", item.traceID, "call %d must not inherit init trace ID", i)
 		assert.NotContains(t, seenTraceIDs, item.traceID, "call %d reused a trace ID", i)
 		seenTraceIDs[item.traceID] = struct{}{}
+	}
+	for i, item := range mcpObserved {
+		assert.NotEmpty(t, item.requestID, "mcp call %d requestID should be populated", i)
+		assert.NotEqual(t, "init-req-id", item.requestID, "mcp call %d must not inherit init request ID", i)
+		assert.Empty(t, item.virtualKey, "mcp call %d must not inherit init virtual key", i)
+		assert.Nil(t, item.customVal, "mcp call %d must not inherit init custom key", i)
+		assert.Empty(t, item.traceID, "mcp call %d must not inherit init trace ID", i)
+		assert.NotContains(t, seenReqIDs, item.requestID, "mcp call %d reused a request ID", i)
+		seenReqIDs[item.requestID] = struct{}{}
 	}
 
 	// Explicit caller context keeps its caller-supplied values and is not canceled by Bifrost.
@@ -11220,4 +11355,181 @@ func TestNilContextStreamForwardingStopsOnShutdown(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected producer goroutine to observe shutdown cancellation")
 	}
+}
+
+func TestConcurrentNilContextSDKRequestsHaveIsolatedIdentity(t *testing.T) {
+	type customCtxKey struct{}
+
+	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	initCtx.SetValue(schemas.BifrostContextKeyRequestID, "init-req-id")
+	initCtx.SetValue(schemas.BifrostContextKeyTraceID, "init-trace-id")
+	initCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "init-vk")
+	initCtx.SetValue(customCtxKey{}, "init-custom")
+	defer initCtx.Cancel()
+
+	tracer := &uniqueTraceTracer{}
+	plugin := &identityRecordingPlugin{shortCircuit: true, customKey: customCtxKey{}}
+	mcpPlugin := &mcpIdentityRecordingPlugin{customKey: customCtxKey{}}
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 10)
+	client, err := Init(initCtx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		Tracer:     tracer,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		MCPPlugins: []schemas.MCPPlugin{mcpPlugin},
+		MCPConfig:  &schemas.MCPConfig{},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	const workers = 64
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var workerErrs []string
+	recordErr := func(msg string) {
+		errMu.Lock()
+		workerErrs = append(workerErrs, msg)
+		errMu.Unlock()
+	}
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			streamCh, streamErr := client.ChatCompletionStreamRequest(nil, &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+			})
+			if streamErr != nil {
+				recordErr(fmt.Sprintf("worker %d stream err: %v", idx, streamErr))
+			} else {
+				for range streamCh {
+				}
+			}
+
+			switch idx % 5 {
+			case 0:
+				if _, callErr := client.ChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4o-mini",
+					Input: []schemas.ChatMessage{{
+						Role:    schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+					}},
+				}); callErr != nil {
+					recordErr(fmt.Sprintf("worker %d chat err: %v", idx, callErr))
+				}
+			case 1:
+				if _, callErr := client.ResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4o-mini",
+					Input: []schemas.ResponsesMessage{{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+					}},
+				}); callErr != nil {
+					recordErr(fmt.Sprintf("worker %d responses err: %v", idx, callErr))
+				}
+			case 2:
+				if _, callErr := client.ListModelsRequest(nil, &schemas.BifrostListModelsRequest{
+					Provider: schemas.OpenAI,
+				}); callErr != nil {
+					recordErr(fmt.Sprintf("worker %d list models err: %v", idx, callErr))
+				}
+			case 3:
+				if _, callErr := client.ModelRetrieveRequest(nil, &schemas.BifrostModelRetrieveRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4o-mini",
+				}); callErr != nil {
+					recordErr(fmt.Sprintf("worker %d model retrieve err: %v", idx, callErr))
+				}
+			case 4:
+				if _, callErr := client.ExecuteChatMCPTool(nil, &schemas.ChatAssistantMessageToolCall{
+					ID:       schemas.Ptr("call-concurrent"),
+					Type:     schemas.Ptr("function"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("alpha-echo"), Arguments: `{}`},
+				}); callErr != nil {
+					recordErr(fmt.Sprintf("worker %d mcp err: %v", idx, callErr))
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	require.Empty(t, workerErrs)
+
+	plugin.mu.Lock()
+	llmObserved := append([]observedContextIdentity(nil), plugin.observed...)
+	plugin.mu.Unlock()
+	mcpPlugin.mu.Lock()
+	mcpObserved := append([]observedContextIdentity(nil), mcpPlugin.observed...)
+	mcpPlugin.mu.Unlock()
+
+	allObserved := make([]observedContextIdentity, 0, len(llmObserved)+len(mcpObserved))
+	allObserved = append(allObserved, llmObserved...)
+	allObserved = append(allObserved, mcpObserved...)
+	require.Len(t, allObserved, workers*2)
+
+	seenReqIDs := make(map[string]struct{}, len(allObserved))
+	seenTraceIDs := make(map[string]struct{}, workers)
+	for i, item := range allObserved {
+		assert.NotEmpty(t, item.requestID, "call %d missing requestID", i)
+		assert.NotEqual(t, "init-req-id", item.requestID, "call %d inherited init request ID", i)
+		assert.Empty(t, item.virtualKey, "call %d inherited init virtual key", i)
+		assert.Nil(t, item.customVal, "call %d inherited init custom value", i)
+		assert.NotContains(t, seenReqIDs, item.requestID, "call %d reused requestID", i)
+		seenReqIDs[item.requestID] = struct{}{}
+		if item.traceID != "" {
+			assert.NotEqual(t, "init-trace-id", item.traceID, "call %d inherited init trace ID", i)
+			assert.NotContains(t, seenTraceIDs, item.traceID, "call %d reused traceID", i)
+			seenTraceIDs[item.traceID] = struct{}{}
+		}
+	}
+	assert.Len(t, seenTraceIDs, workers)
+
+	require.Eventually(t, func() bool {
+		for _, item := range allObserved {
+			if item.rootCtx.Err() == nil {
+				return false
+			}
+		}
+		return true
+	}, 2*time.Second, 10*time.Millisecond, "expected all concurrent nil-context request watchers to cancel on completion")
+}
+
+func BenchmarkNewRequestContext(b *testing.B) {
+	b.Run("caller-ctx", func(b *testing.B) {
+		initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer initCtx.Cancel()
+		client := &Bifrost{ctx: initCtx}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			got, cancel := client.newRequestContext(ctx)
+			if got != ctx || cancel != nil {
+				b.Fatal("expected caller context passthrough with nil cancel")
+			}
+		}
+	})
+	b.Run("nil-ctx", func(b *testing.B) {
+		initCtx, initCancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer initCancel()
+		client := &Bifrost{ctx: initCtx}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			got, cancel := client.newRequestContext(nil)
+			if got == nil || cancel == nil {
+				b.Fatal("expected isolated context and cancel func")
+			}
+			cancel()
+		}
+	})
 }
