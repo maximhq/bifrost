@@ -824,6 +824,9 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 			params.Text = &text
 		}
 	}
+	if event.AccessPrograms != nil {
+		params.AccessPrograms = event.AccessPrograms
+	}
 	if event.Metadata != nil {
 		var metadata map[string]any
 		if err := sonic.Unmarshal(event.Metadata, &metadata); err == nil {
@@ -1110,6 +1113,7 @@ var wsResponsesKnownFields = map[string]bool{
 	"metadata":             true,
 	"text":                 true,
 	"truncation":           true,
+	"access_programs":      true,
 }
 
 // rewriteUpstreamEvent modifies the raw JSON event for upstream consumption:
