@@ -813,7 +813,7 @@ func TestMetricsExportRefusesRedirects(t *testing.T) {
 			}
 			defer func() { _ = exp.Shutdown(context.Background()) }()
 
-			assertRedirectRefused(t, exp.Export(context.Background(), oneMetric()), collectorHits, targetHits)
+			assertRedirectRefused(t, exp.Export(context.Background(), oneMetric()), code, collectorHits, targetHits)
 		})
 	}
 }

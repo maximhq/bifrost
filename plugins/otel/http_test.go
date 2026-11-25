@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -71,13 +72,16 @@ func redirectPair(t *testing.T, code int) (collectorURL string, collectorHits, t
 	return collector.URL, collectorHits, targetHits
 }
 
-func assertRedirectRefused(t *testing.T, err error, collectorHits, targetHits *atomic.Int32) {
+func assertRedirectRefused(t *testing.T, err error, code int, collectorHits, targetHits *atomic.Int32) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("export succeeded across a redirect, want an error")
 	}
-	if !strings.Contains(err.Error(), errRedirectRefused.Error()) {
-		t.Errorf("error %q does not report the refused redirect", err)
+	if !errors.Is(err, errRedirectRefused) {
+		t.Errorf("error %q does not wrap errRedirectRefused", err)
+	}
+	if status := "(" + strconv.Itoa(code) + ")"; !strings.Contains(err.Error(), status) {
+		t.Errorf("error %q does not name the status %s", err, status)
 	}
 	for _, marker := range []string{locationMarker, bodyMarker} {
 		if strings.Contains(err.Error(), marker) {
@@ -104,7 +108,7 @@ func TestTraceExportRefusesRedirects(t *testing.T) {
 			}
 			defer client.Close()
 
-			assertRedirectRefused(t, client.Emit(context.Background(), nil), collectorHits, targetHits)
+			assertRedirectRefused(t, client.Emit(context.Background(), nil), code, collectorHits, targetHits)
 		})
 	}
 }

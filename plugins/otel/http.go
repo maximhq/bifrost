@@ -15,9 +15,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// errRedirectRefused is fixed on purpose: the endpoint controls the Location header and
-// the redirect body, and net/http puts the Location URL in the error it builds when
-// CheckRedirect refuses, so neither may reach logs or error text.
+// errRedirectRefused is wrapped with the status code and nothing else: the endpoint
+// controls the Location header and the redirect body, and net/http puts the Location URL
+// in the error it builds when CheckRedirect refuses, so neither may reach logs or error text.
 var errRedirectRefused = errors.New("otel export: redirect refused")
 
 // refuseRedirects fails any 3xx response before net/http can follow it, so the batch is
@@ -33,7 +33,7 @@ func (r refuseRedirects) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if resp.StatusCode/100 == 3 {
 		_ = resp.Body.Close()
-		return nil, errRedirectRefused
+		return nil, fmt.Errorf("%w (%d); configure the final collector URL", errRedirectRefused, resp.StatusCode)
 	}
 	return resp, nil
 }
