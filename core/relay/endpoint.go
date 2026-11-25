@@ -80,6 +80,17 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 	if cfg.Network != nil && cfg.Network.StreamIdleTimeoutInSeconds > 0 {
 		e.streamIdle = cfg.Network.StreamIdleTimeoutInSeconds
 	}
+	e.indexRoutes()
+	if cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && cfg.Credential != nil && cfg.Credential.AWS != nil {
+		e.awsKey = bedrockKeyConfig(cfg.Credential.AWS)
+		e.awsRegion = cfg.Credential.AWS.Region.GetValue()
+	}
+	return e, nil
+}
+
+// indexRoutes notes the job routes, ranked once so a status check only walks the order, and whether
+// any route is disabled.
+func (e *endpoint) indexRoutes() {
 	for i := range e.routes {
 		if e.routes[i].job != nil {
 			e.hasJobs = true
@@ -89,15 +100,9 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 			e.hasDisabled = true
 		}
 	}
-	// Ranked once when the relay is built, so a status check only walks the order.
 	slices.SortStableFunc(e.jobOrder, func(a, b int) int {
 		return pollFixedText(e.routes[b].job.Poll) - pollFixedText(e.routes[a].job.Poll)
 	})
-	if cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && cfg.Credential != nil && cfg.Credential.AWS != nil {
-		e.awsKey = bedrockKeyConfig(cfg.Credential.AWS)
-		e.awsRegion = cfg.Credential.AWS.Region.GetValue()
-	}
-	return e, nil
 }
 
 // plan is the outcome of matching one request against an endpoint's routes.

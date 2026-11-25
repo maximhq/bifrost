@@ -1546,6 +1546,8 @@
 			"charged": "청구됨",
 			"routeDisabled": "{{method}} {{path}} · 비활성화됨",
 			"noRouteRelayPricing": "라우트 없음 · 릴레이 가격",
+			"statusCheck": "상태 확인(무료)",
+			"statusCheckHelp": "릴레이 작업 중 하나에 대한 호출자의 상태 확인과 일치합니다. Bifrost가 해당 작업을 시작했다면 호출은 무료로 전달되며, 작업은 완료될 때 한 번 청구됩니다.",
 			"noRouteRefused": "라우트 없음 · 거부됨",
 			"billable": "과금 대상",
 			"notCharged": "청구되지 않음",

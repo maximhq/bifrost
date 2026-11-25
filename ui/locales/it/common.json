@@ -535,6 +535,7 @@
 			"pathRequired": "Il percorso è obbligatorio",
 			"pathMustStartWithSlash": "Il percorso deve iniziare con /",
 			"doubleStarOnce": "** è consentito una sola volta in un percorso",
+			"malformedPattern": "Questo percorso ha un pattern non valido: chiudi ogni [ ], inserisci un carattere o un intervallo e fai l'escape di un \\ finale",
 			"headerNameRequired": "Per l'autenticazione tramite header è richiesto il nome dell'header",
 			"queryParamRequired": "Per l'autenticazione tramite query è richiesto il parametro di query",
 			"awsServiceRequired": "Per l'autenticazione SigV4 è richiesto il servizio AWS",

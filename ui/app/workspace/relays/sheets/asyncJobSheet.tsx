@@ -93,7 +93,12 @@ export function AsyncJobSheet({
 	// Fields stay locked while saving, so a late edit cannot be dropped when the sheet closes.
 	const locked = disabled || saving;
 	const editing = editIndex >= 0 ? routes[editIndex] : undefined;
-	const form = useForm<RelayAsyncJobForm>({ resolver: zodResolver(relayAsyncJobFormSchema), defaultValues: NEW_ASYNC_JOB });
+	// Checked as the user types, as the relay sheets are.
+	const form = useForm<RelayAsyncJobForm>({
+		mode: "onChange",
+		resolver: zodResolver(relayAsyncJobFormSchema),
+		defaultValues: NEW_ASYNC_JOB,
+	});
 	// Remounts the status check fields after a reset, so their rows show the job being opened.
 	const [openedJob, setOpenedJob] = useState(0);
 	// Reset on open only: the table rebuilds its routes on every render, which must not wipe the typing.

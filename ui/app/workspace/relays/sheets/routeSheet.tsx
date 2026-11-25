@@ -52,7 +52,9 @@ export function RouteSheet({
 	const { t } = useTranslation("config");
 
 	const schema = useMemo(() => relayRouteFormSchemaFor(endpointBodyOverridePaths), [endpointBodyOverridePaths]);
+	// Checked as the user types, as the relay sheets are, so a malformed pattern shows under its field.
 	const form = useForm<RouteForm>({
+		mode: "onChange",
 		resolver: zodResolver(schema),
 		defaultValues: route ?? { method: "POST", path: "/", headers: [], body_overrides: [] },
 	});

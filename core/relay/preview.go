@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -8,6 +10,7 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // UsagePreviewInput is one hypothetical relayed call: what the caller would send and what the
@@ -29,6 +32,7 @@ type UsagePreviewInput struct {
 type UsagePreview struct {
 	RouteIndex     *int                      `json:"route_index"`   // index into routes[], null when none matched
 	RouteAllowed   bool                      `json:"route_allowed"` // false when no route matches and skip_route_check is off
+	StatusCheck    bool                      `json:"status_check"`  // a caller's status check for one of the relay's jobs: relayed free
 	Billable       bool                      `json:"billable"`      // the route's or the method default
 	Streams        bool                      `json:"streams"`       // served by the streaming relay
 	Counted        bool                      `json:"counted"`       // reports usage: billable and a 2xx status
@@ -57,10 +61,6 @@ type PreviewTokens struct {
 	Total  int `json:"total"`
 }
 
-// PreviewUsage runs one hypothetical call through the same route matching and usage mapping the
-// relay applies, so an operator can check a mapping against a sample before saving it. It builds
-// no client and sends nothing. Config-time only, never on the request path. cfg may be unsaved;
-// its extra_headers take part in route matching and its ignore_upstream_cost in pricing, as on
 // gatewayDroppedExtraHeaders are the x-bf-eh-* names the HTTP transport always refuses (its
 // security denylist in transports/bifrost-http/lib/ctx.go), so the preview drops them too.
 var gatewayDroppedExtraHeaders = map[string]struct{}{
@@ -68,6 +68,10 @@ var gatewayDroppedExtraHeaders = map[string]struct{}{
 	"x-api-key": {}, "x-goog-api-key": {}, "xi-api-key": {}, "x-bf-api-key": {}, "x-bf-api-key-id": {}, "x-bf-vk": {}, "x-bf-direct-key": {},
 }
 
+// PreviewUsage runs one hypothetical call through the same route matching and usage mapping the
+// relay applies, so an operator can check a mapping against a sample before saving it. It builds
+// no client and sends nothing. Config-time only, never on the request path. cfg may be unsaved;
+// its extra_headers take part in route matching and its ignore_upstream_cost in pricing, as on
 // the relay.
 func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview, error) {
 	if cfg == nil {
@@ -88,14 +92,20 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	// The query rides along in the path field the way an operator types it; it is split off here
 	// so the routes see the path alone and a GET's ?stream=true counts as the relay counts it.
 	path, rawQuery, _ := strings.Cut(in.Path, "?")
-	// The transport matches the decoded path (a%2Fb is a/b), so the sample path is decoded too.
-	path, err := url.PathUnescape(path)
-	if err != nil {
+	if _, err := url.PathUnescape(path); err != nil {
 		return nil, fmt.Errorf("path: %w", err)
 	}
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	// The transport resolves . and .. on the whole /relay/<name><path> before it reads the relay
+	// name, so a sample that climbs out of the relay is sent elsewhere or refused, never to it.
+	prefix := "/relay/" + cmp.Or(cfg.Name, "preview")
+	full := transportPath(prefix + path)
+	if full != prefix && !strings.HasPrefix(full, prefix+"/") {
+		return &UsagePreview{Notes: []string{"the path climbs out of the relay with .. segments, so the gateway never sends it to this relay: another relay's route takes it, or it is refused with 404"}}, nil
+	}
+	path = cmp.Or(strings.TrimPrefix(full, prefix), "/")
 	status := in.StatusCode
 	if status == 0 {
 		status = 200
@@ -114,6 +124,7 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 		routes[i].usage.eventPaths = routes[i].usage.collectEventPaths()
 	}
 	e := &endpoint{cfg: cfg, usage: usage, routes: routes, streamGlobs: compileStreamGlobs(cfg), operatorHeaders: lowerHeaderValues(cfg.ExtraHeaders), operatorLogHeaders: loggableHeaderValues(cfg.ExtraHeaders)}
+	e.indexRoutes()
 	headers := make(map[string]string, len(in.Headers))
 	var extra map[string][]string
 	for name, value := range in.Headers {
@@ -170,6 +181,48 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	out.UnitsBlockSize, out.UnitsMinimum = usage.unitsBlockSize, usage.unitsMinimum
 	out.Notes = []string{}
 
+	// As in Serve: a call matching a job's status check is relayed free whatever route it reaches (a
+	// disabled one aside), provided Bifrost started that job, which a preview cannot know.
+	if e.hasJobs && !hasDotSegment(path) && (route == nil || !route.disabled) {
+		probeBody, created, err := applyBodyOverrides(forced, method, contentType, reqBody)
+		// As in Serve, a created body under the relay's non-JSON Content-Type is refused before the
+		// status check is looked at: with a 400 on a route, or as no route (below).
+		_, relayTypeSet := e.operatorHeaders["content-type"]
+		if err == nil && !(created && !isJSONBodyType(contentType) && relayTypeSet) {
+			probeHeaders := headers
+			if created && !isJSONBodyType(contentType) {
+				probeHeaders = withJSONContentType(headers)
+			}
+			probe := &schemas.BifrostRelayRequest{Method: method, Path: path, RawQuery: rawQuery, Headers: probeHeaders, Body: probeBody}
+			// Serve checks the call as sent against disabled routes again, created Content-Type
+			// included, so a status check that lands on one is refused there with 404.
+			if disabled := e.selectRoute(method, path, probeHeaders); e.hasDisabled && disabled != nil && disabled.disabled {
+				out.RouteAllowed = false
+				out.Notes = append(out.Notes, "the matching route is disabled: the call is refused with 404")
+				return out, nil
+			}
+			if len(e.statusCheckCandidates(context.Background(), probe)) > 0 {
+				// Serve still reads the model after matching a status check, and refuses a request it
+				// cannot read one from (a model sent twice in the query), so that refusal wins here too.
+				probeType := contentType
+				if created && !isJSONBodyType(contentType) {
+					probeType = "application/json"
+				}
+				model, err := ReadRequestModel(usage.modelSource, probeBody, probeType, rawQuery, usage.effectiveModelPath())
+				if err != nil {
+					// Admitted as a status check, then refused, so the UI shows the 400, not "no route".
+					out.RouteAllowed = true
+					out.Notes = append(out.Notes, "the relay refuses this request with 400: "+err.Error())
+					return out, nil
+				}
+				out.Model = model
+				out.StatusCheck, out.RouteAllowed, out.Billable = true, true, false
+				out.Notes = append(out.Notes, "this is a caller's status check for one of the relay's jobs: if Bifrost started that job, the call is relayed free and the job is charged once, when it finishes")
+				return out, nil
+			}
+		}
+	}
+
 	if !out.RouteAllowed {
 		if route != nil && route.disabled {
 			out.Notes = append(out.Notes, "the matching route is disabled: the call is refused with 404")
@@ -187,6 +240,11 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 		return out, nil
 	}
 	if created && !isJSONBodyType(contentType) {
+		// As in Serve: the relay's own non-JSON Content-Type would win on the wire, so it is refused.
+		if relayType, set := e.operatorHeaders["content-type"]; set {
+			out.Notes = append(out.Notes, fmt.Sprintf("the relay refuses this request with 400: this route creates a JSON body for its forced fields, but the relay's extra headers set Content-Type to %q", relayType))
+			return out, nil
+		}
 		contentType = "application/json"
 	}
 	// The model is read the way the transport reads it, so a body the relay refuses is reported.
@@ -315,4 +373,13 @@ func noPath(u resolvedUsage) string {
 		return " and no units path"
 	}
 	return " at path " + u.unitsPath
+}
+
+// transportPath is the path as the HTTP transport hands it to the relay: fasthttp decodes it and
+// resolves . and .. segments, so a sample of /w/a/../x is matched as /w/x, as a live call is.
+func transportPath(path string) string {
+	u := fasthttp.AcquireURI()
+	defer fasthttp.ReleaseURI(u)
+	u.SetPath(path)
+	return string(u.Path())
 }

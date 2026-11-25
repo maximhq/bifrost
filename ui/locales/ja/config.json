@@ -1540,6 +1540,8 @@
 			"charged": "課金額",
 			"routeDisabled": "{{method}} {{path}} · 無効",
 			"noRouteRelayPricing": "ルートなし · リレーの料金",
+			"statusCheck": "ステータス確認（無料）",
+			"statusCheckHelp": "これはリレーのジョブの1つに対する呼び出し元のステータス確認に一致します。Bifrost がそのジョブを開始した場合、呼び出しは無料で中継され、ジョブは完了時に1回だけ課金されます。",
 			"noRouteRefused": "ルートなし · 拒否",
 			"billable": "課金対象",
 			"notCharged": "課金なし",

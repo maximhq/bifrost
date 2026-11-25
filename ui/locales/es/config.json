@@ -1524,6 +1524,8 @@
 			"charged": "Cobrado",
 			"routeDisabled": "{{method}} {{path}} · deshabilitada",
 			"noRouteRelayPricing": "Sin ruta · precio del relay",
+			"statusCheck": "Consulta de estado (gratis)",
+			"statusCheckHelp": "Coincide con la consulta de estado de un llamante para uno de los trabajos del relay. Si Bifrost inició ese trabajo, la llamada se reenvía gratis y el trabajo se cobra una vez, cuando termina.",
 			"noRouteRefused": "Sin ruta · rechazada",
 			"billable": "Facturable",
 			"notCharged": "No cobrado",

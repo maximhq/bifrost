@@ -535,6 +535,7 @@
 			"pathRequired": "路径为必填项",
 			"pathMustStartWithSlash": "路径必须以 / 开头",
 			"doubleStarOnce": "** 在路径中只能使用一次",
+			"malformedPattern": "此路径的模式格式错误：请闭合每个 [ ]，在其中放入字符或范围，并转义末尾的 \\",
 			"headerNameRequired": "请求头认证需要请求头名称",
 			"queryParamRequired": "查询参数认证需要查询参数",
 			"awsServiceRequired": "SigV4 认证需要 AWS 服务",
