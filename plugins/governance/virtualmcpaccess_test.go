@@ -28,7 +28,7 @@ func gatewayCtx(vmcps ...configstoreTables.TableVirtualMCP) *schemas.BifrostCont
 func TestVirtualMCPToolAccess(t *testing.T) {
 	names := map[string]string{"cA": "alpha", "cB": "beta"}
 	store := func(clientNames map[string]string) *LocalGovernanceStore {
-		return &LocalGovernanceStore{inMemoryStore: &mockInMemoryStore{clientNames: clientNames}, logger: NewMockLogger()}
+		return fixtureStore(t, &liveFixture{clientNames: clientNames})
 	}
 	// The addressable vMCP "g" grants alpha read+write and every tool of beta.
 	assigned := configstoreTables.TableVirtualMCP{
@@ -56,7 +56,7 @@ func TestVirtualMCPToolAccess(t *testing.T) {
 
 	t.Run("access narrows the served tools to what the request may reach", func(t *testing.T) {
 		// The request's access permits only alpha-read.
-		accessPermit := permitFor(buildVKNoMCPConfigs(), []configstoreTables.TableVirtualMCP{
+		accessPermit := permitFor(t, buildVKNoMCPConfigs(), []configstoreTables.TableVirtualMCP{
 			{Name: "acc", EndpointSlug: "acc", Enabled: true, ParsedTools: []configstoreTables.MCPToolSpec{spec("cA", "read")}},
 		}, names, nil)
 		access := grant.NewAccess([]schemas.Permit{accessPermit}, "", nil, "", nil)

@@ -100,12 +100,13 @@ func TestExecuteTool_DeadSession_SalvagesTheCallForARetryableTool(t *testing.T) 
 	// Read-only: safe to auto-retry, so the caller's own request is salvaged.
 	ts, upstream := buildRecoveryMCPServer(t, mcpgo.WithReadOnlyHintAnnotation(true))
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	// connectToMCPClient starts a connection checker per client; without this
 	// its goroutine outlives the test and can probe an httptest server that
 	// t.Cleanup has already closed.
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("client-dead-session-salvage", "salvage-client", ts.URL)
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	toolName := config.Name + "-echo"
 
@@ -140,12 +141,13 @@ func TestExecuteTool_DeadSession_SalvagesTheCallForARetryableTool(t *testing.T) 
 func TestExecuteTool_DeadSession_HealsEvenWhenTheRetryIsSuppressed(t *testing.T) {
 	ts, upstream := buildRecoveryMCPServer(t) // unannotated: assumed destructive
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	// connectToMCPClient starts a connection checker per client; without this
 	// its goroutine outlives the test and can probe an httptest server that
 	// t.Cleanup has already closed.
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("client-dead-session-heal", "heal-client", ts.URL)
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	toolName := config.Name + "-echo"
 
@@ -217,13 +219,14 @@ func TestExecuteTool_DeadSession_RecoveryHonoursTheToolExecutionTimeout(t *testi
 
 	ts, upstream, initDelay := buildSlowReconnectMCPServer(t, mcpgo.WithReadOnlyHintAnnotation(true))
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	// connectToMCPClient starts a connection checker per client; without this
 	// its goroutine outlives the test and can probe an httptest server that
 	// t.Cleanup has already closed.
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("client-dead-session-deadline", "deadline-client", ts.URL)
 	config.ToolExecutionTimeout = toolBudget
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	toolName := config.Name + "-echo"
 
@@ -273,10 +276,11 @@ func TestExecuteTool_TimeoutNamesTheDeadlineThatApplied(t *testing.T) {
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125)))
 	t.Cleanup(ts.Close)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("client-timeout-message", "timeoutclient", ts.URL)
 	config.ToolExecutionTimeout = 30 * time.Second
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	toolName := config.Name + "-slow"
 
@@ -448,9 +452,10 @@ func TestExecuteTool_ToolErrorMentioningSession_DoesNotTriggerRecovery(t *testin
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(s))
 	t.Cleanup(ts.Close)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("client-tool-error-near-miss", "near-miss-client", ts.URL)
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	toolName := config.Name + "-lookup"
 
@@ -496,9 +501,10 @@ func TestExecuteTool_404OnModernConnection_DoesNotTriggerDeadSessionRecovery(t *
 	}))
 	t.Cleanup(ts.Close)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("client-modern-404", "modern-404-client", ts.URL)
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	toolName := config.Name + "-echo"
 

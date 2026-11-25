@@ -324,10 +324,10 @@ func (s *AgentGatewayGRPCServer) authenticate(ctx context.Context) (context.Cont
 			return nil, nil, errUnauthenticated
 		}
 		vk, ok := s.validator.GetVirtualKey(ctx, rawVirtualKey)
-		if !ok || vk == nil || !vk.IsActiveValue() {
+		if !ok || vk == nil || !vk.Active {
 			return nil, nil, errUnauthenticated
 		}
-		rawVirtualKey = vk.Value.GetValue()
+		rawVirtualKey = vk.Value
 		acceptedCredential = &schemas.AcceptedBifrostCredential{
 			Header: credentialKey,
 			Value:  firstGRPCMetadataValue(md, credentialKey),

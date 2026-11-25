@@ -76,6 +76,7 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent
+				resizeKey="prompt"
 				className="p-0"
 				onOpenAutoFocus={(e) => {
 					e.preventDefault();

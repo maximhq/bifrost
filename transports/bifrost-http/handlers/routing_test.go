@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 type mockRoutingManager struct {
@@ -812,4 +814,156 @@ func TestRoutingTargetTTFTTimeoutValidation(t *testing.T) {
 
 	require.Equal(t, fasthttp.StatusOK, update(t, id, `{"targets":`+targets(`,"ttft_timeout_ms":0`)+`}`))
 	require.Nil(t, stored(t, id), "0 on update must clear the deadline")
+}
+
+// scopeRefusingStore is the real store with routing writes that refuse the user scope "hidden-user"
+// with ErrNotFound and save nothing, the way a store that holds users refuses one the caller cannot
+// see. A routing save on the router "vanishing" deletes it first and answers ErrNotFound, as a save
+// landing after a concurrent delete does. A routing save on the router "unreadable" answers
+// ErrNotFound and fails every later read of that router with a database error.
+type scopeRefusingStore struct {
+	configstore.ConfigStore
+	// unreadable is set once a routing save on the router "unreadable" was refused.
+	unreadable *atomic.Bool
+}
+
+// refusedScope returns the error a scopeRefusingStore answers for a write to scope, or nil when it
+// saves the write.
+func refusedScope(scope string, scopeID *string) error {
+	if scope == "user" && scopeID != nil && *scopeID == "hidden-user" {
+		return fmt.Errorf("user %s: %w", *scopeID, configstore.ErrNotFound)
+	}
+	return nil
+}
+
+// CreateRoutingRule refuses a rule on the hidden user and saves any other.
+func (s scopeRefusingStore) CreateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error {
+	if err := refusedScope(rule.Scope, rule.ScopeID); err != nil {
+		return err
+	}
+	return s.ConfigStore.CreateRoutingRule(ctx, rule, tx...)
+}
+
+// UpdateRoutingRule refuses a rule moved to the hidden user and saves any other.
+func (s scopeRefusingStore) UpdateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error {
+	if err := refusedScope(rule.Scope, rule.ScopeID); err != nil {
+		return err
+	}
+	return s.ConfigStore.UpdateRoutingRule(ctx, rule, tx...)
+}
+
+// CreateModelRouter refuses a router routed to the hidden user and saves any other.
+func (s scopeRefusingStore) CreateModelRouter(ctx context.Context, modelRouter *configstore.ModelRouter, tx ...*gorm.DB) error {
+	if modelRouter.Routing != nil {
+		if err := refusedScope(modelRouter.Routing.Scope, modelRouter.Routing.ScopeID); err != nil {
+			return err
+		}
+	}
+	return s.ConfigStore.CreateModelRouter(ctx, modelRouter, tx...)
+}
+
+// GetModelRouter fails with a database error for the router "unreadable" once its routing save was
+// refused, and reads any other router from the store.
+func (s scopeRefusingStore) GetModelRouter(ctx context.Context, id string) (*configstore.ModelRouter, error) {
+	if id == "unreadable" && s.unreadable.Load() {
+		return nil, errors.New("database is locked")
+	}
+	return s.ConfigStore.GetModelRouter(ctx, id)
+}
+
+// SetModelRouterRouting refuses routing to the hidden user, deletes the router "vanishing" and
+// answers ErrNotFound, refuses the router "unreadable" with ErrNotFound and makes it unreadable,
+// and saves any other routing.
+func (s scopeRefusingStore) SetModelRouterRouting(ctx context.Context, routerID string, routing configstore.ModelRouterRouting, tx ...*gorm.DB) error {
+	if routerID == "unreadable" {
+		s.unreadable.Store(true)
+		return configstore.ErrNotFound
+	}
+	if routerID == "vanishing" {
+		if err := s.ConfigStore.DeleteModelRouter(ctx, routerID); err != nil {
+			return err
+		}
+		return configstore.ErrNotFound
+	}
+	if err := refusedScope(routing.Scope, routing.ScopeID); err != nil {
+		return err
+	}
+	return s.ConfigStore.SetModelRouterRouting(ctx, routerID, routing, tx...)
+}
+
+// TestRoutingWritesAnswer400WhenTheStoreRefusesTheScope checks that a routing rule or model router
+// write the store refuses with ErrNotFound is answered 400 with the store's message, on create and on
+// update, with nothing saved or reloaded; that a scope the store accepts is saved; that a routing
+// save on a router deleted before it lands is still 404; that one whose router can no longer be read
+// is 500, not 400; and that the store alone, which holds no users, accepts any user id.
+func TestRoutingWritesAnswer400WhenTheStoreRefusesTheScope(t *testing.T) {
+	SetLogger(&mockLogger{})
+	base := setupPricingOverrideHandlerStore(t)
+	store := scopeRefusingStore{ConfigStore: base, unreadable: &atomic.Bool{}}
+	rules := &reloadRecordingRoutingManager{}
+	ruleHandler := &RoutingHandler{configStore: store, routingManager: rules}
+	routers := &modelRouterManagerFake{}
+	routerHandler := &RoutingHandler{configStore: store, routingManager: routers}
+	ruleBody := func(name, userID string) string {
+		return fmt.Sprintf(`{"name":%q,"cel_expression":"model == \"gpt-4o\"","scope":"user","scope_id":%q,"targets":[{"provider":"openai","weight":1}]}`, name, userID)
+	}
+	userRouting := func(userID string) string {
+		return `"routing":{"enabled":true,"scope":"user","scope_id":"` + userID + `"}`
+	}
+
+	status, body := call(t, ruleHandler.createRoutingRule, ruleBody("on-hidden-user", "hidden-user"), nil)
+	require.Equal(t, fasthttp.StatusBadRequest, status, "%v", body)
+	require.Equal(t, "user hidden-user: not found", modelRouterErrorMessage(body), "the answer is the store's message")
+	saved, err := base.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, saved, "a refused rule create saves nothing")
+	require.Empty(t, rules.reloaded, "and reloads nothing")
+
+	status, body = call(t, ruleHandler.createRoutingRule, ruleBody("on-visible-user", "visible-user"), nil)
+	require.Equal(t, fasthttp.StatusOK, status, "%v", body)
+	rule, _ := body["rule"].(map[string]any)
+	ruleID, _ := rule["id"].(string)
+	require.Equal(t, []string{ruleID}, rules.reloaded)
+
+	status, body = call(t, ruleHandler.updateRoutingRule, `{"scope_id":"hidden-user"}`, map[string]string{"rule_id": ruleID})
+	require.Equal(t, fasthttp.StatusBadRequest, status, "%v", body)
+	require.Equal(t, "user hidden-user: not found", modelRouterErrorMessage(body))
+	stored, err := base.GetRoutingRule(context.Background(), ruleID)
+	require.NoError(t, err)
+	require.Equal(t, "visible-user", *stored.ScopeID, "a refused rule update leaves the rule on its user")
+	require.Equal(t, []string{ruleID}, rules.reloaded, "and reloads nothing")
+
+	status, body = call(t, routerHandler.createModelRouter, modelRouterBody("on-hidden-user", "On hidden user", userRouting("hidden-user")), nil)
+	require.Equal(t, fasthttp.StatusBadRequest, status, "%v", body)
+	require.Equal(t, "user hidden-user: not found", modelRouterErrorMessage(body))
+	_, err = base.GetModelRouter(context.Background(), "on-hidden-user")
+	require.ErrorIs(t, err, configstore.ErrNotFound, "a refused router create saves nothing")
+	require.Empty(t, routers.reloadedRouters, "and reloads nothing")
+
+	modelRouterOK(t, routerHandler.createModelRouter, modelRouterBody("on-visible-user", "On visible user", userRouting("visible-user")), nil)
+	require.Equal(t, []string{"on-visible-user"}, routers.reloadedRouters)
+
+	status, body = call(t, routerHandler.setModelRouterRouting, `{"scope_id":"hidden-user"}`, modelRouterPath("on-visible-user"))
+	require.Equal(t, fasthttp.StatusBadRequest, status, "%v", body)
+	require.Equal(t, "user hidden-user: not found", modelRouterErrorMessage(body))
+	storedRouter, err := base.GetModelRouter(context.Background(), "on-visible-user")
+	require.NoError(t, err)
+	require.Equal(t, "visible-user", *storedRouter.Routing.ScopeID, "a refused routing update leaves the router on its user")
+	require.Empty(t, routers.reloadedRouting, "and reloads nothing")
+
+	modelRouterOK(t, routerHandler.createModelRouter, routerBody("vanishing", "Vanishing"), nil)
+	status, body = call(t, routerHandler.setModelRouterRouting, `{"enabled":true}`, modelRouterPath("vanishing"))
+	require.Equal(t, fasthttp.StatusNotFound, status, "a router deleted before its routing save is still not found: %v", body)
+
+	modelRouterOK(t, routerHandler.createModelRouter, routerBody("unreadable", "Unreadable"), nil)
+	status, body = call(t, routerHandler.setModelRouterRouting, `{"enabled":true}`, modelRouterPath("unreadable"))
+	require.Equal(t, fasthttp.StatusInternalServerError, status, "a refused routing save whose router cannot be read again is a server failure: %v", body)
+	require.Equal(t, "failed to get model router: database is locked", modelRouterErrorMessage(body))
+	require.Empty(t, routers.reloadedRouting, "and reloads nothing")
+
+	plainRules := &RoutingHandler{configStore: base, routingManager: &reloadRecordingRoutingManager{}}
+	status, body = call(t, plainRules.createRoutingRule, ruleBody("plain-store", "hidden-user"), nil)
+	require.Equal(t, fasthttp.StatusOK, status, "a store that holds no users accepts any user id: %v", body)
+	plainRouters := &RoutingHandler{configStore: base, routingManager: &modelRouterManagerFake{}}
+	modelRouterOK(t, plainRouters.createModelRouter, modelRouterBody("plain-store", "Plain store", userRouting("hidden-user")), nil)
 }

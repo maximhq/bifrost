@@ -298,14 +298,22 @@ type ConfigStore interface {
 	UpsertFeatureFlag(ctx context.Context, id string, enabled bool, updatedAt int64) error
 
 	// Provider config CRUD
-	UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, tx ...*gorm.DB) error
+	// UpdateProvidersConfig upserts providers and, for each provider with an entry in keys, its keys
+	// (the config.json sync).
+	UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key, tx ...*gorm.DB) error
+	// AddProvider creates a provider without keys; CreateProviderKey adds them.
 	AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error
+	// UpdateProvider writes a provider's settings only: its key rows, config hash, status,
+	// description and limits are left as stored.
 	UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error
 	DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error
+	// GetProvidersConfig and GetProviderConfig read provider configurations, which hold no keys;
+	// GetProviderKeys reads a provider's keys.
 	GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error)
 	GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*ProviderConfig, error)
 	GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error)
-	GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error)
+	// GetProviderKey reads one key of a provider; ErrNotFound when the provider has no such key.
+	GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*tables.TableKey, error)
 	CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error
 	UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error
 	DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error
@@ -315,6 +323,7 @@ type ConfigStore interface {
 
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
+	GetMCPClientConfigs(ctx context.Context) ([]*schemas.MCPClientConfig, error)
 	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
 	GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
@@ -469,10 +478,8 @@ type ConfigStore interface {
 	DeleteVirtualKeyMCPConfig(ctx context.Context, id uint, tx ...*gorm.DB) error
 
 	// GetVirtualMCPs returns every Virtual MCP definition (enabled and disabled), tools decoded, for
-	// the governance cache. GetVirtualMCPAssignments returns each VK's assigned definition IDs, keyed
-	// by VK row ID. Neither is DAC-scoped: holder grant data, not an admin catalog view.
+	// the governance cache. It is not scoped to the caller: holder grant data, not an admin catalog view.
 	GetVirtualMCPs(ctx context.Context) ([]tables.TableVirtualMCP, error)
-	GetVirtualMCPAssignments(ctx context.Context) (map[string][]uint, error)
 
 	// Virtual MCP CRUD. CreateVirtualMCP fills endpoint_slug from the name when unset and enforces
 	// its uniqueness; UpdateVirtualMCP never changes the slug (immutable after creation).
@@ -483,6 +490,10 @@ type ConfigStore interface {
 	GetVirtualMCPByName(ctx context.Context, name string) (*tables.TableVirtualMCP, error)
 	GetVirtualMCPsPaginated(ctx context.Context, params VirtualMCPsQueryParams) ([]tables.TableVirtualMCP, int64, error)
 	UpdateVirtualMCP(ctx context.Context, def *tables.TableVirtualMCP) error
+	// SetVirtualMCPConfigIssues records the parts of a Virtual MCP's config.json declaration that could
+	// not be applied, or clears them with nil. It writes nothing else, and UpdateVirtualMCP never
+	// writes this column.
+	SetVirtualMCPConfigIssues(ctx context.Context, id uint, issues *string) error
 	DeleteVirtualMCP(ctx context.Context, id uint) error
 	AttachVirtualMCPToVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
 	DetachVirtualMCPFromVirtualKey(ctx context.Context, vmcpID uint, virtualKeyID string) error
@@ -543,7 +554,6 @@ type ConfigStore interface {
 	UpdateBudgets(ctx context.Context, budgets []*tables.TableBudget, tx ...*gorm.DB) error
 	DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error
 	UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error
-	UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error
 
 	// Routing Rules CRUD
 	GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error)
@@ -1074,7 +1084,6 @@ type ConfigStore interface {
 	DeletePrompt(ctx context.Context, id string) error
 
 	// Prompt Repository - Versions
-	GetAllPromptVersions(ctx context.Context) ([]tables.TablePromptVersion, error)
 	GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error)
 	GetPromptVersionByID(ctx context.Context, id uint) (*tables.TablePromptVersion, error)
 	GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error)
@@ -1122,6 +1131,9 @@ type ConfigStore interface {
 	GetLatestSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
 	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error)
 	MarkStaleSidekiqJobsFailed(ctx context.Context, staleBefore time.Time) (int64, error)
+	// DeleteTerminalSidekiqJobs deletes up to limit jobs of kind that reached a
+	// terminal status before the cutoff and returns how many it removed.
+	DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error)
 
 	// Phrase-suggestion schedule state: the next run of a router's schedule,
 	// claimed by one node when due. On the interface rather than read off the

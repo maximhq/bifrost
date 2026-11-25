@@ -14,8 +14,8 @@ import (
 
 // chatService builds a service whose model is scripted and whose store holds a
 // usable configuration, which is the shape both transports run against.
-func chatService(model *scriptedModel, fake *fakeLogReader) *Service {
-	return NewService(nil,
+func chatService(t testing.TB, model *scriptedModel, fake *fakeLogReader) *Service {
+	return serviceForTest(t, nil,
 		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
@@ -108,12 +108,12 @@ func TestWarpRunTurnBufferedAndStreamedAgree(t *testing.T) {
 	// otherwise be the one field the two responses legitimately differ on.
 	request := &ChatRequest{ConversationID: "thread-1", Messages: []ChatMessage{{Role: "user", Content: "how many?"}}}
 
-	buffered := chatService(turns(), &fakeLogReader{})
+	buffered := chatService(t, turns(), &fakeLogReader{})
 	turn, err := buffered.NewTurn(context.Background(), request, 64)
 	require.NoError(t, err)
 	fromBuffer := buffered.RunTurn(context.Background(), turn, nil)
 
-	streamed := chatService(turns(), &fakeLogReader{})
+	streamed := chatService(t, turns(), &fakeLogReader{})
 	turn, err = streamed.NewTurn(context.Background(), request, 64)
 	require.NoError(t, err)
 	replay := newFold()
@@ -181,7 +181,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 		close(released)
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: ctx.Err().Error()}}
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
@@ -239,7 +239,7 @@ func TestWarpRunTurnStopsWhenSinkRefuses(t *testing.T) {
 }
 
 func TestWarpNewTurnMapsRequestProblems(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	_, err := service.NewTurn(context.Background(), &ChatRequest{}, 10)
 	require.ErrorIs(t, err, ErrEmptyConversation)
 
@@ -249,7 +249,7 @@ func TestWarpNewTurnMapsRequestProblems(t *testing.T) {
 	_, err = service.NewTurn(context.Background(), &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "x"}}}, MaxHistoryBytes+1)
 	require.ErrorIs(t, err, ErrConversationTooLong)
 
-	unconfigured := NewService(nil, WithConfigStore(&recordingStore{}), WithLogReader(&fakeLogReader{}), WithChatFunc((&scriptedModel{}).respond))
+	unconfigured := serviceForTest(t, nil, WithConfigStore(&recordingStore{}), WithLogReader(&fakeLogReader{}), WithChatFunc((&scriptedModel{}).respond))
 	_, err = unconfigured.NewTurn(context.Background(), &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "x"}}}, 10)
 	require.ErrorIs(t, err, ErrUnavailable)
 }
@@ -257,7 +257,7 @@ func TestWarpNewTurnMapsRequestProblems(t *testing.T) {
 // NewTurn is the one place a raw client-sent offset exists; everything
 // downstream trusts what it produces, so the sanitizing has to happen here.
 func TestWarpNewTurnSanitizesUTCOffset(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	message := []ChatMessage{{Role: "user", Content: "x"}}
 
 	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: message, UTCOffsetMinutes: 330}, 10)
@@ -275,7 +275,7 @@ func TestWarpNewTurnSanitizesUTCOffset(t *testing.T) {
 
 // NewTurn is also the one place a raw client-sent zone name exists.
 func TestWarpNewTurnSanitizesTimezone(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	message := []ChatMessage{{Role: "user", Content: "x"}}
 
 	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: message, Timezone: "Asia/Kolkata"}, 10)
@@ -294,9 +294,9 @@ func TestWarpNewTurnSanitizesTimezone(t *testing.T) {
 // Without a log reader there is nothing to research, so the service must say
 // so up front rather than register a chat route that always fails.
 func TestWarpCanChatRequiresLogReader(t *testing.T) {
-	require.False(t, NewService(nil, WithChatFunc((&scriptedModel{}).respond)).CanChat())
-	require.True(t, NewService(nil, WithLogReader(&fakeLogReader{}), WithChatFunc((&scriptedModel{}).respond)).CanChat())
-	require.False(t, NewService(nil).CanChat())
+	require.False(t, serviceForTest(t, nil, WithChatFunc((&scriptedModel{}).respond)).CanChat())
+	require.True(t, serviceForTest(t, nil, WithLogReader(&fakeLogReader{}), WithChatFunc((&scriptedModel{}).respond)).CanChat())
+	require.False(t, serviceForTest(t, nil).CanChat())
 }
 
 // SetLogReader writes s.logs under the lock; every reader must take it.
@@ -305,7 +305,7 @@ func TestWarpCanChatRequiresLogReader(t *testing.T) {
 // unsynchronized read in chatFuncFor, CanChat or Shutdown is a data race on a
 // field written concurrently.
 func TestWarpServiceClientAccessIsRaceFree(t *testing.T) {
-	service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}))
+	service := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}))
 	config := &schemas.WarpConfig{Provider: "openai", Model: "gpt-4o"}
 
 	var wg sync.WaitGroup
@@ -340,7 +340,7 @@ func TestWarpServiceClientAccessIsRaceFree(t *testing.T) {
 // tool this agent has reads logs, so the first one the model reached for
 // dereferenced nil inside the agent.
 func TestWarpNewTurnRefusesWhenTheLogReaderIsGone(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	defer service.Shutdown()
 
 	request := &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "how much?"}}}
@@ -361,7 +361,7 @@ func TestWarpNewTurnRefusesWhenTheLogReaderIsGone(t *testing.T) {
 func TestWarpRunTurnStampsConversationIDOnDone(t *testing.T) {
 	store := newMemoryConversations()
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("42 requests.")}}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithVectorStore(newFakeWarpVectorStore()),
@@ -396,7 +396,7 @@ func TestWarpStreamedErrorCarriesTheConversationID(t *testing.T) {
 	failing := func(context.Context, *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider is down"}}
 	}
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
 		WithConversationStore(store),
@@ -432,7 +432,7 @@ func TestWarpStreamedErrorCarriesTheConversationID(t *testing.T) {
 // returns an empty id and the turn silently vanishes from history. Not a UUID
 // check: the local contract accepts ids like "thread-1".
 func TestWarpNewTurnRejectsOversizedConversationID(t *testing.T) {
-	service := chatService(&scriptedModel{}, &fakeLogReader{})
+	service := chatService(t, &scriptedModel{}, &fakeLogReader{})
 	_, err := service.NewTurn(context.Background(), &ChatRequest{
 		ConversationID: strings.Repeat("x", MaxConversationIDChars+1),
 		Messages:       []ChatMessage{{Role: "user", Content: "hi"}},
@@ -448,12 +448,12 @@ func TestWarpNewTurnRejectsOversizedConversationID(t *testing.T) {
 	require.Equal(t, "thread-1", turn.ConversationID)
 }
 
-func chatServiceWithModels(model *scriptedModel) *Service {
+func chatServiceWithModels(t testing.TB, model *scriptedModel) *Service {
 	row := validWarpConfigRow()
 	row.APIKeyID = "key-default"
 	additional := `[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-anthropic"}]`
 	row.AdditionalModels = &additional
-	return NewService(nil,
+	return serviceForTest(t, nil,
 		withManagement(newFakeManagement()),
 		WithConfigStore(&recordingStore{row: row}),
 		WithVectorStore(newFakeWarpVectorStore()),
@@ -477,7 +477,7 @@ func TestWarpTurnRunsOnTheSelectedModel(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			scripted := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done.")}}
-			service := chatServiceWithModels(scripted)
+			service := chatServiceWithModels(t, scripted)
 			request := test.request
 			request.Messages = []ChatMessage{{Role: "user", Content: "hi"}}
 			turn, err := service.NewTurn(context.Background(), &request, 64)
@@ -514,7 +514,7 @@ func TestWarpNewTurnRefusesAnUnexposedModel(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			scripted := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done.")}}
 			request.Messages = []ChatMessage{{Role: "user", Content: "hi"}}
-			_, err := chatServiceWithModels(scripted).NewTurn(context.Background(), &request, 64)
+			_, err := chatServiceWithModels(t, scripted).NewTurn(context.Background(), &request, 64)
 			require.ErrorIs(t, err, ErrModelNotAvailable)
 			require.Zero(t, scripted.calls)
 		})

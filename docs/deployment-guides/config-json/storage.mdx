@@ -21,7 +21,7 @@ If you use PostgreSQL for any store, the target database must be **UTF8 encoded*
 ## config_store
 
 <Note>
-When `config_store` is omitted, Bifrost creates a default SQLite config store in the app directory. Set `config_store.enabled` to `false` only when you want file-only configuration with no config-backed Web UI/API edits. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
+When `config_store` is omitted, Bifrost creates a default SQLite config store in the app directory. Set `config_store.enabled` to `false` only when you want file-only configuration with no configuration Web UI/API. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
 </Note>
 
 ### SQLite (Default)
@@ -117,7 +117,7 @@ Use `password_command` for short-lived database credentials such as AWS RDS IAM 
 
 ### Disabled (file-only mode)
 
-Use this when you want Bifrost to read all configuration from `config.json` only - no configuration database and no config-backed Web UI/API edits.
+Use this when you want Bifrost to read all configuration from `config.json` only - no configuration database and no configuration Web UI/API.
 
 ```json
 {
@@ -126,6 +126,8 @@ Use this when you want Bifrost to read all configuration from `config.json` only
   }
 }
 ```
+
+Every configuration API route then answers `503 config store not available`, reads included, so the Web UI cannot show or edit configuration. Inference, `GET /api/config`, `/health`, logs and metrics keep working.
 
 This is the recommended setup for [multinode OSS deployments](/deployment-guides/how-to/multinode) where a shared `config.json` is the single source of truth.
 

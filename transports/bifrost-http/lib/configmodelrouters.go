@@ -420,6 +420,9 @@ func modelRouterScopeResolves(ctx context.Context, store configstore.ConfigStore
 // hash only for what they applied, so a targets or routing write that fails
 // is retried by the next boot.
 func syncModelRoutersFromFile(ctx context.Context, config *Config, configData *ConfigData) {
+	if config != nil && config.boot != nil && configData != nil {
+		config.boot.modelRouters = configData.ModelRouters
+	}
 	if config == nil || configData == nil || !configData.sectionPresent("model_routers") || configData.ModelRouters == nil {
 		return
 	}

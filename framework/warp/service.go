@@ -7,10 +7,13 @@ package warp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -110,10 +113,15 @@ type Service struct {
 	management ManagementTools
 	bifrostMCP bool // Warp uses management; BifrostMCPEnabled unless WithBifrostMCP says otherwise
 	// usedConfirmations is the confirmation tokens this instance has seen
-	// claimed, by when; the durable claim is in the conversation store (see
-	// claimConfirmation).
-	usedConfirmations sync.Map
+	// claimed, by when, in a live-store table; the durable claim is in the
+	// conversation store (see claimConfirmation).
+	usedConfirmations *livestore.Table[string, time.Time]
+	live              *livestore.Store
 }
+
+// usedConfirmationsTable is the live-store table a service keeps the confirmations it has seen
+// claimed in, one per process.
+const usedConfirmationsTable = "warp_used_confirmations"
 
 // topicLister returns the topic reader as the tool interface, or a nil
 // interface when there is none - a typed nil would pass the tool's nil check.
@@ -259,9 +267,18 @@ func WithCallerRestrictionResolver(resolver CallerRestrictionResolver) Option {
 
 // NewService builds a Service over the deployment's config store. A store that
 // does not implement WarpStore is supported: the service then reports
-// ErrUnavailable from every configuration call.
-func NewService(store configstore.ConfigStore, opts ...Option) *Service {
-	service := &Service{bifrostMCP: BifrostMCPEnabled}
+// ErrUnavailable from every configuration call. live, which is required, holds the
+// confirmations the service has seen claimed; Shutdown drops their table, so a later
+// service on the same store can create it again.
+func NewService(store configstore.ConfigStore, live *livestore.Store, opts ...Option) (*Service, error) {
+	if live == nil {
+		return nil, fmt.Errorf("warp: %w", livestore.ErrNoLiveStore)
+	}
+	used, err := live.NewTable[string, time.Time](context.Background(), usedConfirmationsTable)
+	if err != nil {
+		return nil, err
+	}
+	service := &Service{bifrostMCP: BifrostMCPEnabled, usedConfirmations: used, live: live}
 	if store != nil {
 		service.store, _ = store.(configstore.WarpStore)
 		service.backfillJobs, _ = store.(BackfillJobStore)
@@ -283,7 +300,7 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 			}
 		}
 	}
-	return service
+	return service, nil
 }
 
 // HasHistory reports whether conversations can be listed and filed.
@@ -371,6 +388,7 @@ func (s *Service) Shutdown() {
 		s.management = nil
 	}
 	s.mu.Unlock()
+	_ = s.live.DropTable(context.Background(), usedConfirmationsTable)
 }
 
 // SetLogReader rebinds what Warp researches through, after construction.

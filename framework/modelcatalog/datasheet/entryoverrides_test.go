@@ -44,7 +44,7 @@ func newEntryOverrideStore(t *testing.T, body string) (*Store, configstore.Confi
 		_, _ = w.Write([]byte(current.Load().(string)))
 	}))
 	t.Cleanup(srv.Close)
-	s := New(cs, logger, Config{URL: srv.URL, ModelParametersURL: srv.URL})
+	s := newForTest(t, cs, logger, Config{URL: srv.URL, ModelParametersURL: srv.URL})
 	require.NoError(t, s.SyncFromURL(ctx))
 	return s, cs, current
 }
@@ -194,7 +194,7 @@ func TestEntryOverride_MixedCaseModelIsPatched(t *testing.T) {
 // rejects an empty ID.
 func TestEntryOverride_IDlessOverridesStayDistinct(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "a", Provider: "openai", Mode: "chat", InputCostPerToken: bifrost.Ptr(1.0)},
 		{Model: "b", Provider: "openai", Mode: "chat", InputCostPerToken: bifrost.Ptr(2.0)},
@@ -229,7 +229,7 @@ func TestEntryOverride_IDlessOverridesStayDistinct(t *testing.T) {
 // Target-derived IDs must not collide when a field contains '/': these two
 // targets differ only in where the slash sits.
 func TestEntryOverride_IDlessTargetsWithSlashesStayDistinct(t *testing.T) {
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "team/model", Provider: "acme", Mode: "chat", InputCostPerToken: bifrost.Ptr(1.0)},
 		{Model: "model", Provider: "acme/team", Mode: "chat", InputCostPerToken: bifrost.Ptr(2.0)},
@@ -252,7 +252,7 @@ func TestEntryOverride_IDlessTargetsWithSlashesStayDistinct(t *testing.T) {
 // loaded (oldest) is kept; lookups by target ignore case like the pricing key.
 func TestEntryOverride_OneOverridePerTarget(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{{Model: "gpt-4o", Provider: "openai", Mode: "chat", InputCostPerToken: bifrost.Ptr(1.0)}})
 	s.SetEntryOverrides(ctx, []configstoreTables.TableDatasheetOverride{
 		{ID: "first", Provider: "openai", Model: "gpt-4o", Mode: "chat", PricingPatch: json.RawMessage(`{"input_cost_per_token": 5}`)},
@@ -280,7 +280,7 @@ func TestEntryOverride_OneOverridePerTarget(t *testing.T) {
 // provider's canonical name.
 func TestEntryOverride_ParamsPatchProviderIgnoresCase(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetEntryOverrides(ctx, []configstoreTables.TableDatasheetOverride{
 		{ID: "azure", Provider: "Azure", Model: "my-deployment", Mode: "chat", IsCustom: true, ParamsPatch: json.RawMessage(`{"mode": "chat", "supports_mcp": true}`)},
 	})
@@ -318,7 +318,7 @@ func TestEntryOverride_BedrockAndMantleStayDistinct(t *testing.T) {
 	ctx := context.Background()
 	for name, ids := range map[string][2]string{"without ids": {"", ""}, "with ids": {"b", "m"}} {
 		t.Run(name, func(t *testing.T) {
-			s := newTestStore()
+			s := newTestStore(t)
 			s.SetEntryOverrides(ctx, []configstoreTables.TableDatasheetOverride{
 				{ID: ids[0], Provider: "bedrock", Model: "m", Mode: "chat", IsCustom: true, ParamsPatch: json.RawMessage(`{"mode": "chat", "max_output_tokens": 100}`)},
 				{ID: ids[1], Provider: "bedrock_mantle", Model: "m", Mode: "chat", IsCustom: true, ParamsPatch: json.RawMessage(`{"mode": "chat", "max_output_tokens": 200}`)},
@@ -342,7 +342,7 @@ func TestEntryOverride_BedrockAndMantleStayDistinct(t *testing.T) {
 // Provider aliases fold whatever their case: a Vertex_AI override edits the
 // vertex row and a Vertex_AI custom entry is listed under vertex.
 func TestEntryOverride_MixedCaseProviderAliasFolds(t *testing.T) {
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{{Model: "gemini-x", Provider: "vertex", Mode: "chat", InputCostPerToken: bifrost.Ptr(1.0)}})
 	s.SetEntryOverrides(context.Background(), []configstoreTables.TableDatasheetOverride{
 		{ID: "edit", Provider: "Vertex_AI", Model: "gemini-x", Mode: "chat", PricingPatch: json.RawMessage(`{"input_cost_per_token": 5}`)},
@@ -356,7 +356,7 @@ func TestEntryOverride_MixedCaseProviderAliasFolds(t *testing.T) {
 // patch its pricing; params-only overrides for either provider are fine.
 func TestEntryOverride_PricingPatchesMustNotCollideAfterFolding(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{{Model: "m", Provider: "bedrock", Mode: "chat", InputCostPerToken: bifrost.Ptr(1.0)}})
 	require.NoError(t, s.UpsertEntryOverride(ctx, configstoreTables.TableDatasheetOverride{ID: "a", Provider: "bedrock", Model: "m", Mode: "chat", PricingPatch: json.RawMessage(`{"input_cost_per_token": 5}`)}))
 
@@ -379,7 +379,7 @@ func TestEntryOverride_PricingPatchesMustNotCollideAfterFolding(t *testing.T) {
 // its pricing row is folded under.
 func TestGetDatasheetEntry_ParamsUseRequestedProvider(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{{Model: "m", Provider: "bedrock", Mode: "chat", InputCostPerToken: bifrost.Ptr(1.0)}})
 	s.SetEntryOverrides(ctx, []configstoreTables.TableDatasheetOverride{
 		{ID: "b", Provider: "bedrock", Model: "m", Mode: "chat", ParamsPatch: json.RawMessage(`{"max_output_tokens": 100}`)},
@@ -396,7 +396,7 @@ func TestGetDatasheetEntry_ParamsUseRequestedProvider(t *testing.T) {
 // that filter resolves the same target as FindEntryOverride.
 func TestEntryOverride_ListProviderFilterFoldsMixedCaseAlias(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "gemini-x", Provider: "vertex", Mode: "chat", InputCostPerToken: bifrost.Ptr(1.0)},
 		{Model: "m", Provider: "bedrock", Mode: "chat", InputCostPerToken: bifrost.Ptr(1.0)},
@@ -421,7 +421,7 @@ func TestEntryOverride_ListProviderFilterFoldsMixedCaseAlias(t *testing.T) {
 // that slot to the same provider rather than to whichever the map visits first.
 func TestEntryOverride_SharedBareParamsSlotIsDeterministic(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore()
+	s := newTestStore(t)
 	s.applyModelParameters(map[string]json.RawMessage{})
 	overrides := []configstoreTables.TableDatasheetOverride{
 		{ID: "openai", Provider: "openai", Model: "shared", Mode: "chat", IsCustom: true, ParamsPatch: json.RawMessage(`{"mode":"chat","supported_endpoints":["/v1/chat/completions"]}`)},
@@ -441,7 +441,7 @@ func TestEntryOverride_SharedBareParamsSlotIsDeterministic(t *testing.T) {
 // other patch's output.
 func TestEntryOverride_SharedParamsRowHasOneOwner(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore()
+	s := newTestStore(t)
 	row := `{"provider":"bedrock_mantle","mode":"chat","supports_function_calling":false}`
 	sheet := map[string]json.RawMessage{"m": json.RawMessage(row)}
 	s.SetEntryOverrides(ctx, []configstoreTables.TableDatasheetOverride{
@@ -452,8 +452,8 @@ func TestEntryOverride_SharedParamsRowHasOneOwner(t *testing.T) {
 		s.applyModelParameters(sheet)
 		assert.NotContains(t, s.GetSupportedParameters("m"), "tools", "the bedrock patch does not stack onto the bedrock_mantle row (apply %d)", i)
 		s.entryOverridesMu.RLock()
-		mantleUpstream := s.paramsUpstream[paramsPatchKey("bedrock_mantle", "m")]
-		bedrockUpstream := s.paramsUpstream[paramsPatchKey("bedrock", "m")]
+		mantleUpstream := s.paramsUpstream.load()[paramsPatchKey("bedrock_mantle", "m")]
+		bedrockUpstream := s.paramsUpstream.load()[paramsPatchKey("bedrock", "m")]
 		s.entryOverridesMu.RUnlock()
 		assert.JSONEq(t, row, string(mantleUpstream), "the bedrock_mantle upstream is the unpatched sheet row (apply %d)", i)
 		assert.JSONEq(t, row, string(bedrockUpstream), "the bedrock upstream is the unpatched sheet row, not the other patch's output (apply %d)", i)
@@ -512,11 +512,11 @@ func TestEntryOverride_DeleteRestoresUpstream(t *testing.T) {
 // A mode-wide override (mode "") patches every mode of the model; a
 // mode-specific override for the same field wins on its mode.
 func TestEntryOverride_ModeWideAndModeSpecificPrecedence(t *testing.T) {
-	s := newTestStore()
+	s := newTestStore(t)
 	for _, mode := range []string{"chat", "responses"} {
-		s.pricingData[makeKey("m", "openai", mode)] = configstoreTables.TableModelPricing{
+		s.pricingData.Put(makeKey("m", "openai", mode), configstoreTables.TableModelPricing{
 			Model: "m", Provider: "openai", Mode: mode, InputCostPerToken: bifrost.Ptr(1.0),
-		}
+		})
 	}
 	s.SetEntryOverrides(context.Background(), []configstoreTables.TableDatasheetOverride{
 		{ID: "chat", Provider: "openai", Model: "m", Mode: "chat", PricingPatch: json.RawMessage(`{"input_cost_per_token": 3}`)},
@@ -544,7 +544,7 @@ func TestEntryOverride_ModeWideAndModeSpecificPrecedence(t *testing.T) {
 func TestEntryOverride_ConcurrentUpsertsKeepEveryOverride(t *testing.T) {
 	ctx := context.Background()
 	for round := 0; round < 20; round++ {
-		s := newTestStore()
+		s := newTestStore(t)
 		const n = 16
 		var wg sync.WaitGroup
 		for i := 0; i < n; i++ {
@@ -568,9 +568,9 @@ func TestEntryOverride_ConcurrentUpsertsKeepEveryOverride(t *testing.T) {
 // upstream value already differed is not drift.
 func TestEntryOverride_ModeWideBaselineDoesNotFlagOtherModes(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore()
-	s.pricingData[makeKey("m", "openai", "chat")] = configstoreTables.TableModelPricing{Model: "m", Provider: "openai", Mode: "chat", InputCostPerToken: bifrost.Ptr(1.0)}
-	s.pricingData[makeKey("m", "openai", "responses")] = configstoreTables.TableModelPricing{Model: "m", Provider: "openai", Mode: "responses", InputCostPerToken: bifrost.Ptr(2.0)}
+	s := newTestStore(t)
+	s.pricingData.Put(makeKey("m", "openai", "chat"), configstoreTables.TableModelPricing{Model: "m", Provider: "openai", Mode: "chat", InputCostPerToken: bifrost.Ptr(1.0)})
+	s.pricingData.Put(makeKey("m", "openai", "responses"), configstoreTables.TableModelPricing{Model: "m", Provider: "openai", Mode: "responses", InputCostPerToken: bifrost.Ptr(2.0)})
 	row := configstoreTables.TableDatasheetOverride{ID: "all", Provider: "openai", Model: "m", PricingPatch: json.RawMessage(`{"input_cost_per_token": 5}`)}
 	parsed, err := ParseEntryOverride(&row)
 	require.NoError(t, err)
@@ -601,10 +601,10 @@ func TestEntryOverride_ModeWideBaselineDoesNotFlagOtherModes(t *testing.T) {
 
 // Scoped pricing overrides keep stacking on top of the edited datasheet price.
 func TestEntryOverride_ScopedPricingOverrideStacksOnEditedBase(t *testing.T) {
-	s := newTestStore()
-	s.pricingData[makeKey("m", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s := newTestStore(t)
+	s.pricingData.Put(makeKey("m", "openai", "chat"), configstoreTables.TableModelPricing{
 		Model: "m", Provider: "openai", Mode: "chat", InputCostPerToken: bifrost.Ptr(1e-06), OutputCostPerToken: bifrost.Ptr(2e-06),
-	}
+	})
 	s.SetEntryOverrides(context.Background(), []configstoreTables.TableDatasheetOverride{
 		{ID: "edit", Provider: "openai", Model: "m", Mode: "chat", PricingPatch: json.RawMessage(`{"input_cost_per_token": 5e-06}`)},
 	})
@@ -622,10 +622,10 @@ func TestEntryOverride_ScopedPricingOverrideStacksOnEditedBase(t *testing.T) {
 // A positive provider-reported usage.cost wins over an edited base price
 // unless the provider has ignore_provider_cost set.
 func TestEntryOverride_ProviderReportedCostBypassesEditedBase(t *testing.T) {
-	s := newTestStore()
-	s.pricingData[makeKey("m", "openai", "chat")] = configstoreTables.TableModelPricing{
+	s := newTestStore(t)
+	s.pricingData.Put(makeKey("m", "openai", "chat"), configstoreTables.TableModelPricing{
 		Model: "m", Provider: "openai", Mode: "chat", InputCostPerToken: bifrost.Ptr(1e-06), OutputCostPerToken: bifrost.Ptr(2e-06),
-	}
+	})
 	s.SetEntryOverrides(context.Background(), []configstoreTables.TableDatasheetOverride{
 		{ID: "edit", Provider: "openai", Model: "m", Mode: "chat", PricingPatch: json.RawMessage(`{"input_cost_per_token": 5e-06}`)},
 	})
@@ -704,7 +704,7 @@ func TestEntryOverride_ParamsPatchAppliesToCapabilities(t *testing.T) {
 // A params row stored under a provider-qualified name is the upstream for a
 // patch on the bare name: the patched row keeps its flags.
 func TestEntryOverride_ParamsPatchMergesIntoQualifiedUpstreamRow(t *testing.T) {
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetEntryOverrides(context.Background(), []configstoreTables.TableDatasheetOverride{
 		{ID: "limit", Provider: "openai", Model: "gpt-4o", Mode: "chat", ParamsPatch: json.RawMessage(`{"max_output_tokens": 4096}`)},
 	})
@@ -719,7 +719,7 @@ func TestEntryOverride_ParamsPatchMergesIntoQualifiedUpstreamRow(t *testing.T) {
 // sheet when overrides change.
 func TestEntryOverride_ParamsPatchWithoutConfigStoreRebuildsIndexes(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore()
+	s := newTestStore(t)
 	s.applyModelParameters(map[string]json.RawMessage{
 		"gpt-4o": json.RawMessage(`{"provider":"openai","mode":"chat","supported_endpoints":["/v1/chat/completions"]}`),
 	})
@@ -774,10 +774,10 @@ func TestEntryOverride_RemovingLastParamsOverrideDropsCustomModel(t *testing.T) 
 			}, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = cs.Close(ctx) })
-			return New(cs, bifrost.NewDefaultLogger(schemas.LogLevelError), Config{})
+			return newForTest(t, cs, bifrost.NewDefaultLogger(schemas.LogLevelError), Config{})
 		},
 		"empty sheet without a store": func(t *testing.T) *Store {
-			s := newTestStore()
+			s := newTestStore(t)
 			s.applyModelParameters(map[string]json.RawMessage{})
 			return s
 		},
@@ -798,7 +798,7 @@ func TestEntryOverride_RemovingLastParamsOverrideDropsCustomModel(t *testing.T) 
 
 // The listing's provider filter matches regardless of case, like the lookups.
 func TestEntryOverride_ListProviderFilterIgnoresCase(t *testing.T) {
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{{Model: "gpt-4o", Provider: "azure", Mode: "chat", InputCostPerToken: bifrost.Ptr(1.0)}})
 	s.SetEntryOverrides(context.Background(), []configstoreTables.TableDatasheetOverride{
 		{ID: "edit", Provider: "Azure", Model: "gpt-4o", Mode: "chat", PricingPatch: json.RawMessage(`{"input_cost_per_token": 2}`)},
@@ -850,7 +850,7 @@ func TestPricingLookupModesCoverEveryRequestType(t *testing.T) {
 // An override whose target is not in the datasheet stays listed so it can be
 // found and deleted.
 func TestEntryOverride_OrphanOverrideIsListed(t *testing.T) {
-	s := newTestStore()
+	s := newTestStore(t)
 	s.SetEntryOverrides(context.Background(), []configstoreTables.TableDatasheetOverride{
 		{ID: "gone", Provider: "openai", Model: "retired", Mode: "chat", PricingPatch: json.RawMessage(`{"input_cost_per_token": 1}`)},
 	})
@@ -917,7 +917,7 @@ func BenchmarkLoadModelCapabilities(b *testing.B) {
 	rows := map[string]string{"gpt-4o": `{"provider":"openai","mode":"chat","max_output_tokens":16384,"supports_mcp":false}`}
 	ctx := context.Background()
 	b.Run("no_overrides", func(b *testing.B) {
-		s := NewTestStore(nil)
+		s := testStore(b, nil)
 		s.configStore = paramsOnlyConfigStore{rows: rows}
 		b.ReportAllocs()
 		for b.Loop() {
@@ -927,7 +927,7 @@ func BenchmarkLoadModelCapabilities(b *testing.B) {
 		}
 	})
 	b.Run("with_override", func(b *testing.B) {
-		s := NewTestStore(nil)
+		s := testStore(b, nil)
 		s.configStore = paramsOnlyConfigStore{rows: rows}
 		s.installEntryOverrides(s.parseEntryOverrideRows([]configstoreTables.TableDatasheetOverride{
 			{ID: "o", Provider: "openai", Model: "gpt-4o", Mode: "chat", ParamsPatch: json.RawMessage(`{"max_output_tokens":4096}`)},
@@ -945,10 +945,10 @@ func BenchmarkLoadModelCapabilities(b *testing.B) {
 // load time: the request-path cost is identical with or without them.
 func BenchmarkCalculateCostWithEntryOverrides(b *testing.B) {
 	newStore := func(withOverride bool) *Store {
-		s := newTestStore()
-		s.pricingData[makeKey("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
+		s := newTestStore(b)
+		s.pricingData.Put(makeKey("gpt-4o", "openai", "chat"), configstoreTables.TableModelPricing{
 			Model: "gpt-4o", Provider: "openai", Mode: "chat", InputCostPerToken: bifrost.Ptr(2.5e-06), OutputCostPerToken: bifrost.Ptr(1e-05),
-		}
+		})
 		if withOverride {
 			s.SetEntryOverrides(context.Background(), []configstoreTables.TableDatasheetOverride{
 				{ID: "o", Provider: "openai", Model: "gpt-4o", Mode: "chat", PricingPatch: json.RawMessage(`{"input_cost_per_token": 1e-06}`)},
