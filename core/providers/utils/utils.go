@@ -4905,8 +4905,20 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			closeBodyStream(bodyStream, errStreamParkedAfterFinish)
 			return
 		}
-		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		drainTimeout := defaultStreamDrainTimeout
+		if idleTimeout := GetStreamIdleTimeout(ctx); idleTimeout > 0 && idleTimeout < drainTimeout {
+			drainTimeout = idleTimeout
+		}
+		var stdCtx context.Context = context.Background()
+		if ctx != nil {
+			stdCtx = ctx
+		}
+		abandoned, err := drainStreamingBody(stdCtx, drainTimeout, bodyStream)
+		if err != nil {
+			getLogger().Warn("failed to drain streaming response body before release (discarding connection): %v", err)
+		}
+		if abandoned {
+			return
 		}
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp

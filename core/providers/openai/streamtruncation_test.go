@@ -933,7 +933,7 @@ func TestTextCompletionStreamOptInWithWaitForUsageKeepsTrailingUsage(t *testing.
 // The synthesized final text chunk names the model the upstream served, like the
 // chat path, not the requested id.
 func TestTextCompletionStreamFinalChunkCarriesServedModel(t *testing.T) {
-	server := completeSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"served-model","choices":[{"index":0,"text":"hello","finish_reason":null}]}`+"\n\n"+
+	server := heartbeatSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"served-model","choices":[{"index":0,"text":"hello","finish_reason":null}]}`+"\n\n"+
 		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"served-model","choices":[{"index":0,"text":"","finish_reason":"stop"}]}`+"\n\n"+
 		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"served-model","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n"+
 		"data: [DONE]\n\n")
@@ -965,7 +965,7 @@ func TestTextCompletionStreamFinalChunkCarriesServedModel(t *testing.T) {
 
 // The text-completion stream falls back to the requested id when the upstream never names a model.
 func TestTextCompletionStreamFinalChunkFallsBackToRequestedModel(t *testing.T) {
-	server := completeSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"choices":[{"index":0,"text":"hello","finish_reason":"stop"}]}`+"\n\n"+
+	server := heartbeatSSEServer(t, `data: {"id":"cmpl-repro","object":"text_completion","created":1,"choices":[{"index":0,"text":"hello","finish_reason":"stop"}]}`+"\n\n"+
 		`data: {"id":"cmpl-repro","object":"text_completion","created":1,"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n"+
 		"data: [DONE]\n\n")
 	defer server.Close()
@@ -2603,5 +2603,108 @@ func TestOpenAIStreamingTrueEOFWithoutDoneMarker(t *testing.T) {
 			t.Fatalf("got %d chunks, want content chunk + truncation error", len(chunks))
 		}
 		assertTruncationError(t, chunks[1].BifrostError)
+	})
+}
+
+// TestOpenAIStreamingDoneWithOpenBodyDoesNotHang verifies that when an upstream
+// sends "data: [DONE]" and holds the HTTP body open without sending the final
+// 0-length chunk, both HandleOpenAIChatCompletionStreaming and
+// HandleOpenAITextCompletionStreaming close their output channel within the
+// bounded release drain, discard the half-open socket rather than pooling it,
+// and remain usable for subsequent streams.
+func TestOpenAIStreamingDoneWithOpenBodyDoesNotHang(t *testing.T) {
+	t.Run("ChatCompletion_SilentOpenBodyAfterDone", func(t *testing.T) {
+		var holdOpen atomic.Bool
+		holdOpen.Store(true)
+		stop := "stop"
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w, chatChunk("hello", nil)+chatChunk("", &stop)+chatUsageOnlyChunk+"data: [DONE]\n\n")
+			flusher.Flush()
+			if holdOpen.Load() {
+				<-r.Context().Done()
+			}
+		}))
+		t.Cleanup(srv.Close)
+
+		client, counter := newOpenAITestStreamingClient(4)
+		start := time.Now()
+		stream, bifrostErr := HandleOpenAIChatCompletionStreaming(
+			newStreamTestContext(), client, srv.URL, basicChatRequest(), nil, nil, 30,
+			false, false, schemas.OpenAI, passthroughPostHook,
+			nil, nil, nil, nil, nil, nil, testNoopLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			t.Fatalf("setup failed: %v", bifrostErr)
+		}
+		chunks := collectChunks(t, stream)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("stream took %v to close after [DONE] on open body; expected bounded drain", elapsed)
+		}
+		for i, c := range chunks {
+			if c.BifrostError != nil {
+				t.Fatalf("chunk %d unexpected error: %+v", i, c.BifrostError)
+			}
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d, want 0 (unterminated socket must be discarded)", got)
+		}
+
+		// Next clean request dials fresh and pools normally.
+		holdOpen.Store(false)
+		stream2, bifrostErr := HandleOpenAIChatCompletionStreaming(
+			newStreamTestContext(), client, srv.URL, basicChatRequest(), nil, nil, 30,
+			false, false, schemas.OpenAI, passthroughPostHook,
+			nil, nil, nil, nil, nil, nil, testNoopLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			t.Fatalf("follow-up setup failed: %v", bifrostErr)
+		}
+		for _, c := range collectChunks(t, stream2) {
+			if c.BifrostError != nil {
+				t.Fatalf("follow-up unexpected error: %+v", c.BifrostError)
+			}
+		}
+		if got := counter.open(); got != 1 {
+			t.Fatalf("open connections after clean stream = %d, want 1", got)
+		}
+	})
+
+	t.Run("TextCompletion_SilentOpenBodyAfterDone", func(t *testing.T) {
+		srv := silentParkSSEServer(t,
+			`data: {"id":"cmpl-open","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":"stop"}]}`+"\n\n"+
+				`data: {"id":"cmpl-open","object":"text_completion","created":1,"model":"repro-model","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n"+
+				"data: [DONE]\n\n")
+		t.Cleanup(srv.Close)
+
+		client, counter := newOpenAITestStreamingClient(4)
+		req := &schemas.BifrostTextCompletionRequest{
+			Provider: schemas.OpenAI,
+			Model:    "repro-model",
+			Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+		}
+		start := time.Now()
+		stream, bifrostErr := HandleOpenAITextCompletionStreaming(
+			newStreamTestContext(), client, srv.URL, req, nil, nil, 30,
+			false, false, schemas.OpenAI, nil, passthroughPostHook,
+			nil, nil, testNoopLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			t.Fatalf("setup failed: %v", bifrostErr)
+		}
+		chunks := collectChunks(t, stream)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("stream took %v to close after [DONE] on open body; expected bounded drain", elapsed)
+		}
+		for i, c := range chunks {
+			if c.BifrostError != nil {
+				t.Fatalf("chunk %d unexpected error: %+v", i, c.BifrostError)
+			}
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d, want 0 (unterminated socket must be discarded)", got)
+		}
 	})
 }

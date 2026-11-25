@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1009,16 +1008,12 @@ func anthropicFixtureSaturated(bErr *schemas.BifrostError) bool {
 		return false
 	}
 	err := bErr.Error.Error
-	if errors.Is(err, fasthttp.ErrConnectionClosed) {
-		return true
-	}
 	var opErr *net.OpError
-	if !errors.As(err, &opErr) || (opErr.Op != "dial" && opErr.Op != "write") {
+	if !errors.As(err, &opErr) || opErr.Op != "dial" {
 		return false
 	}
 	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
-		errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.EADDRNOTAVAIL) ||
-		(opErr.Op == "dial" && opErr.Timeout())
+		errors.Is(err, syscall.EADDRNOTAVAIL) || opErr.Timeout()
 }
 
 var errRetrySaturated = errors.New("loopback fixture saturated")
@@ -1031,7 +1026,7 @@ var errRetrySaturated = errors.New("loopback fixture saturated")
 func TestAnthropicStreamingConcurrentCancellationStress(t *testing.T) {
 	const (
 		deltaCount    = 24
-		chunkGap      = 1 * time.Millisecond
+		chunkGap      = 2 * time.Millisecond
 		streamBudget  = 5 * time.Second
 		maxConns      = 64
 		cleanWorkers  = 8
@@ -1174,7 +1169,14 @@ func TestAnthropicStreamingConcurrentCancellationStress(t *testing.T) {
 		return nil
 	}
 
-	var cancelWG sync.WaitGroup
+	var (
+		mu             sync.Mutex
+		failures       []string
+		midBodyCancels atomic.Int32
+		cancelWG       sync.WaitGroup
+		cleanWG        sync.WaitGroup
+	)
+
 	cancelWG.Add(1)
 	go func() {
 		defer cancelWG.Done()
@@ -1189,6 +1191,8 @@ func TestAnthropicStreamingConcurrentCancellationStress(t *testing.T) {
 				defer func() { <-sem }()
 				ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 				drained := make(chan struct{})
+				started := make(chan struct{})
+				var startOnce sync.Once
 				go func() {
 					defer close(drained)
 					var stream chan *schemas.BifrostStreamChunk
@@ -1207,12 +1211,24 @@ func TestAnthropicStreamingConcurrentCancellationStress(t *testing.T) {
 						)
 					}
 					if bErr != nil {
+						if ctx.Err() == nil && !anthropicFixtureSaturated(bErr) {
+							mu.Lock()
+							failures = append(failures, fmt.Sprintf("cancel worker setup error: %v", bErr.Error))
+							mu.Unlock()
+						}
 						return
 					}
-					for range stream {
+					for c := range stream {
+						if c != nil {
+							startOnce.Do(func() { close(started) })
+						}
 					}
 				}()
-				time.Sleep(2*time.Millisecond + time.Duration(rand.Int64N(int64(8*time.Millisecond))))
+				select {
+				case <-started:
+					midBodyCancels.Add(1)
+				case <-drained:
+				}
 				cancel()
 				<-drained
 			}()
@@ -1220,11 +1236,6 @@ func TestAnthropicStreamingConcurrentCancellationStress(t *testing.T) {
 		wg.Wait()
 	}()
 
-	var (
-		mu       sync.Mutex
-		failures []string
-		cleanWG  sync.WaitGroup
-	)
 	for w := range cleanWorkers {
 		cleanWG.Add(1)
 		workerIdx := w
@@ -1245,8 +1256,12 @@ func TestAnthropicStreamingConcurrentCancellationStress(t *testing.T) {
 	cancelWG.Wait()
 
 	if len(failures) > 0 {
-		t.Fatalf("%d concurrent clean streams failed alongside cancellations; first few: %v",
+		t.Fatalf("%d stream failures alongside cancellations; first few: %v",
 			len(failures), failures[:min(len(failures), 5)])
+	}
+	if got := midBodyCancels.Load(); got < cancelStreams/2 {
+		t.Fatalf("only %d of %d cancellations landed after body start; mid-body cancellation path was not exercised",
+			got, cancelStreams)
 	}
 
 	for i := range 20 {

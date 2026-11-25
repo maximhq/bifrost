@@ -554,3 +554,100 @@ func TestReleaseAfterBodyEOFDoesNotBlock(t *testing.T) {
 		t.Fatal("ReleaseStreamingResponse blocked draining a body already at EOF")
 	}
 }
+
+// TestReleaseStreamingResponse_OpenBodyAfterMarkerIsBoundedAndDiscarded verifies
+// that when an upstream sends "data: [DONE]" and holds the HTTP body open
+// without sending the terminating 0-length chunk, ReleaseStreamingResponse
+// neither blocks indefinitely nor pools the half-open socket, and honors context
+// cancellation while draining.
+func TestReleaseStreamingResponse_OpenBodyAfterMarkerIsBoundedAndDiscarded(t *testing.T) {
+	openAfterDone := false
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		holdOpen := openAfterDone
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "data: {\"i\":0}\n\ndata: [DONE]\n\n")
+		flusher.Flush()
+		if holdOpen {
+			<-r.Context().Done()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Run("bounded_by_drain_deadline", func(t *testing.T) {
+		mu.Lock()
+		openAfterDone = true
+		mu.Unlock()
+
+		client, counter := newTestStreamingClient(4)
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		start := time.Now()
+		frames, err := runSSEStream(ctx, client, srv.URL)
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("runSSEStream failed: %v", err)
+		}
+		if frames != 1 {
+			t.Fatalf("frames = %d, want 1", frames)
+		}
+		if elapsed > 2*time.Second {
+			t.Fatalf("ReleaseStreamingResponse took %v on open post-[DONE] body; expected bounded drain", elapsed)
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d, want 0 (unterminated post-[DONE] socket must be discarded)", got)
+		}
+
+		// Subsequent clean stream on the same client must dial fresh and succeed.
+		mu.Lock()
+		openAfterDone = false
+		mu.Unlock()
+		frames, err = runSSEStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), client, srv.URL)
+		if err != nil || frames != 1 {
+			t.Fatalf("follow-up clean stream failed: frames=%d err=%v", frames, err)
+		}
+		if got := counter.open(); got != 1 {
+			t.Fatalf("open connections after clean stream = %d, want 1 (pooled)", got)
+		}
+	})
+
+	t.Run("cancelled_during_drain", func(t *testing.T) {
+		mu.Lock()
+		openAfterDone = true
+		mu.Unlock()
+
+		client, counter := newTestStreamingClient(4)
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+
+		done := make(chan error, 1)
+		start := time.Now()
+		go func() {
+			_, err := runSSEStream(ctx, client, srv.URL)
+			done <- err
+		}()
+
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+
+		select {
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatal("ReleaseStreamingResponse ignored context cancellation during drain")
+		}
+		if elapsed := time.Since(start); elapsed >= defaultStreamDrainTimeout {
+			t.Fatalf("cancelled drain took %v, expected immediate interruption before %v drain timeout", elapsed, defaultStreamDrainTimeout)
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d, want 0 after cancelled drain", got)
+		}
+	})
+}
