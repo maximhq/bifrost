@@ -180,7 +180,7 @@ func TestTranscriptTextSinglePartIsZeroCopy(t *testing.T) {
 		resp := &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Parts: []*Part{part}}}}}
 		got := resp.transcriptText()
 		require.Equal(t, transcript, got)
-		assert.Equal(t, unsafe.StringData(transcript), unsafe.StringData(got), "single-part transcript was copied")
+		assert.Same(t, unsafe.StringData(transcript), unsafe.StringData(got), "single-part transcript was copied")
 		assert.Zero(t, testing.AllocsPerRun(10, func() { _ = resp.transcriptText() }))
 	}
 }
