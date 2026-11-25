@@ -788,6 +788,9 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	if authorizeURL == "" {
 		return nil, fmt.Errorf("authorize_url is required (provide manually or ensure server supports OAuth discovery)")
 	}
+	if err := ValidateAuthorizeURL(authorizeURL); err != nil {
+		return nil, fmt.Errorf("invalid authorize_url: %w", err)
+	}
 	if tokenURL == "" {
 		return nil, fmt.Errorf("token_url is required (provide manually or ensure server supports OAuth discovery)")
 	}
@@ -1204,6 +1207,9 @@ func (p *OAuth2Provider) buildUpstreamAuthorizeURLForFlow(ctx context.Context, f
 	scopes, err := templateConfig.ScopeList()
 	if err != nil {
 		return "", fmt.Errorf("failed to parse oauth scopes for flow %s: %w", flow.ID, err)
+	}
+	if err := ValidateAuthorizeURL(templateConfig.AuthorizeURL); err != nil {
+		return "", fmt.Errorf("oauth flow %s: invalid authorize_url: %w", flow.ID, err)
 	}
 	return p.buildAuthorizeURLWithPKCE(
 		templateConfig.AuthorizeURL,

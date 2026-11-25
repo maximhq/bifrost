@@ -1672,3 +1672,113 @@ func TestSignIn_ConfigDeletedDuringDiscovery(t *testing.T) {
 	_, err = provider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
 	require.ErrorIs(t, err, schemas.ErrOAuth2ConfigNotFound)
 }
+
+// The authorize URL is what the dashboard sends the browser to, so it has to be
+// an absolute http(s) URL whether it was typed in or discovered from the server.
+func TestInitiateOAuthFlow_RequiresHTTPAuthorizeURL(t *testing.T) {
+	for _, authorizeURL := range []string{
+		"javascript:alert(document.domain)",
+		"data:text/html,<script>alert(1)</script>",
+		"/relative/authorize",
+		"https:///authorize",
+	} {
+		t.Run(authorizeURL, func(t *testing.T) {
+			provider, _ := newDCRProvider(t)
+			_, err := provider.InitiateOAuthFlow(context.Background(), &schemas.OAuth2Config{
+				ClientID:     schemas.NewSecretVar("client-id"),
+				AuthorizeURL: authorizeURL,
+				TokenURL:     "https://as.example.com/token",
+				RedirectURI:  dcrRedirectURI,
+				ServerURL:    "https://mcp.example.com",
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "authorize_url")
+		})
+	}
+}
+
+func TestHasAuthorizationEndpoint_RequiresHTTPURL(t *testing.T) {
+	assert.True(t, hasAuthorizationEndpoint(&OAuthMetadata{AuthorizationURL: "https://as.example.com/authorize"}))
+	assert.True(t, hasAuthorizationEndpoint(&OAuthMetadata{AuthorizationURL: "http://localhost:9000/authorize?tenant=a"}))
+	assert.False(t, hasAuthorizationEndpoint(&OAuthMetadata{}))
+	assert.False(t, hasAuthorizationEndpoint(&OAuthMetadata{AuthorizationURL: "javascript:alert(1)"}))
+	assert.False(t, hasAuthorizationEndpoint(&OAuthMetadata{AuthorizationURL: "JaVaScRiPt:alert(1)"}))
+	assert.False(t, hasAuthorizationEndpoint(&OAuthMetadata{AuthorizationURL: "data:text/html,x"}))
+}
+
+// A config that reached the store with an authorize URL that is not a web address
+// (written before the check existed, or by another writer) cannot start a sign-in:
+// the upstream URL is not built for it.
+func TestBuildUpstreamAuthorizeURL_RequiresHTTPStoredAuthorizeURL(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		authorizeURL string
+		wantErr      bool
+	}{
+		{name: "script scheme", authorizeURL: "javascript:alert(1)", wantErr: true},
+		{name: "relative reference", authorizeURL: "/authorize", wantErr: true},
+		{name: "https", authorizeURL: "https://as.example.com/authorize?tenant=a", wantErr: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, store := newDCRProvider(t)
+			ctx := context.Background()
+			require.NoError(t, store.db.Create(&tables.TableOauthConfig{
+				ID: "stored-config", ClientID: schemas.NewSecretVar("client-id"), AuthorizeURL: tc.authorizeURL,
+				TokenURL: "https://as.example.com/token", RedirectURI: dcrRedirectURI, Status: "authorized",
+			}).Error)
+			require.NoError(t, store.db.Create(&tables.TableMCPClient{ClientID: dcrMCPClientID, Name: "grafana", OauthConfigID: bifrost.Ptr("stored-config")}).Error)
+			_, flowID, err := provider.InitiateUserOAuthFlow(ctx, "stored-config", dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin)
+			require.NoError(t, err)
+
+			authorizeURL, err := provider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Empty(t, authorizeURL)
+				assert.Contains(t, err.Error(), "authorize_url")
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, strings.HasPrefix(authorizeURL, "https://as.example.com/authorize?"), authorizeURL)
+		})
+	}
+}
+
+// A stored config is checked again when the sign-in URL is built for a pending flow, so an
+// authorize URL that is not a web address is never handed to a browser, whatever wrote it.
+func TestBuildUpstreamAuthorizeURL_RefusesStoredNonWebAuthorizeURL(t *testing.T) {
+	ctx := context.Background()
+	start := func(t *testing.T, storedAuthorizeURL string) (*OAuth2Provider, string) {
+		t.Helper()
+		provider, store := newDCRProvider(t)
+		initiation, err := provider.InitiateOAuthFlow(ctx, &schemas.OAuth2Config{
+			ClientID:     schemas.NewSecretVar("client-id"),
+			AuthorizeURL: "https://as.example.com/authorize",
+			TokenURL:     "https://as.example.com/token",
+			RedirectURI:  dcrRedirectURI,
+			ServerURL:    "https://mcp.example.com",
+		})
+		require.NoError(t, err)
+		require.NoError(t, store.db.Create(&tables.TableMCPClient{ClientID: dcrMCPClientID, Name: "notes", OauthConfigID: bifrost.Ptr(initiation.OauthConfigID)}).Error)
+		require.NoError(t, store.db.Model(&tables.TableOauthConfig{}).Where("id = ?", initiation.OauthConfigID).Update("authorize_url", storedAuthorizeURL).Error)
+		_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, dcrRedirectURI, schemas.MCPAuthModeAdmin)
+		require.NoError(t, err)
+		return provider, flowID
+	}
+
+	for _, stored := range []string{"javascript:alert(1)", "data:text/html,x", "/relative/authorize"} {
+		t.Run(stored, func(t *testing.T) {
+			provider, flowID := start(t, stored)
+			authorizeURL, err := provider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "authorize_url")
+			assert.Empty(t, authorizeURL)
+		})
+	}
+
+	t.Run("a web address is built as before", func(t *testing.T) {
+		provider, flowID := start(t, "https://as.example.com/authorize?tenant=a")
+		authorizeURL, err := provider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
+		require.NoError(t, err)
+		assert.True(t, strings.HasPrefix(authorizeURL, "https://as.example.com/authorize?"), authorizeURL)
+	})
+}
