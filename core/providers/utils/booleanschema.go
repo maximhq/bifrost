@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -190,7 +191,7 @@ func collectSchemaEdit(toolsRaw string, value gjson.Result, prefix string, index
 	if !gjson.Valid(value.Raw) {
 		return fmt.Errorf("failed to decode tool schema %s: invalid JSON", toolSchemaPath(prefix, index, suffix))
 	}
-	collectRawBooleanSchemaObject(value, edits)
+	scanRawSchemaObject(value.Raw, value.Index, edits)
 	return nil
 }
 
@@ -201,57 +202,156 @@ var (
 	rawFalseSchema = []byte(`{"not":{}}`)
 )
 
-// collectRawBooleanSchemaObject walks one raw schema object with the keyword rules of
-// rewriteBooleanSchemaKeyword. Offsets from ForEach are relative to toolsRaw because
-// every walked value descends from a Result located in it.
-func collectRawBooleanSchemaObject(schema gjson.Result, edits *[]rawSchemaEdit) {
-	schema.ForEach(func(key, value gjson.Result) bool {
-		switch booleanSchemaKeywordKind(key.Str) {
+// rawSchemaScanner walks one raw schema front to back with the keyword rules of
+// rewriteBooleanSchemaKeyword, recording an edit per boolean subschema. Every byte is
+// read once: a nested schema is walked where the scan reaches it, and any other value
+// is stepped over, so a large instance value deep in nested schemas is not rescanned
+// once per enclosing schema. raw must be valid JSON; base is raw's offset in toolsRaw.
+type rawSchemaScanner struct {
+	raw   string
+	base  int
+	edits *[]rawSchemaEdit
+}
+
+// scanRawSchemaObject records the edits for the valid raw schema object at base.
+func scanRawSchemaObject(raw string, base int, edits *[]rawSchemaEdit) {
+	s := rawSchemaScanner{raw: raw, base: base, edits: edits}
+	s.object(s.space(0))
+}
+
+// space returns the index of the first non-whitespace byte at or after i.
+func (s *rawSchemaScanner) space(i int) int {
+	for i < len(s.raw) {
+		switch s.raw[i] {
+		case ' ', '\t', '\n', '\r':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+// next steps past the whitespace and the separator after a member or entry, and
+// returns the index of the following one, or of the closing bracket.
+func (s *rawSchemaScanner) next(i int) int {
+	i = s.space(i)
+	if i < len(s.raw) && s.raw[i] == ',' {
+		i = s.space(i + 1)
+	}
+	return i
+}
+
+// str returns the index after the string that opens at i.
+func (s *rawSchemaScanner) str(i int) int {
+	for i++; i < len(s.raw); i++ {
+		switch s.raw[i] {
+		case '\\':
+			i++
+		case '"':
+			return i + 1
+		}
+	}
+	return i
+}
+
+// skip returns the index after the value at i, which is not walked.
+func (s *rawSchemaScanner) skip(i int) int {
+	switch s.raw[i] {
+	case '"':
+		return s.str(i)
+	case '{', '[':
+		depth := 0
+		for i < len(s.raw) {
+			switch s.raw[i] {
+			case '"':
+				i = s.str(i)
+				continue
+			case '{', '[':
+				depth++
+			case '}', ']':
+				if depth--; depth == 0 {
+					return i + 1
+				}
+			}
+			i++
+		}
+		return i
+	}
+	for i < len(s.raw) {
+		switch s.raw[i] {
+		case ',', '}', ']', ' ', '\t', '\n', '\r':
+			return i
+		}
+		i++
+	}
+	return i
+}
+
+// object walks the schema object that opens at i and returns the index after it.
+func (s *rawSchemaScanner) object(i int) int {
+	for i = s.space(i + 1); i < len(s.raw) && s.raw[i] != '}'; i = s.next(i) {
+		keyEnd := s.str(i)
+		key := s.raw[i+1 : keyEnd-1]
+		if strings.IndexByte(key, '\\') >= 0 {
+			key = gjson.Parse(s.raw[i:keyEnd]).Str
+		}
+		i = s.space(s.space(keyEnd) + 1)
+		switch booleanSchemaKeywordKind(key) {
 		case keywordSchemaMembers:
-			if value.IsObject() {
-				collectRawBooleanSchemaEntries(value, edits)
-			}
+			i = s.entries(i, '{')
 		case keywordSchemaList:
-			if value.IsArray() {
-				collectRawBooleanSchemaEntries(value, edits)
-			}
+			i = s.entries(i, '[')
 		case keywordItems:
-			if value.IsArray() {
-				collectRawBooleanSchemaEntries(value, edits)
+			if s.raw[i] == '[' {
+				i = s.entries(i, '[')
 			} else {
-				collectRawBooleanSchema(value, edits)
+				i = s.schema(i)
 			}
 		case keywordSchema:
-			collectRawBooleanSchema(value, edits)
+			i = s.schema(i)
 		case keywordBooleanOrSchema:
-			if value.IsObject() {
-				collectRawBooleanSchemaObject(value, edits)
+			if s.raw[i] == '{' {
+				i = s.object(i)
+			} else {
+				i = s.skip(i)
 			}
+		default:
+			i = s.skip(i)
 		}
-		return true
-	})
-}
-
-// collectRawBooleanSchemaEntries walks every value of a raw object or array whose
-// entries are all schema positions.
-func collectRawBooleanSchemaEntries(container gjson.Result, edits *[]rawSchemaEdit) {
-	container.ForEach(func(_, entry gjson.Result) bool {
-		collectRawBooleanSchema(entry, edits)
-		return true
-	})
-}
-
-// collectRawBooleanSchema handles the raw value at a schema position: a boolean is
-// replaced by its object form and an object is walked as a schema.
-func collectRawBooleanSchema(value gjson.Result, edits *[]rawSchemaEdit) {
-	switch {
-	case value.Type == gjson.True:
-		*edits = append(*edits, rawSchemaEdit{start: value.Index, end: value.Index + len(value.Raw), raw: rawTrueSchema})
-	case value.Type == gjson.False:
-		*edits = append(*edits, rawSchemaEdit{start: value.Index, end: value.Index + len(value.Raw), raw: rawFalseSchema})
-	case value.IsObject():
-		collectRawBooleanSchemaObject(value, edits)
 	}
+	return i + 1
+}
+
+// entries walks every value of the object or array at i as a schema position when the
+// value opens with open, and steps over it otherwise. It returns the index after it.
+func (s *rawSchemaScanner) entries(i int, open byte) int {
+	if s.raw[i] != open {
+		return s.skip(i)
+	}
+	for i = s.space(i + 1); i < len(s.raw) && s.raw[i] != '}' && s.raw[i] != ']'; i = s.next(i) {
+		if open == '{' {
+			i = s.space(s.space(s.str(i)) + 1)
+		}
+		i = s.schema(i)
+	}
+	return i + 1
+}
+
+// schema handles the value at a schema position: a boolean is replaced by its object
+// form and an object is walked as a schema. It returns the index after the value.
+func (s *rawSchemaScanner) schema(i int) int {
+	switch {
+	case strings.HasPrefix(s.raw[i:], "true"):
+		*s.edits = append(*s.edits, rawSchemaEdit{start: s.base + i, end: s.base + i + len("true"), raw: rawTrueSchema})
+		return i + len("true")
+	case strings.HasPrefix(s.raw[i:], "false"):
+		*s.edits = append(*s.edits, rawSchemaEdit{start: s.base + i, end: s.base + i + len("false"), raw: rawFalseSchema})
+		return i + len("false")
+	case s.raw[i] == '{':
+		return s.object(i)
+	}
+	return s.skip(i)
 }
 
 // booleanSchemaObject returns the object form of a boolean schema. Each call returns a

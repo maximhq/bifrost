@@ -488,8 +488,83 @@ func TestRewriteToolBooleanSchemaNodesJSON_LinearInToolCount(t *testing.T) {
 	}
 }
 
+// nestedItemsSchema nests depth "items" schemas around a leaf that carries payload, an
+// examples array of the given number of strings, ahead of a boolean "not".
+func nestedItemsSchema(depth, payload int) string {
+	var b strings.Builder
+	for range depth {
+		b.WriteString(`{"type":"array","items":`)
+	}
+	b.WriteString(`{"type":"string","examples":[`)
+	for i := range payload {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`"{\"items\":true} [x]"`)
+	}
+	b.WriteString(`],"not":true}`)
+	for range depth {
+		b.WriteByte('}')
+	}
+	return b.String()
+}
+
+// The raw walk reads each byte once, so a fixed-size leaf payload costs about the same
+// however deep the schemas around it are nested: sixty-four times the depth takes about
+// as long, not sixty-four times as long. The bound leaves room for timer noise.
+func TestRewriteToolBooleanSchemaNodesJSON_LinearInSchemaDepth(t *testing.T) {
+	measure := func(depth int) time.Duration {
+		schema := nestedItemsSchema(depth, 20000)
+		body := []byte(`{"tools":[{"name":"f","parameters":` + schema + `}]}`)
+		want := `{"tools":[{"name":"f","parameters":` + strings.Replace(schema, `"not":true`, `"not":{}`, 1) + `}]}`
+		best := time.Duration(1<<63 - 1)
+		for range 3 {
+			start := time.Now()
+			got, changed, err := RewriteToolBooleanSchemaNodesJSON(body)
+			best = min(best, time.Since(start))
+			if err != nil || !changed || string(got) != want {
+				t.Fatalf("depth %d: unexpected rewrite: changed=%t err=%v", depth, changed, err)
+			}
+		}
+		return best
+	}
+	shallow, deep := measure(2), measure(128)
+	if deep > 3*shallow {
+		t.Fatalf("rewrite rescans nested schemas: depth 2 took %v, depth 128 took %v (%.1fx)", shallow, deep, float64(deep)/float64(shallow))
+	}
+}
+
+// The scanner steps over strings holding brackets, quotes and escapes, reads escaped
+// keywords as the decoded walk does, and keeps the whitespace between tokens.
+func TestRewriteToolBooleanSchemaNodesJSON_ScansTokensExactly(t *testing.T) {
+	body := `{"tools":[{"name":"f","parameters": { "description" : "a \"} ] {\\ , [ \" x" ,` +
+		` "propert\u0069es" : { "x\"y" : true , "z" : { "enum" : [ {"items":true} , "]" ] , "items" : [ false , 1 ] } } ,` +
+		"\n\t\"not\"\r: false , \"default\" : { \"not\" : true } } }]}"
+	want := `{"tools":[{"name":"f","parameters": { "description" : "a \"} ] {\\ , [ \" x" ,` +
+		` "propert\u0069es" : { "x\"y" : {} , "z" : { "enum" : [ {"items":true} , "]" ] , "items" : [ {"not":{}} , 1 ] } } ,` +
+		"\n\t\"not\"\r: {\"not\":{}} , \"default\" : { \"not\" : true } } }]}"
+	got, changed, err := RewriteToolBooleanSchemaNodesJSON([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || string(got) != want {
+		t.Fatalf("raw body rewrite mismatch (changed=%t)\n got: %s\nwant: %s", changed, got, want)
+	}
+}
+
 func BenchmarkRewriteToolBooleanSchemaNodesJSON_LargeToolsArray(b *testing.B) {
 	body := []byte(rawToolsBody(20000, `{}`, `{"type":"function","name":"f","parameters":{"type":"object","items":true}}`))
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, _, err := RewriteToolBooleanSchemaNodesJSON(body); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRewriteToolBooleanSchemaNodesJSON_NestedSchemas(b *testing.B) {
+	body := []byte(`{"tools":[{"name":"f","parameters":` + nestedItemsSchema(64, 20000) + `}]}`)
 	b.SetBytes(int64(len(body)))
 	b.ReportAllocs()
 	for b.Loop() {
