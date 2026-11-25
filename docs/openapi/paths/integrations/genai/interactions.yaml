@@ -34,7 +34,10 @@ collection:
                 - object
                 - array
                 - 'null'
-                description: A string, a content block or step, or a list of them.
+                items:
+                  type: object
+                  additionalProperties: true
+                description: A string, a content block or step, or a list of blocks and steps.
               system_instruction:
                 type: string
               tools:

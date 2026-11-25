@@ -1313,8 +1313,8 @@ def test_pricing_patch_above_12hr_fields():
 
 def test_genai_interactions_input_types_match_the_decoder():
     """GeminiInteractionsInput.UnmarshalJSON accepts a string, an object, an array or null and
-    refuses anything else. The create schema has to say the same, in the source and the bundle,
-    or a validator accepts `"input": 42` that the route rejects."""
+    refuses anything else, and an array holds objects. The create schema has to say the same, in the
+    source and the bundle, or a validator accepts `"input": 42` or `["hi"]` that the route rejects."""
     import jsonschema
 
     source = load(HERE / "paths" / "integrations" / "genai" / "interactions.yaml")
@@ -1331,7 +1331,7 @@ def test_genai_interactions_input_types_match_the_decoder():
                 problems.append(f"{name}: rejects input {value!r}, which the route accepts")
         if not validator.is_valid({"model": "gemini-3-flash-preview"}):
             problems.append(f"{name}: rejects an omitted input")
-        for value in (42, True):
+        for value in (42, True, ["hi"], [42], [[{"type": "text", "text": "hi"}]]):
             if validator.is_valid({"model": "gemini-3-flash-preview", "input": value}):
                 problems.append(f"{name}: accepts input {value!r}, which the route rejects")
     assert len(schemas) > 1, "no /genai interactions create operation found in openapi.json"
