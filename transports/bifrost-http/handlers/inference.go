@@ -2081,6 +2081,9 @@ func (h *CompletionHandler) responsesRetrieve(ctx *fasthttp.RequestCtx) {
 		}
 		bifrostReq.StartingAfter = schemas.Ptr(n)
 	}
+	if raw := ctx.QueryArgs().Peek("last_event_id"); len(raw) > 0 {
+		bifrostReq.LastEventID = schemas.Ptr(string(raw))
+	}
 	if raw := ctx.QueryArgs().Peek("include_obfuscation"); len(raw) > 0 {
 		b, err := strconv.ParseBool(string(raw))
 		if err != nil {

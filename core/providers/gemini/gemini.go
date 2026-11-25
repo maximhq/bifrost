@@ -757,6 +757,9 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
 	}
+	if ShouldUseGeminiInteractions(ctx, request) {
+		return InteractionsResponses(ctx, provider.interactionsTarget(ctx, key), request)
+	}
 
 	// Check for large payload streaming mode (enterprise-only feature)
 	// In large payload mode, the request body streams directly from the client — skip body conversion
@@ -976,6 +979,9 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	// Check if responses stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
+	}
+	if ShouldUseGeminiInteractions(ctx, request) {
+		return InteractionsResponsesStream(ctx, provider.interactionsTarget(ctx, key), postHookRunner, postHookSpanFinalizer, request)
 	}
 
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(

@@ -568,3 +568,45 @@ func TestModelRetrieveTarget(t *testing.T) {
 		})
 	}
 }
+
+// TestResponsesRetrieveForwardsLastEventID pins that GET /v1/responses/{id}?stream=true resumes a
+// Gemini Interactions stream at the caller's last_event_id rather than replaying it from the start.
+func TestResponsesRetrieveForwardsLastEventID(t *testing.T) {
+	query := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case query <- r.URL.RawQuery:
+		default:
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: interaction.completed\ndata: {\"event_type\":\"interaction.completed\",\"interaction\":{\"id\":\"v1_r\",\"status\":\"completed\",\"model\":\"gemini-3.8-flash\"}}\n\n")
+	}))
+	defer upstream.Close()
+	log := bifrost.NewNoOpLogger()
+	SetLogger(log)
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{}, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Gemini: {
+			NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL + "/v1beta", AllowPrivateNetwork: true},
+			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
+			Keys:                     []schemas.Key{{ID: "gemini-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("k"), Weight: 1}},
+		},
+	}}
+	client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{Account: lib.NewBaseAccount(config), Logger: log})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	h := NewInferenceHandler(nil, client, config)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/v1/responses/v1_r?provider=gemini&stream=true&last_event_id=evt_1")
+	ctx.SetUserValue("response_id", "v1_r")
+	h.responsesRetrieve(ctx)
+	require.Equal(t, 200, ctx.Response.StatusCode())
+	_, _ = io.ReadAll(ctx.Response.BodyStream())
+	select {
+	case got := <-query:
+		require.Contains(t, got, "last_event_id=evt_1")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upstream was never called")
+	}
+}

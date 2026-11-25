@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -48,6 +49,11 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 	}
 
 	// Copy pointer fields
+	if original.EventID != nil {
+		copyEventID := *original.EventID
+		copy.EventID = &copyEventID
+	}
+
 	if original.OutputIndex != nil {
 		copyOutputIndex := *original.OutputIndex
 		copy.OutputIndex = &copyOutputIndex
@@ -709,7 +715,34 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 		copy.ResponsesOutputMessageContentRefusal = &copyRefusal
 	}
 
+	if original.ResponsesInputMessageContentBlockImage != nil {
+		copy.ResponsesInputMessageContentBlockImage = &schemas.ResponsesInputMessageContentBlockImage{
+			ImageURL: copyString(original.ResponsesInputMessageContentBlockImage.ImageURL),
+			Detail:   copyString(original.ResponsesInputMessageContentBlockImage.Detail),
+		}
+	}
+	if f := original.ResponsesInputMessageContentBlockFile; f != nil {
+		copy.ResponsesInputMessageContentBlockFile = &schemas.ResponsesInputMessageContentBlockFile{
+			FileData: copyString(f.FileData), FileURL: copyString(f.FileURL),
+			Filename: copyString(f.Filename), FileType: copyString(f.FileType),
+		}
+	}
+	if original.Audio != nil {
+		audio := *original.Audio
+		copy.Audio = &audio
+	}
+	copy.FileID = copyString(original.FileID)
+
 	return copy
+}
+
+// copyString is a copy of s that shares nothing with it.
+func copyString(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	c := *s
+	return &c
 }
 
 // respMsgAccum holds strings.Builders for one output message so streamed deltas
@@ -720,8 +753,48 @@ type respMsgAccum struct {
 	cbRefusal   map[int]*strings.Builder // contentIndex -> refusal builder
 	cbSignature map[int]*strings.Builder // contentIndex -> signature builder
 	args        *strings.Builder         // function-call arguments
-	summary     *strings.Builder         // reasoning summary text (Summary[0].Text)
+	summary     map[int]*strings.Builder // summary index -> reasoning summary text builder
 	encrypted   *strings.Builder         // reasoning encrypted content
+}
+
+// keepStreamedMedia adds to message, built from its deltas, the media blocks of the finished item, which have
+// no delta event. Each goes where the item has it when the blocks the deltas own, whose builders address them by
+// index, are text at the same place in the item, and after them otherwise.
+func keepStreamedMedia(message *schemas.ResponsesMessage, item *schemas.ResponsesMessage, acc *respMsgAccum) {
+	if item.Content == nil || message.Content == nil {
+		return
+	}
+	isMedia := func(b schemas.ResponsesMessageContentBlock) bool {
+		return b.ResponsesInputMessageContentBlockImage != nil || b.ResponsesInputMessageContentBlockFile != nil || b.Audio != nil
+	}
+	if slices.ContainsFunc(message.Content.ContentBlocks, isMedia) || !slices.ContainsFunc(item.Content.ContentBlocks, isMedia) {
+		return
+	}
+	final := item.Content.ContentBlocks
+	inPlace := true
+	for _, builders := range []map[int]*strings.Builder{acc.cbText, acc.cbRefusal, acc.cbSignature} {
+		for at := range builders {
+			inPlace = inPlace && at < len(final) && !isMedia(final[at])
+		}
+	}
+	if inPlace {
+		streamed := message.Content.ContentBlocks
+		blocks := make([]schemas.ResponsesMessageContentBlock, len(final))
+		for at := range final {
+			if !isMedia(final[at]) && at < len(streamed) && streamed[at].Type != "" {
+				blocks[at] = streamed[at]
+			} else {
+				blocks[at] = deepCopyResponsesMessageContentBlock(final[at])
+			}
+		}
+		message.Content.ContentBlocks = blocks
+		return
+	}
+	for _, block := range item.Content.ContentBlocks {
+		if isMedia(block) {
+			message.Content.ContentBlocks = append(message.Content.ContentBlocks, deepCopyResponsesMessageContentBlock(block))
+		}
+	}
 }
 
 // buildCompleteMessageFromResponsesStreamChunks builds complete messages from accumulated chunks.
@@ -832,9 +905,12 @@ func BuildResponsesMessagesFromChunks(chunks []*ResponsesStreamChunk) []schemas.
 					}
 					if accums[i] == nil {
 						messages[i] = deepCopyResponsesMessage(*resp.Item)
-					} else if resp.Item.Status != nil {
-						status := *resp.Item.Status
-						messages[i].Status = &status
+					} else {
+						if resp.Item.Status != nil {
+							status := *resp.Item.Status
+							messages[i].Status = &status
+						}
+						keepStreamedMedia(&messages[i], resp.Item, accums[i])
 					}
 					matched = true
 					break
@@ -1005,14 +1081,21 @@ func BuildResponsesMessagesFromChunks(chunks []*ResponsesStreamChunk) []schemas.
 						if targetMessage.ResponsesReasoning == nil {
 							targetMessage.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}
 						}
-						if len(targetMessage.ResponsesReasoning.Summary) == 0 {
-							targetMessage.ResponsesReasoning.Summary = append(targetMessage.ResponsesReasoning.Summary, schemas.ResponsesReasoningSummary{
+						// Items stream in order, so an index past the next one starts the next one.
+						reasoning, at := targetMessage.ResponsesReasoning, 0
+						if resp.SummaryIndex != nil && *resp.SummaryIndex > 0 {
+							at = min(*resp.SummaryIndex, len(reasoning.Summary))
+						}
+						if at == len(reasoning.Summary) {
+							reasoning.Summary = append(reasoning.Summary, schemas.ResponsesReasoningSummary{
 								Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
 							})
 						}
 						acc := getAccum(targetIdx)
-						acc.summary = singleBuilder(acc.summary, &targetMessage.ResponsesReasoning.Summary[0].Text)
-						acc.summary.WriteString(*resp.Delta)
+						if acc.summary == nil {
+							acc.summary = map[int]*strings.Builder{}
+						}
+						builderFor(acc.summary, at, &reasoning.Summary[at].Text).WriteString(*resp.Delta)
 					}
 				}
 
@@ -1061,16 +1144,8 @@ func BuildResponsesMessagesFromChunks(chunks []*ResponsesStreamChunk) []schemas.
 			}
 			msg.ResponsesToolMessage.Arguments = &s
 		}
-		if acc.summary != nil {
-			if msg.ResponsesReasoning == nil {
-				msg.ResponsesReasoning = &schemas.ResponsesReasoning{}
-			}
-			if len(msg.ResponsesReasoning.Summary) == 0 {
-				msg.ResponsesReasoning.Summary = append(msg.ResponsesReasoning.Summary, schemas.ResponsesReasoningSummary{
-					Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
-				})
-			}
-			msg.ResponsesReasoning.Summary[0].Text = acc.summary.String()
+		for at, b := range acc.summary {
+			msg.ResponsesReasoning.Summary[at].Text = b.String()
 		}
 		if acc.encrypted != nil {
 			s := acc.encrypted.String()

@@ -1126,6 +1126,7 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	switch bifrostResp.Type {
 	case schemas.ResponsesStreamResponseTypePing,
 		schemas.ResponsesStreamResponseTypeSafeguardsUpdate,
+		schemas.ResponsesStreamResponseTypeInteractionEvent,
 		schemas.ResponsesStreamResponseTypeProviderRawEvent,
 		schemas.ResponsesStreamResponseTypeCreated,
 		schemas.ResponsesStreamResponseTypeInProgress,
