@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -622,6 +623,92 @@ func BenchmarkAsyncCompletionUsage(b *testing.B) {
 				if _, err := schemas.MarshalSorted(job.ToResponse()); err != nil {
 					b.Fatal(err)
 				}
+			}
+		})
+	}
+}
+
+// A submit is admitted before anything is written. When the admission check
+// refuses, no job row exists and no webhook endpoint is resolved, so a refused
+// caller learns nothing about which endpoint names are configured.
+func TestSubmitJob_AdmissionRunsBeforeAnyWork(t *testing.T) {
+	dispatcher := &recordingWebhookDispatcher{}
+	executor := newWebhookTestExecutor(t, dispatcher)
+	refusal := errors.New("virtual key is required")
+	executor.SetAdmission(func(*schemas.BifrostContext) error { return refusal })
+
+	// The store is read directly: the returned error and nil job would look the same if the row
+	// had been written before the check.
+	store, ok := executor.logstore.(*RDBLogStore)
+	require.True(t, ok, "the test executor writes to a real SQLite store")
+	jobRows := func() int64 {
+		var n int64
+		require.NoError(t, store.db.Model(&AsyncJob{}).Count(&n).Error)
+		return n
+	}
+
+	var ran atomic.Bool
+	operation := func(*schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
+		ran.Store(true)
+		return map[string]string{"status": "ok"}, nil
+	}
+	for name, reference := range map[string]string{"no webhook": "", "unknown webhook": "no-such-endpoint"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if reference != "" {
+				ctx.SetValue(schemas.BifrostContextKeyAsyncWebhookEndpoint, reference)
+			}
+			job, err := executor.SubmitJob(ctx, 3600, operation, schemas.ChatCompletionRequest)
+			require.Error(t, err)
+			assert.Nil(t, job)
+			assert.ErrorIs(t, err, ErrAsyncJobNotAdmitted)
+			assert.ErrorIs(t, err, refusal)
+			assert.NotErrorIs(t, err, ErrInvalidWebhookReference)
+			assert.Zero(t, jobRows(), "a refused submit must leave no job row")
+		})
+	}
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, ran.Load(), "a refused submit must not run the operation")
+	assert.Zero(t, jobRows(), "a refused submit must leave no job row")
+
+	executor.SetAdmission(func(*schemas.BifrostContext) error { return nil })
+	job, err := executor.SubmitJob(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), 3600, operation, schemas.ChatCompletionRequest)
+	require.NoError(t, err)
+	require.NotNil(t, job)
+	assert.EqualValues(t, 1, jobRows(), "an admitted submit writes its job row")
+}
+
+func TestResolveAsyncJobResultTTL(t *testing.T) {
+	const day = 24 * 60 * 60
+	tests := []struct {
+		name       string
+		requested  string
+		defaultTTL int
+		want       int
+	}{
+		{name: "absent uses the default", requested: "", defaultTTL: 3600, want: 3600},
+		{name: "malformed uses the default", requested: "soon", defaultTTL: 3600, want: 3600},
+		{name: "negative uses the default", requested: "-5", defaultTTL: 3600, want: 3600},
+		{name: "in range is kept", requested: "7200", defaultTTL: 3600, want: 7200},
+		{name: "at the ceiling is kept", requested: "2592000", defaultTTL: 3600, want: MaxAsyncJobResultTTL},
+		{name: "above the ceiling is clamped", requested: "3153600000", defaultTTL: 3600, want: MaxAsyncJobResultTTL},
+		{name: "overflow is clamped via the default path", requested: "99999999999999999999", defaultTTL: 3600, want: 3600},
+		{name: "a larger configured default raises the ceiling", requested: "3153600000", defaultTTL: 90 * day, want: 90 * day},
+		{name: "a larger configured default is itself honored", requested: "", defaultTTL: 90 * day, want: 90 * day},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ResolveAsyncJobResultTTL(tt.requested, tt.defaultTTL))
+		})
+	}
+}
+
+func BenchmarkResolveAsyncJobResultTTL(b *testing.B) {
+	for name, requested := range map[string]string{"absent": "", "in range": "7200", "above the ceiling": "3153600000"} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ResolveAsyncJobResultTTL(requested, 3600)
 			}
 		})
 	}

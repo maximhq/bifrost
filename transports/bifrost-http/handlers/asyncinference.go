@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -541,20 +541,46 @@ func getVirtualKeyFromContext(ctx *schemas.BifrostContext) *string {
 }
 
 func getResultTTLFromHeaderWithDefault(ctx *fasthttp.RequestCtx, defaultTTL int) int {
-	resultTTL := string(ctx.Request.Header.Peek(schemas.AsyncHeaderResultTTL))
-	if resultTTL == "" {
-		return defaultTTL
+	return logstore.ResolveAsyncJobResultTTL(string(ctx.Request.Header.Peek(schemas.AsyncHeaderResultTTL)), defaultTTL)
+}
+
+// asyncJobCredentialRequiredMessage is what a caller who submitted a job without
+// a credential is told, the same wording the request pipeline uses.
+const asyncJobCredentialRequiredMessage = "virtual key is required. Provide a virtual key via the x-bf-vk header."
+
+// AsyncJobAdmission returns the admission check for async job submits: when the
+// deployment requires authentication on inference, a submit must carry a
+// credential. The request pipeline asks the same question, but for an async job
+// it runs in the background, after the submit call has already answered 202 and
+// stored the job. Asking here, through governance's own predicate, refuses the
+// submit before anything is written. Access and limits stay with the pipeline.
+func AsyncJobAdmission(config *lib.Config) logstore.AsyncJobAdmission {
+	return func(ctx *schemas.BifrostContext) error {
+		if config == nil {
+			return nil
+		}
+		// A config save replaces ClientConfig under this lock. It is released before
+		// the credential check, which reads only the request context.
+		config.Mu.RLock()
+		enforceAuth := config.ClientConfig != nil && config.ClientConfig.EnforceAuthOnInference
+		config.Mu.RUnlock()
+		if !enforceAuth {
+			return nil
+		}
+		if governance.PresentedAnyCredential(ctx) {
+			return nil
+		}
+		return errors.New(asyncJobCredentialRequiredMessage)
 	}
-	resultTTLInt, err := strconv.Atoi(resultTTL)
-	if err != nil || resultTTLInt < 0 {
-		return defaultTTL
-	}
-	return resultTTLInt
 }
 
 // sendSubmitJobError maps a submit failure to HTTP: an unusable webhook
 // reference is the caller's mistake, everything else is server-side.
 func sendSubmitJobError(ctx *fasthttp.RequestCtx, err error) {
+	if errors.Is(err, logstore.ErrAsyncJobNotAdmitted) {
+		SendError(ctx, fasthttp.StatusUnauthorized, asyncJobCredentialRequiredMessage)
+		return
+	}
 	if errors.Is(err, logstore.ErrInvalidWebhookReference) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
