@@ -45,7 +45,6 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/otel"
-	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -164,7 +163,7 @@ type ServerCallbacks interface {
 	GetModelRouterStatus(ctx context.Context, id string) (complexity.SemanticStatusInfo, complexity.LLMStatusInfo, error)
 	RetryModelRouterWarmup(ctx context.Context, id string) (complexity.SemanticStatusInfo, bool, error)
 	// Prompt repository related callbacks
-	ReloadPromptCache(ctx context.Context) error
+	RefreshPrompts(ctx context.Context, promptIDs []string, removed bool) error
 	// Webhook related callbacks
 	ReloadWebhookEndpoint(ctx context.Context, id string) error
 	RemoveWebhookEndpoint(ctx context.Context, id string) error
@@ -658,33 +657,18 @@ func governancePluginNameFromContext(ctx context.Context) string {
 	return governance.PluginName
 }
 
-// getPromptsPluginName returns the prompts plugin name from context or default
-func (s *BifrostHTTPServer) getPromptsPluginName() string {
-	if name, ok := s.Ctx.Value(schemas.BifrostContextKeyPromptsPluginName).(string); ok && name != "" {
-		return name
-	}
-	return prompts.PluginName
-}
-
-// promptCacheReloadable is the prompts plugin's cache refresh entry point.
-type promptCacheReloadable interface {
-	Reload(ctx context.Context) error
-}
-
-// ReloadPromptCache rebuilds the prompts plugin's in-memory index; no-op when the plugin is not loaded.
-func (s *BifrostHTTPServer) ReloadPromptCache(ctx context.Context) error {
-	name := s.getPromptsPluginName()
-	plugin, err := lib.FindPluginAs[schemas.BasePlugin](s.Config, name)
-	if err != nil || plugin == nil {
+// RefreshPrompts brings the named prompts, with their versions, into memory after a write, or drops
+// them when removed is set. The live store holds prompts whether or not the prompts plugin is
+// loaded, so memory follows the database either way. With no IDs there is nothing to refresh.
+func (s *BifrostHTTPServer) RefreshPrompts(ctx context.Context, promptIDs []string, removed bool) error {
+	if len(promptIDs) == 0 {
 		return nil
 	}
-	reloader, ok := plugin.(promptCacheReloadable)
-	if !ok {
-		// A plugin registered under this name that cannot reload leaves the cache stale silently.
-		logger.Warn("plugin %s does not support prompt cache reload", name)
-		return nil
+	refs := make([]livestore.Ref, 0, len(promptIDs))
+	for _, id := range promptIDs {
+		refs = append(refs, livestore.Ref{Kind: livestore.KindPrompt, ID: id, Remove: removed})
 	}
-	return reloader.Reload(ctx)
+	return s.refreshRows(ctx, refs)
 }
 
 // getGovernancePlugin safely retrieves the governance plugin with proper locking.

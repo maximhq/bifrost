@@ -127,7 +127,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)
 
 	case prompts.PluginName:
-		return prompts.Init(ctx, bifrostConfig.ConfigStore, logger)
+		return prompts.Init(ctx, bifrostConfig.ConfigStore, bifrostConfig.LiveStore, logger)
 
 	case logging.PluginName:
 		loggingConfig, err := loggingPluginConfig(pluginConfig, bifrostConfig)

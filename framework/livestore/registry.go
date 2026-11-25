@@ -45,6 +45,13 @@ const KindRoutingRule Kind = "routing_rule"
 // KindModelRouter names the model router collection.
 const KindModelRouter Kind = "model_router"
 
+// KindPrompt and KindPromptVersion name the prompt collections: prompts, and their versions with
+// their messages.
+const (
+	KindPrompt        Kind = "prompt"
+	KindPromptVersion Kind = "prompt_version"
+)
+
 // KindGrantSet names the interned grant sets: what keys may use, stored once per content.
 const KindGrantSet Kind = "grant_set"
 
@@ -65,6 +72,10 @@ type Collections struct {
 	Agents       *Collection[registry.Agent]
 	RoutingRules *Collection[registry.RoutingRule]
 	ModelRouters *Collection[registry.ModelRouter]
+	Prompts      *Collection[registry.Prompt]
+	// PromptVersions holds every prompt version, by prompt and number and as each prompt's latest;
+	// a prompt's refresh re-reads its versions and its removal removes them.
+	PromptVersions *Collection[registry.PromptVersion]
 	// GrantSets holds the grant set of every key, once per content. A key names its own by
 	// VirtualKey.Grants; GrantSet looks one up.
 	GrantSets *Interned[registry.GrantSet]
@@ -238,6 +249,24 @@ func registerCollections(s *Store, o *storeOptions) (*Collections, error) {
 		Page: registry.ModelRoutersPage,
 		ByID: registry.ModelRoutersByID,
 	}); err != nil {
+		return nil, err
+	}
+	if c.Prompts, err = s.Register(KindPrompt, nil, Loader[registry.Prompt]{
+		ID:   registry.PromptID,
+		Page: registry.PromptsPage,
+		ByID: registry.PromptsByID,
+	}); err != nil {
+		return nil, err
+	}
+	if c.PromptVersions, err = s.Register(KindPromptVersion, []Kind{KindPrompt}, Loader[registry.PromptVersion]{
+		ID:   registry.PromptVersionID,
+		Page: registry.PromptVersionsPage,
+		ByID: registry.PromptVersionsByID,
+	},
+		ChildOf(KindPrompt, registry.PromptVersionPrompt, registry.PromptVersionsByPrompts, Cascade),
+		UniqueIndex(registry.PromptVersionByNumber, registry.PromptVersionNumberKey),
+		MultiIndex(registry.PromptVersionLatest, registry.PromptVersionLatestKey),
+	); err != nil {
 		return nil, err
 	}
 	return c, nil
