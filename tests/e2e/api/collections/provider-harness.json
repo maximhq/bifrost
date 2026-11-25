@@ -351593,6 +351593,260 @@
           }
         }
       ]
+    },
+    {
+      "name": "388. Log rows record the provider's response ID (provider response id)",
+      "description": "A log row could not be matched to the single provider response it describes: the response ID survived only inside logged response content, which is blank when content logging is off. `provider_response_id` is now a field on the row.\n\nEach case sends one request, reads the response ID off the wire the way a client would, then reads the log row by `x-bifrost-request-id` and asserts the two are equal. The cases cover the neutral chat route (non-streaming and streaming), the neutral Responses route, and the Anthropic drop-in route that coding harnesses use. The streaming chat case runs with content logging off through a virtual key, which is the configuration where the ID was previously unrecoverable.",
+      "item": [
+        {
+          "name": "Logs: openai gpt-4o-mini /v1/chat/completions records provider_response_id (provider response id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat non-stream: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('chat non-stream: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "var wireId;",
+                  "wireId = pm.response.json().id;",
+                  "pm.test('chat non-stream: response carries an id', function () { pm.expect(wireId, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                  "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      pm.test('chat non-stream: log row provider_response_id equals the id on the wire', function () { pm.expect(j.provider_response_id, JSON.stringify(j)).to.eql(wireId); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('chat non-stream: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Logs: openai gpt-4o-mini /v1/chat/completions stream with content logging off records provider_response_id (provider response id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat stream, content off: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('chat stream, content off: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "var wireId;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (wireId || line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { var evt = JSON.parse(payload); if (evt && evt.id) { wireId = evt.id; } } catch (e) {}",
+                  "});",
+                  "pm.test('chat stream, content off: response carries an id', function () { pm.expect(wireId, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                  "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      pm.test('chat stream, content off: log row provider_response_id equals the id on the wire', function () { pm.expect(j.provider_response_id, JSON.stringify(j)).to.eql(wireId); });",
+                  "      pm.test('chat stream, content off: content_hidden is true', function () { pm.expect(j.content_hidden, JSON.stringify(j)).to.eql(true); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('chat stream, content off: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-test-key-nocontent"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Logs: openai gpt-4o-mini /v1/responses records provider_response_id (provider response id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses non-stream: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('responses non-stream: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "var wireId;",
+                  "wireId = pm.response.json().id;",
+                  "pm.test('responses non-stream: response carries an id', function () { pm.expect(wireId, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                  "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      pm.test('responses non-stream: log row provider_response_id equals the id on the wire', function () { pm.expect(j.provider_response_id, JSON.stringify(j)).to.eql(wireId); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('responses non-stream: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Say hi\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Logs: anthropic claude-haiku-4-5 /anthropic/v1/messages stream records provider_response_id (provider response id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic messages stream: request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('anthropic messages stream: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "var wireId;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (wireId || line.indexOf('data:') !== 0) { return; }",
+                  "  try { var evt = JSON.parse(line.slice(5).trim()); if (evt && evt.type === 'message_start' && evt.message) { wireId = evt.message.id; } } catch (e) {}",
+                  "});",
+                  "pm.test('anthropic messages stream: response carries an id', function () { pm.expect(wireId, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "// The log row is written by the batching writer (logs_store.writer.batch_interval), so poll the",
+                  "// logs API for it instead of asserting on the first read. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (!err && res.code === 200) {",
+                  "      var j = res.json();",
+                  "      pm.test('anthropic messages stream: log row provider_response_id equals the id on the wire', function () { pm.expect(j.provider_response_id, JSON.stringify(j)).to.eql(wireId); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('anthropic messages stream: log row appeared', function () { pm.expect.fail('log ' + reqId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 8,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

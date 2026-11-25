@@ -5343,6 +5343,11 @@ func migrationAddProviderResponseIDColumn(ctx context.Context, db *gorm.DB, logg
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
+			// logs is the hottest table: bound the wait so the ALTER cannot queue
+			// behind a long read and hold up every statement that follows it.
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
 			if err := addColumnIfNotExists(tx, logger, &Log{}, "provider_response_id"); err != nil {
 				return fmt.Errorf("failed to add provider_response_id column: %w", err)
 			}
@@ -5354,7 +5359,11 @@ func migrationAddProviderResponseIDColumn(ctx context.Context, db *gorm.DB, logg
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
-			return dropColumnIfExists(tx.WithContext(ctx), logger, &Log{}, "provider_response_id")
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "provider_response_id")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

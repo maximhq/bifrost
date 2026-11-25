@@ -2725,3 +2725,147 @@ func TestRelayEvictionRetryLeavesPendingEntryIntact(t *testing.T) {
 		t.Fatal("CreatedAt must not be reset on the kept entry")
 	}
 }
+
+func TestApplyProviderResponseID(t *testing.T) {
+	id := "msg_011ChQDewfwJ3BMDLzXNoVjS"
+	oversized := strings.Repeat("a", maxPersistedProviderResponseIDLen+1)
+	cases := []struct {
+		name   string
+		result *schemas.BifrostResponse
+		want   string
+	}{
+		{
+			name:   "chat completion",
+			result: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: id}},
+			want:   id,
+		},
+		{
+			name:   "responses",
+			result: &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{ID: &id}},
+			want:   id,
+		},
+		{
+			name: "responses stream final chunk",
+			result: &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Response: &schemas.BifrostResponsesResponse{ID: &id},
+			}},
+			want: id,
+		},
+		{
+			name:   "responses stream chunk without a response",
+			result: &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{}},
+		},
+		{
+			name:   "text completion",
+			result: &schemas.BifrostResponse{TextCompletionResponse: &schemas.BifrostTextCompletionResponse{ID: id}},
+			want:   id,
+		},
+		{
+			name:   "empty id",
+			result: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}},
+		},
+		{
+			name:   "oversized id",
+			result: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: oversized}},
+		},
+		{name: "nil result"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := &logstore.Log{}
+			applyProviderResponseID(entry, tc.result)
+			got := ""
+			if entry.ProviderResponseID != nil {
+				got = *entry.ProviderResponseID
+			}
+			if got != tc.want {
+				t.Fatalf("provider_response_id = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	// A nil entry must not panic.
+	applyProviderResponseID(nil, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: id}})
+}
+
+// TestPostLLMHookStreamRecordsProviderResponseIDWithoutTracer drives a streaming final
+// chunk through the hooks with no tracer on the context, so the accumulator never runs and
+// the row is written by the fallback branch. The final chunk still carries the completed
+// response, so its ID must reach the row. Content logging is off: the ID is not content.
+func TestPostLLMHookStreamRecordsProviderResponseIDWithoutTracer(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	const requestID = "req-untraced-stream-response-id"
+	responseID := "msg_011ChQENCy5gjziK91snE7MY"
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-haiku-4-5",
+			Params:   &schemas.ResponsesParameters{},
+		},
+	}
+	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	finalChunk := &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Response: &schemas.BifrostResponsesResponse{ID: &responseID, Model: "claude-haiku-4-5"},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ResponsesStreamRequest,
+				Provider:    schemas.Anthropic,
+			},
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, finalChunk, nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), requestID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.Status != "success" {
+		t.Fatalf("expected success status, got %q", logEntry.Status)
+	}
+	if logEntry.ProviderResponseID == nil || *logEntry.ProviderResponseID != responseID {
+		t.Fatalf("provider_response_id = %v, want %q", logEntry.ProviderResponseID, responseID)
+	}
+}
+
+// BenchmarkApplyProviderResponseID records the per-request cost of capturing the provider's
+// response ID: one small allocation for a response that carries an ID, none otherwise.
+func BenchmarkApplyProviderResponseID(b *testing.B) {
+	id := "msg_011ChQDewfwJ3BMDLzXNoVjS"
+	cases := []struct {
+		name   string
+		result *schemas.BifrostResponse
+	}{
+		{"chat_with_id", &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: id}}},
+		{"responses_stream_with_id", &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Response: &schemas.BifrostResponsesResponse{ID: &id},
+		}}},
+		{"chat_without_id", &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}},
+		{"other_request_type", &schemas.BifrostResponse{}},
+	}
+	for _, c := range cases {
+		b.Run(c.name, func(b *testing.B) {
+			entry := &logstore.Log{}
+			b.ReportAllocs()
+			for b.Loop() {
+				entry.ProviderResponseID = nil
+				applyProviderResponseID(entry, c.result)
+			}
+		})
+	}
+}

@@ -2700,6 +2700,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Without an accumulated response, CalculateCost cannot see cache or
 			// guardrail metadata. Normal accumulated streams already include both.
 			p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
+			// The final chunk still carries the completed response, so its ID does
+			// not depend on the accumulator.
+			if isFinalChunk {
+				applyProviderResponseID(entry, result)
+			}
 		} else if isFinalChunk {
 			// Apply streaming output fields to the entry
 			entry.Stream = true

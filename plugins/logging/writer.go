@@ -1511,7 +1511,10 @@ func applyProviderResponseID(entry *logstore.Log, result *schemas.BifrostRespons
 	if id == "" || len(id) > maxPersistedProviderResponseIDLen {
 		return
 	}
-	entry.ProviderResponseID = &id
+	// Copy into a variable declared here so only a recorded ID reaches the heap; taking
+	// the address of id would allocate on every call, including the ones that record nothing.
+	recorded := id
+	entry.ProviderResponseID = &recorded
 }
 
 // applyUserEmail records the governance-stamped user email on an LLM row when the context carries one.
