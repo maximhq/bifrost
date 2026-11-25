@@ -298,6 +298,43 @@ test.describe('MCP Settings', () => {
       expect(JSON.stringify(saved?.issuer_url)).toContain('https://gateway.e2e.test')
     })
 
+    test('should save a browser URL under Security and keep it when MCP settings save', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.gotoSecurity()
+
+      await mcpSettingsPage.securityBrowserBaseUrlInput.fill('https://bifrost.corp.e2e.test')
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('success')).toBeVisible()
+      type Saved = { issuer_url?: unknown; browser_base_url?: unknown } | undefined
+      let saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as Saved
+      expect(JSON.stringify(saved?.browser_base_url)).toContain('https://bifrost.corp.e2e.test')
+      expect(JSON.stringify(saved?.issuer_url)).toContain('https://bifrost.e2e.test')
+
+      // MCP settings rewrite oauth2_server_config, which the server replaces whole.
+      const uri = 'https://www.cursor.com/agents/mcp/oauth/callback'
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+      await mcpSettingsPage.allowedRedirectUrisInput.fill(uri)
+      await mcpSettingsPage.allowedRedirectUrisInput.press('Enter')
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as Saved
+      expect(JSON.stringify(saved?.browser_base_url)).toContain('https://bifrost.corp.e2e.test')
+
+      await mcpSettingsPage.gotoSecurity()
+      await expect(mcpSettingsPage.securityBrowserBaseUrlInput).toHaveValue('https://bifrost.corp.e2e.test')
+    })
+
+    test('should reject a malformed browser URL under Security without saving', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.gotoSecurity()
+
+      await mcpSettingsPage.securityBrowserBaseUrlInput.fill('bifrost.corp.e2e.test')
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/browser_base_url must be an absolute HTTP or HTTPS URL/i)
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { browser_base_url?: unknown } | undefined
+      expect(JSON.stringify(saved?.browser_base_url ?? '')).not.toContain('bifrost.corp.e2e.test')
+    })
+
     test('should reject a non-https remote redirect URI without saving', async ({ mcpSettingsPage, request }) => {
       await mcpSettingsPage.goto()
       await mcpSettingsPage.advancedTrigger.click()

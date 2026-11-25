@@ -171,6 +171,10 @@ export default function SecurityView() {
 			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
 		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
 		const issuerURLChanged = !secretVarEquals(localConfig.oauth2_server_config?.issuer_url, config.oauth2_server_config?.issuer_url);
+		const browserBaseURLChanged = !secretVarEquals(
+			localConfig.oauth2_server_config?.browser_base_url,
+			config.oauth2_server_config?.browser_base_url,
+		);
 
 		return (
 			originsChanged ||
@@ -188,7 +192,8 @@ export default function SecurityView() {
 			entityAccessProfileModeChanged ||
 			dualCredentialConflictBehaviorChanged ||
 			vkRotationCooldownChanged ||
-			issuerURLChanged
+			issuerURLChanged ||
+			browserBaseURLChanged
 		);
 	}, [config, localConfig, authConfig, bifrostConfig, showPasswordSection, credentialsChanged]);
 
@@ -791,6 +796,26 @@ export default function SecurityView() {
 								<AlertDescription>{t("security.issuerChangeWarning")}</AlertDescription>
 							</Alert>
 						)}
+					<div className="space-y-2 border-t pt-4">
+						<div className="space-y-0.5">
+							<label htmlFor="oauth2-browser-base-url" className="text-sm font-medium">
+								{t("security.oauthBrowserUrl")}
+							</label>
+							<p className="text-muted-foreground text-sm">
+								<Trans t={t} i18nKey="security.oauthBrowserUrlHelp" components={{ code0: <code className="text-xs" /> }} />
+							</p>
+						</div>
+						<SecretVarInput
+							id="oauth2-browser-base-url"
+							data-testid="oauth2-browser-base-url-input"
+							placeholder={t("security.oauthBrowserUrlPlaceholder")}
+							value={localConfig.oauth2_server_config?.browser_base_url}
+							onChange={(value: SecretVar) =>
+								setLocalConfig((prev) => ({ ...prev, oauth2_server_config: { ...prev.oauth2_server_config, browser_base_url: value } }))
+							}
+							disabled={!hasSettingsUpdateAccess}
+						/>
+					</div>
 				</div>
 				{/* Allowed Origins */}
 				{needsRestart && <RestartWarning />}

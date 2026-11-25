@@ -19,6 +19,7 @@ export class MCPSettingsPage extends BasePage {
   readonly issuerUrlSecurityLink: Locator
   readonly securityIssuerUrlInput: Locator
   readonly securityIssuerUrlChangeWarning: Locator
+  readonly securityBrowserBaseUrlInput: Locator
   readonly securitySaveBtn: Locator
   readonly maxProtocolVersionSelect: Locator
   readonly serverMaxProtocolVersionSelect: Locator
@@ -43,6 +44,7 @@ export class MCPSettingsPage extends BasePage {
     // The issuer is edited under Settings > Security, since Cross App Access uses it too.
     this.securityIssuerUrlInput = page.getByTestId('oauth2-issuer-url-input')
     this.securityIssuerUrlChangeWarning = page.getByTestId('oauth2-issuer-url-change-warning')
+    this.securityBrowserBaseUrlInput = page.getByTestId('oauth2-browser-base-url-input')
     this.securitySaveBtn = page.getByTestId('security-save-btn')
     this.maxProtocolVersionSelect = page.getByTestId('mcp-max-protocol-version-select')
     // Under Advanced Settings: the cap on what Bifrost's own /mcp serves.

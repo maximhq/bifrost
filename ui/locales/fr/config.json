@@ -260,6 +260,9 @@
 		"oauthIssuerUrl": "URL de l’émetteur OAuth",
 		"oauthIssuerUrlHelp": "URL publique stable du serveur d’autorisation OAuth de Bifrost, annoncée dans les documents de découverte et définie comme revendication <code0>iss</code0> de chaque jeton émis par Bifrost. OAuth MCP (obligatoire en modes OAuth et Both) et Cross App Access l’utilisent. Bifrost ne la déduit jamais de l’en-tête <code1>Host</code1> de la requête, car cet en-tête est contrôlé par l’appelant. Prend en charge la syntaxe des variables d’environnement (par ex. <code2>env.BIFROST_ISSUER_URL</code2>).",
 		"issuerChangeWarning": "Changer l’émetteur invalide les jetons d’accès émis par Bifrost. Les clients MCP les actualisent automatiquement et les applications Cross App Access en demandent de nouveaux.",
+		"oauthBrowserUrl": "URL du navigateur",
+		"oauthBrowserUrlHelp": "Adresse par laquelle les navigateurs des utilisateurs atteignent Bifrost pour se connecter et approuver l'accès, lorsque les clients MCP l'atteignent par un nom d'hôte que les navigateurs ne peuvent pas résoudre, comme un tunnel privé. Le point de terminaison d'autorisation, la page de consentement et la connexion des appareils l'utilisent ; l'émetteur et tous les points de terminaison appelés par les clients MCP restent sur l'URL de l'émetteur. Laissez vide pour utiliser l'URL de l'émetteur. Incluez le chemin de base si Bifrost est servi sous l'un d'eux. Prend en charge la syntaxe des variables d'environnement (par ex. <code0>env.BIFROST_BROWSER_URL</code0>).",
+		"oauthBrowserUrlPlaceholder": "https://bifrost.corp.example.com ou env.BIFROST_BROWSER_URL",
 		"toastIssuerUrlRequired": "L’URL de l’émetteur est obligatoire tant que le mode d’authentification MCP est OAuth ou Both. Passez l’authentification MCP sur En-têtes dans les paramètres MCP pour l’effacer."
 	},
 	"logging": {
