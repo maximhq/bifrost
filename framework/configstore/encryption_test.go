@@ -1516,6 +1516,130 @@ func TestVertexAWSWorkloadIdentity_GORMRoundTrip(t *testing.T) {
 	assert.Nil(t, adc.VertexKeyConfig.AWSWorkloadIdentity)
 }
 
+// TestVertexBatchGCSConfig_GORMRoundTrip saves a key through the hooks (BeforeSave serializes and
+// encrypts, AfterFind decrypts and rebuilds) and checks the bucket list comes back intact, and that
+// a key without one leaves the column NULL.
+func TestVertexBatchGCSConfig_GORMRoundTrip(t *testing.T) {
+	_, db := setupEncryptionTestStore(t)
+
+	withBuckets := tables.TableKey{
+		Name: "vertex-buckets", ProviderID: 1, Provider: "vertex", KeyID: "vx-gcs-1",
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewSecretVar("my-gcp-project"),
+			Region:    *schemas.NewSecretVar("us-central1"),
+			BatchGCSConfig: &schemas.BatchGCSConfig{Buckets: []schemas.GCSBucketConfig{
+				{BucketName: "team-batch", Prefix: "jobs/"},
+				{BucketName: "team-files"},
+			}},
+		},
+	}
+	withoutBuckets := tables.TableKey{
+		Name: "vertex-open", ProviderID: 1, Provider: "vertex", KeyID: "vx-gcs-2",
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewSecretVar("my-gcp-project"),
+			Region:    *schemas.NewSecretVar("us-central1"),
+		},
+	}
+	require.NoError(t, db.Create(&withBuckets).Error)
+	require.NoError(t, db.Create(&withoutBuckets).Error)
+
+	var raw map[string]any
+	db.Table("config_keys").Where("name = ?", "vertex-buckets").Take(&raw)
+	require.NotNil(t, raw["vertex_batch_gcs_config_json"], "the bucket list must be stored")
+	assert.NotContains(t, fmt.Sprintf("%v", raw["vertex_batch_gcs_config_json"]), "team-batch", "stored encrypted")
+	raw = nil
+	db.Table("config_keys").Where("name = ?", "vertex-open").Take(&raw)
+	assert.Nil(t, raw["vertex_batch_gcs_config_json"], "keys without a bucket list keep the column NULL")
+
+	var found tables.TableKey
+	require.NoError(t, db.Where("name = ?", "vertex-buckets").First(&found).Error)
+	require.NotNil(t, found.VertexKeyConfig)
+	require.NotNil(t, found.VertexKeyConfig.BatchGCSConfig)
+	assert.Equal(t, []schemas.GCSBucketConfig{{BucketName: "team-batch", Prefix: "jobs/"}, {BucketName: "team-files"}}, found.VertexKeyConfig.BatchGCSConfig.Buckets)
+
+	// A fresh receiver: First() on a populated struct also filters by its primary key.
+	var open tables.TableKey
+	require.NoError(t, db.Where("name = ?", "vertex-open").First(&open).Error)
+	require.NotNil(t, open.VertexKeyConfig)
+	assert.Nil(t, open.VertexKeyConfig.BatchGCSConfig)
+}
+
+// TestEncryptPlaintextKeys_VertexBatchGCSConfig_EncryptsAndDecryptsCorrectly pins the
+// vertex_batch_gcs_config_json column: a plaintext row is encrypted by the startup pass like the
+// other JSON key columns, and the GORM hooks rebuild the bucket list.
+func TestEncryptPlaintextKeys_VertexBatchGCSConfig_EncryptsAndDecryptsCorrectly(t *testing.T) {
+	store, db := setupEncryptionTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+	insertPlaintextRow(t, db,
+		`INSERT INTO config_keys (name, provider_id, provider, key_id, value, vertex_project_id, vertex_region, vertex_batch_gcs_config_json, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'plain_text', ?, ?)`,
+		"vertex-buckets-key", 1, "vertex", "vx-gcs", "",
+		"my-gcp-project", "us-central1", `{"buckets":[{"bucket_name":"team-batch","prefix":"jobs/"}]}`, now, now)
+
+	count, err := store.encryptPlaintextKeys(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+
+	var raw map[string]any
+	db.Table("config_keys").Where("name = ?", "vertex-buckets-key").Take(&raw)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	assert.NotContains(t, fmt.Sprintf("%v", raw["vertex_batch_gcs_config_json"]), "team-batch")
+
+	var found tables.TableKey
+	require.NoError(t, db.Where("name = ?", "vertex-buckets-key").First(&found).Error)
+	require.NotNil(t, found.VertexKeyConfig)
+	require.NotNil(t, found.VertexKeyConfig.BatchGCSConfig)
+	assert.Equal(t, []schemas.GCSBucketConfig{{BucketName: "team-batch", Prefix: "jobs/"}}, found.VertexKeyConfig.BatchGCSConfig.Buckets)
+}
+
+// TestMigrationAddVertexBatchGCSConfigColumn verifies the upgrade path: a config_keys table
+// provisioned before this release gains the column, and replaying the migration is a no-op.
+func TestMigrationAddVertexBatchGCSConfigColumn(t *testing.T) {
+	_, db := setupEncryptionTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableKey{}, "vertex_batch_gcs_config_json"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableKey{}, "vertex_batch_gcs_config_json"),
+		"precondition: the column must be absent before the migration runs")
+
+	require.NoError(t, migrationAddVertexBatchGCSConfigColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "vertex_batch_gcs_config_json"))
+
+	require.NoError(t, migrationAddVertexBatchGCSConfigColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "vertex_batch_gcs_config_json"))
+}
+
+// TestMigrationAddVertexBatchGCSConfigColumn_RollbackRefuses pins the down path: the column holds
+// operator-entered bucket lists, so a rollback must refuse instead of dropping it (the same contract
+// as the other non-rollbackable operator-settings columns), leaving the schema and data intact.
+func TestMigrationAddVertexBatchGCSConfigColumn_RollbackRefuses(t *testing.T) {
+	_, db := setupEncryptionTestStore(t)
+	ctx := context.Background()
+	require.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "vertex_batch_gcs_config_json"))
+
+	seed := tables.TableKey{
+		Name: "vertex-buckets", ProviderID: 1, Provider: "vertex", KeyID: "vx-gcs-rollback",
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID:      *schemas.NewSecretVar("my-gcp-project"),
+			Region:         *schemas.NewSecretVar("us-central1"),
+			BatchGCSConfig: &schemas.BatchGCSConfig{Buckets: []schemas.GCSBucketConfig{{BucketName: "team-files"}}},
+		},
+	}
+	require.NoError(t, db.Create(&seed).Error)
+
+	err := rollbackVertexBatchGCSConfigColumn(ctx, db, testMigrationLogger)
+	require.Error(t, err, "rollback must refuse: dropping the column removes every stored bucket list")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, "vertex_batch_gcs_config_json"),
+		"a refused rollback must leave the column intact")
+
+	var found tables.TableKey
+	require.NoError(t, db.Where("name = ?", "vertex-buckets").First(&found).Error)
+	require.NotNil(t, found.VertexKeyConfig)
+	require.NotNil(t, found.VertexKeyConfig.BatchGCSConfig, "the stored bucket list must survive the refused rollback")
+}
+
 // TestMigrationAddVertexAWSWorkloadIdentityColumn verifies the upgrade path: a config_keys table
 // provisioned before this release gains the column, and replaying the migration is a no-op.
 func TestMigrationAddVertexAWSWorkloadIdentityColumn(t *testing.T) {

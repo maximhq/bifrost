@@ -699,6 +699,51 @@ func TestUpdateProvidersConfig_CreateNew(t *testing.T) {
 	assert.Equal(t, "openai-primary", openaiKeys[0].Name)
 }
 
+// TestUpdateProvidersConfig_VertexBatchGCSConfigRoundTrip pins that a Vertex key's bucket list
+// survives save and reload, that an edit to the list persists, and that clearing it persists.
+func TestUpdateProvidersConfig_VertexBatchGCSConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	key := schemas.Key{
+		ID:     "key-uuid-gcs",
+		Name:   "vertex-buckets",
+		Value:  *schemas.NewSecretVar(""),
+		Weight: 1,
+		VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewSecretVar("my-gcp-project"),
+			Region:    *schemas.NewSecretVar("us-central1"),
+			BatchGCSConfig: &schemas.BatchGCSConfig{Buckets: []schemas.GCSBucketConfig{
+				{BucketName: "team-batch", Prefix: "jobs/"},
+				{BucketName: "team-files"},
+			}},
+		},
+	}
+	save := func() schemas.Key {
+		t.Helper()
+		require.NoError(t, store.UpdateProvidersConfig(ctx,
+			map[schemas.ModelProvider]ProviderConfig{"vertex": {}},
+			map[schemas.ModelProvider][]schemas.Key{"vertex": {key}}))
+		stored := storedProviderKeys(t, store, "vertex")
+		require.Len(t, stored, 1)
+		require.NotNil(t, stored[0].VertexKeyConfig)
+		return stored[0]
+	}
+
+	got := save()
+	require.NotNil(t, got.VertexKeyConfig.BatchGCSConfig, "the bucket list must survive the round trip")
+	assert.Equal(t, []schemas.GCSBucketConfig{{BucketName: "team-batch", Prefix: "jobs/"}, {BucketName: "team-files"}}, got.VertexKeyConfig.BatchGCSConfig.Buckets)
+
+	key.VertexKeyConfig.BatchGCSConfig = &schemas.BatchGCSConfig{Buckets: []schemas.GCSBucketConfig{{BucketName: "team-files", Prefix: "uploads"}}}
+	got = save()
+	require.NotNil(t, got.VertexKeyConfig.BatchGCSConfig)
+	assert.Equal(t, []schemas.GCSBucketConfig{{BucketName: "team-files", Prefix: "uploads"}}, got.VertexKeyConfig.BatchGCSConfig.Buckets, "an edit to the bucket list must persist")
+
+	key.VertexKeyConfig.BatchGCSConfig = nil
+	got = save()
+	assert.Nil(t, got.VertexKeyConfig.BatchGCSConfig, "clearing the bucket list must persist")
+}
+
 func TestUpdateProvidersConfig_UpdateExistingByKeyID(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

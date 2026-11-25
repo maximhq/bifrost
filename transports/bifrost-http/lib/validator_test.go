@@ -1935,6 +1935,40 @@ func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity(t *testing.T) 
 	}
 }
 
+// A Vertex key may list the Cloud Storage buckets it serves; each entry needs a bucket name.
+func TestValidateConfigSchema_VertexKeyConfig_BatchGCSConfig(t *testing.T) {
+	config := func(bucketEntry string) []byte {
+		return []byte(`{
+			"providers": {
+				"vertex": {
+					"keys": [
+						{
+							"name": "vertex-buckets-key",
+							"value": "",
+							"weight": 1.0,
+							"vertex_key_config": {
+								"project_id": "my-gcp-project",
+								"region": "us-central1",
+								"batch_gcs_config": {"buckets": [` + bucketEntry + `]}
+							}
+						}
+					]
+				}
+			}
+		}`)
+	}
+
+	if err := ValidateConfigSchema(config(`{"bucket_name": "team-batch", "prefix": "jobs/"}, {"bucket_name": "team-files"}`), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected Vertex key with batch_gcs_config to pass validation, got: %v", err)
+	}
+	if err := ValidateConfigSchema(config(`{"prefix": "jobs/"}`), loadLocalSchema(t)); err == nil {
+		t.Error("expected a bucket entry without 'bucket_name' to fail validation")
+	}
+	if err := ValidateConfigSchema(config(`{"bucket_name": "team-batch", "is_default": true}`), loadLocalSchema(t)); err == nil {
+		t.Error("expected an unknown field inside a bucket entry to fail validation")
+	}
+}
+
 func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity_MissingAudience(t *testing.T) {
 	invalidConfig := `{
 		"providers": {

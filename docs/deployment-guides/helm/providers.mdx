@@ -668,6 +668,20 @@ helm install bifrost bifrost/bifrost -f vertex-aws-wif-values.yaml
 </Tab>
 </Tabs>
 
+**Files and Batch API - GCS bucket list**
+
+`batch_gcs_config` lists the Cloud Storage buckets a key serves for file and batch operations. A key that lists buckets serves only those buckets, and only objects inside an entry's `prefix` when one is set. A `prefix` names a folder: `jobs` and `jobs/` both mean objects under `jobs/`. A request for any other location is refused with a `403` before it reaches Google. A key that lists no buckets accepts whichever bucket the request names.
+
+```yaml
+vertex_key_config:
+  project_id: "my-gcp-project"
+  region: "us-central1"
+  batch_gcs_config:
+    buckets:
+      - bucket_name: "my-vertex-batch-bucket"
+        prefix: "batch/"
+```
+
 </Tab>
 
 <Tab title="Groq / Mistral / Gemini / Others">

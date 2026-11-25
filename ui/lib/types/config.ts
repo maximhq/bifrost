@@ -121,6 +121,18 @@ export interface VertexAWSWorkloadIdentityConfig {
 	aws_role_arn?: SecretVar;
 }
 
+// GCSBucketConfig matching Go's schemas.GCSBucketConfig
+export interface GCSBucketConfig {
+	bucket_name: string;
+	prefix?: string;
+}
+
+// BatchGCSConfig matching Go's schemas.BatchGCSConfig: the Cloud Storage buckets a Vertex key
+// serves for file and batch operations. A key that lists none accepts any bucket.
+export interface BatchGCSConfig {
+	buckets?: GCSBucketConfig[];
+}
+
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
 export interface VertexKeyConfig {
 	project_id: SecretVar;
@@ -130,6 +142,7 @@ export interface VertexKeyConfig {
 	force_single_region?: boolean;
 	use_session_routing?: boolean;
 	aws_workload_identity?: VertexAWSWorkloadIdentityConfig;
+	batch_gcs_config?: BatchGCSConfig;
 }
 
 // Seed for the "Workload Identity (AWS)" tab. The lifetime is left unset so the server default
@@ -143,6 +156,7 @@ export const DefaultVertexAWSWorkloadIdentityConfig: VertexAWSWorkloadIdentityCo
 
 // aws_workload_identity is deliberately absent here: an empty block would otherwise be sent to
 // the API on every save. The tab seeds it from DefaultVertexAWSWorkloadIdentityConfig on demand.
+// batch_gcs_config is absent for the same reason: a key without a bucket list stays without one.
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	project_id: { value: "", ref: "" },
 	project_number: { value: "", ref: "" },
@@ -150,7 +164,7 @@ export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	auth_credentials: { value: "", ref: "" },
 	force_single_region: false,
 	use_session_routing: false,
-} as const satisfies Required<Omit<VertexKeyConfig, "aws_workload_identity">>;
+} as const satisfies Required<Omit<VertexKeyConfig, "aws_workload_identity" | "batch_gcs_config">>;
 
 export interface S3BucketConfig {
 	bucket_name: string;

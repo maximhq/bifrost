@@ -15119,6 +15119,341 @@
       ]
     },
     {
+      "name": "Vertex file and batch operations follow the key bucket list (vertex-bucket-list) [SERIAL]",
+      "description": "A Vertex key that lists buckets in vertex_key_config.batch_gcs_config serves file and batch operations for those buckets only, and inside a bucket's prefix when one is set. The Cloud Storage request carries the key's own Google credentials, so the list is what ties an operation to the buckets the key was set up for. The folder adds one key to the vertex provider, limited to gs://bifrost-harness-listed/uploads/, with placeholder credentials and a model list no request names, so inference never selects it. Each case pins that key with x-bf-api-key-id, so no other vertex key can serve the request, and nothing reaches Google: the refusal is decided before a token is requested. Cases: retrieve from an unlisted bucket, content from the listed bucket outside its prefix, a sibling folder that only shares the prefix's spelling (uploads-archive), and delete in an unlisted bucket all answer 403 naming batch_gcs_config. The last step deletes the key. Keys that list no buckets are unaffected; folder 11b covers them. No provider spend, no Google call.",
+      "item": [
+        {
+          "name": "[EXPECT-200] vertex bucket list setup: add a key limited to one bucket and prefix - vertex bucket list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('vertexBucketListKeyId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('key create exact response status - vertex bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// The id is saved before anything else is checked, so the cleanup step still deletes the key when a later check fails.",
+                  "var createdKey = {}; try { createdKey = pm.response.json() || {}; } catch (e) { createdKey = {}; }",
+                  "if (createdKey.id) { pm.collectionVariables.set('vertexBucketListKeyId', createdKey.id); }",
+                  "pm.test('the key has an id - vertex bucket list', function () {",
+                  "  pm.expect(createdKey.id, 'failed: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('the key keeps its bucket list - vertex bucket list', function () {",
+                  "  var buckets = (((createdKey.vertex_key_config || {}).batch_gcs_config || {}).buckets) || [];",
+                  "  pm.expect(buckets.length, 'failed: ' + pm.response.text()).to.equal(1);",
+                  "  pm.expect(buckets[0].bucket_name, 'failed: ' + pm.response.text()).to.equal('bifrost-harness-listed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/vertex/keys",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"gcs-bucket-list-harness\", \"weight\": 1, \"models\": [\"gcs-bucket-list-harness-unused\"], \"vertex_key_config\": {\"project_id\": \"harness-project\", \"region\": \"us-central1\", \"auth_credentials\": \"harness-placeholder-credentials\", \"batch_gcs_config\": {\"buckets\": [{\"bucket_name\": \"bifrost-harness-listed\", \"prefix\": \"uploads/\"}]}}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] vertex file retrieve from a bucket the key does not list - vertex bucket list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('vertexBucketListKeyId');",
+                  "pm.test('prerequisite vertexBucketListKeyId exists - vertex bucket list', function () { pm.expect(ready, 'the setup step did not create the key').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('retrieve from an unlisted bucket exact response status - vertex bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('retrieve from an unlisted bucket is refused by the key bucket list, before any Google call - vertex bucket list', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('batch_gcs_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key-id",
+                "value": "{{vertexBucketListKeyId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/gs%3A%2F%2Fbifrost-harness-unlisted%2Fuploads%2Fa.jsonl?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "gs%3A%2F%2Fbifrost-harness-unlisted%2Fuploads%2Fa.jsonl"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] vertex file content from the listed bucket outside its prefix - vertex bucket list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('vertexBucketListKeyId');",
+                  "pm.test('prerequisite vertexBucketListKeyId exists - vertex bucket list', function () { pm.expect(ready, 'the setup step did not create the key').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('content outside the prefix exact response status - vertex bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('content outside the prefix is refused by the key bucket list, before any Google call - vertex bucket list', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('batch_gcs_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key-id",
+                "value": "{{vertexBucketListKeyId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/gs%3A%2F%2Fbifrost-harness-listed%2Fprivate%2Fa.jsonl/content?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "gs%3A%2F%2Fbifrost-harness-listed%2Fprivate%2Fa.jsonl",
+                "content"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] vertex file retrieve from a folder that only shares the prefix spelling - vertex bucket list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('vertexBucketListKeyId');",
+                  "pm.test('prerequisite vertexBucketListKeyId exists - vertex bucket list', function () { pm.expect(ready, 'the setup step did not create the key').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('retrieve from uploads-archive exact response status - vertex bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('retrieve from uploads-archive is refused by the key bucket list, before any Google call - vertex bucket list', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('batch_gcs_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key-id",
+                "value": "{{vertexBucketListKeyId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/gs%3A%2F%2Fbifrost-harness-listed%2Fuploads-archive%2Fa.jsonl?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "gs%3A%2F%2Fbifrost-harness-listed%2Fuploads-archive%2Fa.jsonl"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] vertex file delete in a bucket the key does not list - vertex bucket list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('vertexBucketListKeyId');",
+                  "pm.test('prerequisite vertexBucketListKeyId exists - vertex bucket list', function () { pm.expect(ready, 'the setup step did not create the key').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('delete in an unlisted bucket exact response status - vertex bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('delete in an unlisted bucket is refused by the key bucket list, before any Google call - vertex bucket list', function () {",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('batch_gcs_config');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key-id",
+                "value": "{{vertexBucketListKeyId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files/gs%3A%2F%2Fbifrost-harness-unlisted%2Fuploads%2Fa.jsonl?provider=vertex",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files",
+                "gs%3A%2F%2Fbifrost-harness-unlisted%2Fuploads%2Fa.jsonl"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] vertex bucket list cleanup: delete the key - vertex bucket list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var ready = pm.collectionVariables.get('vertexBucketListKeyId');",
+                  "pm.test('prerequisite vertexBucketListKeyId exists - vertex bucket list', function () { pm.expect(ready, 'the setup step did not create the key').to.be.a('string').and.not.empty; });",
+                  "if (!ready && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('key delete exact response status - vertex bucket list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('vertexBucketListKeyId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/vertex/keys/{{vertexBucketListKeyId}}"
+          }
+        }
+      ]
+    },
+    {
       "name": "11c. Vertex Batches (/openai + native passthrough)",
       "description": "Vertex batch prediction is GCS-backed. CRUD (create/list/retrieve/cancel) runs via the OpenAI drop-in (/openai/v1/batches, routed by provider=vertex); the base64 batch ids round-trip through every endpoint. The last two rows exercise the native genai surface raw passthrough: a verbatim Vertex BatchPredictionJob body POSTed to .../batchPredictionJobs is forwarded as-is and the native job resource is returned. All [PREVIEW]-tagged: needs a gateway Vertex provider key + a GCS bucket, plus vertexProject/vertexLocation for the native rows. Set vertexGcsBucket, vertexProject and run with --env-var include_preview=1.",
       "item": [

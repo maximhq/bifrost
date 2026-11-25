@@ -1041,6 +1041,84 @@ func TestInlineDocumentURLsResponsesForwardsGeminiURLs(t *testing.T) {
 	}
 }
 
+// TestForwardedGCSReferencesFollowTheKeyBucketList: a gs:// reference bound for a Gemini model is
+// not downloaded by Bifrost. It is forwarded, and Vertex reads the object with the request key's
+// credentials. That is still a read through this key, so a key that lists buckets forwards only
+// what its list covers, as it does for an object Bifrost reads itself for a Claude model. A
+// reference outside the list is refused with a 403 before anything is sent; one inside it, and
+// any reference on a key with no list, is forwarded untouched.
+func TestForwardedGCSReferencesFollowTheKeyBucketList(t *testing.T) {
+	t.Parallel()
+
+	listed := schemas.Key{ID: "listed", VertexKeyConfig: &schemas.VertexKeyConfig{BatchGCSConfig: &schemas.BatchGCSConfig{Buckets: []schemas.GCSBucketConfig{
+		{BucketName: "team-files", Prefix: "uploads/"},
+	}}}}
+	const inside, outside = "gs://team-files/uploads/clip.mp4", "gs://team-files/private/report.pdf"
+
+	// inline runs one reference through both inliners, as a file block and as an image block,
+	// and returns the error each gives with the URLs the request is left with.
+	type outcome struct {
+		name string
+		err  error
+		url  *string
+	}
+	inline := func(key schemas.Key, rawURL string) []outcome {
+		provider := &VertexProvider{}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		var outcomes []outcome
+
+		chatFile, chatImage := rawURL, rawURL
+		chatFileReq := &schemas.BifrostChatRequest{Model: "gemini-3.1-pro-preview", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileURL: &chatFile}}}}}}}
+		err := provider.inlineRemoteURLSources(ctx, key, chatFileReq)
+		outcomes = append(outcomes, outcome{"chat file", err, chatFileReq.Input[0].Content.ContentBlocks[0].File.FileURL})
+		chatImageReq := &schemas.BifrostChatRequest{Model: "gemini-3.1-pro-preview", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: chatImage}}}}}}}
+		err = provider.inlineRemoteURLSources(ctx, key, chatImageReq)
+		outcomes = append(outcomes, outcome{"chat image", err, &chatImageReq.Input[0].Content.ContentBlocks[0].ImageURLStruct.URL})
+
+		role := schemas.ResponsesInputMessageRoleUser
+		respFile, respImage := rawURL, rawURL
+		respFileReq := &schemas.BifrostResponsesRequest{Model: "gemini-3.1-pro-preview", Input: []schemas.ResponsesMessage{{Role: &role,
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileURL: &respFile}}}}}}}
+		err = provider.inlineDocumentURLsResponses(ctx, key, respFileReq)
+		outcomes = append(outcomes, outcome{"responses file", err, respFileReq.Input[0].Content.ContentBlocks[0].ResponsesInputMessageContentBlockFile.FileURL})
+		respImageReq := &schemas.BifrostResponsesRequest{Model: "gemini-3.1-pro-preview", Input: []schemas.ResponsesMessage{{Role: &role,
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+				ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &respImage}}}}}}}
+		err = provider.inlineDocumentURLsResponses(ctx, key, respImageReq)
+		outcomes = append(outcomes, outcome{"responses image", err, respImageReq.Input[0].Content.ContentBlocks[0].ResponsesInputMessageContentBlockImage.ImageURL})
+		return outcomes
+	}
+
+	for _, got := range inline(listed, outside) {
+		if got.err == nil {
+			t.Errorf("%s: a reference outside the key's bucket list was forwarded", got.name)
+			continue
+		}
+		refusal := inlineURLSourcesError("failed to inline URL sources", got.err)
+		if refusal.StatusCode == nil || *refusal.StatusCode != http.StatusForbidden {
+			t.Errorf("%s: expected the bucket list 403, got %+v (%v)", got.name, refusal.StatusCode, got.err)
+		}
+	}
+	for label, key := range map[string]schemas.Key{"inside the list": listed, "no list": {}} {
+		rawURL := inside
+		if label == "no list" {
+			rawURL = outside
+		}
+		for _, got := range inline(key, rawURL) {
+			if got.err != nil {
+				t.Errorf("%s, %s: refused, want forwarded: %v", label, got.name, got.err)
+				continue
+			}
+			if got.url == nil || *got.url != rawURL {
+				t.Errorf("%s, %s: url = %v, want %q forwarded untouched", label, got.name, got.url, rawURL)
+			}
+		}
+	}
+}
+
 // TestInlineRemoteURLSourcesForwardsUnfetchableSchemes: a scheme bifrost cannot download
 // is passed through untouched rather than rejected. Bifrost does not model which sources
 // a provider accepts - the provider answers for itself, and its capabilities can change
@@ -2020,4 +2098,411 @@ func TestVertexListModelsAPIKeyOnlyKeyListsConfiguration(t *testing.T) {
 	if n := hits.Load(); n != 0 {
 		t.Errorf("an API-key-only key called Model Garden %d times", n)
 	}
+}
+
+// A key that lists buckets in batch_gcs_config serves file and batch operations for
+// those buckets only, and within a bucket's prefix when one is set. A key that
+// lists none keeps accepting whichever bucket the request names.
+func TestKeysAllowingGCSObject(t *testing.T) {
+	open := schemas.Key{ID: "open", VertexKeyConfig: &schemas.VertexKeyConfig{}}
+	emptyList := schemas.Key{ID: "empty-list", VertexKeyConfig: &schemas.VertexKeyConfig{BatchGCSConfig: &schemas.BatchGCSConfig{}}}
+	noConfig := schemas.Key{ID: "no-config"}
+	listed := schemas.Key{ID: "listed", VertexKeyConfig: &schemas.VertexKeyConfig{BatchGCSConfig: &schemas.BatchGCSConfig{Buckets: []schemas.GCSBucketConfig{
+		{BucketName: "team-batch", Prefix: "jobs/"},
+		{BucketName: "team-files"},
+		{BucketName: "team-bare", Prefix: "/jobs"},
+	}}}}
+
+	tests := []struct {
+		name      string
+		keys      []schemas.Key
+		bucket    string
+		objectKey string
+		wantIDs   []string
+	}{
+		{name: "a key with no list accepts any bucket", keys: []schemas.Key{open, emptyList, noConfig}, bucket: "anything", objectKey: "a/b", wantIDs: []string{"open", "empty-list", "no-config"}},
+		{name: "a listed bucket is accepted", keys: []schemas.Key{listed}, bucket: "team-files", objectKey: "a/b.jsonl", wantIDs: []string{"listed"}},
+		{name: "a listed bucket without a prefix accepts its root", keys: []schemas.Key{listed}, bucket: "team-files", objectKey: "", wantIDs: []string{"listed"}},
+		{name: "an unlisted bucket is refused", keys: []schemas.Key{listed}, bucket: "someone-elses", objectKey: "a/b.jsonl"},
+		{name: "the bucket name must match exactly", keys: []schemas.Key{listed}, bucket: "team-files-private", objectKey: "a"},
+		{name: "inside the configured prefix is accepted", keys: []schemas.Key{listed}, bucket: "team-batch", objectKey: "jobs/input.jsonl", wantIDs: []string{"listed"}},
+		{name: "the prefix itself is accepted", keys: []schemas.Key{listed}, bucket: "team-batch", objectKey: "jobs/", wantIDs: []string{"listed"}},
+		{name: "a prefix without a trailing slash is a folder", keys: []schemas.Key{listed}, bucket: "team-bare", objectKey: "jobs/input.jsonl", wantIDs: []string{"listed"}},
+		{name: "a sibling of a prefix without a trailing slash is refused", keys: []schemas.Key{listed}, bucket: "team-bare", objectKey: "jobs-archive/x"},
+		{name: "outside the configured prefix is refused", keys: []schemas.Key{listed}, bucket: "team-batch", objectKey: "private/key.pem"},
+		{name: "a sibling of the prefix is refused", keys: []schemas.Key{listed}, bucket: "team-batch", objectKey: "jobs-archive/x"},
+		{name: "a parent segment in the object key is refused", keys: []schemas.Key{listed}, bucket: "team-batch", objectKey: "jobs/../private/key.pem"},
+		{name: "the bucket root is refused when a prefix is set", keys: []schemas.Key{listed}, bucket: "team-batch", objectKey: ""},
+		{name: "only the keys that list the bucket are used", keys: []schemas.Key{listed, open}, bucket: "someone-elses", objectKey: "a", wantIDs: []string{"open"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, bifrostErr := keysAllowingGCSObject(tt.keys, tt.bucket, tt.objectKey)
+			if len(tt.wantIDs) == 0 {
+				if bifrostErr == nil {
+					t.Fatalf("expected a refusal, got keys %v", got)
+				}
+				if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusForbidden {
+					t.Fatalf("expected status 403, got %v", bifrostErr.StatusCode)
+				}
+				return
+			}
+			if bifrostErr != nil {
+				t.Fatalf("unexpected refusal: %v", bifrostErr.Error.Message)
+			}
+			ids := make([]string, 0, len(got))
+			for _, k := range got {
+				ids = append(ids, k.ID)
+			}
+			if strings.Join(ids, ",") != strings.Join(tt.wantIDs, ",") {
+				t.Fatalf("keys = %v, want %v", ids, tt.wantIDs)
+			}
+		})
+	}
+}
+
+// File and batch operations refuse a location outside the key's bucket list before a
+// token is attached or a request is sent.
+func TestVertexFileOperationsFollowTheKeyBucketList(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	key.ID = "listed"
+	key.VertexKeyConfig.BatchGCSConfig = &schemas.BatchGCSConfig{Buckets: []schemas.GCSBucketConfig{{BucketName: "team-files", Prefix: "uploads/"}}}
+	keys := []schemas.Key{key}
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	model := "gemini-2.5-flash"
+
+	requireForbidden := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		if bifrostErr == nil {
+			t.Fatal("expected a refusal, got none")
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected status 403, got %v (error: %+v)", bifrostErr.StatusCode, bifrostErr.Error)
+		}
+		if calls := upstreamCalls.Load(); calls != 0 {
+			t.Fatalf("expected no upstream request, got %d", calls)
+		}
+	}
+
+	t.Run("retrieve", func(t *testing.T) {
+		_, bifrostErr := provider.FileRetrieve(ctx, keys, &schemas.BifrostFileRetrieveRequest{Provider: schemas.Vertex, FileID: "gs://other-bucket/uploads/a.jsonl"})
+		requireForbidden(t, bifrostErr)
+	})
+	t.Run("content outside the prefix", func(t *testing.T) {
+		_, bifrostErr := provider.FileContent(ctx, keys, &schemas.BifrostFileContentRequest{Provider: schemas.Vertex, FileID: "gs://team-files/private/a.jsonl"})
+		requireForbidden(t, bifrostErr)
+	})
+	t.Run("delete", func(t *testing.T) {
+		_, bifrostErr := provider.FileDelete(ctx, keys, &schemas.BifrostFileDeleteRequest{Provider: schemas.Vertex, FileID: "gs://other-bucket/uploads/a.jsonl"})
+		requireForbidden(t, bifrostErr)
+	})
+	t.Run("list", func(t *testing.T) {
+		_, bifrostErr := provider.FileList(ctx, keys, &schemas.BifrostFileListRequest{
+			Provider:      schemas.Vertex,
+			StorageConfig: &schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "other-bucket"}},
+		})
+		requireForbidden(t, bifrostErr)
+	})
+	t.Run("list outside the prefix", func(t *testing.T) {
+		_, bifrostErr := provider.FileList(ctx, keys, &schemas.BifrostFileListRequest{
+			Provider:      schemas.Vertex,
+			StorageConfig: &schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "team-files"}},
+		})
+		requireForbidden(t, bifrostErr)
+	})
+	t.Run("upload", func(t *testing.T) {
+		_, bifrostErr := provider.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{
+			Provider: schemas.Vertex, Filename: "a.jsonl", File: []byte("{}"),
+			StorageConfig: &schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "other-bucket", Prefix: "uploads/"}},
+		})
+		requireForbidden(t, bifrostErr)
+	})
+	t.Run("resumable upload outside the prefix", func(t *testing.T) {
+		_, bifrostErr := provider.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{
+			Provider: schemas.Vertex, Filename: "a.jsonl",
+			StorageConfig: &schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "team-files", Prefix: "private/"}},
+		})
+		requireForbidden(t, bifrostErr)
+	})
+	t.Run("batch output location", func(t *testing.T) {
+		_, bifrostErr := provider.BatchCreate(ctx, key, &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Vertex, Model: &model, InputFileID: "gs://team-files/uploads/in.jsonl",
+			OutputFolder: &schemas.BatchOutputFolder{URL: "gs://other-bucket/out/"},
+		})
+		requireForbidden(t, bifrostErr)
+	})
+	t.Run("batch input location", func(t *testing.T) {
+		_, bifrostErr := provider.BatchCreate(ctx, key, &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Vertex, Model: &model, InputFileID: "gs://team-files/private/in.jsonl",
+			OutputFolder: &schemas.BatchOutputFolder{URL: "gs://team-files/uploads/out/"},
+		})
+		requireForbidden(t, bifrostErr)
+	})
+	t.Run("gs url read for a claude model", func(t *testing.T) {
+		fileURL := "gs://other-bucket/uploads/report.pdf"
+		_, bifrostErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+			Provider: schemas.Vertex, Model: "claude-sonnet-4-5",
+			Input: []schemas.ChatMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileURL: &fileURL}},
+				}},
+			}},
+		})
+		requireForbidden(t, bifrostErr)
+	})
+}
+
+// The bucket list is applied to the job body that is sent, so the locations are read in
+// every spelling Vertex accepts and every time a field appears.
+func TestVertexBatchJobGCSLocations(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		want        []string
+		wantOutputs []string
+	}{
+		{
+			name: "typed body",
+			body: `{"displayName":"job","inputConfig":{"instancesFormat":"jsonl","gcsSource":{"uris":["gs://in/a.jsonl","gs://in/b.jsonl"]}},"outputConfig":{"predictionsFormat":"jsonl","gcsDestination":{"outputUriPrefix":"gs://out/dir/"}}}`,
+			want: []string{"gs://in/a.jsonl", "gs://in/b.jsonl"}, wantOutputs: []string{"gs://out/dir/"},
+		},
+		{
+			name: "snake case fields",
+			body: `{"input_config":{"gcs_source":{"uris":["gs://in/a.jsonl"]}},"output_config":{"gcs_destination":{"output_uri_prefix":"gs://out/dir/"}}}`,
+			want: []string{"gs://in/a.jsonl"}, wantOutputs: []string{"gs://out/dir/"},
+		},
+		{
+			name:        "a repeated field is read every time",
+			body:        `{"outputConfig":{"gcsDestination":{"outputUriPrefix":"gs://one/"}},"outputConfig":{"gcsDestination":{"outputUriPrefix":"gs://two/"}}}`,
+			wantOutputs: []string{"gs://one/", "gs://two/"},
+		},
+		{
+			name: "a job without cloud storage locations",
+			body: `{"inputConfig":{"bigquerySource":{"inputUri":"bq://p.d.t"}},"outputConfig":{"bigqueryDestination":{"outputUri":"bq://p.d"}}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inputs, outputs := vertexBatchJobGCSLocations([]byte(tt.body))
+			if !reflect.DeepEqual(inputs, tt.want) || !reflect.DeepEqual(outputs, tt.wantOutputs) {
+				t.Fatalf("inputs = %v, outputs = %v; want %v and %v", inputs, outputs, tt.want, tt.wantOutputs)
+			}
+		})
+	}
+}
+
+// A location inside the key's bucket list is served as before.
+func TestVertexFileOperationsServeListedBuckets(t *testing.T) {
+	var gotPath atomic.Value
+	provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath.Store(r.URL.EscapedPath())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"uploads/a.jsonl","size":"2"}`))
+	}))
+	key.VertexKeyConfig.BatchGCSConfig = &schemas.BatchGCSConfig{Buckets: []schemas.GCSBucketConfig{{BucketName: "team-files", Prefix: "uploads"}}}
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+
+	resp, bifrostErr := provider.FileRetrieve(ctx, []schemas.Key{key}, &schemas.BifrostFileRetrieveRequest{Provider: schemas.Vertex, FileID: "gs://team-files/uploads/a.jsonl"})
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %+v", bifrostErr.Error)
+	}
+	if resp.Bytes != 2 {
+		t.Fatalf("bytes = %d, want 2", resp.Bytes)
+	}
+	if path, _ := gotPath.Load().(string); !strings.HasSuffix(path, "/b/team-files/o/uploads%2Fa.jsonl") {
+		t.Fatalf("upstream path = %q", path)
+	}
+}
+
+// Batch locations follow the key's bucket list the way file operations do: the results a
+// finished job wrote, the output folder in either spelling, and the input Bifrost generates
+// for an inline batch.
+func TestVertexBatchLocationsFollowTheKeyBucketList(t *testing.T) {
+	listed := func() schemas.Key {
+		return schemas.Key{ID: "listed", VertexKeyConfig: &schemas.VertexKeyConfig{BatchGCSConfig: &schemas.BatchGCSConfig{Buckets: []schemas.GCSBucketConfig{
+			{BucketName: "team-files", Prefix: "uploads/"},
+			{BucketName: "team-open"},
+		}}}}
+	}
+	open := schemas.Key{ID: "open", VertexKeyConfig: &schemas.VertexKeyConfig{}}
+
+	t.Run("results are read only from an output the key lists", func(t *testing.T) {
+		var storageCalls atomic.Int32
+		jobOutput := atomic.Value{}
+		jobOutput.Store("gs://other-bucket/out/prediction-1")
+		provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.URL.Path, "batchPredictionJobs") {
+				_, _ = w.Write([]byte(`{"name":"projects/project-123/locations/us-west1/batchPredictionJobs/1","state":"JOB_STATE_SUCCEEDED","outputInfo":{"gcsOutputDirectory":"` + jobOutput.Load().(string) + `"}}`))
+				return
+			}
+			storageCalls.Add(1)
+			_, _ = w.Write([]byte(`{"items":[]}`))
+		}))
+		key.ID = "listed"
+		key.VertexKeyConfig.BatchGCSConfig = listed().VertexKeyConfig.BatchGCSConfig
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+
+		_, bifrostErr := provider.BatchResults(ctx, []schemas.Key{key}, &schemas.BifrostBatchResultsRequest{Provider: schemas.Vertex, BatchID: "1"})
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected a 403 for a job whose output is outside the bucket list, got %+v", bifrostErr)
+		}
+		if calls := storageCalls.Load(); calls != 0 {
+			t.Fatalf("the output outside the bucket list was read with the key's credentials (%d storage requests)", calls)
+		}
+
+		jobOutput.Store("gs://team-files/uploads/out/prediction-1")
+		if _, bifrostErr := provider.BatchResults(ctx, []schemas.Key{key}, &schemas.BifrostBatchResultsRequest{Provider: schemas.Vertex, BatchID: "1"}); bifrostErr != nil {
+			t.Fatalf("results inside the bucket list are still read: %+v", bifrostErr.Error)
+		}
+		if calls := storageCalls.Load(); calls == 0 {
+			t.Fatal("expected the listed output to be read")
+		}
+	})
+
+	// The listing is asked for under the directory the job reports, separators and all: uploads//
+	// is not uploads/, which also holds every other job's output. Whatever the listing returns,
+	// every object is checked before it is read.
+	t.Run("a listed object outside the key's prefix is not read", func(t *testing.T) {
+		var downloads atomic.Int32
+		var listedPrefix atomic.Value
+		provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(r.URL.Path, "batchPredictionJobs"):
+				_, _ = w.Write([]byte(`{"name":"projects/project-123/locations/us-west1/batchPredictionJobs/1","state":"JOB_STATE_SUCCEEDED","outputInfo":{"gcsOutputDirectory":"gs://team-files/uploads//"}}`))
+			case r.URL.Query().Get("alt") == "media":
+				downloads.Add(1)
+				_, _ = w.Write([]byte(`{"response":{"candidates":[]}}`))
+			default:
+				listedPrefix.Store(r.URL.Query().Get("prefix"))
+				_, _ = w.Write([]byte(`{"items":[{"name":"uploads/other/predictions-0.jsonl"}]}`))
+			}
+		}))
+		key.ID = "listed"
+		key.VertexKeyConfig.BatchGCSConfig = &schemas.BatchGCSConfig{Buckets: []schemas.GCSBucketConfig{{BucketName: "team-files", Prefix: "uploads//"}}}
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+
+		resp, bifrostErr := provider.BatchResults(ctx, []schemas.Key{key}, &schemas.BifrostBatchResultsRequest{Provider: schemas.Vertex, BatchID: "1"})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %+v", bifrostErr.Error)
+		}
+		if got, _ := listedPrefix.Load().(string); got != "uploads//" {
+			t.Fatalf("the listing was asked for under %q, want the job's own directory %q", got, "uploads//")
+		}
+		if got := downloads.Load(); got != 0 {
+			t.Fatalf("an object outside the key's prefix was downloaded (%d reads)", got)
+		}
+		if len(resp.Results) != 0 {
+			t.Fatalf("results from outside the key's prefix were returned: %+v", resp.Results)
+		}
+	})
+
+	// Every key is tried, so a key that may read the output still can. When none can, the caller
+	// is told the output is outside the bucket list, not that the job does not exist.
+	t.Run("the bucket refusal is kept when a later key cannot find the job", func(t *testing.T) {
+		var otherLookups atomic.Int32
+		provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.URL.Path, "project-other") {
+				otherLookups.Add(1)
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":{"code":404,"message":"job not found","status":"NOT_FOUND"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"name":"projects/project-123/locations/us-west1/batchPredictionJobs/1","state":"JOB_STATE_SUCCEEDED","outputInfo":{"gcsOutputDirectory":"gs://other-bucket/out/prediction-1"}}`))
+		}))
+		key.ID = "listed"
+		key.VertexKeyConfig.BatchGCSConfig = listed().VertexKeyConfig.BatchGCSConfig
+		other := schemas.Key{ID: "other-project", Value: key.Value, VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewSecretVar("project-other"), Region: key.VertexKeyConfig.Region, AuthCredentials: *schemas.NewSecretVar("other-credentials"),
+		}}
+		provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(other)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+
+		_, bifrostErr := provider.BatchResults(ctx, []schemas.Key{key, other}, &schemas.BifrostBatchResultsRequest{Provider: schemas.Vertex, BatchID: "1"})
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected the bucket list 403, got %+v", bifrostErr)
+		}
+		// The 403 alone would also come from stopping at the first key's refusal.
+		if got := otherLookups.Load(); got != 1 {
+			t.Fatalf("the second key looked the job up %d times, want 1: every key is tried before the refusal is returned", got)
+		}
+	})
+
+	t.Run("an output folder is accepted with or without its trailing slash", func(t *testing.T) {
+		for _, uri := range []string{"gs://team-files/uploads", "gs://team-files/uploads/", "gs://team-files/uploads/out"} {
+			if _, bifrostErr := keysAllowingGCSFolderURI([]schemas.Key{listed()}, uri); bifrostErr != nil {
+				t.Errorf("folder %q is inside the listed prefix: %s", uri, bifrostErr.Error.Message)
+			}
+		}
+		for _, uri := range []string{"gs://team-files/uploads-archive", "gs://team-files/private/", "gs://team-files/"} {
+			if _, bifrostErr := keysAllowingGCSFolderURI([]schemas.Key{listed()}, uri); bifrostErr == nil {
+				t.Errorf("folder %q is outside the listed prefix", uri)
+			}
+		}
+	})
+
+	t.Run("generated inline input stays inside the prefix that covers the output", func(t *testing.T) {
+		key := listed()
+		for _, outKey := range []string{"uploads/", "uploads", "uploads/out/"} {
+			inputPrefix := vertexBatchInputPrefix(key, "team-files", outKey)
+			objectKey := gcsObjectKey(inputPrefix, "job-input.jsonl")
+			if !keyAllowsGCSObject(key, "team-files", objectKey) {
+				t.Errorf("output %q put the input at %q, which the key may not write", outKey, objectKey)
+			}
+		}
+		// A sibling of the output is kept wherever the key may write it.
+		if got := vertexBatchInputPrefix(key, "team-files", "uploads/out/"); got != "uploads/input" {
+			t.Errorf("input prefix = %q, want the output's sibling uploads/input", got)
+		}
+		if got := vertexBatchInputPrefix(open, "anything", "out/"); got != "input" {
+			t.Errorf("input prefix for a key with no list = %q, want input", got)
+		}
+		if got := vertexBatchInputPrefix(key, "team-open", "out/"); got != "input" {
+			t.Errorf("input prefix in a listed bucket with no prefix = %q, want input", got)
+		}
+	})
+
+	t.Run("a key that lists no bucket does not have its job body scanned", func(t *testing.T) {
+		body := []byte(`{"inputConfig":{"gcsSource":{"uris":["gs://in/a.jsonl"]}},"outputConfig":{"gcsDestination":{"outputUriPrefix":"gs://out/dir/"}}}`)
+		if bifrostErr := vertexBatchJobLocationsRefusal(open, body); bifrostErr != nil {
+			t.Fatalf("unexpected refusal: %s", bifrostErr.Error.Message)
+		}
+		if allocs := testing.AllocsPerRun(100, func() { _ = vertexBatchJobLocationsRefusal(open, body) }); allocs != 0 {
+			t.Fatalf("an unrestricted key paid %.0f allocations for the body scan", allocs)
+		}
+		if bifrostErr := vertexBatchJobLocationsRefusal(listed(), body); bifrostErr == nil {
+			t.Fatal("a restricted key's job body is still checked")
+		}
+		ok := []byte(`{"inputConfig":{"gcsSource":{"uris":["gs://team-files/uploads/a.jsonl"]}},"outputConfig":{"gcsDestination":{"outputUriPrefix":"gs://team-files/uploads"}}}`)
+		if bifrostErr := vertexBatchJobLocationsRefusal(listed(), ok); bifrostErr != nil {
+			t.Fatalf("a body naming listed locations is accepted: %s", bifrostErr.Error.Message)
+		}
+	})
+}
+
+// The job body check runs on every batch create. A key that lists no buckets pays a nil check.
+func BenchmarkVertexBatchJobLocationsRefusal(b *testing.B) {
+	body := []byte(`{"displayName":"job","inputConfig":{"instancesFormat":"jsonl","gcsSource":{"uris":["gs://team-files/uploads/a.jsonl"]}},"outputConfig":{"predictionsFormat":"jsonl","gcsDestination":{"outputUriPrefix":"gs://team-files/uploads/out/"}}}`)
+	open := schemas.Key{ID: "open", VertexKeyConfig: &schemas.VertexKeyConfig{}}
+	listed := schemas.Key{ID: "listed", VertexKeyConfig: &schemas.VertexKeyConfig{BatchGCSConfig: &schemas.BatchGCSConfig{Buckets: []schemas.GCSBucketConfig{{BucketName: "team-files", Prefix: "uploads/"}}}}}
+	b.Run("no bucket list", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = vertexBatchJobLocationsRefusal(open, body)
+		}
+	})
+	b.Run("listed bucket and prefix", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = vertexBatchJobLocationsRefusal(listed, body)
+		}
+	})
 }

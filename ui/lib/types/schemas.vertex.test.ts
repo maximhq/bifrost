@@ -129,3 +129,18 @@ describe("vertexKeyConfigSchema, aws workload identity", () => {
 		expect(result.success).toBe(true);
 	});
 });
+
+describe("Vertex bucket list", () => {
+	it("keeps batch_gcs_config through validation so saving a key does not drop the list", () => {
+		const batch_gcs_config = { buckets: [{ bucket_name: "team-batch", prefix: "jobs/" }, { bucket_name: "team-files" }] };
+		const result = vertexKeyConfigSchema.safeParse({ ...base, batch_gcs_config });
+		expect(result.success).toBe(true);
+		expect(result.data?.batch_gcs_config).toEqual(batch_gcs_config);
+	});
+
+	it("rejects a bucket entry without a name", () => {
+		const result = vertexKeyConfigSchema.safeParse({ ...base, batch_gcs_config: { buckets: [{ bucket_name: "" }] } });
+		expect(result.success).toBe(false);
+		expect(result.error?.issues.map((issue) => issue.path.join("."))).toContain("batch_gcs_config.buckets.0.bucket_name");
+	});
+});
