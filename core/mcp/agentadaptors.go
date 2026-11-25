@@ -68,6 +68,14 @@ type agentAPIAdapter interface {
 	// applyUsage sets accumulated usage on the response in place.
 	applyUsage(response interface{}, usage *schemas.BifrostLLMUsage)
 
+	// extractCost returns the send-back cost core attached to a response, or nil.
+	extractCost(response interface{}) *schemas.BifrostCost
+
+	// applyCost returns a shallow copy of the response carrying cost, or the
+	// response itself when cost is nil. The response may still be held by
+	// post-hook plugins, so it is never written.
+	applyCost(response interface{}, cost *schemas.BifrostCost) interface{}
+
 	// carryForward records the assistant text and reasoning of a turn the loop is about to
 	// supersede, leaving out the tool calls Bifrost executed for it.
 	carryForward(response interface{}, executedToolCalls []schemas.ChatAssistantMessageToolCall)
@@ -205,6 +213,19 @@ func (c *chatAPIAdapter) extractUsage(response interface{}) *schemas.BifrostLLMU
 
 func (c *chatAPIAdapter) applyUsage(response interface{}, usage *schemas.BifrostLLMUsage) {
 	response.(*schemas.BifrostChatResponse).Usage = usage
+}
+
+func (c *chatAPIAdapter) extractCost(response interface{}) *schemas.BifrostCost {
+	return response.(*schemas.BifrostChatResponse).ExtraFields.Cost
+}
+
+func (c *chatAPIAdapter) applyCost(response interface{}, cost *schemas.BifrostCost) interface{} {
+	if cost == nil {
+		return response
+	}
+	withCost := *response.(*schemas.BifrostChatResponse)
+	withCost.ExtraFields.Cost = cost
+	return &withCost
 }
 
 func (c *chatAPIAdapter) routingInfo(response interface{}) schemas.RoutingInfo {
@@ -543,6 +564,19 @@ func (r *responsesAPIAdapter) extractUsage(response interface{}) *schemas.Bifros
 
 func (r *responsesAPIAdapter) applyUsage(response interface{}, usage *schemas.BifrostLLMUsage) {
 	response.(*schemas.BifrostResponsesResponse).Usage = usage.ToResponsesResponseUsage()
+}
+
+func (r *responsesAPIAdapter) extractCost(response interface{}) *schemas.BifrostCost {
+	return response.(*schemas.BifrostResponsesResponse).ExtraFields.Cost
+}
+
+func (r *responsesAPIAdapter) applyCost(response interface{}, cost *schemas.BifrostCost) interface{} {
+	if cost == nil {
+		return response
+	}
+	withCost := *response.(*schemas.BifrostResponsesResponse)
+	withCost.ExtraFields.Cost = cost
+	return &withCost
 }
 
 func (r *responsesAPIAdapter) routingInfo(response interface{}) schemas.RoutingInfo {
